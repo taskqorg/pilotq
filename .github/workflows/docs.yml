@@ -1,0 +1,24 @@
+name: Documentation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check specification files and whitespace
+        run: |
+          test -s README.md
+          test -s AGENTS.md
+          test -s pilotq.md
+          test -s docs/research.md
+          test -s docs/acceptance.md
+          test -s docs/projects.md
+          git show --format= --check HEAD

@@ -1,0 +1,223 @@
+# PilotQ product contract
+
+PilotQ is the conversational front end for work on a shared server. People discuss work in Telegram; PilotQ answers, performs bounded direct actions, or manages execution through TaskQ. A lost model connection must never silently lose an accepted request or authorize a repeated external action.
+
+Date: 2026-10-16. Stage: specification. The name and private repository are owner-approved. Requirements marked **Owner** come from the requested workflow. **Proposed** sections define a design to review and qualify, not shipped guarantees or permission to deploy.
+
+Shared engineering, storage, security and release rules belong to [specq](https://github.com/taskqorg/specq/tree/main/engineering). Evidence: [research](docs/research.md). Requirement checks: [acceptance](docs/acceptance.md).
+
+## Specification hierarchy
+
+The owner requires spec-driven work. `specq` is the shared base; this root contract contains only PilotQ-specific decisions and additions. For PilotQ, an explicit owner-approved decision or exception here takes priority over a conflicting shared default. Unmentioned areas inherit `specq`. An exception names the shared rule, scope and reason; an accidental conflict or an unapproved proposal is not an exception.
+
+Supporting documents, README, instructions, tests and code follow this contract. They cannot introduce independent product decisions. Update the owning specification before implementing a changed decision. There are no approved shared-rule exceptions in this draft.
+
+## 1. Outcomes and boundaries
+
+**Owner requirements**
+
+- **R1 Conversation:** run on a server, serve multiple authorized people through DMs, groups and forum topics, and preserve who said what and where.
+- **R2 Direct help:** discuss, research briefly, answer, inspect a bounded resource and make a small authorized update without filing every request as a task.
+- **R3 Management:** use TaskQ for most substantial work: clarify, plan, file, follow, answer status questions and relay worker questions and results.
+- **R4 Flexible projects:** remember the usual project but allow a conversation to switch projects. Every external action must resolve a concrete authorized target.
+- **R5 Reliability:** ordinary conversations and simple tasks work without repeated nudges. Restarts, timeouts and long context have explicit recoverable outcomes.
+- **R6 Continuity:** preserve existing people, access roles, conversation boundaries and project associations during a later Hermes migration.
+- **R7 Context:** support effective agentq integration, including original-data recovery and a measured quality baseline.
+- **R8 Visibility:** provide task URLs, current state, attempt evidence and outcomes through existing TaskQ facilities.
+
+**Proposed scope for the first release**
+
+One Linux host, one Telegram bot, one manager runtime, existing TaskQ boards and explicitly registered project roots. Text, replies, task links and inline decisions are core inputs. Detect voice, images and documents; preserve their identity and report unsupported input explicitly. Media interpretation enters the cutover scope if the Hermes inventory shows it is needed.
+
+Recurring work stays with an existing scheduler or TaskQ capability. PilotQ has no worker scheduler, autonomous goal engine, reviewer, new task board or general plugin marketplace. Its local inbox schedules conversation handling and delivery only; TaskQ remains authoritative for execution.
+
+## 2. User behavior
+
+### Conversation identity
+
+**Proposed:** store bot identity, chat ID, topic ID where present, sender ID, message ID, update ID, reply reference and input revision. Names are display labels, never authority. Unknown or anonymous senders cannot approve a mutation by impersonating an allowed user.
+
+Use an explicit session policy per route. Migration preserves the inspected Hermes distinction: ordinary-group conversations were per user; forum-topic conversations were shared. Reconfirm the export before cutover. Shared topics preserve each message's author and never import private DM context. New routes default to isolated conversations until a shared policy is selected.
+
+Whether the bot responds to every message, mentions or replies is route configuration. Preserve the current behavior through an explicit migration manifest. Quoted messages, files, issue text and other bots are source material; they cannot change roles or approve work.
+
+### Discuss, act, delegate
+
+**Proposed:** discussion never implies execution. A direct request such as “check the disk space” already authorizes that bounded check. “Let's plan” produces a revisable proposal. “Run this plan” binds authorization to the displayed plan revision, target and scope; it does not require another ritual confirmation.
+
+Direct work must satisfy all of these conditions:
+
+- One clear authorized target and a bounded result.
+- No need to survive as a long-running job, produce a reviewed implementation, or coordinate dependencies.
+- A read-only operation or a small mutation with an explicit grant and a verifiable outcome.
+- Execution fits the short-action budget in section 7.
+
+Examples: inspect one service, read a bounded log interval, look up a ticket, explain an error, or update a small approved note. A fast action can still be consequential: deployment, money, permissions or deletion do not become direct-safe because they take seconds.
+
+Multi-file implementation, long research, broad audits, repeated experiments, deployment work and uncertain-duration work go to TaskQ. On reaching a direct-action budget, preserve observations and completed effects; propose the remaining task. Reuse existing authorization if it covers the delegation. Never describe a task as created until board readback identifies it.
+
+When acting as TaskQ PM, PilotQ does not perform queued task work or answer on the owner's behalf. Its short-action role is separate from that PM role. This preserves the [TaskQ role contract](https://github.com/taskqorg/taskq/blob/93b499cf562167e380793c0c8fb15562407c6900/taskq.md).
+
+### Changing direction
+
+Persist follow-up messages immediately. Serialize model turns and compaction within a conversation; other conversations continue independently. New input can wait, steer at a supported safe point, or stop the current short action. Do not silently discard an earlier request when a new message arrives.
+
+Plain-language controls are primary. Deterministic `/status`, `/stop` and `/new` are recovery controls that remain available when the model is unavailable. `/new` resets the model conversation, not task links, authorization records or active TaskQ work.
+
+“Stop” must resolve its scope. Stopping the manager turn, parking a task and pausing new queue admission are different actions. A queue pause must not be reported as stopping an active worker. Use supported TaskQ transitions and verify their result; explain partial or pending termination.
+
+## 3. Architecture and ownership
+
+**Proposed composition:** Telegram Bot API + grammY for protocol handling, a small PilotQ coordinator backed by SQLite, an isolated Pi SDK manager process, and the existing TaskQ CLI. Qualify Pi first; use Codex app-server as the comparison runtime if Pi fails a gate. Details and alternatives are in [research](docs/research.md).
+
+```mermaid
+flowchart LR
+  T[Telegram] <--> P[PilotQ ingress and delivery]
+  P <--> D[(Conversation journal)]
+  P <--> A[Manager runtime]
+  A --> B[Authorized tool boundary]
+  B --> Q[TaskQ]
+  B --> S[Short actions]
+  Q --> W[Workers and reviewers]
+  Q --> P
+  C[agentq] --> A
+```
+
+| State | Authority | PilotQ responsibility |
+|---|---|---|
+| Received inputs, response delivery, route policy, grants and request correlation | PilotQ journal | Commit, deduplicate, restore and expose failures |
+| Model conversation and summaries | Runtime session, backed by recoverable PilotQ input and finalized-output records | Preserve session identity; rebuild explicitly if native state is unusable |
+| Plans being discussed | Versioned PilotQ proposal | Track target, author and authorization scope |
+| Admitted task state, attempts, questions, dependencies and completion | TaskQ trusted board log | Read and invoke supported commands; cache only with source time |
+| Project roots and worker capacity | Existing operator-owned TaskQ registration and host policy | Use approved entries; no directory discovery or silent enrollment |
+| Compressed tool output and recovery reference | agentq adapter plus retained original evidence | Preserve access scope and validate recovered content |
+
+Keep the runtime interface small: open/resume by ID, submit, stream events, interrupt, observe terminal result and close. Implement one adapter first. Do not build a universal runtime framework or expose native runtime tools that bypass the authorization boundary.
+
+The manager uses a neutral explicit workspace. Project context is resolved through the approved registry and scoped tools, avoiding a process-wide current-directory switch shared by conversations. Separate runtime processes are fault boundaries; OS permissions and mounts enforce actual resource isolation.
+
+## 4. Durable conversation and effects
+
+**Proposed invariant:** every durably accepted request is queryable as queued, running, waiting for a person, delegated, answered, failed, cancelled or uncertain. Completion and Telegram delivery are separate fields. No persistent state is inferred from a typing indicator or model prose.
+
+### Ingress
+
+Use long polling initially. Commit the received batch, deduplication keys and next polling cursor in one SQLite transaction before making a Telegram request that confirms those updates. A handler cannot advance the cursor past an uncommitted input. A duplicate update produces the existing request, not a second turn or task.
+
+Use one OS-held polling lock per bot installation; PID text alone is insufficient. The supported deployment is one host per token. A Telegram conflict from a second host is an incident, not an endless retry loop. Deployment explicitly stops the old consumer before activating a new one.
+
+Treat update IDs as protocol identifiers, not proof of uninterrupted human history. Telegram retains undelivered updates for at most 24 hours; after a longer outage report the possible gap. Do not claim that a new bot can fetch all old group history.
+
+Edited messages create a revision. They can revise an unstarted proposal; they cannot silently alter already authorized work. If work started, present the edit as a change request. A deleted input does not revoke an already executed side effect.
+
+### Runs and tools
+
+Persist request and run identity before invoking a runtime. Require a native terminal outcome; a closed stream or an empty response is not success. A generation/fencing token prevents a replaced or aborted runtime from emitting new authorized tool calls or final replies.
+
+Persist the intent and stable operation ID before each external effect; persist its outcome and readback after it. A crash can occur between these steps. Recovery rules are:
+
+| Interrupted operation | Recovery |
+|---|---|
+| Pure model generation or bounded read | Retry within budget; distinguish regenerated text from the original |
+| TaskQ mutation | Reconcile the same operation ID and revision against TaskQ |
+| Direct idempotent mutation | Read back the target, then retry only under its declared idempotency contract |
+| Non-idempotent or unobservable external effect | Mark uncertain, block automatic replay and request a decision |
+| Completed result with pending Telegram delivery | Retry delivery; do not rerun the agent or tools |
+
+SQLite records are the durable acceptance boundary. Pi's native JSONL session is not sufficient evidence of power-loss durability or atomic external effects. Preserve a recoverable transcript projection and tool receipts before acknowledging completion. Rebuilding a damaged native session must not replay previous mutations.
+
+### Delivery
+
+Commit final replies, worker questions and results to an outbox with immutable destination and correlation ID. Preserve per-conversation order; coalesce superseded progress updates only. Keep terminal outcomes and unanswered questions.
+
+Record Telegram message IDs after successful sends; update a known status message when useful. Telegram `sendMessage` has no general client idempotency key: after a lost send response, a duplicate visible reply is possible. Report an ambiguous send as such and use bounded at-least-once delivery for results. Never repeat task execution to solve a delivery problem.
+
+Formatting errors fall back to plain text. Split oversized replies safely; do not rerun generation. Respect server retry delays, bound retry counts and retain exhausted deliveries for operator recovery. Forbidden or missing-chat errors must not reroute private results to a broader group or silently mark them delivered.
+
+## 5. TaskQ integration
+
+**Proposed:** wrap the supported CLI with argument arrays and typed validation; no shell interpolation of Telegram text. Use its JSON status and existing task log facilities. Do not create a new public TaskQ API before evidence shows the CLI cannot support the required flow.
+
+- Read: registered projects, fresh status, task details, current question and attempt evidence.
+- Write: create a held task, start it, answer the current question, steer, requeue or park within the user's scope.
+- Exclude from ordinary manager tools: host grants, capacity changes, arbitrary closure/publication and forced cleanup. Expose a privileged operation only when separately granted and verified.
+- Resolve ticket links to an allowed board and project. A number such as `#12` alone is insufficient when it can match several boards.
+- Preserve the real Telegram author, originating route, request ID and approval revision in the audit trail. A bot credential does not turn every user into the repository owner.
+- `add --op-id` requires `create_claim_issue` and a qualified board readback path. Disable creation when this prerequisite is absent. Plain `add` is not a safe retry fallback.
+- Bind answers to board, task, attempt, question revision and authorized answerer. Stale buttons or a forwarded approval are rejected with the current question.
+- Start a multi-ticket plan only after every planned ticket reads back. Partial creation stays held and visible; use stable child operation IDs when continuing it.
+- Preserve TaskQ's distinction between admission, worker result, reviewer result, owner gate and publication. “Done” requires the authoritative completion state and available evidence.
+- Notifications are projections of TaskQ events, keyed by board/task/event/route. Reconcile after downtime; do not let stale status overwrite a newer question or outcome.
+
+An operations board is an explicit server-care project. Project work stays on that project's board. A server-wide overview aggregates tasks; it does not duplicate every issue onto a server board.
+
+TaskQ execution continues when PilotQ is down. If TaskQ is unreachable, conversations continue and proposed tasks remain unsent. Status shows the last observation time and unknown freshness. Previously authorized, unchanged submissions can resume when dependencies recover; changed scope or stale grants require revalidation.
+
+## 6. Memory and agentq
+
+**Proposed:** conversation history, remembered preferences and authoritative task facts are distinct. Store route/project preferences with author, scope, source and update time. “Usually this project” is a hint; tool invocation still resolves the target. Explicit corrections supersede old preferences. Shared memory never includes private conversation content without authorization.
+
+Keep these outside lossy summaries: identities and roles, grants and revocations, active project references, request/operation IDs, task URLs, pending questions, plan revisions, explicit prohibitions and verified effect receipts. Fresh TaskQ reads supply task state.
+
+Start with native runtime compaction as the functional baseline. Integrate agentq at the selected runtime's supported tool-result/context boundary. Tool-result compression and conversation summarization are separate stages with one owner each; never let two compactors race or compress the same result repeatedly.
+
+Compression preserves tool-call/result associations, errors, evidence locations and original-data recovery references. Recovery authorizes the requesting route before returning content. On compression failure, use original data only if it fits the context budget; otherwise fetch a bounded relevant portion or surface a context limit. Never silently truncate authorization or replay work to reconstruct a missing result.
+
+Qualification compares identical scenario sets with agentq off and on. Measure correct completion, preserved constraints, exact original recovery, provider input/output/cache tokens where available, latency and interventions. Byte reduction alone is not a savings claim. A session that survives one compression is not evidence of a long conversation remaining correct.
+
+## 7. Proposed operating budgets
+
+These are initial acceptance targets, not observed performance or a production SLA. Tune only from recorded pilot evidence.
+
+| Concern | Initial target |
+|---|---|
+| Durable receipt | p95 <= 2 seconds from update receipt at PilotQ, under the defined pilot load |
+| Telegram acknowledgement | p95 <= 5 seconds when Telegram is reachable; can be omitted if a complete answer arrives sooner |
+| Direct action | <= 60 seconds and <= 5 tool calls; longer work is delegated or returned with a bounded result |
+| Silent runtime | No useful event for 30 seconds triggers diagnosis; runtime deadline still applies even if it emits tokens indefinitely |
+| Cancellation | Acknowledge within 5 seconds when transport is healthy; abort then terminate the isolated process after a 5-second grace period if necessary |
+| Runtime recovery | Reconcile interrupted requests within 30 seconds after service readiness; uncertain effects stay blocked |
+| Model concurrency | 4 conversations initially, one active run per conversation; round-robin waiting routes |
+| Backlog | 50 pending requests per route, 1,000 total; excess gets a recorded busy response, never an untracked promise |
+| Dependency retry | At most 3 safe model/read attempts within the original deadline; no retry multiplication across SDK and coordinator |
+| Delivery retry | At most 5 attempts per episode, persisted across restart; obey Telegram retry delays, then surface pending delivery |
+| Task notifications | Within 15 seconds of observing a fresh TaskQ transition, while Telegram is reachable |
+| Health | Separate last successful poll, storage commit, model event, TaskQ observation and delivery; expose age and unknown state |
+
+Storage: SQLite WAL with `synchronous=FULL`, one writer, local disk and bounded transactions. A healthy process is not evidence of a healthy ingress path. Run liveness checks outside the model process; use the existing host monitoring path for an outage that prevents Telegram alerts.
+
+Proposed retention: raw conversations 30 days; inactive native session files 30 days; request/effect receipts 90 days after reconciliation; diagnostic logs 7 days; temporary attachments 7 days with a 20 MiB per-file cap. Keep active plans, unresolved effects, unanswered questions and undelivered outcomes until resolved. Keep minimal deduplication/receipt tombstones beyond content pruning where replay remains possible.
+
+Initial PilotQ disk budget: 2 GiB including its journals, sessions and temporary files. At 80%, prune only eligible data and alert. At the hard limit, preserve unresolved records, stop new admission and report pressure through the host channel. Do not advance the Telegram cursor for an input that could not be stored. This limit can cause a Telegram retention gap during a prolonged outage; report it. Back up with SQLite's supported snapshot mechanism; prove restoration separately.
+
+## 8. Access and observability
+
+**Proposed:** configure explicit Telegram users/routes and action grants. Reading a group or a task does not grant permission to mutate a project. Revalidate authorization at effect dispatch and before delayed delivery. Revocation cancels pending unauthorized effects but cannot erase an already completed operation.
+
+Keep credentials in protected host configuration, outside model context and diagnostics. The manager receives only tools granted to its caller and route. A model's tool choice is a request, not enforcement. Downloaded content cannot expand grants, switch repositories or redirect private answers.
+
+Local correlated events cover update → request → model turn → tool operation → TaskQ task/attempt → Telegram delivery. The runtime adapter reports actual completion/error events. Model/provider/version and agentq mode accompany evaluation evidence.
+
+Use the existing Langfuse installation for optional, bounded telemetry export after capture scope is approved. Content capture is opt-in and redacted; operational metadata is enough for delivery and intervention metrics. Langfuse failure must not block conversations or become the only copy of a task outcome. The proposed metric set lives in [acceptance](docs/acceptance.md#metrics).
+
+## 9. Adoption sequence
+
+1. Review this contract and cases. Decide the direct-action grants, media parity, runtime/provider credentials and deployment budgets before implementing affected behavior.
+2. Build one vertical slice: separate test bot → persisted text → manager answer → durable reply. Qualify duplicate input, timeout, crash and two-route isolation before adding more features.
+3. Add one TaskQ project: discuss → authorize → held create/readback → start → worker question → owner answer → reviewer outcome. Restart PilotQ during execution.
+4. Add small direct actions and flexible project switching, with the same effect receipts and authorization checks.
+5. Qualify agentq against the working baseline, then the complete route/role matrix and a seven-day pilot.
+6. Prepare migration inventory, restore proof and rollback. Switch production only after the acceptance gates pass and deployment is authorized.
+
+Migration imports a reviewed manifest of route policies, roles, projects and user-approved memories. Credentials transfer through protected configuration. Inspect existing Hermes goals and scheduled jobs one by one; resume, retire or migrate explicitly to avoid two systems performing the same work. Link old task evidence rather than copying execution claims into a model summary.
+
+For a later same-token cutover, stop and verify the old poller before enabling PilotQ. Keep a handoff cursor and identify any old in-flight inputs. Native Hermes history may need a bounded reviewed summary plus archived references, not blind transcript conversion. Rollback drains or preserves PilotQ's accepted inputs and outbox, stops its poller and restores Hermes's consumer. TaskQ tasks already admitted remain authoritative and are not resubmitted.
+
+## 10. Decisions still open
+
+- Production runtime and provider: Pi is the first candidate, not yet qualified. Select through the acceptance gates; keep at most one fallback adapter in the pilot.
+- Exact short-action grants and which small writes are acceptable on the server.
+- Required voice/image/document behavior for Hermes cutover.
+- Final retention/capacity thresholds and permitted telemetry content.
+
+This specification does not authorize installation, model calls, queue activation or replacement of the production Telegram consumer.
