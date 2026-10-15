@@ -10,5 +10,6 @@ PilotQ answers questions and performs bounded actions directly. It turns longer 
 - [Runtime research](docs/research.md): source findings, alternatives and adoption decisions.
 - [Acceptance cases](docs/acceptance.md): observable outcomes, failure injection and selection gates.
 - [Project relationships](docs/projects.md): PilotQ in the taskqorg project portfolio.
+- [Repository setup status](docs/bootstrap.md): verified publication and unresolved platform controls.
 
 Shared rules: [specq](https://github.com/taskqorg/specq).
