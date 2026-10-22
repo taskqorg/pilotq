@@ -7,19 +7,20 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 /// Schema this binary writes; a newer journal is refused rather than guessed (F08).
-const SCHEMA: i64 = 4;
+const SCHEMA: i64 = 5;
 /// Model attempts per request across restarts (§ 7 dependency retry).
 const RUNS: i64 = 3;
 /// Delivery attempts per episode, persisted across restart (§ 7).
 pub const ATTEMPTS: i64 = 5;
-/// Named grants (§ 2, § 8). `chat` admits conversation only; every other grant is separate. `project:NAME` scopes a project.
-pub const GRANTS: [&str; 5] = ["chat", "users", "projects", "taskq", "audit"];
+/// Named grants (§ 2, § 5, § 8). `chat` admits conversation only; every other grant is separate. `project:NAME` scopes a project;
+/// `projects` covers every project; `queue` pauses host admission.
+pub const GRANTS: [&str; 6] = ["chat", "users", "projects", "taskq", "audit", "queue"];
 
 fn valid_grant(g: &str) -> bool {
     GRANTS.contains(&g) || g.strip_prefix("project:").is_some_and(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)))
 }
 
-fn has(c: &Connection, user: i64, grant: &str) -> Result<bool, String> {
+pub(crate) fn has(c: &Connection, user: i64, grant: &str) -> Result<bool, String> {
     c.query_row("SELECT 1 FROM grants WHERE user=?1 AND name=?2", params![user, grant], |_| Ok(())).optional().map(|r| r.is_some()).map_err(|e| e.to_string())
 }
 
@@ -43,11 +44,11 @@ fn control(text: Option<&str>) -> Option<&'static str> {
 /// Admits one request; its row is the audit record (§ 8 Request audit), so who, where, the display name at that time and the
 /// grant set used commit with the input.
 #[allow(clippy::too_many_arguments)]
-fn insert(tx: &Connection, update: i64, front: &str, chat: i64, topic: Option<i64>, sender: i64, name: Option<&str>, message: i64, kind: &str, text: Option<&str>, state: &str, at: i64, session: &str) -> Result<i64, String> {
+fn insert(tx: &Connection, update: i64, front: &str, chat: i64, topic: Option<i64>, sender: i64, name: Option<&str>, message: i64, kind: &str, text: Option<&str>, state: &str, at: i64, session: &str, reply_to: Option<i64>) -> Result<i64, String> {
     let grants = grants_of(tx, sender)?.join(",");
     tx.execute(
-        "INSERT INTO requests(update_id, front, chat, topic, sender, name, grants, message, kind, text, state, received_at, session) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
-        params![update, front, chat, topic, sender, name, grants, message, kind, text, state, at, session],
+        "INSERT INTO requests(update_id, front, chat, topic, sender, name, grants, message, kind, text, state, received_at, session, reply_to) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+        params![update, front, chat, topic, sender, name, grants, message, kind, text, state, at, session, reply_to],
     )
     .map_err(|e| e.to_string())?;
     Ok(tx.last_insert_rowid())
@@ -98,6 +99,65 @@ fn outbox(tx: &Connection, request: i64, chat: i64, topic: Option<i64>, reply_to
             .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// Queues one task message (§ 5): a `status` row, edited in place on delivery when the task already has a delivered status
+/// message; a `question`; or the `final` outcome. Nothing edits a question or a final message.
+#[allow(clippy::too_many_arguments)]
+fn notice(tx: &Connection, request: i64, chat: i64, topic: Option<i64>, kind: &str, task: i64, revision: i64, text: &str, at: i64) -> Result<(), String> {
+    tx.execute(
+        "INSERT INTO outbox(request_id, chat, topic, text, next_at, kind, task, revision) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+        params![request, chat, topic, text, at, kind, task, revision],
+    )
+    .map(drop)
+    .map_err(|e| e.to_string())
+}
+
+/// What a task in `state` waits for, in its status message (L01: waiting has a reason, never a hung warning).
+pub fn describe(state: &str) -> &'static str {
+    match state {
+        "held" => "held: filed, not started",
+        "ready" => "ready: waiting for a free worker",
+        "waiting" => "waiting for the tasks it depends on",
+        "doing" => "doing: a worker is on it",
+        "ask" => "ask: waiting for an answer to its question",
+        "review" => "review: the worker handed in a result; a reviewer checks it",
+        "later" => "parked (later)",
+        "failed" => "failed: the attempt ended without a result",
+        _ => "in a state PilotQ does not know",
+    }
+}
+
+/// A person's reply to a relayed TaskQ question, waiting to be checked and written (§ 5).
+#[derive(Debug)]
+pub struct Answer {
+    pub request: i64,
+    pub sender: i64,
+    pub text: String,
+    pub task: i64,
+    pub revision: i64,
+}
+
+/// One planned ticket of an authorized plan run and what the board holds for it so far.
+#[derive(Debug, Clone)]
+pub struct Ticket {
+    pub idx: i64,
+    pub op_id: String,
+    pub task: Option<i64>,
+    pub started: bool,
+    pub plan: Value,
+}
+
+/// An authorized plan run: who authorized it, from which request and route, and its tickets in order.
+#[derive(Debug)]
+pub struct PlanRun {
+    pub id: i64,
+    pub revision: i64,
+    pub request: i64,
+    pub actor: i64,
+    pub chat: i64,
+    pub topic: Option<i64>,
+    pub tickets: Vec<Ticket>,
 }
 
 /// Revalidates `chat` at dispatch and before delivery (§ 8, F10, F17): queued Telegram work of a person who lost it is cancelled
@@ -296,6 +356,8 @@ pub struct Input {
     pub message: i64,
     pub kind: &'static str,
     pub text: Option<String>,
+    /// The message this one replies to; a reply to a relayed TaskQ question is an answer (§ 5).
+    pub reply_to: Option<i64>,
 }
 
 /// An outbox row due for a send.
@@ -308,6 +370,8 @@ pub struct Delivery {
     pub html: Option<String>,
     pub text: String,
     pub attempts: i64,
+    /// A task status update edits this delivered status message instead of sending a new one (§ 12, L12).
+    pub edit: Option<i64>,
 }
 
 /// What one send attempt established.
@@ -376,6 +440,24 @@ impl Journal {
                 CREATE TABLE audit_reads(id INTEGER PRIMARY KEY, at INTEGER NOT NULL, reader INTEGER NOT NULL, front TEXT NOT NULL, filter TEXT NOT NULL,
                     count INTEGER NOT NULL);")?;
         }
+        if version < 5 {
+            // § 5 TaskQ tools: reply references, task messages, plan revisions, authorized plan runs, tickets and task subscriptions
+            up("ALTER TABLE requests ADD COLUMN reply_to INTEGER;
+                ALTER TABLE outbox ADD COLUMN kind TEXT NOT NULL DEFAULT 'reply';
+                ALTER TABLE outbox ADD COLUMN task INTEGER;
+                ALTER TABLE outbox ADD COLUMN revision INTEGER;
+                CREATE TABLE plans(id INTEGER PRIMARY KEY, session TEXT NOT NULL, revision INTEGER NOT NULL, request_id INTEGER NOT NULL, tickets TEXT NOT NULL,
+                    at INTEGER NOT NULL, UNIQUE(session, revision));
+                CREATE TABLE plan_runs(id INTEGER PRIMARY KEY, plan_id INTEGER NOT NULL UNIQUE, request_id INTEGER NOT NULL, actor INTEGER NOT NULL,
+                    state TEXT NOT NULL, reason TEXT, next_at INTEGER NOT NULL, at INTEGER NOT NULL);
+                CREATE TABLE tickets(run_id INTEGER NOT NULL, idx INTEGER NOT NULL, op_id TEXT NOT NULL UNIQUE, task INTEGER, started INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(run_id, idx));
+                CREATE TABLE tasks(number INTEGER PRIMARY KEY, request_id INTEGER NOT NULL, chat INTEGER NOT NULL, topic INTEGER, state TEXT NOT NULL,
+                    revision INTEGER NOT NULL, card TEXT, closed INTEGER NOT NULL DEFAULT 0, observed INTEGER NOT NULL);")?;
+        }
+        // TaskQ op IDs are permanent board claims; a random installation ID keeps a fresh journal from reusing another's
+        let salt = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as i64) ^ ((std::process::id() as i64) << 40);
+        c.execute("INSERT INTO meta(key, value) VALUES ('instance', ?1) ON CONFLICT(key) DO NOTHING", [salt & i64::MAX]).map_err(|e| e.to_string())?;
         up(&format!("PRAGMA user_version={SCHEMA};"))?;
         Ok(Journal(c, path.with_file_name("telemetry.sqlite"), std::sync::OnceLock::new()))
     }
@@ -420,13 +502,22 @@ impl Journal {
                             .map_err(|e| e.to_string())?;
                         route >= ROUTE_BACKLOG || total >= TOTAL_BACKLOG
                     };
+                    // a reply to a relayed TaskQ question is an answer: checked and written by PilotQ, never by the model (§ 5)
+                    let question: Option<i64> = match (cmd, i.reply_to) {
+                        (None, Some(m)) if i.kind == "text" => tx
+                            .query_row("SELECT task FROM outbox WHERE kind='question' AND chat=?1 AND sent_message=?2", params![i.chat, m], |r| r.get(0))
+                            .optional()
+                            .map_err(|e| e.to_string())?,
+                        _ => None,
+                    };
                     let (kind, state) = match (cmd, i.kind) {
                         (Some(_), _) => ("control", "answered"),
                         (None, "text") if busy => ("text", "failed"),
+                        (None, "text") if question.is_some() => ("answer", "queued"),
                         (None, "text") => ("text", "queued"),
                         _ => (i.kind, "failed"),
                     };
-                    let id = insert(&tx, *update, "telegram", i.chat, i.topic, sender, i.name.as_deref(), i.message, kind, i.text.as_deref(), state, at, &s)?;
+                    let id = insert(&tx, *update, "telegram", i.chat, i.topic, sender, i.name.as_deref(), i.message, kind, i.text.as_deref(), state, at, &s, i.reply_to)?;
                     let first: bool = tx.query_row("SELECT NOT EXISTS (SELECT 1 FROM requests WHERE sender=?1 AND id<>?2)", [sender, id], |r| r.get(0)).map_err(|e| e.to_string())?;
                     let (html, mut text) = match cmd {
                         Some(c) => {
@@ -437,6 +528,7 @@ impl Journal {
                         // § 1: unsupported input is detected and gets an explicit outcome, never silence
                         None if busy => (None, format!("Request #{id} was not accepted: PilotQ is busy; send it again later.")),
                         None if state == "failed" => (None, format!("Request #{id}: this input type is not supported yet; send text.")),
+                        None if kind == "answer" => (None, format!("Received. Request #{id}, your answer to task #{}, is queued.", question.unwrap_or_default())),
                         // § 12: acknowledge the committed request and say it is queued
                         None => (Some(format!("Received. Request <b>#{id}</b> is queued.")), format!("Received. Request #{id} is queued.")),
                     };
@@ -482,9 +574,15 @@ impl Journal {
             (SELECT 1 FROM outbox p WHERE p.state='pending' AND p.chat=o.chat AND p.topic IS o.topic AND p.id<o.id)";
         let row = self
             .0
-            .query_row(&format!("SELECT id, chat, topic, reply_to, html, text, attempts {heads} AND next_at<=?1 ORDER BY id LIMIT 1"), [now], |r| {
-                Ok(Delivery { id: r.get(0)?, chat: r.get(1)?, topic: r.get(2)?, reply_to: r.get(3)?, html: r.get(4)?, text: r.get(5)?, attempts: r.get(6)? })
-            })
+            .query_row(
+                // a status row edits the task's latest delivered status message, resolved now, after every earlier row of its route
+                &format!(
+                    "SELECT id, chat, topic, reply_to, html, text, attempts, CASE WHEN kind='status' THEN (SELECT s.sent_message FROM outbox s WHERE s.task=o.task
+                        AND s.kind='status' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1) END {heads} AND next_at<=?1 ORDER BY id LIMIT 1"
+                ),
+                [now],
+                |r| Ok(Delivery { id: r.get(0)?, chat: r.get(1)?, topic: r.get(2)?, reply_to: r.get(3)?, html: r.get(4)?, text: r.get(5)?, attempts: r.get(6)?, edit: r.get(7)? }),
+            )
             .optional()
             .map_err(|e| e.to_string())?;
         let next = self.0.query_row(&format!("SELECT min(next_at) {heads}"), [], |r| r.get(0)).map_err(|e| e.to_string())?;
@@ -640,7 +738,7 @@ impl Journal {
         }
         // ponytail: CLI requests take negative synthetic update IDs, so Telegram's positive IDs never collide
         let update: i64 = tx.query_row("SELECT min(coalesce(min(update_id), 0), 0) - 1 FROM requests", [], |r| r.get(0)).map_err(|e| e.to_string())?;
-        let id = insert(&tx, update, "cli", sender, None, sender, None, 0, "text", Some(text), "queued", at, &format!("cli:{sender}"))?;
+        let id = insert(&tx, update, "cli", sender, None, sender, None, 0, "text", Some(text), "queued", at, &format!("cli:{sender}"), None)?;
         let run = claim(&tx, id, at)?.ok_or("request was claimed twice")?;
         tx.commit().map_err(|e| e.to_string())?;
         Ok(run)
@@ -655,7 +753,7 @@ impl Journal {
         let ids: Vec<i64> = {
             let mut q = tx
                 .prepare(
-                    "SELECT min(id) FROM requests r WHERE state='queued' AND front='telegram'
+                    "SELECT min(id) FROM requests r WHERE state='queued' AND front='telegram' AND kind='text'
                     AND NOT EXISTS (SELECT 1 FROM requests p WHERE p.session=r.session AND p.state='running') GROUP BY session ORDER BY 1 LIMIT ?1",
                 )
                 .map_err(|e| e.to_string())?;
@@ -784,6 +882,243 @@ impl Journal {
         Ok(rows)
     }
 
+    /// TaskQ op ID prefix of this installation (§ 5).
+    pub fn instance(&self) -> Result<String, String> {
+        self.0.query_row("SELECT value FROM meta WHERE key='instance'", [], |r| r.get::<_, i64>(0)).map(|v| format!("{v:x}")).map_err(|e| e.to_string())
+    }
+
+    pub fn has(&self, user: i64, grant: &str) -> Result<bool, String> {
+        has(&self.0, user, grant)
+    }
+
+    /// The sender of `request`.
+    pub fn sender(&self, request: i64) -> Result<i64, String> {
+        self.0.query_row("SELECT sender FROM requests WHERE id=?1", [request], |r| r.get(0)).map_err(|e| e.to_string())
+    }
+
+    /// Saves the next plan revision of the run's conversation while its fence holds (§ 5 `task_plan`). No board write.
+    pub fn save_plan(&self, r: &Run, tickets: &Value, at: i64) -> Result<i64, String> {
+        if self.fenced(r)? {
+            return Err("this run was stopped; nothing was saved".into());
+        }
+        self.0
+            .query_row(
+                "INSERT INTO plans(session, revision, request_id, tickets, at) SELECT ?1, coalesce(max(revision), 0) + 1, ?2, ?3, ?4 FROM plans WHERE session=?1 RETURNING revision",
+                params![r.session, r.request, tickets.to_string(), at],
+                |x| x.get(0),
+            )
+            .map_err(|e| e.to_string())
+    }
+
+    /// Authorizes `revision` of the run's conversation plan for `actor` (§ 5 `task_run_plan`): only the latest revision, saved by
+    /// an earlier request, runs, and at most once. Returns the plan run, leased for `lease` seconds to the caller; a refusal is the
+    /// reason, with nothing written.
+    pub fn authorize(&mut self, r: &Run, revision: i64, actor: i64, lease: i64, at: i64) -> Result<i64, String> {
+        let e = |e: rusqlite::Error| e.to_string();
+        let inst = self.instance()?;
+        if self.fenced(r)? {
+            return Err("this run was stopped; nothing was filed".into());
+        }
+        let tx = self.0.transaction().map_err(e)?;
+        let latest: Option<(i64, i64, i64, String)> = tx
+            .query_row("SELECT id, revision, request_id, tickets FROM plans WHERE session=?1 ORDER BY revision DESC LIMIT 1", [&r.session], |x| {
+                Ok((x.get(0)?, x.get(1)?, x.get(2)?, x.get(3)?))
+            })
+            .optional()
+            .map_err(e)?;
+        let Some((plan, latest, request, tickets)) = latest else { return Err("this conversation has no saved plan; nothing was filed".into()) };
+        if revision != latest {
+            return Err(format!("revision {revision} is not the latest plan revision ({latest}); nothing was filed. Show revision {latest} and ask again."));
+        }
+        if request == r.request {
+            return Err(format!("revision {revision} was saved by this same request; the person authorizes it in a later message after seeing it. Nothing was filed."));
+        }
+        if let Some(run) = tx.query_row("SELECT id FROM plan_runs WHERE plan_id=?1", [plan], |x| x.get(0)).optional().map_err(e)? {
+            return Ok(run);
+        }
+        tx.execute("INSERT INTO plan_runs(plan_id, request_id, actor, state, next_at, at) VALUES (?1,?2,?3,'creating',?4,?5)", params![plan, r.request, actor, at + lease, at]).map_err(e)?;
+        let run = tx.last_insert_rowid();
+        let n = serde_json::from_str::<Value>(&tickets).map_err(|x| x.to_string())?.as_array().map_or(0, Vec::len);
+        for idx in 1..=n as i64 {
+            tx.execute("INSERT INTO tickets(run_id, idx, op_id) VALUES (?1,?2,?3)", params![run, idx, format!("pilotq-{inst}-p{plan}-t{idx}")]).map_err(e)?;
+        }
+        tx.commit().map_err(e)?;
+        Ok(run)
+    }
+
+    /// Plan runs still filing or starting whose retry time has come, each leased for `lease` seconds (§ 5, L16).
+    pub fn due_runs(&self, now: i64, lease: i64) -> Result<Vec<i64>, String> {
+        let mut q = self.0.prepare("UPDATE plan_runs SET next_at=?1 + ?2 WHERE state='creating' AND next_at<=?1 RETURNING id").map_err(|e| e.to_string())?;
+        q.query_map([now, lease], |r| r.get(0)).and_then(Iterator::collect).map_err(|e| e.to_string())
+    }
+
+    pub fn plan_run(&self, id: i64) -> Result<PlanRun, String> {
+        let e = |e: rusqlite::Error| e.to_string();
+        let (revision, request, actor, chat, topic, plan): (i64, i64, i64, i64, Option<i64>, String) = self
+            .0
+            .query_row(
+                "SELECT p.revision, r.request_id, r.actor, q.chat, q.topic, p.tickets FROM plan_runs r JOIN plans p ON p.id=r.plan_id JOIN requests q ON q.id=r.request_id WHERE r.id=?1",
+                [id],
+                |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?, x.get(3)?, x.get(4)?, x.get(5)?)),
+            )
+            .map_err(e)?;
+        let plan: Value = serde_json::from_str(&plan).map_err(|x| x.to_string())?;
+        let mut q = self.0.prepare("SELECT idx, op_id, task, started FROM tickets WHERE run_id=?1 ORDER BY idx").map_err(e)?;
+        let tickets = q
+            .query_map([id], |x| Ok(Ticket { idx: x.get(0)?, op_id: x.get(1)?, task: x.get(2)?, started: x.get(3)?, plan: Value::Null }))
+            .and_then(Iterator::collect::<Result<Vec<Ticket>, _>>)
+            .map_err(e)?
+            .into_iter()
+            .map(|t| Ticket { plan: plan[(t.idx - 1) as usize].clone(), ..t })
+            .collect();
+        Ok(PlanRun { id, revision, request, actor, chat, topic, tickets })
+    }
+
+    /// Records a ticket's held readback: the task joins its route's subscriptions and the request's audit record.
+    pub fn filed(&self, run: &PlanRun, idx: i64, task: i64, revision: i64, at: i64) -> Result<(), String> {
+        let e = |e: rusqlite::Error| e.to_string();
+        let tx = self.0.unchecked_transaction().map_err(e)?;
+        tx.execute("UPDATE tickets SET task=?3 WHERE run_id=?1 AND idx=?2", params![run.id, idx, task]).map_err(e)?;
+        tx.execute(
+            "INSERT INTO tasks(number, request_id, chat, topic, state, revision, observed) VALUES (?1,?2,?3,?4,'held',?5,?6) ON CONFLICT(number) DO NOTHING",
+            params![task, run.request, run.chat, run.topic, revision, at],
+        )
+        .map_err(e)?;
+        let op = &run.tickets.iter().find(|t| t.idx == idx).ok_or("no such ticket")?.op_id;
+        tx.execute("INSERT INTO audit_events(request_id, at, kind, target, item, result) VALUES (?1,?2,'task',?3,?4,'held')", params![run.request, at, format!("add #{task}"), op])
+            .map_err(e)?;
+        tx.commit().map_err(e)
+    }
+
+    /// Records a ticket's start receipt.
+    pub fn started(&self, run: &PlanRun, idx: i64, task: i64, state: &str, at: i64) -> Result<(), String> {
+        let e = |e: rusqlite::Error| e.to_string();
+        let tx = self.0.unchecked_transaction().map_err(e)?;
+        tx.execute("UPDATE tickets SET started=1 WHERE run_id=?1 AND idx=?2", params![run.id, idx]).map_err(e)?;
+        tx.execute("INSERT INTO audit_events(request_id, at, kind, target, item, result) VALUES (?1,?2,'task',?3,NULL,?4)", params![run.request, at, format!("start #{task}"), state])
+            .map_err(e)?;
+        tx.commit().map_err(e)
+    }
+
+    /// Ends a plan run (`started` or `failed`) or defers it (`creating`, retried after `next_at`) with its reason. `notify` goes
+    /// to the run's route: a scan, not the authorizing turn, finished it.
+    pub fn run_outcome(&self, run: &PlanRun, state: &str, reason: Option<&str>, notify: Option<&str>, next_at: i64, at: i64) -> Result<(), String> {
+        let e = |e: rusqlite::Error| e.to_string();
+        let tx = self.0.unchecked_transaction().map_err(e)?;
+        tx.execute("UPDATE plan_runs SET state=?2, reason=?3, next_at=?4 WHERE id=?1", params![run.id, state, reason, next_at]).map_err(e)?;
+        if let Some(text) = notify {
+            outbox(&tx, run.request, run.chat, run.topic, None, None, text, at)?;
+        }
+        tx.commit().map_err(e)
+    }
+
+    /// Open task subscriptions and their stored revisions.
+    pub fn subscriptions(&self) -> Result<Vec<(i64, i64)>, String> {
+        let mut q = self.0.prepare("SELECT number, revision FROM tasks WHERE closed=0 ORDER BY number").map_err(|e| e.to_string())?;
+        q.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).and_then(Iterator::collect).map_err(|e| e.to_string())
+    }
+
+    /// The stored projection of a subscribed task: state, revision and card.
+    pub fn task(&self, task: i64) -> Result<Option<(String, i64, Option<String>)>, String> {
+        self.0.query_row("SELECT state, revision, card FROM tasks WHERE number=?1", [task], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional().map_err(|e| e.to_string())
+    }
+
+    /// Applies one fresh board observation of a subscribed task (§ 5). An observation older than the stored revision is stale and
+    /// ignored (F14); an unchanged one changes nothing. A change supersedes the task's pending status update with `status`, and
+    /// an `ask` also queues `question` as its own message. Returns true when something was queued.
+    #[allow(clippy::too_many_arguments)]
+    pub fn observe(&self, task: i64, state: &str, revision: i64, card: Option<&str>, status: &str, question: Option<&str>, at: i64) -> Result<bool, String> {
+        let e = |e: rusqlite::Error| e.to_string();
+        let tx = self.0.unchecked_transaction().map_err(e)?;
+        let row: Option<(i64, i64, Option<i64>, String, i64)> = tx
+            .query_row("SELECT request_id, chat, topic, state, revision FROM tasks WHERE number=?1 AND closed=0", [task], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .optional()
+            .map_err(e)?;
+        let Some((request, chat, topic, old, rev)) = row else { return Ok(false) };
+        if revision < rev || (revision == rev && state == old) {
+            return Ok(false);
+        }
+        tx.execute("UPDATE tasks SET state=?2, revision=?3, card=?4, observed=?5 WHERE number=?1", params![task, state, revision, card, at]).map_err(e)?;
+        tx.execute("UPDATE outbox SET state='superseded' WHERE task=?1 AND kind='status' AND state='pending'", [task]).map_err(e)?;
+        notice(&tx, request, chat, topic, "status", task, revision, status, at)?;
+        if let (Some(q), "ask") = (question, state) {
+            notice(&tx, request, chat, topic, "question", task, revision, q, at)?;
+        }
+        tx.commit().map_err(e)?;
+        Ok(true)
+    }
+
+    /// A subscribed task left a complete open snapshot: its closing outcome goes out once, as its own message (§ 5, L12).
+    pub fn close_task(&self, task: i64, text: &str, at: i64) -> Result<bool, String> {
+        let e = |e: rusqlite::Error| e.to_string();
+        let tx = self.0.unchecked_transaction().map_err(e)?;
+        let row: Option<(i64, i64, Option<i64>, i64)> = tx
+            .query_row("UPDATE tasks SET closed=1, observed=?2 WHERE number=?1 AND closed=0 RETURNING request_id, chat, topic, revision", params![task, at], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .optional()
+            .map_err(e)?;
+        let Some((request, chat, topic, revision)) = row else { return Ok(false) };
+        tx.execute("UPDATE outbox SET state='superseded' WHERE task=?1 AND kind='status' AND state='pending'", [task]).map_err(e)?;
+        notice(&tx, request, chat, topic, "final", task, revision, text, at)?;
+        tx.commit().map_err(e)?;
+        Ok(true)
+    }
+
+    /// Answers waiting to be checked and written, oldest first; `in flight` ones were taken before a restart and resume their
+    /// write with the same op ID.
+    pub fn answers(&self) -> Result<Vec<(Answer, bool)>, String> {
+        let mut q = self
+            .0
+            .prepare(
+                "SELECT q.id, q.sender, coalesce(q.text, ''), o.task, o.revision, q.state='running' FROM requests q JOIN outbox o ON o.kind='question' AND o.chat=q.chat
+                AND o.sent_message=q.reply_to WHERE q.kind='answer' AND q.state IN ('queued', 'running') ORDER BY q.id",
+            )
+            .map_err(|e| e.to_string())?;
+        q.query_map([], |r| Ok((Answer { request: r.get(0)?, sender: r.get(1)?, text: r.get(2)?, task: r.get(3)?, revision: r.get(4)? }, r.get(5)?)))
+            .and_then(Iterator::collect)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Marks an answer in flight before its board write.
+    pub fn take_answer(&self, request: i64) -> Result<(), String> {
+        self.0.execute("UPDATE requests SET state='running' WHERE id=?1 AND kind='answer'", [request]).map(drop).map_err(|e| e.to_string())
+    }
+
+    /// Ends an answer request with its reply in its route, and records the board write in its audit record.
+    pub fn end_answer(&self, a: &Answer, state: &str, reply: &str, error: Option<&str>, at: i64) -> Result<(), String> {
+        let e = |e: rusqlite::Error| e.to_string();
+        let tx = self.0.unchecked_transaction().map_err(e)?;
+        tx.execute("UPDATE requests SET state=?2, reply=?3, error=?4 WHERE id=?1", params![a.request, state, reply, error]).map_err(e)?;
+        tx.execute(
+            "INSERT INTO audit_events(request_id, at, kind, target, item, result) VALUES (?1,?2,'task',?3,?4,?5)",
+            params![a.request, at, format!("answer #{}", a.task), format!("revision {}", a.revision), state],
+        )
+        .map_err(e)?;
+        let (chat, topic, message): (i64, Option<i64>, i64) = tx.query_row("SELECT chat, topic, message FROM requests WHERE id=?1", [a.request], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(e)?;
+        outbox(&tx, a.request, chat, topic, Some(message), None, reply, at)?;
+        tx.commit().map_err(e)?;
+        self.trace(a.request, at);
+        Ok(())
+    }
+
+    /// Records a direct TaskQ write of a run (status read, park, queue pause) in its request's audit record.
+    pub fn task_event(&self, request: i64, target: &str, result: &str, at: i64) -> Result<(), String> {
+        self.0
+            .execute("INSERT INTO audit_events(request_id, at, kind, target, result) VALUES (?1,?2,'task',?3,?4)", params![request, at, target, result])
+            .map(drop)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Telegram routes with a running turn started within `window` seconds: they show typing (§ 12, L02).
+    pub fn typing(&self, now: i64, window: i64) -> Result<Vec<(i64, Option<i64>)>, String> {
+        let mut q = self
+            .0
+            .prepare("SELECT DISTINCT q.chat, q.topic FROM runs r JOIN requests q ON q.id=r.request_id WHERE r.state='running' AND q.state='running' AND q.front='telegram' AND r.started_at>=?1")
+            .map_err(|e| e.to_string())?;
+        q.query_map([now - window], |r| Ok((r.get(0)?, r.get(1)?))).and_then(Iterator::collect).map_err(|e| e.to_string())
+    }
+
     /// Appends the ended request's CoreQ event, keyed by request ID. Metadata only: no request or reply text, so no key value
     /// can reach telemetry (§ 8). A telemetry failure is reported and never blocks the request.
     fn trace(&self, request: i64, at: i64) {
@@ -837,7 +1172,7 @@ impl Journal {
         }
         let count = |sql: &str| self.0.query_row(sql, [], |r| r.get::<_, i64>(0)).map_err(|e| e.to_string());
         s["pending"] = serde_json::json!({"count": count("SELECT count(*) FROM requests WHERE state='queued'")?});
-        s["undelivered"] = serde_json::json!({"count": count("SELECT count(*) FROM outbox WHERE state<>'delivered'")?});
+        s["undelivered"] = serde_json::json!({"count": count("SELECT count(*) FROM outbox WHERE state NOT IN ('delivered', 'superseded')")?});
         s["uncertain"] = serde_json::json!({"count": count("SELECT count(*) FROM requests WHERE state='uncertain'")?});
         Ok(())
     }
@@ -857,7 +1192,7 @@ mod tests {
     }
 
     fn msg(chat: i64, sender: i64, message: i64) -> Option<Input> {
-        Some(Input { chat, topic: None, sender: Some(sender), name: None, message, kind: "text", text: Some("hi".into()) })
+        Some(Input { chat, topic: None, sender: Some(sender), name: None, message, kind: "text", text: Some("hi".into()), reply_to: None })
     }
 
     fn count(j: &Journal, sql: &str) -> i64 {
@@ -905,7 +1240,7 @@ mod tests {
     }
 
     fn at(chat: i64, topic: Option<i64>, sender: i64, message: i64) -> Option<Input> {
-        Some(Input { chat, topic, sender: Some(sender), name: None, message, kind: "text", text: Some("hi".into()) })
+        Some(Input { chat, topic, sender: Some(sender), name: None, message, kind: "text", text: Some("hi".into()), reply_to: None })
     }
 
     fn sessions(j: &Journal) -> Vec<(i64, String)> {
@@ -984,14 +1319,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(p);
     }
 
-    // A schema 1 journal from an earlier release gains the session column, the schema 3 run tables and the schema 4 audit tables.
+    // A schema 1 journal from an earlier release gains the session column, the schema 3 run tables, the schema 4 audit tables and the
+    // schema 5 TaskQ tables.
     #[test]
     fn schema_1_journal_upgrades() {
         let (j, p) = journal("upgrade");
         j.0.execute_batch(
             "ALTER TABLE requests DROP COLUMN session; ALTER TABLE requests DROP COLUMN front; ALTER TABLE requests DROP COLUMN reply;
             ALTER TABLE requests DROP COLUMN error; ALTER TABLE requests DROP COLUMN name; ALTER TABLE requests DROP COLUMN grants;
-            ALTER TABLE requests DROP COLUMN project; DROP TABLE conversations; DROP TABLE runs; DROP TABLE audit_events; DROP TABLE audit_reads; PRAGMA user_version=1",
+            ALTER TABLE requests DROP COLUMN project; DROP TABLE conversations; DROP TABLE runs; DROP TABLE audit_events; DROP TABLE audit_reads;
+            ALTER TABLE requests DROP COLUMN reply_to; ALTER TABLE outbox DROP COLUMN kind; ALTER TABLE outbox DROP COLUMN task; ALTER TABLE outbox DROP COLUMN revision;
+            DROP TABLE plans; DROP TABLE plan_runs; DROP TABLE tickets; DROP TABLE tasks; PRAGMA user_version=1",
         )
         .unwrap();
         drop(j);
@@ -1023,14 +1361,14 @@ mod tests {
 
         j.admit(&[(3, msg(7, 7, 3))], 4).unwrap();
         let r = j.claim_next(4, 4).unwrap().remove(0);
-        j.admit(&[(4, Some(Input { chat: 7, topic: None, sender: Some(7), name: None, message: 4, kind: "text", text: Some("/stop".into()) }))], 5).unwrap();
+        j.admit(&[(4, Some(Input { chat: 7, topic: None, sender: Some(7), name: None, message: 4, kind: "text", text: Some("/stop".into()), reply_to: None }))], 5).unwrap();
         assert!(j.fenced(&r).unwrap());
         assert!(!j.finish(&r, Some("t-old"), None, &Outcome::Answered("late".into()), 6).unwrap(), "a stopped run cannot reply");
         assert_eq!(j.request(r.request).unwrap(), ("cancelled".into(), None, Some("stopped by /stop".into())));
 
         j.admit(&[(5, msg(7, 7, 5))], 7).unwrap();
         let r = j.claim_next(4, 7).unwrap().remove(0);
-        j.admit(&[(6, Some(Input { chat: 7, topic: None, sender: Some(7), name: None, message: 6, kind: "text", text: Some("/new".into()) }))], 8).unwrap();
+        j.admit(&[(6, Some(Input { chat: 7, topic: None, sender: Some(7), name: None, message: 6, kind: "text", text: Some("/new".into()), reply_to: None }))], 8).unwrap();
         assert!(j.finish(&r, Some("t-old"), None, &Outcome::Answered("ok".into()), 9).unwrap());
         assert_eq!(count(&j, "SELECT count(*) FROM conversations WHERE session='dm:7' AND thread IS NULL AND generation=1"), 1);
         drop(j);
@@ -1047,7 +1385,7 @@ mod tests {
         j.grant(7, 8, &["chat".into()], 0).unwrap();
         j.grant(7, 9, &["chat".into()], 0).unwrap();
         let named = |chat, topic, sender, message, text: &str| {
-            Some(Input { chat, topic, sender: Some(sender), name: Some(format!("P{sender}")), message, kind: "text", text: Some(text.into()) })
+            Some(Input { chat, topic, sender: Some(sender), name: Some(format!("P{sender}")), message, kind: "text", text: Some(text.into()), reply_to: None })
         };
         let secret = "sk-aaaaaaaaaaaaaaaaaaaa"; // invented value standing in for anything a person types
         j.admit(&[(1, named(8, None, 8, 1, &format!("dm question {secret}"))), (2, named(-100, Some(5), 9, 2, "topic question"))], 10).unwrap();
@@ -1114,7 +1452,7 @@ mod tests {
     }
 
     fn input(chat: i64, topic: Option<i64>, sender: Option<i64>, name: &str, kind: &'static str, text: Option<&str>) -> Option<Input> {
-        Some(Input { chat, topic, sender, name: Some(name.into()), message: 1, kind, text: text.map(str::to_string) })
+        Some(Input { chat, topic, sender, name: Some(name.into()), message: 1, kind, text: text.map(str::to_string), reply_to: None })
     }
 
     // F09, F15, F16, L06, L14: strangers in a DM, a group and a topic, an anonymous sender, a stranger reusing the owner's display
@@ -1183,7 +1521,7 @@ mod tests {
         let busy = ROUTE_BACKLOG + 1;
         assert_eq!(j.request(busy).unwrap(), ("failed".into(), Some(format!("Request #{busy} was not accepted: PilotQ is busy; send it again later.")), Some("busy: backlog full".into())));
         j.grant(7, 8, &["chat".into()], 1).unwrap();
-        j.admit(&[(100, msg(8, 8, 100)), (101, Some(Input { chat: 7, topic: None, sender: Some(7), name: None, message: 101, kind: "text", text: Some("/status".into()) }))], 2).unwrap();
+        j.admit(&[(100, msg(8, 8, 100)), (101, Some(Input { chat: 7, topic: None, sender: Some(7), name: None, message: 101, kind: "text", text: Some("/status".into()), reply_to: None }))], 2).unwrap();
         assert_eq!(j.request(busy + 1).unwrap().0, "queued", "another route is admitted");
         assert!(j.request(busy + 2).unwrap().1.unwrap().starts_with("Running: none. Queued: #1, #2"), "the control answers on the full route");
         let runs = j.claim_next(4, 3).unwrap();
@@ -1216,6 +1554,64 @@ mod tests {
         j.record(3, &Sent::Retry { after: 5, ambiguous: true, error: "lost".into() }, 2).unwrap();
         assert_eq!(j.due(3).unwrap().0.map(|d| d.id), None, "chunk 3 waits behind its retrying predecessor");
         assert_eq!(j.due(7).unwrap().0.map(|d| d.id), Some(3), "only the ambiguous chunk is resent");
+        drop(j);
+        let _ = std::fs::remove_dir_all(p);
+    }
+
+    // U05, L03, L12, F14 (journal part): a revision saved by a request cannot be run by that request; a later request runs only
+    // the latest revision, at most once; a burst of transitions leaves one pending status update; an older or unchanged
+    // observation queues nothing; the next update edits the delivered status message; a reply to a relayed question is an
+    // answer and any other reply is text; the closing outcome is queued once and nothing follows it.
+    #[test]
+    fn plans_and_task_projections() {
+        use crate::manager::Outcome;
+        let (mut j, p) = journal("plans");
+        j.admit(&[(1, msg(7, 7, 1))], 0).unwrap();
+        let r = j.claim_next(4, 0).unwrap().remove(0);
+        assert_eq!(j.save_plan(&r, &json!([{"title": "A", "goal": "g", "acceptance": ["a"]}]), 1).unwrap(), 1);
+        assert!(j.authorize(&r, 1, 7, 120, 1).unwrap_err().contains("same request"), "a plan-only request starts nothing");
+        j.finish(&r, None, None, &Outcome::Answered("plan".into()), 2).unwrap();
+        j.admit(&[(2, msg(7, 7, 2))], 3).unwrap();
+        let r2 = j.claim_next(4, 3).unwrap().remove(0);
+        assert!(j.authorize(&r2, 2, 7, 120, 3).unwrap_err().contains("not the latest"));
+        let run = j.authorize(&r2, 1, 7, 120, 3).unwrap();
+        assert_eq!(j.authorize(&r2, 1, 7, 120, 3).unwrap(), run, "one revision runs at most once");
+        assert!(j.due_runs(3, 120).unwrap().is_empty(), "the authorizing call holds the lease");
+        assert_eq!(j.due_runs(124, 120).unwrap(), [run], "the scan takes over an expired lease");
+        let pr = j.plan_run(run).unwrap();
+        assert_eq!((pr.tickets.len(), pr.tickets[0].plan["title"].as_str(), pr.tickets[0].op_id.ends_with("-t1")), (1, Some("A"), true));
+        j.filed(&pr, 1, 19, 10, 4).unwrap();
+
+        let rows = |j: &Journal, s: &str| count(j, &format!("SELECT count(*) FROM outbox WHERE task=19 AND kind='status' AND state='{s}'"));
+        assert!(j.observe(19, "ready", 11, None, "ready", None, 5).unwrap());
+        assert!(j.observe(19, "doing", 12, None, "doing", None, 5).unwrap());
+        assert_eq!((rows(&j, "pending"), rows(&j, "superseded")), (1, 1), "a burst leaves one pending status update");
+        assert!(!j.observe(19, "ready", 11, None, "stale", None, 6).unwrap(), "an older observation is ignored");
+        assert!(!j.observe(19, "doing", 12, None, "same", None, 6).unwrap(), "an unchanged one too");
+        while let (Some(d), _) = j.due(7).unwrap() {
+            assert!(d.edit.is_none() && d.text != "ready", "the superseded update is never sent");
+            j.record(d.id, &Sent::Ok(100 + d.id), 7).unwrap();
+        }
+        let status: i64 = count(&j, "SELECT sent_message FROM outbox WHERE task=19 AND kind='status' AND state='delivered'");
+        assert!(j.observe(19, "ask", 13, Some("Q?"), "ask", Some("Task #19 asks:\nQ?"), 8).unwrap());
+        let (d, _) = j.due(8).unwrap();
+        assert_eq!((d.as_ref().unwrap().edit, d.as_ref().unwrap().text.as_str()), (Some(status), "ask"), "the status message is edited in place");
+        j.record(d.unwrap().id, &Sent::Ok(status), 8).unwrap();
+        let q = j.due(8).unwrap().0.unwrap();
+        assert!(q.edit.is_none() && q.text.starts_with("Task #19 asks:"), "the question is its own message");
+        j.record(q.id, &Sent::Ok(500), 8).unwrap();
+
+        let answer = |id, to| Some(Input { chat: 7, topic: None, sender: Some(7), name: None, message: id, kind: "text", text: Some("2".into()), reply_to: Some(to) });
+        j.admit(&[(3, answer(3, 500)), (4, answer(4, status))], 9).unwrap();
+        let a = j.answers().unwrap();
+        assert_eq!(a.iter().map(|(a, resumed)| (a.request, a.task, a.revision, *resumed)).collect::<Vec<_>>(), [(3, 19, 13, false)], "only a reply to the question answers it");
+        assert_eq!(j.request(4).unwrap().0, "queued", "another reply is ordinary text for the model");
+        assert!(j.claim_next(4, 9).unwrap().iter().all(|r| r.request != 3), "the model never takes an answer");
+
+        assert!(j.close_task(19, "closed", 10).unwrap());
+        assert!(!j.close_task(19, "closed", 11).unwrap(), "the outcome is queued once");
+        assert!(!j.observe(19, "doing", 14, None, "late", None, 12).unwrap(), "nothing follows the outcome");
+        assert_eq!(count(&j, "SELECT count(*) FROM outbox WHERE task=19 AND kind='final'"), 1);
         drop(j);
         let _ = std::fs::remove_dir_all(p);
     }

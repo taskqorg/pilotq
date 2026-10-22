@@ -2,6 +2,7 @@
 
 mod journal;
 mod manager;
+mod taskq;
 mod telegram;
 
 use coreq::Tool;
@@ -55,6 +56,7 @@ struct Config {
     owner: i64,
     api_url: Option<url::Url>,
     codex: manager::Codex,
+    taskq: Option<taskq::Taskq>,
 }
 
 /// None when no bot is configured yet; an unsafe or malformed file is an error, never ignored.
@@ -76,7 +78,14 @@ fn config(t: &Tool) -> Result<Option<Config>, String> {
     let secs = |k: &str, d: u64| v["codex_limits"][k].as_u64().map_or(Ok(Duration::from_secs(d)), |n| if n > 0 { Ok(Duration::from_secs(n)) } else { Err(format!("config.json: codex_limits.{k} must be positive")) });
     let limits = manager::Limits { first_event: secs("first_event", 30)?, silent: secs("silent", 30)?, deadline: secs("deadline", 60)? };
     let codex = manager::Codex { bin: v["codex"].as_str().unwrap_or("codex").to_string(), workspace: t.install.join("workspace"), home: t.install.join("codex"), limits };
-    Ok(Some(Config { token, owner, api_url, codex }))
+    // § 5: the TaskQ CLI and the project root whose taskq.json names the board; absent, the manager has no TaskQ tools
+    let tq = &v["taskq"];
+    let taskq = match (tq["bin"].as_str(), tq["root"].as_str()) {
+        (Some(bin), Some(root)) => Some(taskq::Taskq { bin: bin.into(), root: root.into(), poll: Duration::from_secs(tq["poll"].as_u64().filter(|n| *n > 0).unwrap_or(15)) }),
+        (None, None) => None,
+        _ => return Err("config.json: taskq needs bin and root".into()),
+    };
+    Ok(Some(Config { token, owner, api_url, codex, taskq }))
 }
 
 fn now() -> u64 {
@@ -139,11 +148,19 @@ fn service_run(t: &Tool) -> ! {
             bot = bot.set_api_url(u);
         }
         let (j, wake) = (j.clone(), Arc::new(tokio::sync::Notify::new()));
-        let (mj, mwake, codex, drain) = (j.clone(), wake.clone(), c.codex, t.install.join(DRAIN));
-        std::thread::spawn(move || manager::serve(codex, mj, mwake, || now() as i64, drain));
+        let deadline = c.codex.limits.deadline;
+        let tq = c.taskq.map(Arc::new);
+        let (mj, mwake, codex, drain, mtq) = (j.clone(), wake.clone(), c.codex, t.install.join(DRAIN), tq.clone());
+        std::thread::spawn(move || manager::serve(codex, mj, mwake, || now() as i64, drain, mtq));
+        if let Some(tq) = tq {
+            let (wj, wwake) = (j.clone(), wake.clone());
+            std::thread::spawn(move || taskq::watch(tq, wj, wwake));
+        }
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("tokio runtime");
-            rt.block_on(async { tokio::join!(telegram::poll(bot.clone(), j.clone(), wake.clone()), telegram::deliver(bot, j, wake)) });
+            rt.block_on(async {
+                tokio::join!(telegram::poll(bot.clone(), j.clone(), wake.clone()), telegram::typing(bot.clone(), j.clone(), deadline), telegram::deliver(bot, j, wake))
+            });
         });
         lock
     });
@@ -175,7 +192,7 @@ fn ask(t: &Tool, text: &str) -> Result<Value, (Value, String)> {
     j.bootstrap(cfg.owner, now() as i64).map_err(plain)?;
     let r = j.ask(cfg.owner, text, now() as i64).map_err(plain)?;
     let j = Mutex::new(j);
-    manager::run(&cfg.codex, &j, &r, || now() as i64).map_err(plain)?;
+    manager::run(&cfg.codex, &j, &r, || now() as i64, cfg.taskq.as_ref()).map_err(plain)?;
     let (state, reply, error) = j.lock().unwrap().request(r.request).map_err(plain)?;
     let v = json!({"request": r.request, "state": state, "reply": reply, "error": error});
     if state == "answered" { Ok(v) } else { Err((v, format!("request #{} {state}: {}", r.request, error.unwrap_or_default()))) }

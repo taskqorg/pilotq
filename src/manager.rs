@@ -117,8 +117,17 @@ impl Codex {
     }
 
     /// Runs one turn on `thread` (a new thread when None). `alive` reports whether the journal still holds this run's fence;
-    /// `tool` persists a tool item's type, ID and, once completed, its status. Returns the thread ID and model Codex used and the outcome.
-    pub fn turn(&self, thread: Option<&str>, text: &str, mut alive: impl FnMut() -> bool, mut tool: impl FnMut(&str, &str, Option<&str>)) -> (Option<String>, Option<String>, Outcome) {
+    /// `tool` persists a tool item's type, ID and, once completed, its status. `dynamic` offers PilotQ's own tools on a new thread
+    /// (their specs and instructions); `call` answers one complete call of them. Returns the thread ID and model Codex used and the outcome.
+    pub fn turn(
+        &self,
+        thread: Option<&str>,
+        text: &str,
+        dynamic: Option<(&Value, &str)>,
+        mut alive: impl FnMut() -> bool,
+        mut tool: impl FnMut(&str, &str, Option<&str>),
+        mut call: impl FnMut(&str, &Value) -> (bool, String),
+    ) -> (Option<String>, Option<String>, Outcome) {
         let start = Instant::now();
         let mut p = match self.spawn() {
             Ok(p) => p,
@@ -127,7 +136,9 @@ impl Codex {
         let (mut thread, mut turn, mut answer, mut tooled, mut model) = (thread.map(str::to_string), None::<String>, String::new(), false, None::<String>);
         let (mut first, mut last, mut error) = (false, start, None::<String>);
         let lim = &self.limits;
-        p.send(json!({"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "pilotq", "title": "PilotQ", "version": env!("CARGO_PKG_VERSION")}}}));
+        // dynamic tools are an experimental app-server field, negotiated only when PilotQ offers some
+        let caps = dynamic.map(|_| json!({"experimentalApi": true}));
+        p.send(json!({"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "pilotq", "title": "PilotQ", "version": env!("CARGO_PKG_VERSION")}, "capabilities": caps}}));
         let fail = |tooled: bool, why: String| if tooled { Outcome::Uncertain(why) } else { Outcome::Failed(why) };
         loop {
             if !alive() {
@@ -152,8 +163,14 @@ impl Codex {
             };
             (first, last) = (true, Instant::now());
             let method = m["method"].as_str().unwrap_or("");
+            if method == "item/tool/call" && m.get("id").is_some() {
+                // a complete call of PilotQ's own tool: the boundary checks grants and the fence and answers (§ 5, § 12)
+                let (ok, out) = call(m["params"]["tool"].as_str().unwrap_or(""), &m["params"]["arguments"]);
+                p.send(json!({"id": m["id"], "result": {"contentItems": [{"type": "inputText", "text": out}], "success": ok}}));
+                continue;
+            }
             if m.get("id").is_some() && !method.is_empty() {
-                // a server request (approval, user input, tool call): PilotQ grants no native capability in this slice
+                // any other server request (approval, user input): PilotQ grants no native capability
                 p.send(json!({"id": m["id"], "error": {"code": -32601, "message": "PilotQ does not grant this request"}}));
                 continue;
             }
@@ -164,7 +181,12 @@ impl Codex {
             match (m["id"].as_i64(), method) {
                 (Some(1), _) => {
                     p.send(json!({"method": "initialized"}));
-                    let params = json!({"cwd": self.workspace, "approvalPolicy": "never", "sandbox": "read-only"});
+                    let mut params = json!({"cwd": self.workspace, "approvalPolicy": "never", "sandbox": "read-only"});
+                    if let Some((tools, instructions)) = dynamic {
+                        // ponytail: tools ride on thread/start and persist with the thread; a resumed thread keeps the set it started with
+                        params["dynamicTools"] = tools.clone();
+                        params["developerInstructions"] = json!(instructions);
+                    }
                     match &thread {
                         Some(t) => p.send(json!({"id": 2, "method": "thread/resume", "params": {"threadId": t, "cwd": params["cwd"], "approvalPolicy": "never", "sandbox": "read-only"}})),
                         None => p.send(json!({"id": 2, "method": "thread/start", "params": params})),
@@ -205,16 +227,23 @@ impl Codex {
     }
 }
 
-/// Runs one claimed request through Codex and records the outcome under its fence. The CLI and Telegram share this path (R13).
-pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64) -> Result<Outcome, String> {
+/// Runs one claimed request through Codex and records the outcome under its fence. The CLI and Telegram share this path (R13),
+/// with the TaskQ tools when TaskQ is configured.
+pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq: Option<&crate::taskq::Taskq>) -> Result<Outcome, String> {
+    let tools = tq.map(|_| crate::taskq::tools());
     let (thread, model, outcome) = codex.turn(
         r.thread.as_deref(),
         &r.text,
+        tools.as_ref().map(|t| (t, crate::taskq::INSTRUCTIONS)),
         || j.lock().unwrap().fenced(r).map(|f| !f).unwrap_or(true),
         |kind, item, result| {
             if let Err(e) = j.lock().unwrap().tool(r, kind, item, result, now()) {
                 eprintln!("run {}: {e}", r.id);
             }
+        },
+        |name, args| match tq {
+            Some(tq) => crate::taskq::call(tq, j, r, name, args),
+            None => (false, "TaskQ is not configured".into()),
         },
     );
     let j = j.lock().unwrap();
@@ -230,7 +259,7 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64) ->
 
 /// Service loop: claims queued Telegram requests, one run per conversation and `MODELS` at once, oldest first. While the
 /// `drain` file exists (`pilotq update`), nothing new starts; running turns finish (§ 12 planned restart).
-pub fn serve(codex: Codex, j: crate::telegram::Shared, wake: std::sync::Arc<tokio::sync::Notify>, now: fn() -> i64, drain: PathBuf) {
+pub fn serve(codex: Codex, j: crate::telegram::Shared, wake: std::sync::Arc<tokio::sync::Notify>, now: fn() -> i64, drain: PathBuf, tq: Option<std::sync::Arc<crate::taskq::Taskq>>) {
     const MODELS: usize = 4;
     let codex = std::sync::Arc::new(codex);
     loop {
@@ -238,9 +267,9 @@ pub fn serve(codex: Codex, j: crate::telegram::Shared, wake: std::sync::Arc<toki
         match claimed {
             Ok(runs) => {
                 for r in runs {
-                    let (codex, j, wake) = (codex.clone(), j.clone(), wake.clone());
+                    let (codex, j, wake, tq) = (codex.clone(), j.clone(), wake.clone(), tq.clone());
                     std::thread::spawn(move || {
-                        if let Err(e) = run(&codex, &j, &r, now) {
+                        if let Err(e) = run(&codex, &j, &r, now, tq.as_deref()) {
                             eprintln!("run {}: {e}", r.id);
                         }
                         wake.notify_one();

@@ -205,4 +205,31 @@ Run on 2026-10-22 on one Mac (macOS 27.0.1), pilotq 0.1.0 at commit `56199c9` bu
 | U02, U18 two-user | Open | On 2026-10-23 the owner accepted the deterministic evidence (`journal::u02_route_session_policy`, `u18_cli_grant_admits_only_new_requests`) for the first slice. A live second-user request after the grant stays unproven until a later live run |
 | DM topics | Note | The test bot has topics enabled, so DM messages carry a thread ID (`1065394`); replies went to that thread. Request #22, a non-text DM update on the pre-fix build, drew the unsupported reply |
 
+## Step 3 qualification
+
+Results for the [section 10](../pilotq.md#10-adoption-sequence) step 3 slice, task [#18](https://github.com/taskqorg/pilotq/issues/18), against the [first TaskQ tool contract](../pilotq.md#first-taskq-tool-contract). Deterministic traces run in `cargo test --locked` with a fake TaskQ CLI (`FAKE_TASKQ` in `tests/telegram.rs`: argument log, op-id receipts, revision-checked answers, board-down and lost-response faults), a fake Codex that makes one complete dynamic tool call per turn, the fake Bot API (messages, edits, typing) and a 1 s board scan. Fakes do not qualify the real board, Codex dynamic tools or Telegram; the live run is listed separately.
+
+| Case | Deterministic result | Traces |
+|---|---|---|
+| U05 | Pass | `u06_plan_revisions_then_held_create_start_and_one_status_message` (three revisions write nothing; revision 2 cannot run once revision 3 exists), `journal::plans_and_task_projections` (a revision cannot be run by the request that saved it) |
+| U06 | Pass | `u06_plan_revisions_then_held_create_start_and_one_status_message`: `add --op-id` held, readback, `start --op-id <op>.start`, author, route and revision in the task, one task URL, the closing outcome links the issue |
+| U07 | Pass | `u07_question_relay_and_bound_answers`: the question reaches the originating topic; the owner's reply writes `answer 19.2 --revision R --op-id` |
+| U08 | Pass | `u07_question_relay_and_bound_answers`: a reply to the older question and a reply from a person without the grant write nothing and say why |
+| U10 | Pass | `u10_restart_new_status_pause_and_park`: restart and `/new` keep the task; status by issue URL creates nothing; another board's URL is refused |
+| U13 | Pass | `u10_restart_new_status_pause_and_park`: a queue pause reports the running worker as still running; park reports TaskQ's `later` |
+| U15 | Pass | `u15_network_loss_after_ticket_two_reconciles_the_same_ids`: the board created ticket two and the response was lost; after restart the same op ID finds it, ticket three is filed, all three start only after |
+| F04 | Partial | Task creation: lost create response reconciled by op ID (U15 trace). Direct-effect receipts: step 4 |
+| F07 | Pass | `f07_board_unavailable_or_no_create_claim`: no `create_claim_issue` disables creation with that reason and never runs plain `add`; a down board leaves the create unsent with its reason |
+| F09 | Partial | Ticket URLs of another board are refused (U10 trace); Telegram text reaches TaskQ only as argument-array items. Tool output and project redirection: step 4 |
+| F14 | Pass | `u06_…` (an observation older than the stored revision changes nothing), `journal::plans_and_task_projections` |
+| L01 | Pass | `u06_…`: the status message names what the task waits for (`ready: waiting for a free worker`); no hung or stall warning. Fast-answer suppression stays unimplemented |
+| L02 | Partial | `u07_…`: typing goes only to the originating topic while the turn runs and stops after it. Typing is bounded by the absolute deadline, not by the last useful event |
+| L03 | Partial | `journal::plans_and_task_projections`: a burst leaves one pending status update; the question and the outcome are never coalesced. Incident notices across restart: step 5 |
+| L06 | Pass | `u10_…`: `/new` keeps the task and its subscription; an ungranted person's TaskQ call changes nothing. Earlier traces cover stop, status and stale runs |
+| L12 | Pass | `u06_…`: one status message edited in place; the outcome is its own message and nothing edits it; `journal::…` (a superseded update is never sent). A deleted status message is replaced by a new one in the same route (`u10_…`) |
+| L16 | Pass | `u10_…` (a transition made while PilotQ was down is found by the scan after restart), `f07_…` (the scan files a deferred create when the board returns), `u15_…` |
+| U23 | Partial | The request that filed a task lists `add #N` and `start #N` in its audit record (`u06_…`); the task carries the request trace ID. Live check below |
+
+**Live run (A8):** not run yet. It needs `create_claim_issue` on the pilotq board and the test bot with a second person: one real pilotq docs task from discussion to reviewer outcome with a PilotQ restart mid-run, the U23 task-link checks and the U02/U18 two-user rerun.
+
 Completion evidence is a report with exact versions, mechanism-to-case results, unresolved failures, recovery receipts, task links and aggregate metrics. Maintain 62 scenario-family entries: U01–U18, F01–F17, C01–C07 and L01–L20. Record deterministic and live/platform results separately, including not run. Runtime research, a healthy service or green repository CI cannot replace it.
