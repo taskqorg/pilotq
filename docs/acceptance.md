@@ -1,6 +1,6 @@
 # PilotQ acceptance cases
 
-These cases verify [pilotq.md](../pilotq.md), not a separate product contract. Status: proposed, not executed. Owner requirements R1–R16 are defined there; numerical targets are proposed in sections 7 and 12. Review cases before implementation. Test accounts and separate credentials must be isolated from the production bot and production queue. The [mechanism matrix](mechanism-matrix.md) maps 60 scope decisions to these cases and names the source evidence.
+These cases verify [pilotq.md](../pilotq.md), not a separate product contract. Status: proposed, not executed. Owner requirements R1–R17 are defined there; numerical targets are proposed in sections 7 and 12. Review cases before implementation. Test accounts and separate credentials must be isolated from the production bot and production queue. The [mechanism matrix](mechanism-matrix.md) maps 60 scope decisions to these cases and names the source evidence.
 
 ## Functional cases
 
@@ -28,6 +28,7 @@ These cases verify [pilotq.md](../pilotq.md), not a separate product contract. S
 | U20 R15 | Administrator holds `users` and `projects` grants | Tell PilotQ to remember a person with a grant, then to register a project | Exact user ID and grant read back; project goes through TaskQ registration and reads back; without the grant nothing is written |
 | U21 R16 | Key granted to one person and one tool | Run the tool for that person, then for another person; make the tool echo the value | First call works; second is refused at dispatch; the value never appears in model context, journal, telemetry, logs or replies |
 | U22 R14 | Published release with a broken selftest, then a good one | Run `pilotq update` during an active turn | Broken release is refused before the switch; good release waits for the drain, switches and reports the new version in `status.json`; three unhealthy starts return to `previous` |
+| U23 R17 | Two granted people in a DM and a forum topic, one CLI operator | Each asks something; one request files a TaskQ task and one fails; then run `pilotq audit` as the owner, as each person and as a person without the `audit` grant | Every request has one record with who, when, where, text, tools, task link and outcome; its request ID finds the CoreQ trace and the task; each person sees only their own records; no key value appears; each audit read is recorded |
 
 ## Fault and authorization cases
 
