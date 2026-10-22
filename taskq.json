@@ -1,0 +1,6 @@
+{
+  "board": "github",
+  "repo": "taskqorg/pilotq",
+  "publish": "pr",
+  "incident_reports": true
+}
