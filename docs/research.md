@@ -2,6 +2,10 @@
 
 Decision supported: the proposed composition in [pilotq.md](../pilotq.md#3-architecture-and-ownership). Source review: 2026-10-16. Source code and issue reports establish mechanisms and risks; they do not prove a reliability ranking. No new live model or Telegram scenario was run for this specification.
 
+Follow-up: the owner now requires Codex-only subscription access and asks whether Pi is needed at all. [Core options](core-options.md) reassesses the initial recommendation below. Neither runtime recommendation is an adopted implementation decision.
+
+[Mechanism matrix](mechanism-matrix.md) extends the source review to lifecycle, progress, supervision, delivery and recovery. It records 60 scope decisions and the acceptance gaps added to the root contract and case set.
+
 ## Recommendation
 
 Qualify **Pi coding-agent as the first manager runtime**, behind a small durable Telegram coordinator. Reuse TaskQ for all substantial execution. Use grammY for Telegram protocol handling, with a commit-before-ack ingress path owned by PilotQ. Do not fork a complete assistant or build another goal scheduler.
