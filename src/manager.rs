@@ -117,14 +117,14 @@ impl Codex {
     }
 
     /// Runs one turn on `thread` (a new thread when None). `alive` reports whether the journal still holds this run's fence;
-    /// `tool` persists that a tool item started. Returns the thread ID Codex used and the outcome.
-    pub fn turn(&self, thread: Option<&str>, text: &str, mut alive: impl FnMut() -> bool, mut tool: impl FnMut()) -> (Option<String>, Outcome) {
+    /// `tool` persists a tool item's type, ID and, once completed, its status. Returns the thread ID and model Codex used and the outcome.
+    pub fn turn(&self, thread: Option<&str>, text: &str, mut alive: impl FnMut() -> bool, mut tool: impl FnMut(&str, &str, Option<&str>)) -> (Option<String>, Option<String>, Outcome) {
         let start = Instant::now();
         let mut p = match self.spawn() {
             Ok(p) => p,
-            Err(e) => return (None, Outcome::Failed(e)),
+            Err(e) => return (None, None, Outcome::Failed(e)),
         };
-        let (mut thread, mut turn, mut answer, mut tooled) = (thread.map(str::to_string), None::<String>, String::new(), false);
+        let (mut thread, mut turn, mut answer, mut tooled, mut model) = (thread.map(str::to_string), None::<String>, String::new(), false, None::<String>);
         let (mut first, mut last, mut error) = (false, start, None::<String>);
         let lim = &self.limits;
         p.send(json!({"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "pilotq", "title": "PilotQ", "version": env!("CARGO_PKG_VERSION")}}}));
@@ -132,7 +132,7 @@ impl Codex {
         loop {
             if !alive() {
                 p.stop(&thread, &turn);
-                return (thread, Outcome::Fenced);
+                return (thread, model, Outcome::Fenced);
             }
             let total = start + lim.deadline;
             let (limit, why) = if first { (last + lim.silent, "Codex sent no event for") } else { (start + lim.first_event, "Codex sent no first event within") };
@@ -142,12 +142,12 @@ impl Codex {
                 Ok(m) => m,
                 Err(RecvTimeoutError::Timeout) if Instant::now() >= limit => {
                     p.stop(&thread, &turn);
-                    return (thread, fail(tooled, format!("{why} {} s", secs.as_secs())));
+                    return (thread, model, fail(tooled, format!("{why} {} s", secs.as_secs())));
                 }
                 Err(RecvTimeoutError::Timeout) => continue,
                 Err(RecvTimeoutError::Disconnected) => {
                     let why = error.map_or("Codex exited without a terminal event".to_string(), |e| format!("Codex exited without a terminal event after: {e}"));
-                    return (thread, fail(tooled, why));
+                    return (thread, model, fail(tooled, why));
                 }
             };
             (first, last) = (true, Instant::now());
@@ -159,7 +159,7 @@ impl Codex {
             }
             if let Some(e) = m.get("error") {
                 p.stop(&thread, &turn);
-                return (thread, fail(tooled, format!("Codex refused {}: {}", m["id"], e["message"].as_str().unwrap_or("error"))));
+                return (thread, model, fail(tooled, format!("Codex refused {}: {}", m["id"], e["message"].as_str().unwrap_or("error"))));
             }
             match (m["id"].as_i64(), method) {
                 (Some(1), _) => {
@@ -172,17 +172,18 @@ impl Codex {
                 }
                 (Some(2), _) => {
                     let Some(t) = m["result"]["thread"]["id"].as_str() else {
-                        return (thread, Outcome::Failed("Codex returned no thread ID".into()));
+                        return (thread, model, Outcome::Failed("Codex returned no thread ID".into()));
                     };
                     thread = Some(t.to_string());
+                    model = m["result"]["model"].as_str().map(str::to_string);
                     p.send(json!({"id": 3, "method": "turn/start", "params": {"threadId": t, "input": [{"type": "text", "text": text}]}}));
                 }
                 (Some(3), _) => turn = m["result"]["turn"]["id"].as_str().map(str::to_string),
-                (_, "item/started") if TOOLS.contains(&m["params"]["item"]["type"].as_str().unwrap_or("")) => {
-                    if !tooled {
-                        tooled = true;
-                        tool();
-                    }
+                (_, phase @ ("item/started" | "item/completed")) if TOOLS.contains(&m["params"]["item"]["type"].as_str().unwrap_or("")) => {
+                    tooled = true;
+                    let item = &m["params"]["item"];
+                    let status = (phase == "item/completed").then(|| item["status"].as_str().unwrap_or("completed"));
+                    tool(item["type"].as_str().unwrap_or(""), item["id"].as_str().unwrap_or(""), status);
                 }
                 (_, "item/completed") if m["params"]["item"]["type"] == "agentMessage" => {
                     answer = m["params"]["item"]["text"].as_str().unwrap_or("").to_string();
@@ -196,7 +197,7 @@ impl Codex {
                         Some(s) => fail(tooled, format!("Codex turn {s}: {}", t["error"]["message"].as_str().or(error.as_deref()).unwrap_or("no reason given"))),
                         None => fail(tooled, "Codex sent a terminal event without a status".into()),
                     };
-                    return (thread, outcome);
+                    return (thread, model, outcome);
                 }
                 _ => {}
             }
@@ -206,12 +207,12 @@ impl Codex {
 
 /// Runs one claimed request through Codex and records the outcome under its fence. The CLI and Telegram share this path (R13).
 pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64) -> Result<Outcome, String> {
-    let (thread, outcome) = codex.turn(
+    let (thread, model, outcome) = codex.turn(
         r.thread.as_deref(),
         &r.text,
         || j.lock().unwrap().fenced(r).map(|f| !f).unwrap_or(true),
-        || {
-            if let Err(e) = j.lock().unwrap().tool_started(r.id) {
+        |kind, item, result| {
+            if let Err(e) = j.lock().unwrap().tool(r, kind, item, result, now()) {
                 eprintln!("run {}: {e}", r.id);
             }
         },
@@ -223,7 +224,7 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64) ->
         Outcome::Fenced => ("ok", None),
     };
     j.set_health("model", now(), health.0, health.1)?;
-    j.finish(r, thread.as_deref(), &outcome, now())?;
+    j.finish(r, thread.as_deref(), model.as_deref(), &outcome, now())?;
     Ok(outcome)
 }
 

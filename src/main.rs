@@ -11,7 +11,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const USAGE: &str = "usage: pilotq service install|run|stop|status | status [--json] | update [--check] | selftest | version | ask TEXT [--json]
   users list | users show ID | users grant ID GRANT.. | users revoke ID [GRANT..] | users remember ID KEY VALUE [--private] | users forget ID KEY
-  routes list | routes set CHAT[:TOPIC] shared|isolated        (users and routes accept --json)";
+  routes list | routes set CHAT[:TOPIC] shared|isolated        (users and routes accept --json)
+  audit [--user ID] [--route cli|CHAT[:TOPIC]] [--project P] [--since UNIX_SECONDS] [--request ID] [--json]";
 /// A status.json older than this reads unknown (coreq.md § status.json).
 const FRESH: u64 = 60;
 const PASS: Duration = Duration::from_secs(30);
@@ -152,6 +153,27 @@ fn ask(t: &Tool, text: &str) -> Result<Value, (Value, String)> {
     if state == "answered" { Ok(v) } else { Err((v, format!("request #{} {state}: {}", r.request, error.unwrap_or_default()))) }
 }
 
+/// `pilotq audit` (§ 9, R17) as the configured owner, who holds the `audit` grant; the read is recorded.
+fn audit(t: &Tool, a: &[&str]) -> Result<Value, String> {
+    let mut f = journal::Filter::default();
+    let n = |k: &str, v: &str| v.parse::<i64>().map_err(|_| format!("{k} {v}: expected a number"));
+    for pair in a.chunks(2) {
+        match pair {
+            ["--user", v] => f.user = Some(n("--user", v)?),
+            ["--route", v] => f.route = Some(v.to_string()),
+            ["--project", v] => f.project = Some(v.to_string()),
+            ["--since", v] => f.since = Some(n("--since", v)?),
+            ["--request", v] => f.request = Some(n("--request", v)?),
+            _ => return Err(USAGE.into()),
+        }
+    }
+    let cfg = config(t)?.ok_or("no config.json: the CLI acts as its configured owner_id")?;
+    std::fs::create_dir_all(&t.install).map_err(|e| e.to_string())?;
+    let mut j = journal::Journal::open(&t.install.join("journal.sqlite"))?;
+    j.bootstrap(cfg.owner, now() as i64)?;
+    Ok(j.audit(cfg.owner, &f, now() as i64)?.into())
+}
+
 fn fact(f: &journal::Fact) -> Value {
     json!({"key": f.key, "value": f.value, "private": f.private, "source": f.source, "revision": f.revision})
 }
@@ -284,6 +306,26 @@ fn main() {
             let rest: Vec<&str> = a.iter().copied().filter(|x| *x != "--json").collect();
             let v = admin(&t, &rest).unwrap_or_else(|e| t.die(&format!("{cmd}: {e}")));
             if json { println!("{v}") } else { show(&v) }
+        }
+        ["audit", ..] => {
+            let json = a.contains(&"--json");
+            let rest: Vec<&str> = a[1..].iter().copied().filter(|x| *x != "--json").collect();
+            let v = audit(&t, &rest).unwrap_or_else(|e| t.die(&format!("audit: {e}")));
+            if json {
+                println!("{v}");
+            }
+            for r in v.as_array().into_iter().flatten().filter(|_| !json) {
+                let w = &r["where"];
+                let place = if w["front"] == "cli" { "cli".to_string() } else if w["topic"].is_null() { w["chat"].to_string() } else { format!("{}:{}", w["chat"], w["topic"]) };
+                let who = r["who"]["name"].as_str().map_or(r["who"]["id"].to_string(), |n| format!("{} ({n})", r["who"]["id"]));
+                println!("#{} at {} {place} by {who} {}: {}", r["request"], r["received"], r["outcome"].as_str().unwrap_or(""), r["text"].as_str().unwrap_or(""));
+                for x in r["tools"].as_array().into_iter().flatten() {
+                    println!("  tool {} {}", x["target"].as_str().unwrap_or(""), x["result"].as_str().unwrap_or("started"));
+                }
+                if let Some(reply) = r["reply"].as_str() {
+                    println!("  reply: {reply}");
+                }
+            }
         }
         ["ask", rest @ ..] => {
             let json = rest.contains(&"--json");

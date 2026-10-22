@@ -1,4 +1,4 @@
-// F01, F02, F05 and the manager cases U01, U12, U16, U19 and F03 (docs/acceptance.md) against a fake Bot API and a fake
+// F01, F02, F05 and the manager cases U01, U12, U16, U19, U23 and F03 (docs/acceptance.md) against a fake Bot API and a fake
 // Codex app-server: `pilotq service run` polls and sends through a local HTTP server that keeps Telegram's offset confirmation
 // and injects send faults; a shell script speaks the app-server JSON-RPC lines. Live test-bot and real Codex runs are separate evidence.
 #![cfg(unix)]
@@ -135,7 +135,7 @@ while IFS= read -r l; do
   case "$l" in
   *'"method":"initialize"'*) echo '{"id":1,"result":{}}' ;;
   *'"method":"thread/start"'*) n=$(($(cat "$d/threads" 2>/dev/null || echo 0) + 1)); echo $n > "$d/threads"; th=th-$n
-    echo '{"id":2,"result":{"thread":{"id":"'$th'"}}}' ;;
+    echo '{"id":2,"result":{"thread":{"id":"'$th'"},"model":"gpt-test"}}' ;;
   *'"method":"thread/resume"'*) th=$(printf '%s' "$l" | sed 's/.*"threadId":"\([^"]*\)".*/\1/')
     echo '{"id":2,"result":{"thread":{"id":"'$th'"}}}' ;;
   *'"method":"turn/start"'*) text=$(printf '%s' "$l" | sed 's/.*"text":"\([^"]*\)".*/\1/')
@@ -478,5 +478,56 @@ fn f03_provider_faults_are_bounded() {
     use_codex(&d, &d.join("mute"));
     let o = cli(&d, &["ask", "--json", "hello"]);
     assert_eq!(serde_json::from_slice::<Value>(&o.stdout).unwrap()["error"], "Codex sent no first event within 2 s");
+    fs::remove_dir_all(d).unwrap();
+}
+
+// U23 through the service and the CLI: a person in a DM, another in a forum topic and the CLI owner each ask; one fails after a
+// tool started. `pilotq audit` as the owner shows every record with who, where, text, tools and outcome; each request ID
+// finds its CoreQ trace, which carries no message text; each person's /audit DM shows only their own; every read is recorded.
+#[test]
+fn u23_audit_through_service_and_cli() {
+    let (d, st) = setup("u23", vec![]);
+    use_codex(&d, &script(&d, "fake-codex", FAKE));
+    for u in ["8", "9"] {
+        assert!(cli(&d, &["users", "grant", u, "chat"]).status.success());
+    }
+    assert!(cli(&d, &["ask", "owner question"]).status.success());
+    st.lock().unwrap().updates.extend([text(1, 8, None, 8, "dm question"), text(2, -100, Some(5), 9, "tool topic question")]);
+    let c = spawn(&d, None);
+    wait("both outcomes", 20, || sent_has(&st, "re: dm question") && sent_has(&st, "uncertain outcome"));
+    assert!(sent_has(&st, "Your requests are recorded (metadata 365 days"), "admission tells the person");
+
+    let a = cli(&d, &["audit", "--json"]);
+    assert!(a.status.success(), "{}", String::from_utf8_lossy(&a.stderr));
+    let all: Value = serde_json::from_slice(&a.stdout).unwrap();
+    let all = all.as_array().unwrap();
+    assert_eq!(all.len(), 3, "one record per request: {all:?}");
+    assert_eq!((all[0]["where"]["front"].as_str(), all[0]["outcome"].as_str()), (Some("cli"), Some("answered")));
+    let dm = &all[1];
+    assert_eq!((dm["who"]["id"].as_i64(), dm["who"]["name"].as_str(), dm["text"].as_str()), (Some(8), Some("A"), Some("dm question")));
+    assert_eq!((dm["runs"][0]["model"].as_str(), dm["deliveries"][0]["state"].as_str()), (Some("gpt-test"), Some("delivered")));
+    let topic = &all[2];
+    assert_eq!((topic["where"]["chat"].as_i64(), topic["where"]["topic"].as_i64(), topic["outcome"].as_str()), (Some(-100), Some(5), Some("uncertain")));
+    assert_eq!(topic["tools"][0]["target"], "commandExecution");
+    let one = cli(&d, &["audit", "--request", "2"]);
+    assert!(String::from_utf8_lossy(&one.stdout).starts_with("#2 at "), "{}", String::from_utf8_lossy(&one.stdout));
+    assert!(!cli(&d, &["audit", "--user", "x"]).status.success(), "a malformed filter exits nonzero");
+
+    st.lock().unwrap().updates.extend([text(3, 8, None, 8, "/audit"), text(4, 9, None, 9, "/audit")]);
+    wait("audit replies", 15, || texts(&st).iter().filter(|t| t.contains("Latest:")).count() == 2);
+    let t = texts(&st);
+    let mine = |who: &str| t.iter().find(|x| x.contains("Latest:") && x.contains(who)).cloned().unwrap_or_default();
+    assert!(!mine("dm question").contains("topic question") && !mine("dm question").contains("owner"), "{t:?}");
+    assert!(!mine("topic question").contains("dm question"), "{t:?}");
+    assert_eq!(query(&d, "SELECT count(*) FROM audit_reads"), 4, "every read is recorded");
+    let mut c = c;
+    c.kill().unwrap();
+    c.wait().unwrap();
+
+    let tel = coreq::telemetry::Reader::open(&d.join("telemetry.sqlite")).unwrap().export(0, 0, 100).unwrap().to_string();
+    for r in all {
+        assert!(tel.contains(&format!("\"{}\"", r["trace"].as_str().unwrap())), "request {} has no CoreQ trace", r["request"]);
+    }
+    assert!(!tel.contains("question"), "no message text in telemetry");
     fs::remove_dir_all(d).unwrap();
 }

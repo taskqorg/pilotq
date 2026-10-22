@@ -252,7 +252,7 @@ Keep credentials in protected host configuration, outside model context and diag
 - What: the request text, its edits and cancellations, and the reply sent. Key values never appear (section 8 Key store).
 - Done: model, version and agentq mode; each tool call and effect with its target and result; TaskQ tasks filed, answered or followed; the final outcome or failure.
 - One request ID joins the audit record, the CoreQ telemetry trace and TaskQ task text, so an investigation can move from a Telegram message to a task attempt and back.
-- Readers: the owner and administrators with an `audit` grant read all records; every person can read their own. Reading is itself recorded.
+- Readers: the owner and administrators with an `audit` grant read all records through `pilotq audit`; every person can read their own with `/audit` in a direct message, answered without the model like the section 2 controls. In a group or topic `/audit` shows nothing, since it would expose one person's history to the others. Reading is itself recorded.
 - Use: service investigation, answers to a person about their history, and self-improvement analysis. Analysis exports leave out message text unless the owner approves a specific export.
 - The person learns at admission that their requests are recorded and for how long.
 

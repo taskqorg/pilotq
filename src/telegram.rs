@@ -32,6 +32,7 @@ fn input(kind: &UpdateKind) -> Option<Input> {
         chat: m.chat.id.0,
         topic: m.thread_id.map(|t| t.0.0 as i64),
         sender: m.from.as_ref().map(|u| u.id.0 as i64),
+        name: m.from.as_ref().map(|u| u.full_name()),
         message: m.id.0 as i64,
         kind: if m.text().is_some() { "text" } else { "other" },
         text: m.text().map(str::to_string),

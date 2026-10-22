@@ -1,11 +1,13 @@
 //! SQLite journal: admitted inputs, ignored-update dispositions, the polling cursor, the outbox (pilotq.md § 4, § 7),
-//! and the grant registry, route policy and per-person profiles (§ 2, § 6).
+//! the grant registry, route policy and per-person profiles (§ 2, § 6), and the request audit record (§ 8, R17).
 
+use coreq::telemetry::{Event, Store};
 use rusqlite::{Connection, OptionalExtension, params};
-use std::path::Path;
+use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
 
 /// Schema this binary writes; a newer journal is refused rather than guessed (F08).
-const SCHEMA: i64 = 3;
+const SCHEMA: i64 = 4;
 /// Model attempts per request across restarts (§ 7 dependency retry).
 const RUNS: i64 = 3;
 /// Delivery attempts per episode, persisted across restart (§ 7).
@@ -35,14 +37,17 @@ fn session(chat: i64, topic: Option<i64>, sender: i64, shared: bool) -> String {
 /// Recovery control in a message (§ 2 Changing direction), optionally addressed as `/stop@bot`.
 fn control(text: Option<&str>) -> Option<&'static str> {
     let cmd = text?.split_whitespace().next()?.split('@').next()?;
-    ["/stop", "/status", "/new"].into_iter().find(|c| *c == cmd)
+    ["/stop", "/status", "/new", "/audit"].into_iter().find(|c| *c == cmd)
 }
 
+/// Admits one request; its row is the audit record (§ 8 Request audit), so who, where, the display name at that time and the
+/// grant set used commit with the input.
 #[allow(clippy::too_many_arguments)]
-fn insert(tx: &Connection, update: i64, front: &str, chat: i64, topic: Option<i64>, sender: i64, message: i64, kind: &str, text: Option<&str>, state: &str, at: i64, session: &str) -> Result<i64, String> {
+fn insert(tx: &Connection, update: i64, front: &str, chat: i64, topic: Option<i64>, sender: i64, name: Option<&str>, message: i64, kind: &str, text: Option<&str>, state: &str, at: i64, session: &str) -> Result<i64, String> {
+    let grants = grants_of(tx, sender)?.join(",");
     tx.execute(
-        "INSERT INTO requests(update_id, front, chat, topic, sender, message, kind, text, state, received_at, session) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
-        params![update, front, chat, topic, sender, message, kind, text, state, at, session],
+        "INSERT INTO requests(update_id, front, chat, topic, sender, name, grants, message, kind, text, state, received_at, session) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+        params![update, front, chat, topic, sender, name, grants, message, kind, text, state, at, session],
     )
     .map_err(|e| e.to_string())?;
     Ok(tx.last_insert_rowid())
@@ -60,33 +65,53 @@ fn ids(tx: &Connection, session: &str, state: &str) -> Result<Vec<String>, Strin
     q.query_map(params![session, state], |r| r.get(0)).and_then(Iterator::collect).map_err(|e| e.to_string())
 }
 
-/// Answers `/stop`, `/status` or `/new` inside the admission transaction, without the model and scoped to one conversation (§ 12).
-fn answer_control(tx: &Connection, session: &str, cmd: &str) -> Result<String, String> {
+/// Answers `/stop`, `/status`, `/new` or `/audit` inside the admission transaction, without the model and scoped to one
+/// conversation (§ 12). Also returns a request that `/stop` cancelled.
+fn answer_control(tx: &Connection, session: &str, cmd: &str, request: i64, chat: i64, sender: i64, at: i64) -> Result<(String, Option<i64>), String> {
     let e = |e: rusqlite::Error| e.to_string();
-    Ok(match cmd {
-        "/stop" => {
-            let running: Option<i64> = tx.query_row("SELECT id FROM requests WHERE session=?1 AND state='running'", [session], |r| r.get(0)).optional().map_err(e)?;
-            let Some(id) = running else { return Ok("Nothing is running in this conversation.".into()) };
-            // the fence bump is the verified stop: the old run can no longer record a reply or effect
-            tx.execute("UPDATE requests SET state='cancelled', error='stopped by /stop' WHERE id=?1", [id]).map_err(e)?;
-            tx.execute("UPDATE conversations SET fence=fence+1 WHERE session=?1", [session]).map_err(e)?;
-            format!("Stopped request #{id}. Queued follow-ups stay queued.")
-        }
-        "/status" => {
-            let (running, queued) = (ids(tx, session, "running")?, ids(tx, session, "queued")?);
-            if running.is_empty() && queued.is_empty() {
-                "Nothing is running or queued in this conversation.".into()
-            } else {
-                let list = |v: &[String]| if v.is_empty() { "none".to_string() } else { v.join(", ") };
-                format!("Running: {}. Queued: {}.", list(&running), list(&queued))
+    Ok((
+        match cmd {
+            "/stop" => {
+                let running: Option<i64> = tx.query_row("SELECT id FROM requests WHERE session=?1 AND state='running'", [session], |r| r.get(0)).optional().map_err(e)?;
+                let Some(id) = running else { return Ok(("Nothing is running in this conversation.".into(), None)) };
+                // the fence bump is the verified stop: the old run can no longer record a reply or effect
+                tx.execute("UPDATE requests SET state='cancelled', error='stopped by /stop' WHERE id=?1", [id]).map_err(e)?;
+                tx.execute("UPDATE conversations SET fence=fence+1 WHERE session=?1", [session]).map_err(e)?;
+                return Ok((format!("Stopped request #{id}. Queued follow-ups stay queued."), Some(id)));
             }
-        }
-        _ => {
-            tx.execute("INSERT INTO conversations(session, generation) VALUES (?1, 1) ON CONFLICT(session) DO UPDATE SET generation=generation+1, thread=NULL", [session])
-                .map_err(e)?;
-            "New conversation started. Earlier requests, task links and receipts stay recorded.".into()
-        }
-    })
+            // a group or topic would show one person's history to everyone in it
+            "/audit" if chat != sender => "Use /audit in a direct message with PilotQ; it shows only your own requests.".into(),
+            "/audit" => {
+                // Telegram shows a person their own records only, whatever their grants; `pilotq audit` serves the audit grant
+                let own = Filter { user: Some(sender), ..Filter::default() };
+                let rows: Vec<Value> = records(tx, sender, "telegram", &own, at)?.into_iter().filter(|r| r["request"] != request).collect();
+                let mut lines = vec![format!("Your requests are recorded ({RETENTION}). Latest:")];
+                for r in rows.iter().rev().take(5) {
+                    let text: String = r["text"].as_str().unwrap_or("").chars().take(60).collect();
+                    lines.push(format!("#{} {}: {text}", r["request"], r["outcome"].as_str().unwrap_or("")));
+                }
+                if rows.is_empty() {
+                    lines.push("none".into());
+                }
+                lines.join("\n")
+            }
+            "/status" => {
+                let (running, queued) = (ids(tx, session, "running")?, ids(tx, session, "queued")?);
+                if running.is_empty() && queued.is_empty() {
+                    "Nothing is running or queued in this conversation.".into()
+                } else {
+                    let list = |v: &[String]| if v.is_empty() { "none".to_string() } else { v.join(", ") };
+                    format!("Running: {}. Queued: {}.", list(&running), list(&queued))
+                }
+            }
+            _ => {
+                tx.execute("INSERT INTO conversations(session, generation) VALUES (?1, 1) ON CONFLICT(session) DO UPDATE SET generation=generation+1, thread=NULL", [session])
+                    .map_err(e)?;
+                "New conversation started. Earlier requests, task links and receipts stay recorded.".into()
+            }
+        },
+        None,
+    ))
 }
 
 /// One claimed model run. `fence` must still match the conversation's fence for the run to record anything.
@@ -118,6 +143,74 @@ fn claim(tx: &Connection, request: i64, at: i64) -> Result<Option<Run>, String> 
     Ok(Some(Run { id: tx.last_insert_rowid(), request, session, generation, fence, thread, text }))
 }
 
+/// Proposed audit retention, told to each person at their first admitted request (§ 7, § 8; an open decision in § 11).
+const RETENTION: &str = "metadata 365 days, message text 90 days";
+
+/// The CoreQ trace ID of a request: the one ID that joins its audit record, telemetry and TaskQ task text (§ 8).
+pub fn trace_id(request: i64) -> String {
+    format!("pilotq.request.{request}")
+}
+
+/// `pilotq audit` filters (§ 9); `route` is `cli`, `CHAT` or `CHAT:TOPIC`.
+#[derive(Default, Debug)]
+pub struct Filter {
+    pub user: Option<i64>,
+    pub route: Option<String>,
+    pub project: Option<String>,
+    pub since: Option<i64>,
+    pub request: Option<i64>,
+}
+
+/// Audit records `reader` may see under `f`, oldest first, and the read itself recorded (§ 8 Request audit). The owner and
+/// holders of `audit` see everyone's; anyone else sees only their own, whatever the filter asks.
+fn records(c: &Connection, reader: i64, front: &str, f: &Filter, at: i64) -> Result<Vec<Value>, String> {
+    let e = |e: rusqlite::Error| e.to_string();
+    let own = (!has(c, reader, "audit")?).then_some(reader);
+    let mut q = c
+        .prepare(
+            "SELECT id, front, chat, topic, sender, name, grants, project, kind, text, state, reply, error, received_at FROM requests
+            WHERE (?1 IS NULL OR sender=?1) AND (?2 IS NULL OR sender=?2) AND (?3 IS NULL OR ?3=CASE WHEN front='cli' THEN 'cli' ELSE chat || coalesce(':' || topic, '') END)
+            AND (?4 IS NULL OR project=?4) AND (?5 IS NULL OR received_at>=?5) AND (?6 IS NULL OR id=?6) ORDER BY id",
+        )
+        .map_err(e)?;
+    let mut rows: Vec<Value> = q
+        .query_map(params![own, f.user, f.route, f.project, f.since, f.request], |r| {
+            let (id, grants): (i64, Option<String>) = (r.get(0)?, r.get(6)?);
+            Ok(json!({
+                "request": id, "trace": trace_id(id), "kind": r.get::<_, String>(8)?,
+                "who": {"id": r.get::<_, i64>(4)?, "name": r.get::<_, Option<String>>(5)?, "grants": grants.unwrap_or_default().split(',').filter(|g| !g.is_empty()).collect::<Vec<_>>()},
+                "where": {"front": r.get::<_, String>(1)?, "chat": r.get::<_, i64>(2)?, "topic": r.get::<_, Option<i64>>(3)?, "project": r.get::<_, Option<String>>(7)?},
+                "received": r.get::<_, i64>(13)?, "text": r.get::<_, Option<String>>(9)?,
+                "outcome": r.get::<_, String>(10)?, "reply": r.get::<_, Option<String>>(11)?, "error": r.get::<_, Option<String>>(12)?,
+            }))
+        })
+        .and_then(Iterator::collect)
+        .map_err(e)?;
+    for v in &mut rows {
+        let id = v["request"].as_i64().unwrap_or_default();
+        let list = |sql: &str, f: &dyn Fn(&rusqlite::Row) -> rusqlite::Result<Value>| -> Result<Vec<Value>, String> {
+            let mut q = c.prepare(sql).map_err(e)?;
+            q.query_map([id], |r| f(r)).and_then(Iterator::collect).map_err(e)
+        };
+        v["runs"] = list("SELECT started_at, ended_at, state, model, agentq, outcome FROM runs WHERE request_id=?1 ORDER BY id", &|r| {
+            Ok(json!({"started": r.get::<_, i64>(0)?, "ended": r.get::<_, Option<i64>>(1)?, "state": r.get::<_, String>(2)?, "model": r.get::<_, Option<String>>(3)?,
+                "agentq": r.get::<_, String>(4)?, "error": r.get::<_, Option<String>>(5)?}))
+        })?
+        .into();
+        let event = |r: &rusqlite::Row| Ok(json!({"at": r.get::<_, i64>(0)?, "target": r.get::<_, Option<String>>(1)?, "item": r.get::<_, Option<String>>(2)?, "result": r.get::<_, Option<String>>(3)?}));
+        v["tools"] = list("SELECT at, target, item, result FROM audit_events WHERE request_id=?1 AND kind='tool' ORDER BY id", &event)?.into();
+        v["tasks"] = list("SELECT at, target, item, result FROM audit_events WHERE request_id=?1 AND kind='task' ORDER BY id", &event)?.into();
+        v["deliveries"] = list("SELECT state, sent_message, attempts, possible_duplicate, error FROM outbox WHERE request_id=?1 ORDER BY id", &|r| {
+            Ok(json!({"state": r.get::<_, String>(0)?, "message": r.get::<_, Option<i64>>(1)?, "attempts": r.get::<_, i64>(2)?, "possible_duplicate": r.get::<_, bool>(3)?,
+                "error": r.get::<_, Option<String>>(4)?}))
+        })?
+        .into();
+    }
+    let filter = json!({"user": f.user, "route": f.route, "project": f.project, "since": f.since, "request": f.request}).to_string();
+    c.execute("INSERT INTO audit_reads(at, reader, front, filter, count) VALUES (?1,?2,?3,?4,?5)", params![at, reader, front, filter, rows.len() as i64]).map_err(e)?;
+    Ok(rows)
+}
+
 /// One remembered profile fact. A `private` fact is visible only to its subject (in their DM or as the CLI actor).
 #[derive(Debug, PartialEq)]
 pub struct Fact {
@@ -138,11 +231,13 @@ pub struct Route {
     pub at: i64,
 }
 
-/// One Telegram message as the ingress sees it. Names are labels, never authority, so none are stored.
+/// One Telegram message as the ingress sees it. Names are labels, never authority.
 pub struct Input {
     pub chat: i64,
     pub topic: Option<i64>,
     pub sender: Option<i64>,
+    /// Display name at that time, kept in the audit record as a label only.
+    pub name: Option<String>,
     pub message: i64,
     pub kind: &'static str,
     pub text: Option<String>,
@@ -173,7 +268,8 @@ pub enum Sent {
     Failed(String),
 }
 
-pub struct Journal(Connection);
+/// The journal connection, the CoreQ telemetry store path beside it and that store, opened on first use.
+pub struct Journal(Connection, PathBuf, std::sync::OnceLock<Result<Store, String>>);
 
 impl Journal {
     pub fn open(path: &Path) -> Result<Journal, String> {
@@ -213,8 +309,20 @@ impl Journal {
                 CREATE TABLE runs(id INTEGER PRIMARY KEY, request_id INTEGER NOT NULL, session TEXT NOT NULL, generation INTEGER NOT NULL, fence INTEGER NOT NULL,
                     state TEXT NOT NULL, tool INTEGER NOT NULL DEFAULT 0, started_at INTEGER NOT NULL, ended_at INTEGER, outcome TEXT);")?;
         }
+        if version < 4 {
+            // § 8 Request audit: display name and grants at admission, model and agentq mode per run, tool and task events, reads
+            up("ALTER TABLE requests ADD COLUMN name TEXT;
+                ALTER TABLE requests ADD COLUMN grants TEXT;
+                ALTER TABLE requests ADD COLUMN project TEXT;
+                ALTER TABLE runs ADD COLUMN model TEXT;
+                ALTER TABLE runs ADD COLUMN agentq TEXT NOT NULL DEFAULT 'off';
+                CREATE TABLE audit_events(id INTEGER PRIMARY KEY, request_id INTEGER NOT NULL, run_id INTEGER, at INTEGER NOT NULL, kind TEXT NOT NULL,
+                    target TEXT, item TEXT, result TEXT);
+                CREATE TABLE audit_reads(id INTEGER PRIMARY KEY, at INTEGER NOT NULL, reader INTEGER NOT NULL, front TEXT NOT NULL, filter TEXT NOT NULL,
+                    count INTEGER NOT NULL);")?;
+        }
         up(&format!("PRAGMA user_version={SCHEMA};"))?;
-        Ok(Journal(c))
+        Ok(Journal(c, path.with_file_name("telemetry.sqlite"), std::sync::OnceLock::new()))
     }
 
     /// Offset for the next getUpdates call; it confirms everything already committed.
@@ -227,7 +335,7 @@ impl Journal {
     /// silently, and a later grant does not replay them. Returns the number of newly admitted requests.
     pub fn admit(&mut self, batch: &[(i64, Option<Input>)], at: i64) -> Result<usize, String> {
         let tx = self.0.transaction().map_err(|e| e.to_string())?;
-        let mut admitted = 0;
+        let (mut admitted, mut ended) = (0, vec![]);
         for (update, input) in batch {
             let known: bool = tx.query_row("SELECT 1 FROM updates WHERE update_id=?1", [update], |_| Ok(true)).optional().map_err(|e| e.to_string())?.is_some();
             if known {
@@ -251,16 +359,28 @@ impl Journal {
                         (None, "text") => ("text", "queued"),
                         _ => (i.kind, "failed"),
                     };
-                    let id = insert(&tx, *update, "telegram", i.chat, i.topic, sender, i.message, kind, i.text.as_deref(), state, at, &s)?;
-                    let (html, text) = match cmd {
-                        Some(c) => (None, answer_control(&tx, &s, c)?),
+                    let id = insert(&tx, *update, "telegram", i.chat, i.topic, sender, i.name.as_deref(), i.message, kind, i.text.as_deref(), state, at, &s)?;
+                    let first: bool = tx.query_row("SELECT NOT EXISTS (SELECT 1 FROM requests WHERE sender=?1 AND id<>?2)", [sender, id], |r| r.get(0)).map_err(|e| e.to_string())?;
+                    let (html, mut text) = match cmd {
+                        Some(c) => {
+                            let (text, stopped) = answer_control(&tx, &s, c, id, i.chat, sender, at)?;
+                            ended.extend(stopped);
+                            (None, text)
+                        }
                         // § 1: unsupported input is detected and gets an explicit outcome, never silence
                         None if state == "failed" => (None, format!("Request #{id}: this input type is not supported yet; send text.")),
                         // § 12: acknowledge the committed request and say it is queued
                         None => (Some(format!("Received. Request <b>#{id}</b> is queued.")), format!("Received. Request #{id} is queued.")),
                     };
+                    // § 8: a person learns at admission that their requests are recorded, and for how long
+                    let notice = format!(" Your requests are recorded ({RETENTION}); /audit in a direct message shows yours.");
+                    let html = html.map(|h| if first { h + &notice } else { h });
+                    if first {
+                        text += &notice;
+                    }
                     if state != "queued" {
                         tx.execute("UPDATE requests SET reply=?2 WHERE id=?1", params![id, text]).map_err(|e| e.to_string())?;
+                        ended.push(id);
                     }
                     outbox(&tx, id, i.chat, i.topic, Some(i.message), html.as_deref(), &text, at)?;
                     admitted += 1;
@@ -277,6 +397,9 @@ impl Journal {
                 .map_err(|e| e.to_string())?;
         }
         tx.commit().map_err(|e| e.to_string())?;
+        for id in ended {
+            self.trace(id, at);
+        }
         Ok(admitted)
     }
 
@@ -445,7 +568,7 @@ impl Journal {
         }
         // ponytail: CLI requests take negative synthetic update IDs, so Telegram's positive IDs never collide
         let update: i64 = tx.query_row("SELECT min(coalesce(min(update_id), 0), 0) - 1 FROM requests", [], |r| r.get(0)).map_err(|e| e.to_string())?;
-        let id = insert(&tx, update, "cli", sender, None, sender, 0, "text", Some(text), "queued", at, &format!("cli:{sender}"))?;
+        let id = insert(&tx, update, "cli", sender, None, sender, None, 0, "text", Some(text), "queued", at, &format!("cli:{sender}"))?;
         let run = claim(&tx, id, at)?.ok_or("request was claimed twice")?;
         tx.commit().map_err(|e| e.to_string())?;
         Ok(run)
@@ -478,14 +601,26 @@ impl Journal {
         self.0.query_row("SELECT fence<>?2 FROM conversations WHERE session=?1", params![r.session, r.fence], |x| x.get(0)).map_err(|e| e.to_string())
     }
 
-    /// Persists that the run started a tool item; a lost terminal outcome then reads uncertain, never failed-and-retryable.
-    pub fn tool_started(&self, run: i64) -> Result<(), String> {
-        self.0.execute("UPDATE runs SET tool=1 WHERE id=?1", [run]).map(drop).map_err(|e| e.to_string())
+    /// Records a tool item of the run in its audit record: `result` None when it starts, its status when it completes.
+    /// Once one started, a lost terminal outcome reads uncertain, never failed-and-retryable.
+    pub fn tool(&self, r: &Run, kind: &str, item: &str, result: Option<&str>, at: i64) -> Result<(), String> {
+        let e = |e: rusqlite::Error| e.to_string();
+        let tx = self.0.unchecked_transaction().map_err(e)?;
+        tx.execute("UPDATE runs SET tool=1 WHERE id=?1", [r.id]).map_err(e)?;
+        let done = tx.execute("UPDATE audit_events SET result=?3 WHERE run_id=?1 AND item=?2 AND kind='tool'", params![r.id, item, result]).map_err(e)?;
+        if done == 0 {
+            tx.execute(
+                "INSERT INTO audit_events(request_id, run_id, at, kind, target, item, result) VALUES (?1,?2,?3,'tool',?4,?5,?6)",
+                params![r.request, r.id, at, kind, item, result],
+            )
+            .map_err(e)?;
+        }
+        tx.commit().map_err(e)
     }
 
     /// Records a run's outcome, reply and native thread in one transaction, only while its fence holds. Returns false for a
     /// fenced run, which changes nothing but its own run row.
-    pub fn finish(&self, r: &Run, thread: Option<&str>, outcome: &crate::manager::Outcome, at: i64) -> Result<bool, String> {
+    pub fn finish(&self, r: &Run, thread: Option<&str>, model: Option<&str>, outcome: &crate::manager::Outcome, at: i64) -> Result<bool, String> {
         use crate::manager::Outcome;
         let e = |e: rusqlite::Error| e.to_string();
         let tx = self.0.unchecked_transaction().map_err(e)?;
@@ -496,7 +631,7 @@ impl Journal {
             Outcome::Failed(x) => ("failed", format!("Request #{} failed: {x}", r.request), Some(x)),
             Outcome::Uncertain(x) => ("uncertain", format!("Request #{} has an uncertain outcome and will not be repeated automatically: {x}", r.request), Some(x)),
         };
-        tx.execute("UPDATE runs SET state=?2, ended_at=?3, outcome=?4 WHERE id=?1", params![r.id, state, at, error]).map_err(e)?;
+        tx.execute("UPDATE runs SET state=?2, ended_at=?3, outcome=?4, model=?5 WHERE id=?1", params![r.id, state, at, error, model]).map_err(e)?;
         if state == "fenced" {
             tx.commit().map_err(e)?;
             return Ok(false);
@@ -510,6 +645,7 @@ impl Journal {
             outbox(&tx, r.request, dest.1, dest.2, Some(dest.3), None, &text, at)?;
         }
         tx.commit().map_err(e)?;
+        self.trace(r.request, at);
         Ok(true)
     }
 
@@ -546,12 +682,61 @@ impl Journal {
         }
         tx.execute("UPDATE runs SET state='interrupted', ended_at=?1 WHERE state='running'", [at]).map_err(e)?;
         tx.commit().map_err(e)?;
+        for (request, ..) in &stale {
+            if self.request(*request)?.0 != "queued" {
+                self.trace(*request, at);
+            }
+        }
         Ok(stale.len())
     }
 
     /// A request's state, reply and error, for the CLI readback.
     pub fn request(&self, id: i64) -> Result<(String, Option<String>, Option<String>), String> {
         self.0.query_row("SELECT state, reply, error FROM requests WHERE id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(|e| e.to_string())
+    }
+
+    /// `pilotq audit` (§ 9): records `reader` may see, and the read recorded in the same transaction.
+    pub fn audit(&mut self, reader: i64, f: &Filter, at: i64) -> Result<Vec<Value>, String> {
+        let tx = self.0.transaction().map_err(|e| e.to_string())?;
+        let rows = records(&tx, reader, "cli", f, at)?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(rows)
+    }
+
+    /// Appends the ended request's CoreQ event, keyed by request ID. Metadata only: no request or reply text, so no key value
+    /// can reach telemetry (§ 8). A telemetry failure is reported and never blocks the request.
+    fn trace(&self, request: i64, at: i64) {
+        let event = || -> Result<Event, String> {
+            let (front, state, received, runs, model): (String, String, i64, i64, Option<String>) = self
+                .0
+                .query_row(
+                    "SELECT front, state, received_at, (SELECT count(*) FROM runs WHERE request_id=?1),
+                        (SELECT model FROM runs WHERE request_id=?1 AND model IS NOT NULL ORDER BY id DESC LIMIT 1) FROM requests WHERE id=?1",
+                    [request],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                )
+                .map_err(|e| e.to_string())?;
+            let outcome = match state.as_str() {
+                "answered" => "ok",
+                "failed" => "failed",
+                "cancelled" => "cancelled",
+                _ => "unknown",
+            };
+            // ponytail: CoreQ codes allow only [A-Za-z0-9._:-]; a model name outside that is left out, not rewritten
+            let model = model.filter(|m| !m.is_empty() && m.len() <= 128 && m.bytes().all(|c| c.is_ascii_alphanumeric() || b"._:-".contains(&c)));
+            Event::identified(
+                "pilotq.request",
+                &request.to_string(),
+                json!({"product": "pilotq", "version": env!("CARGO_PKG_VERSION"), "operation": "request", "kind": "pilotq.request",
+                    "trace": trace_id(request), "span": "request", "started_ms": received.max(0) * 1000, "duration_us": (at - received).max(0) * 1_000_000,
+                    "outcome": outcome, "error": if outcome == "ok" { "none" } else { state.as_str() }, "source": front, "attempt": runs,
+                    "runtime": (runs > 0).then_some("codex"), "model": model}),
+            )
+        };
+        let r = event().and_then(|ev| self.2.get_or_init(|| Store::open(&self.1)).as_ref().map_err(String::clone)?.append(&[ev]).map(drop));
+        if let Err(e) = r {
+            eprintln!("telemetry request #{request}: {e}");
+        }
     }
 
     pub fn set_health(&self, source: &str, at: i64, state: &str, reason: Option<&str>) -> Result<(), String> {
@@ -591,7 +776,7 @@ mod tests {
     }
 
     fn msg(chat: i64, sender: i64, message: i64) -> Option<Input> {
-        Some(Input { chat, topic: None, sender: Some(sender), message, kind: "text", text: Some("hi".into()) })
+        Some(Input { chat, topic: None, sender: Some(sender), name: None, message, kind: "text", text: Some("hi".into()) })
     }
 
     fn count(j: &Journal, sql: &str) -> i64 {
@@ -639,7 +824,7 @@ mod tests {
     }
 
     fn at(chat: i64, topic: Option<i64>, sender: i64, message: i64) -> Option<Input> {
-        Some(Input { chat, topic, sender: Some(sender), message, kind: "text", text: Some("hi".into()) })
+        Some(Input { chat, topic, sender: Some(sender), name: None, message, kind: "text", text: Some("hi".into()) })
     }
 
     fn sessions(j: &Journal) -> Vec<(i64, String)> {
@@ -718,13 +903,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(p);
     }
 
-    // A schema 1 journal from an earlier release gains the session column and the schema 3 run tables and keeps working.
+    // A schema 1 journal from an earlier release gains the session column, the schema 3 run tables and the schema 4 audit tables.
     #[test]
     fn schema_1_journal_upgrades() {
         let (j, p) = journal("upgrade");
         j.0.execute_batch(
             "ALTER TABLE requests DROP COLUMN session; ALTER TABLE requests DROP COLUMN front; ALTER TABLE requests DROP COLUMN reply;
-            ALTER TABLE requests DROP COLUMN error; DROP TABLE conversations; DROP TABLE runs; PRAGMA user_version=1",
+            ALTER TABLE requests DROP COLUMN error; ALTER TABLE requests DROP COLUMN name; ALTER TABLE requests DROP COLUMN grants;
+            ALTER TABLE requests DROP COLUMN project; DROP TABLE conversations; DROP TABLE runs; DROP TABLE audit_events; DROP TABLE audit_reads; PRAGMA user_version=1",
         )
         .unwrap();
         drop(j);
@@ -744,7 +930,7 @@ mod tests {
         j.admit(&[(1, msg(7, 7, 1)), (2, msg(-5, 7, 2))], 0).unwrap();
         let runs = j.claim_next(4, 0).unwrap();
         assert_eq!(runs.len(), 2);
-        j.tool_started(runs[1].id).unwrap();
+        j.tool(&runs[1], "commandExecution", "c1", None, 0).unwrap();
         assert_eq!(j.reconcile(1).unwrap(), 2);
         assert_eq!(j.request(1).unwrap().0, "queued", "a pure model run is retried");
         assert_eq!(j.request(2).unwrap().0, "uncertain", "a run that started a tool is never replayed");
@@ -756,17 +942,79 @@ mod tests {
 
         j.admit(&[(3, msg(7, 7, 3))], 4).unwrap();
         let r = j.claim_next(4, 4).unwrap().remove(0);
-        j.admit(&[(4, Some(Input { chat: 7, topic: None, sender: Some(7), message: 4, kind: "text", text: Some("/stop".into()) }))], 5).unwrap();
+        j.admit(&[(4, Some(Input { chat: 7, topic: None, sender: Some(7), name: None, message: 4, kind: "text", text: Some("/stop".into()) }))], 5).unwrap();
         assert!(j.fenced(&r).unwrap());
-        assert!(!j.finish(&r, Some("t-old"), &Outcome::Answered("late".into()), 6).unwrap(), "a stopped run cannot reply");
+        assert!(!j.finish(&r, Some("t-old"), None, &Outcome::Answered("late".into()), 6).unwrap(), "a stopped run cannot reply");
         assert_eq!(j.request(r.request).unwrap(), ("cancelled".into(), None, Some("stopped by /stop".into())));
 
         j.admit(&[(5, msg(7, 7, 5))], 7).unwrap();
         let r = j.claim_next(4, 7).unwrap().remove(0);
-        j.admit(&[(6, Some(Input { chat: 7, topic: None, sender: Some(7), message: 6, kind: "text", text: Some("/new".into()) }))], 8).unwrap();
-        assert!(j.finish(&r, Some("t-old"), &Outcome::Answered("ok".into()), 9).unwrap());
+        j.admit(&[(6, Some(Input { chat: 7, topic: None, sender: Some(7), name: None, message: 6, kind: "text", text: Some("/new".into()) }))], 8).unwrap();
+        assert!(j.finish(&r, Some("t-old"), None, &Outcome::Answered("ok".into()), 9).unwrap());
         assert_eq!(count(&j, "SELECT count(*) FROM conversations WHERE session='dm:7' AND thread IS NULL AND generation=1"), 1);
         drop(j);
+        let _ = std::fs::remove_dir_all(p);
+    }
+
+    // U23 (journal part): a DM, a forum topic and the CLI each leave one audit record with who, when, where, text, tools and
+    // outcome; a person without `audit` sees only their own records whatever the filter; the owner sees all; every read is
+    // recorded; the CoreQ event per request carries its trace ID and no request text.
+    #[test]
+    fn u23_audit_records_and_readers() {
+        use crate::manager::Outcome;
+        let (mut j, p) = journal("u23");
+        j.grant(7, 8, &["chat".into()], 0).unwrap();
+        j.grant(7, 9, &["chat".into()], 0).unwrap();
+        let named = |chat, topic, sender, message, text: &str| {
+            Some(Input { chat, topic, sender: Some(sender), name: Some(format!("P{sender}")), message, kind: "text", text: Some(text.into()) })
+        };
+        let secret = "sk-aaaaaaaaaaaaaaaaaaaa"; // invented value standing in for anything a person types
+        j.admit(&[(1, named(8, None, 8, 1, &format!("dm question {secret}"))), (2, named(-100, Some(5), 9, 2, "topic question"))], 10).unwrap();
+        let first = j.0.query_row("SELECT text FROM outbox WHERE request_id=1", [], |r| r.get::<_, String>(0)).unwrap();
+        assert!(first.contains("recorded (metadata 365 days"), "admission tells the person: {first}");
+        let runs = j.claim_next(4, 11).unwrap();
+        j.tool(&runs[0], "commandExecution", "c1", None, 12).unwrap();
+        j.tool(&runs[0], "commandExecution", "c1", Some("completed"), 13).unwrap();
+        j.finish(&runs[0], Some("t1"), Some("gpt-test"), &Outcome::Answered("dm answer".into()), 14).unwrap();
+        j.finish(&runs[1], Some("t2"), None, &Outcome::Failed("usage limit reached".into()), 15).unwrap();
+        let cli = j.ask(7, "cli question", 16).unwrap();
+        j.finish(&cli, None, Some("gpt-test"), &Outcome::Answered("cli answer".into()), 17).unwrap();
+
+        let all = j.audit(7, &Filter::default(), 20).unwrap();
+        assert_eq!(all.len(), 3, "one record per request");
+        let dm = &all[0];
+        assert_eq!((dm["who"]["id"].as_i64(), dm["who"]["name"].as_str(), &dm["who"]["grants"]), (Some(8), Some("P8"), &json!(["chat"])));
+        assert_eq!((dm["where"]["front"].as_str(), dm["where"]["chat"].as_i64(), dm["received"].as_i64()), (Some("telegram"), Some(8), Some(10)));
+        assert_eq!((dm["outcome"].as_str(), dm["reply"].as_str(), dm["trace"].as_str()), (Some("answered"), Some("dm answer"), Some("pilotq.request.1")));
+        assert_eq!(dm["runs"][0]["model"], "gpt-test");
+        assert_eq!((dm["runs"][0]["agentq"].as_str(), dm["runs"][0]["started"].as_i64(), dm["runs"][0]["ended"].as_i64()), (Some("off"), Some(11), Some(14)));
+        assert_eq!((dm["tools"][0]["target"].as_str(), dm["tools"][0]["result"].as_str(), dm["tools"].as_array().unwrap().len()), (Some("commandExecution"), Some("completed"), 1));
+        assert_eq!((all[1]["where"]["topic"].as_i64(), all[1]["outcome"].as_str()), (Some(5), Some("failed")));
+        assert_eq!((all[2]["where"]["front"].as_str(), all[2]["who"]["id"].as_i64()), (Some("cli"), Some(7)));
+        let ids = |v: Vec<Value>| v.iter().map(|r| r["request"].as_i64().unwrap()).collect::<Vec<_>>();
+        assert_eq!(ids(j.audit(7, &Filter { route: Some("-100:5".into()), ..Filter::default() }, 20).unwrap()), [2]);
+        assert_eq!(ids(j.audit(7, &Filter { route: Some("cli".into()), ..Filter::default() }, 20).unwrap()), [3]);
+        assert_eq!(ids(j.audit(7, &Filter { since: Some(16), ..Filter::default() }, 20).unwrap()), [3]);
+        assert_eq!(ids(j.audit(8, &Filter::default(), 21).unwrap()), [1], "a person without audit sees only their own");
+        assert!(j.audit(8, &Filter { user: Some(9), ..Filter::default() }, 21).unwrap().is_empty(), "asking for someone else returns nothing");
+        assert_eq!(ids(j.audit(9, &Filter::default(), 21).unwrap()), [2]);
+        assert_eq!(count(&j, "SELECT count(*) FROM audit_reads"), 7, "every read is recorded");
+        assert_eq!(count(&j, "SELECT count(*) FROM audit_reads WHERE reader=8 AND count=0"), 1);
+
+        // /audit in a DM shows the person their own records; in a group it shows nothing
+        j.admit(&[(3, named(8, None, 8, 3, "/audit")), (4, named(-100, Some(5), 9, 4, "/audit"))], 22).unwrap();
+        let reply = |id: i64| j.request(id).unwrap().1.unwrap();
+        assert!(reply(4).contains("#1 answered: dm question") && !reply(4).contains("topic"), "{}", reply(4));
+        assert!(reply(5).starts_with("Use /audit in a direct message"), "{}", reply(5));
+        assert_eq!(count(&j, "SELECT count(*) FROM audit_reads WHERE front='telegram'"), 1);
+
+        drop(j);
+        let t = coreq::telemetry::Reader::open(&p.join("telemetry.sqlite")).unwrap().export(0, 0, 100).unwrap().to_string();
+        for trace in ["pilotq.request.1", "pilotq.request.2", "pilotq.request.3", "pilotq.request.4", "pilotq.request.5"] {
+            assert!(t.contains(&format!("\"{trace}\"")), "{trace} missing from telemetry: {t}");
+        }
+        assert!(!t.contains(secret) && !t.contains("question") && !t.contains("answer"), "telemetry carries no request or reply text: {t}");
+        assert!(t.contains(r#""outcome":"failed""#) && t.contains(r#""model":"gpt-test""#));
         let _ = std::fs::remove_dir_all(p);
     }
 
