@@ -28,6 +28,8 @@ struct Fake {
     polls: usize,
     /// Hold an empty getUpdates for its `timeout`, as Telegram does.
     hold: bool,
+    /// getUpdates fails with 401 while sendMessage keeps working (F06).
+    poll_fail: bool,
 }
 
 type State = Arc<Mutex<Fake>>;
@@ -65,6 +67,10 @@ fn handle(stream: std::net::TcpStream, st: &State) {
         let ready = {
             let mut f = st.lock().unwrap();
             f.polls += 1;
+            if f.poll_fail {
+                drop(f);
+                return respond(&mut out, 401, r#"{"ok":false,"error_code":401,"description":"Unauthorized"}"#);
+            }
             if f.conflict {
                 drop(f);
                 return respond(&mut out, 409, r#"{"ok":false,"error_code":409,"description":"Conflict: terminated by other getUpdates request; make sure that only one bot instance is running"}"#);
@@ -128,7 +134,8 @@ fn script(d: &Path, name: &str, body: &str) -> PathBuf {
 }
 
 /// A fake `codex app-server`: logs every line it receives; answers "re: TEXT @ THREAD", resuming the requested thread.
-/// The turn text picks a fault: slow, stall, exit, tool (exits after a tool starts), empty, failed, chatty, ask.
+/// The turn text picks a fault: slow, stall, exit, tool (exits after a tool starts), empty, failed, chatty, ask, once (sleeps on
+/// its first run only), diag (an unknown optional event first) or env (answers with the API key it sees).
 const FAKE: &str = r#"d=$(dirname "$0")
 while IFS= read -r l; do
   printf '%s\n' "$l" >> "$d/codex.log"
@@ -149,6 +156,9 @@ while IFS= read -r l; do
     empty*) echo "$done"; continue ;;
     failed*) echo '{"method":"turn/completed","params":{"threadId":"'$th'","turn":{"id":"u1","status":"failed","items":[],"error":{"message":"usage limit reached"}}}}'; continue ;;
     chatty*) while :; do echo '{"method":"item/agentMessage/delta","params":{"delta":"."}}'; sleep 0.5; done ;;
+    once*) [ -f "$d/once" ] || { touch "$d/once"; sleep 30; } ;;
+    diag*) echo '{"method":"pilotq/unknownDiagnostic","params":{"x":1}}' ;;
+    env*) text="key=${OPENAI_API_KEY:-none}${CODEX_API_KEY:-}" ;;
     ask*) echo '{"id":77,"method":"item/commandExecution/requestApproval","params":{}}'; IFS= read -r r; printf '%s\n' "$r" >> "$d/codex.log" ;;
     esac
     echo '{"method":"item/completed","params":{"threadId":"'$th'","turnId":"u1","completedAtMs":0,"item":{"type":"agentMessage","id":"m1","text":"re: '"$text"' @ '"$th"'"}}}'
@@ -158,10 +168,14 @@ done"#;
 
 /// Points the install's config at `codex` with short section 7 limits.
 fn use_codex(d: &Path, codex: &Path) {
+    limits(d, codex, json!({"first_event": 2, "silent": 2, "deadline": 4}));
+}
+
+fn limits(d: &Path, codex: &Path, limits: Value) {
     let cfg = d.join("config.json");
     let mut c: Value = serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
     c["codex"] = json!(codex);
-    c["codex_limits"] = json!({"first_event": 2, "silent": 2, "deadline": 4});
+    c["codex_limits"] = limits;
     fs::write(&cfg, c.to_string()).unwrap();
 }
 
@@ -469,6 +483,11 @@ fn f03_provider_faults_are_bounded() {
         assert_eq!(v["state"], state, "{input}: {v}");
         assert!(v["error"].as_str().unwrap().contains(error), "{input}: {v}");
     }
+    // L07: an unknown optional event is ignored safely; L08: no API key reaches Codex, so there is no billed fallback
+    let o = cli(&d, &["ask", "diag"]);
+    assert_eq!(String::from_utf8_lossy(&o.stdout).trim(), "re: diag @ th-1", "{}", String::from_utf8_lossy(&o.stderr));
+    let o = Command::new(env!("CARGO_BIN_EXE_pilotq")).args(["ask", "env"]).env("PILOTQ_INSTALL", &d).env("OPENAI_API_KEY", "sk-aaaaaaaa").env("CODEX_API_KEY", "sk-bbbbbbbb").output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&o.stdout).trim(), "re: key=none @ th-1", "API keys are removed from the Codex environment");
     let o = cli(&d, &["ask", "ask me"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(fs::read_to_string(d.join("codex.log")).unwrap().contains(r#"{"id":77,"error":"#), "the server request is refused");
@@ -530,4 +549,40 @@ fn u23_audit_through_service_and_cli() {
     }
     assert!(!tel.contains("question"), "no message text in telemetry");
     fs::remove_dir_all(d).unwrap();
+}
+
+// F06, L18: polling fails with 401 while sending still works. Poll health turns failed with its reason, delivery health stays ok
+// and the committed acknowledgement is still delivered.
+#[test]
+fn f06_poll_failure_is_visible_while_delivery_works() {
+    let (d, st) = setup("f06", vec![update(1, 61, OWNER)]);
+    st.lock().unwrap().faults = VecDeque::from(["429"]);
+    let c = spawn(&d, None);
+    wait("admitted", 15, || try_query(&d, "SELECT count(*) FROM requests") == Some(1));
+    st.lock().unwrap().poll_fail = true;
+    wait("poll failed", 15, || try_query(&d, "SELECT count(*) FROM health WHERE source='poll' AND state='failed' AND reason IS NOT NULL") == Some(1));
+    wait("delivered", 15, || try_query(&d, "SELECT count(*) FROM outbox WHERE state='delivered'") == Some(1));
+    assert_eq!(query(&d, "SELECT count(*) FROM health WHERE source='delivery' AND state='ok'"), 1);
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(query(&d, "SELECT count(*) FROM health WHERE source='poll' AND state='failed'"), 1, "no later success hides the failure");
+    stop(c, d);
+}
+
+// Step 2 crash qualification (F01, F03, L15): SIGKILL the service during a Codex turn. On restart the run is interrupted, the pure
+// model request is requeued within its attempt budget and answered once; the acknowledgement is not repeated.
+#[test]
+fn crash_during_turn_requeues_once() {
+    let (d, st) = setup("crash", vec![text(1, OWNER, None, OWNER, "once")]);
+    limits(&d, &script(&d, "fake-codex", FAKE), json!({"first_event": 5, "silent": 60, "deadline": 60}));
+    let mut c = spawn(&d, None);
+    wait("turn running", 15, || d.join("once").exists() && try_query(&d, "SELECT count(*) FROM runs WHERE state='running'") == Some(1));
+    wait("acknowledged", 15, || st.lock().unwrap().sent.len() == 1);
+    c.kill().unwrap();
+    c.wait().unwrap();
+    let c = spawn(&d, None);
+    wait("answer after restart", 20, || sent_has(&st, "re: once @ th-2"));
+    assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE state='answered'"), 1);
+    assert_eq!(query(&d, "SELECT count(*) FROM runs WHERE request_id=1 AND state='interrupted'"), 1);
+    assert_eq!(texts(&st).iter().filter(|t| t.contains("is queued")).count(), 1, "the acknowledgement is not repeated: {:?}", texts(&st));
+    stop(c, d);
 }

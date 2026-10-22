@@ -1,6 +1,6 @@
 # PilotQ acceptance cases
 
-These cases verify [pilotq.md](../pilotq.md), not a separate product contract. Status: proposed, not executed. Owner requirements R1–R17 are defined there; numerical targets are proposed in sections 7 and 12. Review cases before implementation. Test accounts and separate credentials must be isolated from the production bot and production queue. The [mechanism matrix](mechanism-matrix.md) maps 60 scope decisions to these cases and names the source evidence.
+These cases verify [pilotq.md](../pilotq.md), not a separate product contract. Status: proposed; first-slice results are in [First-slice qualification](#first-slice-qualification). Owner requirements R1–R17 are defined there; numerical targets are proposed in sections 7 and 12. Review cases before implementation. Test accounts and separate credentials must be isolated from the production bot and production queue. The [mechanism matrix](mechanism-matrix.md) maps 60 scope decisions to these cases and names the source evidence.
 
 ## Functional cases
 
@@ -124,5 +124,69 @@ All metrics are **new/proposed** for PilotQ. Langfuse's [evaluation guidance](ht
 3. **Context:** run C01–C07 and paired agentq comparisons. Missing adapter is an implementation prerequisite, not a reason to reject the architecture without investigation.
 4. **Pilot:** at least seven days and 500 accepted requests, including at least 200 simple requests, two users, three routes, two projects and ten TaskQ tasks. Deliberate faults remain a separate result set. Record all manual interventions and provider outages. Small samples do not establish long-term uptime.
 5. **Production decision:** choose the passing Codex subscription integration with the lowest maintenance burden and manual intervention rate, following R9 and the proposals in [core options](core-options.md). A candidate that fails these gates is not qualified; changes to the product direction return to the owner before implementation.
+
+## First-slice qualification
+
+Results for the [section 10](../pilotq.md#10-adoption-sequence) step 2 slice, task [#14](https://github.com/taskqorg/pilotq/issues/14). Deterministic traces run in `cargo test --locked` with a fake Bot API (`tests/telegram.rs`), a fake Codex app-server script, journal calls that take explicit times (fake clock) and fixtures. Test names below are in `src/journal.rs` (`journal::`), `tests/telegram.rs` or `tests/update.rs`. Fakes do not qualify real Telegram, Codex, launchd or storage behavior; the live results are recorded separately below.
+
+### Step 2 qualifications
+
+| Qualification | Traces |
+|---|---|
+| Duplicate input | `f02_duplicate_lock_and_conflict`, `journal::duplicates_admit_once_and_strangers_leave_no_body` |
+| Timeout | `f03_provider_faults_are_bounded`: no first event, silence, endless output past the absolute deadline |
+| Crash | `f01_crash_points_keep_each_input_once` (SIGKILL around the inbox commit and cursor), `crash_during_turn_requeues_once` (SIGKILL during a Codex turn) |
+| Update during a turn | `u12_stop_is_scoped_and_fences_the_run` (a message during a turn); `update_waits_for_the_running_turn` (`pilotq update` drains the running turn before it switches) |
+| Two-route isolation | `u12_stop_is_scoped_and_fences_the_run` (a second topic answers while the first is busy), `journal::u02_route_session_policy` |
+
+### Fault and lifecycle traces
+
+"Partial" names what the first slice proves; the rest belongs to the named step. Live portions stay separate.
+
+| Case | First slice | Traces or owning step |
+|---|---|---|
+| F01 | Yes | `f01_crash_points_keep_each_input_once`, `crash_during_turn_requeues_once` |
+| F02 | Yes | `f02_duplicate_lock_and_conflict`, `journal::duplicates_admit_once_and_strangers_leave_no_body` |
+| F03 | Yes | `f03_provider_faults_are_bounded`, `journal::runs_reconcile_and_fence` |
+| F04 | Partial | A started native tool reads uncertain and is never replayed (`f03_provider_faults_are_bounded`, `journal::runs_reconcile_and_fence`). Effect receipts: step 4; task creation: step 3 |
+| F05 | Yes | `f05_delivery_faults_are_bounded`, `journal::outbox_keeps_route_order_and_bounds_retries` |
+| F06 | Partial | `f06_poll_failure_is_visible_while_delivery_works`. Host alert path: step 6 |
+| F07 | No | Step 3 (TaskQ board) |
+| F08 | Partial | `journal::newer_schema_and_corrupt_journal_are_refused`. Disk budget and full disk: step 6; native transcript rebuild: step 5 |
+| F09 | Partial | `journal::strangers_and_claims_change_nothing` (anonymous sender, authority claims in text); Telegram text reaches Codex only as a JSON argument. Issue text, tool output, ticket URLs and project redirection: steps 3 and 4 |
+| F10 | Partial | `journal::revoked_work_is_not_dispatched_or_delivered` (user grant). Project grants: step 4 |
+| F11 | Partial | Stale run fenced (`u12_stop_is_scoped_and_fences_the_run`, `journal::runs_reconcile_and_fence`), one poller (`f02_duplicate_lock_and_conflict`). Backup restore: step 6 |
+| F12 | Yes | `journal::backlog_is_bounded_and_fair` |
+| F13 | No | Step 6 (cutover and rollback) |
+| F14 | No | Step 3 (TaskQ notifications) |
+| F15 | Yes | `journal::strangers_and_claims_change_nothing`, `u18_cli_grant_admits_only_new_requests`, `f02_duplicate_lock_and_conflict`. The first slice offers no inline buttons; callback queries arrive with step 3 |
+| F16 | Yes | `journal::strangers_and_claims_change_nothing` (a stranger reusing the owner's display name), `journal::u18_grant_lifecycle` (grants are per user ID; no group grant exists) |
+| F17 | Yes | `journal::u17_profiles_distinct_and_private`, `journal::revoked_work_is_not_dispatched_or_delivered` |
+| L01 | Partial | Acknowledgement only after commit (`f01_crash_points_keep_each_input_once`), queued is not running (`journal::backlog_is_bounded_and_fair`), acknowledgement before the answer (`u01_follow_up_resumes_the_conversation`). The optional fast-answer suppression is not implemented. Waiting for a person or TaskQ: step 3 |
+| L02 | No | Step 3, with progress status messages (no typing indicator in the first slice) |
+| L03 | No | Step 3 |
+| L04 | Yes | `f03_provider_faults_are_bounded` (no first event) |
+| L05 | Partial | Absolute deadline despite endless tokens (`f03_provider_faults_are_bounded`). Tool-call budget: step 4; compaction: step 5 |
+| L06 | Partial | `u12_stop_is_scoped_and_fences_the_run`, `u16_controls_work_without_the_model`, `journal::runs_reconcile_and_fence` (`/new` generation), `journal::backlog_is_bounded_and_fair` (control on a full route), `journal::strangers_and_claims_change_nothing` (stranger `/stop`). TaskQ work under reset: step 3 |
+| L07 | Yes | `f03_provider_faults_are_bounded`: EOF without terminal, empty answer, unknown optional event, refused server request. The real Codex tool inventory is a live check |
+| L08 | Partial | Quota failure stays failed and no API key reaches Codex (`f03_provider_faults_are_bounded`). Distinct auth, quota and 429 handling with retry-after: step 5 |
+| L09 | No | Step 5; the login state is part of the live run |
+| L10 | Partial | Unsafe or malformed `config.json` stops startup. Bot identity and permission checks against a manifest: step 6 |
+| L11 | Yes | `journal::long_reply_is_chunked_in_order`, `f05_delivery_faults_are_bounded` |
+| L12 | No | Step 3 (status message edits) |
+| L13 | Partial | A blocked chat is held, never rerouted (`f05_delivery_faults_are_bounded`). Administrative remap: step 5 |
+| L14 | Partial | Unsupported media gets an explicit outcome (`journal::strangers_and_claims_change_nothing`); no cross-person merge (`journal::u02_route_session_policy`). Edits and albums: step 5 with the media decision (section 11) |
+| L15 | Partial | `crash_during_turn_requeues_once`, `update_waits_for_the_running_turn`, process-group kill at a deadline (`f03_provider_faults_are_bounded`). A Codex child of a SIGKILLed service ends only on stdin EOF. Linux service proof: step 6 |
+| L16 | Partial | The manager rescans the journal every 0.5 s and delivery rescans the outbox, so a lost wake loses no work (every service trace above). Missed TaskQ events: step 3 |
+| L17 | Partial | Model attempts persist across restarts (`journal::runs_reconcile_and_fence`); live deadlines use the monotonic clock. No trace injects a wall-clock jump |
+| L18 | Partial | `f06_poll_failure_is_visible_while_delivery_works`, `f02_duplicate_lock_and_conflict`. External monitor: step 6 |
+| L19 | Partial | `journal::telemetry_failure_does_not_block`, `journal::long_reply_is_chunked_in_order`, `journal::backlog_is_bounded_and_fair`. Storage full and contention: step 6 |
+| L20 | Partial | `journal::newer_schema_and_corrupt_journal_are_refused`, `journal::schema_1_journal_upgrades`, `update_refuses_a_release_whose_selftest_fails`. Rollback with accepted work and restore: step 6 |
+
+### Live test-bot run
+
+Applicable to the first slice: U01, U02, U12, U14 (unsupported input only), U16, U17 and U18. Owned by later steps: U05–U08, U10, U13 and U15 (step 3); U03, U04, U09 and U11 (step 4).
+
+Status on 2026-10-22: **not run.** The test bot answers `getMe`; PilotQ's own Codex home has no login yet, so no real Codex turn has run.
 
 Completion evidence is a report with exact versions, mechanism-to-case results, unresolved failures, recovery receipts, task links and aggregate metrics. Maintain 62 scenario-family entries: U01–U18, F01–F17, C01–C07 and L01–L20. Record deterministic and live/platform results separately, including not run. Runtime research, a healthy service or green repository CI cannot replace it.

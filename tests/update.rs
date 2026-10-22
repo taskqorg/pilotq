@@ -75,3 +75,47 @@ fn selftest_and_status_report_unknown_health() {
     assert_eq!(s["state"], "unknown", "no service: unknown, never healthy");
     fs::remove_dir_all(d).unwrap();
 }
+
+// U22 drain and the step 2 "update during a turn": `pilotq update` stops new turns and waits for the running request to end
+// before it switches, then clears the drain marker. A fake Codex answers after 3 s; a CLI request is the running turn.
+#[test]
+fn update_waits_for_the_running_turn() {
+    let d = scratch("update-drain");
+    let install = d.join("install");
+    fs::create_dir_all(&install).unwrap();
+    let codex = d.join("codex");
+    executable(
+        &codex,
+        br#"#!/bin/sh
+while IFS= read -r l; do
+  case "$l" in
+  *'"method":"initialize"'*) echo '{"id":1,"result":{}}' ;;
+  *'"method":"thread/start"'*) echo '{"id":2,"result":{"thread":{"id":"t1"}}}' ;;
+  *'"method":"turn/start"'*) echo '{"id":3,"result":{"turn":{"id":"u1"}}}'; sleep 3
+    echo '{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"m1","text":"drained"}}}'
+    echo '{"method":"turn/completed","params":{"turn":{"id":"u1","status":"completed"}}}' ;;
+  esac
+done
+"#,
+    );
+    let cfg = install.join("config.json");
+    fs::write(&cfg, format!(r#"{{"bot_token":"123:fake","owner_id":7,"codex":"{}"}}"#, codex.display())).unwrap();
+    fs::set_permissions(&cfg, fs::Permissions::from_mode(0o600)).unwrap();
+    let ask = Command::new(env!("CARGO_BIN_EXE_pilotq")).args(["ask", "slow"]).env("PILOTQ_INSTALL", &install).stdout(std::process::Stdio::piped()).spawn().unwrap();
+    let running = || {
+        rusqlite::Connection::open(install.join("journal.sqlite")).ok().and_then(|c| c.query_row("SELECT count(*) FROM requests WHERE state='running'", [], |r| r.get::<_, i64>(0)).ok())
+    };
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while running() != Some(1) {
+        assert!(std::time::Instant::now() < end, "the turn never started");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let out = update(&d, "9.0.0", &fs::read(env!("CARGO_BIN_EXE_pilotq")).unwrap());
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).lines().collect::<Vec<_>>(), ["update: 9.0.0", "drain: ok"]);
+    assert_eq!(running(), Some(0), "the switch came after the turn ended");
+    let ask = ask.wait_with_output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&ask.stdout).trim(), "drained");
+    assert!(!install.join("drain").exists(), "the drain marker is cleared");
+    fs::remove_dir_all(d).unwrap();
+}

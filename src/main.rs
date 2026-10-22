@@ -18,6 +18,32 @@ const FRESH: u64 = 60;
 const PASS: Duration = Duration::from_secs(30);
 /// Section 7 health sources, each reported separately.
 const SOURCES: [&str; 5] = ["poll", "storage", "model", "taskq", "delivery"];
+/// While this file exists in the install directory the service starts no new turn (§ 12 planned restart).
+const DRAIN: &str = "drain";
+/// Planned-restart grace: the 60 s direct-action budget plus the 5 s cancellation grace (§ 7).
+const DRAIN_GRACE: Duration = Duration::from_secs(65);
+
+/// Stops new turns and waits up to DRAIN_GRACE for running requests to end. Work still running is left in the journal; the
+/// restarted service reconciles it.
+fn drain(t: &Tool) -> Result<Option<String>, String> {
+    let path = t.install.join("journal.sqlite");
+    if !path.exists() {
+        return Ok(None);
+    }
+    std::fs::write(t.install.join(DRAIN), "").map_err(|e| format!("drain: {e}"))?;
+    let j = journal::Journal::open(&path)?;
+    let end = std::time::Instant::now() + DRAIN_GRACE;
+    loop {
+        let n = j.running()?;
+        if n == 0 {
+            return Ok(Some("drain: ok".into()));
+        }
+        if std::time::Instant::now() >= end {
+            return Ok(Some(format!("drain: {n} running request(s) left for reconciliation after restart")));
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
 
 fn tool() -> Tool {
     Tool::new("pilotq", "PilotQ", "taskqorg/pilotq", env!("CARGO_PKG_VERSION"))
@@ -99,6 +125,8 @@ fn service_run(t: &Tool) -> ! {
     }
     // § 12: reconcile runs a dead process left behind before anything new starts
     journal.reconcile(now() as i64).unwrap_or_else(|e| t.die(&e));
+    // a drain left by an update applies to the process it restarted, not to this one
+    let _ = std::fs::remove_file(t.install.join(DRAIN));
     let j: telegram::Shared = Arc::new(Mutex::new(journal));
     let _lock = cfg.map(|c| {
         // one OS-held lock per installation; it is released only when this process ends
@@ -111,8 +139,8 @@ fn service_run(t: &Tool) -> ! {
             bot = bot.set_api_url(u);
         }
         let (j, wake) = (j.clone(), Arc::new(tokio::sync::Notify::new()));
-        let (mj, mwake, codex) = (j.clone(), wake.clone(), c.codex);
-        std::thread::spawn(move || manager::serve(codex, mj, mwake, || now() as i64));
+        let (mj, mwake, codex, drain) = (j.clone(), wake.clone(), c.codex, t.install.join(DRAIN));
+        std::thread::spawn(move || manager::serve(codex, mj, mwake, || now() as i64, drain));
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("tokio runtime");
             rt.block_on(async { tokio::join!(telegram::poll(bot.clone(), j.clone(), wake.clone()), telegram::deliver(bot, j, wake)) });
@@ -292,10 +320,18 @@ fn main() {
                 Some(v) if check => println!("update: {v} available"),
                 Some(v) => {
                     println!("update: {v}");
-                    // ponytail: no drain yet (nothing runs a turn); section 12 drain joins with the journal
-                    if u.path.exists() {
-                        coreq::service::run_all(&u.unload, true).and_then(|_| coreq::service::run_all(&u.load, false)).unwrap_or_else(|e| t.die(&format!("restart: {e}")));
-                        println!("service restart: ok");
+                    match drain(&t) {
+                        Ok(Some(d)) => println!("{d}"),
+                        Ok(None) => {}
+                        Err(e) => eprintln!("{e}"),
+                    }
+                    let restart = if u.path.exists() { Some(coreq::service::run_all(&u.unload, true).and_then(|_| coreq::service::run_all(&u.load, false))) } else { None };
+                    // the restarted service clears the drain itself; without a unit nothing restarts, so the old one resumes
+                    let _ = std::fs::remove_file(t.install.join(DRAIN));
+                    match restart {
+                        Some(Err(e)) => t.die(&format!("restart: {e}")),
+                        Some(Ok(())) => println!("service restart: ok"),
+                        None => {}
                     }
                 }
                 None => println!("update: up to date"),
