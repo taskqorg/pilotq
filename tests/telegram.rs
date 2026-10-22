@@ -1,5 +1,6 @@
-// F01, F02 and F05 (docs/acceptance.md) against a fake Bot API: `pilotq service run` polls and sends through a local HTTP
-// server that keeps Telegram's offset confirmation and injects send faults. The live test-bot run is separate evidence.
+// F01, F02, F05 and the manager cases U01, U12, U16, U19 and F03 (docs/acceptance.md) against a fake Bot API and a fake
+// Codex app-server: `pilotq service run` polls and sends through a local HTTP server that keeps Telegram's offset confirmation
+// and injects send faults; a shell script speaks the app-server JSON-RPC lines. Live test-bot and real Codex runs are separate evidence.
 #![cfg(unix)]
 
 use serde_json::{Value, json};
@@ -111,9 +112,74 @@ fn setup(tag: &str, updates: Vec<Value>) -> (PathBuf, State) {
         }
     });
     let cfg = d.join("config.json");
-    fs::write(&cfg, json!({"bot_token": "123:fake", "owner_id": OWNER, "api_url": format!("http://127.0.0.1:{port}/")}).to_string()).unwrap();
+    // a Codex that never answers keeps the ingress and delivery tests free of model replies
+    let mute = script(&d, "mute", "while read -r l; do :; done");
+    let c = json!({"bot_token": "123:fake", "owner_id": OWNER, "api_url": format!("http://127.0.0.1:{port}/"), "codex": mute, "codex_limits": {"first_event": 600}});
+    fs::write(&cfg, c.to_string()).unwrap();
     fs::set_permissions(&cfg, fs::Permissions::from_mode(0o600)).unwrap();
     (d, st)
+}
+
+fn script(d: &Path, name: &str, body: &str) -> PathBuf {
+    let p = d.join(name);
+    fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+    fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
+    p
+}
+
+/// A fake `codex app-server`: logs every line it receives; answers "re: TEXT @ THREAD", resuming the requested thread.
+/// The turn text picks a fault: slow, stall, exit, tool (exits after a tool starts), empty, failed, chatty, ask.
+const FAKE: &str = r#"d=$(dirname "$0")
+while IFS= read -r l; do
+  printf '%s\n' "$l" >> "$d/codex.log"
+  case "$l" in
+  *'"method":"initialize"'*) echo '{"id":1,"result":{}}' ;;
+  *'"method":"thread/start"'*) n=$(($(cat "$d/threads" 2>/dev/null || echo 0) + 1)); echo $n > "$d/threads"; th=th-$n
+    echo '{"id":2,"result":{"thread":{"id":"'$th'"}}}' ;;
+  *'"method":"thread/resume"'*) th=$(printf '%s' "$l" | sed 's/.*"threadId":"\([^"]*\)".*/\1/')
+    echo '{"id":2,"result":{"thread":{"id":"'$th'"}}}' ;;
+  *'"method":"turn/start"'*) text=$(printf '%s' "$l" | sed 's/.*"text":"\([^"]*\)".*/\1/')
+    echo '{"id":3,"result":{"turn":{"id":"u1","status":"inProgress","items":[]}}}'
+    done='{"method":"turn/completed","params":{"threadId":"'$th'","turn":{"id":"u1","status":"completed","items":[]}}}'
+    case "$text" in
+    slow*) sleep 20 ;;
+    stall*) sleep 20; exit 0 ;;
+    exit*) exit 0 ;;
+    tool*) echo '{"method":"item/started","params":{"threadId":"'$th'","turnId":"u1","item":{"type":"commandExecution","id":"c1","command":"touch x","commandActions":[],"cwd":"/","status":"inProgress"}}}'; exit 0 ;;
+    empty*) echo "$done"; continue ;;
+    failed*) echo '{"method":"turn/completed","params":{"threadId":"'$th'","turn":{"id":"u1","status":"failed","items":[],"error":{"message":"usage limit reached"}}}}'; continue ;;
+    chatty*) while :; do echo '{"method":"item/agentMessage/delta","params":{"delta":"."}}'; sleep 0.5; done ;;
+    ask*) echo '{"id":77,"method":"item/commandExecution/requestApproval","params":{}}'; IFS= read -r r; printf '%s\n' "$r" >> "$d/codex.log" ;;
+    esac
+    echo '{"method":"item/completed","params":{"threadId":"'$th'","turnId":"u1","completedAtMs":0,"item":{"type":"agentMessage","id":"m1","text":"re: '"$text"' @ '"$th"'"}}}'
+    echo "$done" ;;
+  esac
+done"#;
+
+/// Points the install's config at `codex` with short section 7 limits.
+fn use_codex(d: &Path, codex: &Path) {
+    let cfg = d.join("config.json");
+    let mut c: Value = serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
+    c["codex"] = json!(codex);
+    c["codex_limits"] = json!({"first_event": 2, "silent": 2, "deadline": 4});
+    fs::write(&cfg, c.to_string()).unwrap();
+}
+
+fn text(id: i64, chat: i64, topic: Option<i64>, sender: i64, text: &str) -> Value {
+    let mut u = update(id, chat, sender);
+    u["message"]["text"] = json!(text);
+    if chat < 0 {
+        u["message"]["chat"] = json!({"id": chat, "type": "supergroup", "title": "G", "is_forum": topic.is_some()});
+    }
+    if let Some(t) = topic {
+        u["message"]["message_thread_id"] = json!(t);
+        u["message"]["is_topic_message"] = json!(true);
+    }
+    u
+}
+
+fn texts(st: &State) -> Vec<String> {
+    st.lock().unwrap().sent.iter().map(|s| s["text"].as_str().unwrap_or("").to_string()).collect()
 }
 
 fn spawn(d: &Path, fault: Option<&str>) -> Child {
@@ -280,5 +346,137 @@ fn u18_cli_grant_admits_only_new_requests() {
     assert_eq!(st.lock().unwrap().sent.len(), 1, "no reply to revoked input");
     c.kill().unwrap();
     c.wait().unwrap();
+    fs::remove_dir_all(d).unwrap();
+}
+
+fn sent_has(st: &State, needle: &str) -> bool {
+    texts(st).iter().any(|t| t.contains(needle))
+}
+
+fn stop(mut c: Child, d: PathBuf) {
+    c.kill().unwrap();
+    c.wait().unwrap();
+    fs::remove_dir_all(d).unwrap();
+}
+
+// U01: a question and a follow-up in one DM. The follow-up resumes the same Codex thread; each request ends answered with a
+// delivered reply after its acknowledgement.
+#[test]
+fn u01_follow_up_resumes_the_conversation() {
+    let (d, st) = setup("u01", vec![text(1, OWNER, None, OWNER, "first")]);
+    use_codex(&d, &script(&d, "fake-codex", FAKE));
+    let c = spawn(&d, None);
+    wait("first answer", 15, || sent_has(&st, "re: first @ th-1"));
+    st.lock().unwrap().updates.push(text(2, OWNER, None, OWNER, "follow"));
+    wait("follow-up answer", 15, || sent_has(&st, "re: follow @ th-1"));
+    wait("deliveries recorded", 5, || try_query(&d, "SELECT count(*) FROM outbox WHERE state='delivered'") == Some(4));
+    assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE state='answered' AND reply LIKE 're: %'"), 2);
+    let log = fs::read_to_string(d.join("codex.log")).unwrap();
+    assert_eq!(log.matches("thread/start").count(), 1, "{log}");
+    assert!(log.contains(r#""method":"thread/resume","params":{"threadId":"th-1""#), "{log}");
+    let t = texts(&st);
+    assert!(t[0].contains("<b>#1</b> is queued") && t[1].starts_with("re: first"), "acknowledgement precedes the answer: {t:?}");
+    stop(c, d);
+}
+
+// U12: a slow turn, a follow-up and /stop in one topic, a question in another topic. /stop cancels only the running turn,
+// the follow-up stays queued and then runs, the other topic answers meanwhile, and the stopped run never replies.
+#[test]
+fn u12_stop_is_scoped_and_fences_the_run() {
+    let (d, st) = setup("u12", vec![text(1, -100, Some(5), OWNER, "slow one")]);
+    use_codex(&d, &script(&d, "fake-codex", FAKE));
+    let c = spawn(&d, None);
+    wait("slow turn running", 15, || try_query(&d, "SELECT count(*) FROM runs WHERE state='running'") == Some(1));
+    st.lock().unwrap().updates.extend([text(2, -100, Some(5), OWNER, "follow"), text(3, -100, Some(5), OWNER, "/stop"), text(4, -100, Some(6), OWNER, "other")]);
+    wait("other topic answered", 15, || sent_has(&st, "re: other @"));
+    wait("stop acknowledged", 15, || sent_has(&st, "Stopped request #1"));
+    wait("follow-up answered", 20, || sent_has(&st, "re: follow @"));
+    assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE id=1 AND state='cancelled'"), 1);
+    wait("stopped run fenced", 15, || try_query(&d, "SELECT count(*) FROM runs WHERE request_id=1 AND state='fenced'") == Some(1));
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(!sent_has(&st, "re: slow"), "a fenced run cannot reply: {:?}", texts(&st));
+    let f = st.lock().unwrap();
+    let other = f.sent.iter().find(|s| s["text"].as_str().unwrap().starts_with("re: other")).unwrap();
+    assert_eq!(other["message_thread_id"], 6, "the reply goes to its own topic");
+    drop(f);
+    stop(c, d);
+}
+
+// U16: with Codex unavailable the request fails visibly, while /status, /new and /stop answer without the model;
+// /new keeps earlier requests and receipts.
+#[test]
+fn u16_controls_work_without_the_model() {
+    let (d, st) = setup("u16", vec![text(1, OWNER, None, OWNER, "hello")]);
+    use_codex(&d, &d.join("missing-codex"));
+    let c = spawn(&d, None);
+    wait("visible failure", 15, || sent_has(&st, "Request #1 failed: codex app-server did not start"));
+    st.lock().unwrap().updates.extend([text(2, OWNER, None, OWNER, "/status"), text(3, OWNER, None, OWNER, "/new@pilotq_bot"), text(4, OWNER, None, OWNER, "/stop")]);
+    wait("control replies", 15, || sent_has(&st, "Nothing is running in this conversation."));
+    assert!(sent_has(&st, "Nothing is running or queued in this conversation."));
+    assert!(sent_has(&st, "New conversation started."));
+    assert_eq!(query(&d, "SELECT count(*) FROM requests"), 4, "/new keeps earlier requests");
+    assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE kind='control' AND state='answered'"), 3);
+    assert_eq!(query(&d, "SELECT generation FROM conversations WHERE session='dm:7'"), 1);
+    assert_eq!(query(&d, "SELECT count(*) FROM health WHERE source='model' AND state='failed'"), 1);
+    stop(c, d);
+}
+
+// U19: the same question through `pilotq ask` and a Telegram DM uses one grant check and request record. --json parses;
+// a failed request exits nonzero.
+#[test]
+fn u19_cli_and_telegram_share_one_path() {
+    let (d, st) = setup("u19", vec![]);
+    use_codex(&d, &script(&d, "fake-codex", FAKE));
+    let a = cli(&d, &["ask", "same", "--json"]);
+    assert!(a.status.success(), "{}", String::from_utf8_lossy(&a.stderr));
+    let v: Value = serde_json::from_slice(&a.stdout).unwrap();
+    assert_eq!((v["state"].as_str(), v["reply"].as_str()), (Some("answered"), Some("re: same @ th-1")));
+    let plain = cli(&d, &["ask", "plain"]);
+    assert_eq!(String::from_utf8_lossy(&plain.stdout).trim(), "re: plain @ th-1", "the CLI conversation resumes too");
+    let bad = cli(&d, &["ask", "--json", "failed"]);
+    assert!(!bad.status.success());
+    assert_eq!(serde_json::from_slice::<Value>(&bad.stdout).unwrap()["state"], "failed");
+    assert!(!cli(&d, &["ask"]).status.success(), "no text is a usage error");
+
+    st.lock().unwrap().updates.push(text(1, OWNER, None, OWNER, "same"));
+    let c = spawn(&d, None);
+    wait("Telegram answer", 15, || sent_has(&st, "re: same @ th-2"));
+    assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE sender=7 AND text='same' AND state='answered'"), 2);
+    assert_eq!(query(&d, "SELECT count(DISTINCT front) FROM requests"), 2);
+    stop(c, d);
+}
+
+// F03: stall, disconnect before and after a tool, an empty or failed terminal event, endless output and a server request.
+// Every case ends bounded and never as false success; after a tool started the outcome is uncertain, not retryable.
+#[test]
+fn f03_provider_faults_are_bounded() {
+    let (d, _st) = setup("f03", vec![]);
+    use_codex(&d, &script(&d, "fake-codex", FAKE));
+    let cases = [
+        ("stall", "failed", "Codex sent no event for 2 s"),
+        ("exit", "failed", "Codex exited without a terminal event"),
+        ("tool", "uncertain", "Codex exited without a terminal event"),
+        ("empty", "failed", "Codex ended the turn without an answer"),
+        ("failed", "failed", "usage limit reached"),
+        ("chatty", "failed", "Codex did not finish within 4 s"),
+    ];
+    for (input, state, error) in cases {
+        let t = Instant::now();
+        let o = cli(&d, &["ask", "--json", input]);
+        assert!(t.elapsed() < Duration::from_secs(12), "{input}: unbounded ({:?})", t.elapsed());
+        assert!(!o.status.success(), "{input}: no false success");
+        let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(v["state"], state, "{input}: {v}");
+        assert!(v["error"].as_str().unwrap().contains(error), "{input}: {v}");
+    }
+    let o = cli(&d, &["ask", "ask me"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(fs::read_to_string(d.join("codex.log")).unwrap().contains(r#"{"id":77,"error":"#), "the server request is refused");
+    assert_eq!(query(&d, "SELECT count(*) FROM runs WHERE tool=1"), 1);
+
+    // no first event at all
+    use_codex(&d, &d.join("mute"));
+    let o = cli(&d, &["ask", "--json", "hello"]);
+    assert_eq!(serde_json::from_slice::<Value>(&o.stdout).unwrap()["error"], "Codex sent no first event within 2 s");
     fs::remove_dir_all(d).unwrap();
 }

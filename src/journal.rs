@@ -5,7 +5,9 @@ use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 
 /// Schema this binary writes; a newer journal is refused rather than guessed (F08).
-const SCHEMA: i64 = 2;
+const SCHEMA: i64 = 3;
+/// Model attempts per request across restarts (§ 7 dependency retry).
+const RUNS: i64 = 3;
 /// Delivery attempts per episode, persisted across restart (§ 7).
 pub const ATTEMPTS: i64 = 5;
 /// Named grants (§ 2, § 8). `chat` admits conversation only; every other grant is separate. `project:NAME` scopes a project.
@@ -28,6 +30,92 @@ fn grants_of(c: &Connection, user: i64) -> Result<Vec<String>, String> {
 fn session(chat: i64, topic: Option<i64>, sender: i64, shared: bool) -> String {
     let topic = topic.unwrap_or(0);
     if chat == sender { format!("dm:{chat}") } else if shared { format!("{chat}:{topic}") } else { format!("{chat}:{topic}:{sender}") }
+}
+
+/// Recovery control in a message (§ 2 Changing direction), optionally addressed as `/stop@bot`.
+fn control(text: Option<&str>) -> Option<&'static str> {
+    let cmd = text?.split_whitespace().next()?.split('@').next()?;
+    ["/stop", "/status", "/new"].into_iter().find(|c| *c == cmd)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn insert(tx: &Connection, update: i64, front: &str, chat: i64, topic: Option<i64>, sender: i64, message: i64, kind: &str, text: Option<&str>, state: &str, at: i64, session: &str) -> Result<i64, String> {
+    tx.execute(
+        "INSERT INTO requests(update_id, front, chat, topic, sender, message, kind, text, state, received_at, session) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+        params![update, front, chat, topic, sender, message, kind, text, state, at, session],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(tx.last_insert_rowid())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn outbox(tx: &Connection, request: i64, chat: i64, topic: Option<i64>, reply_to: Option<i64>, html: Option<&str>, text: &str, at: i64) -> Result<(), String> {
+    tx.execute("INSERT INTO outbox(request_id, chat, topic, reply_to, html, text, next_at) VALUES (?1,?2,?3,?4,?5,?6,?7)", params![request, chat, topic, reply_to, html, text, at])
+        .map(drop)
+        .map_err(|e| e.to_string())
+}
+
+fn ids(tx: &Connection, session: &str, state: &str) -> Result<Vec<String>, String> {
+    let mut q = tx.prepare("SELECT '#' || id FROM requests WHERE session=?1 AND state=?2 ORDER BY id").map_err(|e| e.to_string())?;
+    q.query_map(params![session, state], |r| r.get(0)).and_then(Iterator::collect).map_err(|e| e.to_string())
+}
+
+/// Answers `/stop`, `/status` or `/new` inside the admission transaction, without the model and scoped to one conversation (§ 12).
+fn answer_control(tx: &Connection, session: &str, cmd: &str) -> Result<String, String> {
+    let e = |e: rusqlite::Error| e.to_string();
+    Ok(match cmd {
+        "/stop" => {
+            let running: Option<i64> = tx.query_row("SELECT id FROM requests WHERE session=?1 AND state='running'", [session], |r| r.get(0)).optional().map_err(e)?;
+            let Some(id) = running else { return Ok("Nothing is running in this conversation.".into()) };
+            // the fence bump is the verified stop: the old run can no longer record a reply or effect
+            tx.execute("UPDATE requests SET state='cancelled', error='stopped by /stop' WHERE id=?1", [id]).map_err(e)?;
+            tx.execute("UPDATE conversations SET fence=fence+1 WHERE session=?1", [session]).map_err(e)?;
+            format!("Stopped request #{id}. Queued follow-ups stay queued.")
+        }
+        "/status" => {
+            let (running, queued) = (ids(tx, session, "running")?, ids(tx, session, "queued")?);
+            if running.is_empty() && queued.is_empty() {
+                "Nothing is running or queued in this conversation.".into()
+            } else {
+                let list = |v: &[String]| if v.is_empty() { "none".to_string() } else { v.join(", ") };
+                format!("Running: {}. Queued: {}.", list(&running), list(&queued))
+            }
+        }
+        _ => {
+            tx.execute("INSERT INTO conversations(session, generation) VALUES (?1, 1) ON CONFLICT(session) DO UPDATE SET generation=generation+1, thread=NULL", [session])
+                .map_err(e)?;
+            "New conversation started. Earlier requests, task links and receipts stay recorded.".into()
+        }
+    })
+}
+
+/// One claimed model run. `fence` must still match the conversation's fence for the run to record anything.
+#[derive(Debug, Clone)]
+pub struct Run {
+    pub id: i64,
+    pub request: i64,
+    pub session: String,
+    pub generation: i64,
+    pub fence: i64,
+    pub thread: Option<String>,
+    pub text: String,
+}
+
+/// Claims one queued request: the request turns running, the conversation's fence advances, and the run row records both.
+fn claim(tx: &Connection, request: i64, at: i64) -> Result<Option<Run>, String> {
+    let e = |e: rusqlite::Error| e.to_string();
+    let row: Option<(String, String)> = tx
+        .query_row("UPDATE requests SET state='running' WHERE id=?1 AND state='queued' RETURNING session, coalesce(text, '')", [request], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional()
+        .map_err(e)?;
+    let Some((session, text)) = row else { return Ok(None) };
+    tx.execute("INSERT INTO conversations(session) VALUES (?1) ON CONFLICT(session) DO NOTHING", [&session]).map_err(e)?;
+    let (generation, thread, fence) = tx
+        .query_row("UPDATE conversations SET fence=fence+1 WHERE session=?1 RETURNING generation, thread, fence", [&session], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .map_err(e)?;
+    tx.execute("INSERT INTO runs(request_id, session, generation, fence, state, started_at) VALUES (?1,?2,?3,?4,'running',?5)", params![request, session, generation, fence, at])
+        .map_err(e)?;
+    Ok(Some(Run { id: tx.last_insert_rowid(), request, session, generation, fence, thread, text }))
 }
 
 /// One remembered profile fact. A `private` fact is visible only to its subject (in their DM or as the CLI actor).
@@ -112,9 +200,20 @@ impl Journal {
                 revision INTEGER NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(subject, key));"
         ))
         .map_err(|e| format!("journal {}: {e}", path.display()))?;
+        let up = |sql: &str| c.execute_batch(sql).map_err(|e| format!("journal {}: {e}", path.display()));
         if version < 2 {
-            c.execute_batch(&format!("ALTER TABLE requests ADD COLUMN session TEXT; PRAGMA user_version={SCHEMA};")).map_err(|e| format!("journal {}: {e}", path.display()))?;
+            up("ALTER TABLE requests ADD COLUMN session TEXT;")?;
         }
+        if version < 3 {
+            // § 4 Runs: request and run identity, the conversation's native thread and the fence that retires a stopped run
+            up("ALTER TABLE requests ADD COLUMN front TEXT NOT NULL DEFAULT 'telegram';
+                ALTER TABLE requests ADD COLUMN reply TEXT;
+                ALTER TABLE requests ADD COLUMN error TEXT;
+                CREATE TABLE conversations(session TEXT PRIMARY KEY, generation INTEGER NOT NULL DEFAULT 0, thread TEXT, fence INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE runs(id INTEGER PRIMARY KEY, request_id INTEGER NOT NULL, session TEXT NOT NULL, generation INTEGER NOT NULL, fence INTEGER NOT NULL,
+                    state TEXT NOT NULL, tool INTEGER NOT NULL DEFAULT 0, started_at INTEGER NOT NULL, ended_at INTEGER, outcome TEXT);")?;
+        }
+        up(&format!("PRAGMA user_version={SCHEMA};"))?;
         Ok(Journal(c))
     }
 
@@ -145,18 +244,25 @@ impl Journal {
                         .optional()
                         .map_err(|e| e.to_string())?
                         .unwrap_or(false);
-                    tx.execute(
-                        "INSERT INTO requests(update_id, chat, topic, sender, message, kind, text, state, received_at, session) VALUES (?1,?2,?3,?4,?5,?6,?7,'queued',?8,?9)",
-                        params![update, i.chat, i.topic, sender, i.message, i.kind, i.text, at, session(i.chat, i.topic, sender, shared)],
-                    )
-                    .map_err(|e| e.to_string())?;
-                    let id = tx.last_insert_rowid();
-                    // § 12: acknowledge the committed request and say it is queued
-                    tx.execute(
-                        "INSERT INTO outbox(request_id, chat, topic, reply_to, html, text, next_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
-                        params![id, i.chat, i.topic, i.message, format!("Received. Request <b>#{id}</b> is queued."), format!("Received. Request #{id} is queued."), at],
-                    )
-                    .map_err(|e| e.to_string())?;
+                    let s = session(i.chat, i.topic, sender, shared);
+                    let cmd = control(i.text.as_deref());
+                    let (kind, state) = match (cmd, i.kind) {
+                        (Some(_), _) => ("control", "answered"),
+                        (None, "text") => ("text", "queued"),
+                        _ => (i.kind, "failed"),
+                    };
+                    let id = insert(&tx, *update, "telegram", i.chat, i.topic, sender, i.message, kind, i.text.as_deref(), state, at, &s)?;
+                    let (html, text) = match cmd {
+                        Some(c) => (None, answer_control(&tx, &s, c)?),
+                        // § 1: unsupported input is detected and gets an explicit outcome, never silence
+                        None if state == "failed" => (None, format!("Request #{id}: this input type is not supported yet; send text.")),
+                        // § 12: acknowledge the committed request and say it is queued
+                        None => (Some(format!("Received. Request <b>#{id}</b> is queued.")), format!("Received. Request #{id} is queued.")),
+                    };
+                    if state != "queued" {
+                        tx.execute("UPDATE requests SET reply=?2 WHERE id=?1", params![id, text]).map_err(|e| e.to_string())?;
+                    }
+                    outbox(&tx, id, i.chat, i.topic, Some(i.message), html.as_deref(), &text, at)?;
                     admitted += 1;
                     Some(id)
                 }
@@ -331,6 +437,123 @@ impl Journal {
             .map_err(|e| e.to_string())
     }
 
+    /// Admits and claims one `pilotq ask` request through the same grant check and request record as Telegram (R13, U19).
+    pub fn ask(&mut self, sender: i64, text: &str, at: i64) -> Result<Run, String> {
+        let tx = self.0.transaction().map_err(|e| e.to_string())?;
+        if !has(&tx, sender, "chat")? {
+            return Err(format!("{sender} has no chat grant"));
+        }
+        // ponytail: CLI requests take negative synthetic update IDs, so Telegram's positive IDs never collide
+        let update: i64 = tx.query_row("SELECT min(coalesce(min(update_id), 0), 0) - 1 FROM requests", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+        let id = insert(&tx, update, "cli", sender, None, sender, 0, "text", Some(text), "queued", at, &format!("cli:{sender}"))?;
+        let run = claim(&tx, id, at)?.ok_or("request was claimed twice")?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(run)
+    }
+
+    /// Claims the oldest queued Telegram request of each conversation without a running one, up to `limit` running in total.
+    pub fn claim_next(&mut self, limit: usize, at: i64) -> Result<Vec<Run>, String> {
+        let tx = self.0.transaction().map_err(|e| e.to_string())?;
+        let running: i64 = tx.query_row("SELECT count(*) FROM requests WHERE state='running' AND front='telegram'", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+        let free = (limit as i64 - running).max(0);
+        let ids: Vec<i64> = {
+            let mut q = tx
+                .prepare(
+                    "SELECT min(id) FROM requests r WHERE state='queued' AND front='telegram'
+                    AND NOT EXISTS (SELECT 1 FROM requests p WHERE p.session=r.session AND p.state='running') GROUP BY session ORDER BY 1 LIMIT ?1",
+                )
+                .map_err(|e| e.to_string())?;
+            q.query_map([free], |r| r.get(0)).and_then(Iterator::collect).map_err(|e| e.to_string())?
+        };
+        let mut runs = vec![];
+        for id in ids {
+            runs.extend(claim(&tx, id, at)?);
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(runs)
+    }
+
+    /// True when a stop or a later claim has retired this run's fence.
+    pub fn fenced(&self, r: &Run) -> Result<bool, String> {
+        self.0.query_row("SELECT fence<>?2 FROM conversations WHERE session=?1", params![r.session, r.fence], |x| x.get(0)).map_err(|e| e.to_string())
+    }
+
+    /// Persists that the run started a tool item; a lost terminal outcome then reads uncertain, never failed-and-retryable.
+    pub fn tool_started(&self, run: i64) -> Result<(), String> {
+        self.0.execute("UPDATE runs SET tool=1 WHERE id=?1", [run]).map(drop).map_err(|e| e.to_string())
+    }
+
+    /// Records a run's outcome, reply and native thread in one transaction, only while its fence holds. Returns false for a
+    /// fenced run, which changes nothing but its own run row.
+    pub fn finish(&self, r: &Run, thread: Option<&str>, outcome: &crate::manager::Outcome, at: i64) -> Result<bool, String> {
+        use crate::manager::Outcome;
+        let e = |e: rusqlite::Error| e.to_string();
+        let tx = self.0.unchecked_transaction().map_err(e)?;
+        let (state, text, error) = match outcome {
+            _ if self.fenced(r)? => ("fenced", String::new(), None),
+            Outcome::Fenced => ("fenced", String::new(), None),
+            Outcome::Answered(a) => ("answered", a.clone(), None),
+            Outcome::Failed(x) => ("failed", format!("Request #{} failed: {x}", r.request), Some(x)),
+            Outcome::Uncertain(x) => ("uncertain", format!("Request #{} has an uncertain outcome and will not be repeated automatically: {x}", r.request), Some(x)),
+        };
+        tx.execute("UPDATE runs SET state=?2, ended_at=?3, outcome=?4 WHERE id=?1", params![r.id, state, at, error]).map_err(e)?;
+        if state == "fenced" {
+            tx.commit().map_err(e)?;
+            return Ok(false);
+        }
+        tx.execute("UPDATE requests SET state=?2, reply=?3, error=?4 WHERE id=?1", params![r.request, state, text, error]).map_err(e)?;
+        // a thread from before /new never attaches to the new conversation generation
+        tx.execute("UPDATE conversations SET thread=coalesce(?3, thread) WHERE session=?1 AND generation=?2", params![r.session, r.generation, thread]).map_err(e)?;
+        let dest: (String, i64, Option<i64>, i64) =
+            tx.query_row("SELECT front, chat, topic, message FROM requests WHERE id=?1", [r.request], |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?, x.get(3)?))).map_err(e)?;
+        if dest.0 == "telegram" {
+            outbox(&tx, r.request, dest.1, dest.2, Some(dest.3), None, &text, at)?;
+        }
+        tx.commit().map_err(e)?;
+        Ok(true)
+    }
+
+    /// Startup recovery (§ 4, § 12): a run left running by a dead process is interrupted. Its request is requeued while model
+    /// attempts remain, uncertain once a tool started, and failed for a CLI caller that is gone. Returns the requests changed.
+    pub fn reconcile(&mut self, at: i64) -> Result<usize, String> {
+        let e = |e: rusqlite::Error| e.to_string();
+        let tx = self.0.transaction().map_err(e)?;
+        let stale: Vec<(i64, bool, String, i64)> = {
+            let mut q = tx
+                .prepare(
+                    "SELECT r.request_id, r.tool, q.front, (SELECT count(*) FROM runs x WHERE x.request_id=r.request_id)
+                    FROM runs r JOIN requests q ON q.id=r.request_id WHERE r.state='running' AND q.state='running'",
+                )
+                .map_err(e)?;
+            q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).and_then(Iterator::collect).map_err(e)?
+        };
+        for (request, tool, front, attempts) in &stale {
+            let (state, why) = match (tool, front.as_str()) {
+                (true, _) => ("uncertain", "PilotQ restarted after a tool started"),
+                (false, "telegram") if *attempts < RUNS => ("queued", ""),
+                _ => ("failed", "PilotQ restarted during the run"),
+            };
+            if state == "queued" {
+                tx.execute("UPDATE requests SET state='queued' WHERE id=?1", [request]).map_err(e)?;
+                continue;
+            }
+            let text = format!("Request #{request} {}: {why}.", if state == "failed" { "failed" } else { "has an uncertain outcome and will not be repeated automatically" });
+            tx.execute("UPDATE requests SET state=?2, error=?3, reply=?4 WHERE id=?1", params![request, state, why, text]).map_err(e)?;
+            let dest: (i64, Option<i64>, i64) = tx.query_row("SELECT chat, topic, message FROM requests WHERE id=?1", [request], |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?))).map_err(e)?;
+            if front == "telegram" {
+                outbox(&tx, *request, dest.0, dest.1, Some(dest.2), None, &text, at)?;
+            }
+        }
+        tx.execute("UPDATE runs SET state='interrupted', ended_at=?1 WHERE state='running'", [at]).map_err(e)?;
+        tx.commit().map_err(e)?;
+        Ok(stale.len())
+    }
+
+    /// A request's state, reply and error, for the CLI readback.
+    pub fn request(&self, id: i64) -> Result<(String, Option<String>, Option<String>), String> {
+        self.0.query_row("SELECT state, reply, error FROM requests WHERE id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(|e| e.to_string())
+    }
+
     pub fn set_health(&self, source: &str, at: i64, state: &str, reason: Option<&str>) -> Result<(), String> {
         self.0
             .execute("INSERT OR REPLACE INTO health(source, at, state, reason) VALUES (?1,?2,?3,?4)", params![source, at, state, reason])
@@ -349,6 +572,7 @@ impl Journal {
         let count = |sql: &str| self.0.query_row(sql, [], |r| r.get::<_, i64>(0)).map_err(|e| e.to_string());
         s["pending"] = serde_json::json!({"count": count("SELECT count(*) FROM requests WHERE state='queued'")?});
         s["undelivered"] = serde_json::json!({"count": count("SELECT count(*) FROM outbox WHERE state<>'delivered'")?});
+        s["uncertain"] = serde_json::json!({"count": count("SELECT count(*) FROM requests WHERE state='uncertain'")?});
         Ok(())
     }
 }
@@ -494,15 +718,54 @@ mod tests {
         let _ = std::fs::remove_dir_all(p);
     }
 
-    // A schema 1 journal from the previous release gains the session column and keeps working.
+    // A schema 1 journal from an earlier release gains the session column and the schema 3 run tables and keeps working.
     #[test]
     fn schema_1_journal_upgrades() {
         let (j, p) = journal("upgrade");
-        j.0.execute_batch("ALTER TABLE requests DROP COLUMN session; PRAGMA user_version=1").unwrap();
+        j.0.execute_batch(
+            "ALTER TABLE requests DROP COLUMN session; ALTER TABLE requests DROP COLUMN front; ALTER TABLE requests DROP COLUMN reply;
+            ALTER TABLE requests DROP COLUMN error; DROP TABLE conversations; DROP TABLE runs; PRAGMA user_version=1",
+        )
+        .unwrap();
         drop(j);
         let mut j = Journal::open(&p.join("journal.sqlite")).unwrap();
         assert_eq!(j.admit(&[(1, msg(7, 7, 1))], 0).unwrap(), 1);
         assert_eq!(sessions(&j), [(7, "dm:7".to_string())]);
+        drop(j);
+        let _ = std::fs::remove_dir_all(p);
+    }
+
+    // F03, F04, U12: a restart requeues a pure model run within its attempt budget, never one that started a tool; a fenced
+    // run records nothing on its request; /new keeps the old thread off the new conversation generation.
+    #[test]
+    fn runs_reconcile_and_fence() {
+        use crate::manager::Outcome;
+        let (mut j, p) = journal("runs");
+        j.admit(&[(1, msg(7, 7, 1)), (2, msg(-5, 7, 2))], 0).unwrap();
+        let runs = j.claim_next(4, 0).unwrap();
+        assert_eq!(runs.len(), 2);
+        j.tool_started(runs[1].id).unwrap();
+        assert_eq!(j.reconcile(1).unwrap(), 2);
+        assert_eq!(j.request(1).unwrap().0, "queued", "a pure model run is retried");
+        assert_eq!(j.request(2).unwrap().0, "uncertain", "a run that started a tool is never replayed");
+        for _ in 1..RUNS {
+            j.claim_next(4, 2).unwrap();
+            j.reconcile(3).unwrap();
+        }
+        assert_eq!(j.request(1).unwrap().0, "failed", "model attempts are bounded across restarts");
+
+        j.admit(&[(3, msg(7, 7, 3))], 4).unwrap();
+        let r = j.claim_next(4, 4).unwrap().remove(0);
+        j.admit(&[(4, Some(Input { chat: 7, topic: None, sender: Some(7), message: 4, kind: "text", text: Some("/stop".into()) }))], 5).unwrap();
+        assert!(j.fenced(&r).unwrap());
+        assert!(!j.finish(&r, Some("t-old"), &Outcome::Answered("late".into()), 6).unwrap(), "a stopped run cannot reply");
+        assert_eq!(j.request(r.request).unwrap(), ("cancelled".into(), None, Some("stopped by /stop".into())));
+
+        j.admit(&[(5, msg(7, 7, 5))], 7).unwrap();
+        let r = j.claim_next(4, 7).unwrap().remove(0);
+        j.admit(&[(6, Some(Input { chat: 7, topic: None, sender: Some(7), message: 6, kind: "text", text: Some("/new".into()) }))], 8).unwrap();
+        assert!(j.finish(&r, Some("t-old"), &Outcome::Answered("ok".into()), 9).unwrap());
+        assert_eq!(count(&j, "SELECT count(*) FROM conversations WHERE session='dm:7' AND thread IS NULL AND generation=1"), 1);
         drop(j);
         let _ = std::fs::remove_dir_all(p);
     }
