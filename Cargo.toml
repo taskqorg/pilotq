@@ -1,0 +1,9 @@
+[package]
+name = "pilotq"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+coreq = { git = "https://github.com/taskqorg/coreq", tag = "v0.14.6" }
+serde_json = { version = "1", features = ["preserve_order"] }
