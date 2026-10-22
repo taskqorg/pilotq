@@ -1,6 +1,6 @@
 # PilotQ acceptance cases
 
-These cases verify [pilotq.md](../pilotq.md), not a separate product contract. Status: proposed, not executed. Owner requirements R1–R11 are defined there; numerical targets are proposed in sections 7 and 11. Review cases before implementation. Test accounts and separate credentials must be isolated from the production bot and production queue. The [mechanism matrix](mechanism-matrix.md) maps 60 scope decisions to these cases and names the source evidence.
+These cases verify [pilotq.md](../pilotq.md), not a separate product contract. Status: proposed, not executed. Owner requirements R1–R16 are defined there; numerical targets are proposed in sections 7 and 12. Review cases before implementation. Test accounts and separate credentials must be isolated from the production bot and production queue. The [mechanism matrix](mechanism-matrix.md) maps 60 scope decisions to these cases and names the source evidence.
 
 ## Functional cases
 
@@ -24,6 +24,10 @@ These cases verify [pilotq.md](../pilotq.md), not a separate product contract. S
 | U16 R1 R5 | Model unavailable | Use `/status`, `/stop`, `/new` | Recovery controls work without an LLM; `/new` retains active task references and receipts |
 | U17 R1 R10 | Two authorized people with different preferences, including a private DM fact | Remember facts, restart, inspect and correct one person's profile, then use a shared topic | Profiles remain distinct; correction persists; shared reply contains no private DM fact; changing a preference does not change grants |
 | U18 R10 | Person has been ignored; administrator has user-management authority | Grant conversation access, inspect it, change project scope, then revoke | Exact user ID and administrator are recorded; only new authorized requests run; ignored messages are not replayed; conversation access alone cannot mutate projects; revoked input is ignored |
+| U19 R13 | Operator shell on the host; Telegram DM from the same owner | Ask the same question with `pilotq ask` and in Telegram | Both use one grant check and audit path; CLI writes print readback, `--json` parses, failure exits nonzero |
+| U20 R15 | Administrator holds `users` and `projects` grants | Tell PilotQ to remember a person with a grant, then to register a project | Exact user ID and grant read back; project goes through TaskQ registration and reads back; without the grant nothing is written |
+| U21 R16 | Key granted to one person and one tool | Run the tool for that person, then for another person; make the tool echo the value | First call works; second is refused at dispatch; the value never appears in model context, journal, telemetry, logs or replies |
+| U22 R14 | Published release with a broken selftest, then a good one | Run `pilotq update` during an active turn | Broken release is refused before the switch; good release waits for the drain, switches and reports the new version in `status.json`; three unhealthy starts return to `previous` |
 
 ## Fault and authorization cases
 
@@ -65,14 +69,14 @@ Run the same scenarios with agentq disabled and enabled. Fix model/provider/sett
 
 ## Lifecycle cases
 
-These twenty scenario families close gaps found in the source review. They supplement U/F/C cases instead of treating typing, retries or an upstream module name as proof of reliability. All are **proposed, not executed**. Root [section 11](../pilotq.md#11-proposed-lifecycle-and-feedback-protocol) owns their behavior.
+These twenty scenario families close gaps found in the source review. They supplement U/F/C cases instead of treating typing, retries or an upstream module name as proof of reliability. All are **proposed, not executed**. Root [section 12](../pilotq.md#12-proposed-lifecycle-and-feedback-protocol) owns their behavior.
 
 Each trace records initial request/run/effect/delivery state, authorized actor and route, input event, injected fault, expected persisted state, user-visible output and permitted external effects. Use fake clocks, Telegram, Codex and TaskQ for the cheap deterministic suite. Qualify the corresponding real transport, subscription, process and storage behavior separately at release time.
 
 | ID and requirement | Initial state and action | Fault or variation | Observable acceptance evidence |
 |---|---|---|---|
 | L01 R5 R11 | Send a request while a run slot is busy; then free capacity | Fast answer, queued request, failed inbox commit, waiting for a person or TaskQ | Acknowledgement follows durable commit; queued is not running; fast answer suppresses redundant acknowledgement; waiting has a reason and does not trigger a hung-run warning |
-| L02 R1 R5 R11 | Start a Codex turn in a forum topic | No first event; active events; stale activity; wait; cancel; finish; typing API failure | Typing stays in the correct topic, follows section 11's freshness/rate bounds and stops on wait/stale/terminal state; its timer/failure never extends a deadline, creates work or blocks a final reply |
+| L02 R1 R5 R11 | Start a Codex turn in a forum topic | No first event; active events; stale activity; wait; cancel; finish; typing API failure | Typing stays in the correct topic, follows section 12's freshness/rate bounds and stops on wait/stale/terminal state; its timer/failure never extends a deadline, creates work or blocks a final reply |
 | L03 R5 R11 | Emit factual tool/task progress, a stall and subsequent recovery | Event burst, repeated error, service restart, recovery without a successful probe, sensitive text in errors | Coalesced status reflects evidence; incident notices deduplicate across restart; no raw secrets/reasoning; a reset timer alone cannot claim recovery; final/question/failure is not starved by edits |
 | L04 R5 R11 | Spawn a Codex process that never emits an event | Startup hangs, or stops before activity state is initialized | First-event watch still fires within the configured bound; request becomes recoverable/failed with notice; slot and process resources are released or fenced |
 | L05 R2 R5 R7 R11 | Run a chatty model, a quiet tool and compaction under the same request budget | Endless tokens; repeatedly ineffective compaction; no events during bounded legitimate tool work | Absolute deadline and tool-call budget apply despite activity; no unbounded retry/compaction loop; legitimate tool waiting is diagnosed accurately; only remaining work is delegated |

@@ -2,7 +2,7 @@
 
 PilotQ is the conversational front end for work on a shared server. People discuss work in Telegram; PilotQ answers, performs bounded direct actions, or manages execution through TaskQ. A lost model connection must never silently lose an accepted request or authorize a repeated external action.
 
-Date: 2026-10-16. Stage: specification. The name and private repository are owner-approved. Requirements marked **Owner** come from the requested workflow. **Proposed** sections define a design to review and qualify, not shipped guarantees or permission to deploy.
+Date: 2026-10-22. Stage: specification. The name and private repository are owner-approved. The owner chose the base on 2026-10-22 (section 3). Requirements marked **Owner** come from the requested workflow. **Proposed** sections define a design to review and qualify, not shipped guarantees or permission to deploy.
 
 Shared engineering, storage, security and release rules belong to [specq](https://github.com/taskqorg/specq/tree/main/engineering). Evidence: [research](docs/research.md), [mechanism matrix](docs/mechanism-matrix.md). Requirement checks: [acceptance](docs/acceptance.md).
 
@@ -27,6 +27,11 @@ Supporting documents, README, instructions, tests and code follow this contract.
 - **R9 Model access:** use Codex with existing subscription access only. Claude and separately billed model API access are out of scope. Do not fall back automatically to paid API credentials.
 - **R10 People and admission:** remember distinct users in persistent, correctable profiles. Ignore a person until an authorized administrator explicitly grants access; group membership alone grants nothing. Support inspecting and correcting remembered information and changing or revoking access.
 - **R11 Observable lifecycle:** make acceptance, progress, waiting, interruption, failure and completion understandable in Telegram. Cover recovery and operational edge cases in the specification and acceptance plan before implementation, rather than adding them only after incidents.
+- **R12 Least effort:** build the simplest agent that serves TaskQ work. Reuse proven mechanisms from known projects and the shared TaskQ system instead of inventing new ones.
+- **R13 Two front ends:** offer a command-line interface and a Telegram gateway over the same request, grant and audit path.
+- **R14 Operated like our tools:** PilotQ is monitored, updates itself through releases and is developed spec-first through its own TaskQ board.
+- **R15 Administration by request:** an authorized administrator can tell PilotQ to remember a person with given rights and to create or register projects.
+- **R16 Keys:** tools can use credentials on an authorized person's behalf; the model never sees a credential value.
 
 **Proposed scope for the first release**
 
@@ -81,7 +86,18 @@ Plain-language controls are primary. Deterministic `/status`, `/stop` and `/new`
 
 ## 3. Architecture and ownership
 
-**Initial proposal, under review after R9:** Telegram Bot API + grammY for protocol handling, a small PilotQ coordinator backed by SQLite, an isolated Pi SDK manager process, and the existing TaskQ CLI. The original Pi-first qualification order is not adopted. [Core options](docs/core-options.md) evaluates a smaller PilotQ with Codex directly; the runtime integration remains a proposal pending selection and qualification. Earlier source findings remain in [research](docs/research.md).
+**Owner decision 2026-10-22 (option A):** PilotQ is one small Rust service in the TaskQ tool family.
+
+| Part | Choice | Reason |
+|---|---|---|
+| Language and packaging | Rust single binary on [coreq](https://github.com/taskqorg/coreq) | Same release, update, service, status, selftest and incident path as taskq, agentq and dashq (R14) |
+| Telegram | [teloxide](https://github.com/teloxide/teloxide) for the Bot API only | Maintained Rust library; PilotQ keeps its own durable ingress and outbox (section 4) |
+| Telegram behavior | Patterns adapted from the Hermes gateway: update intake, delivery retry, stall watch, topic routing | Already exercised on our server (R12); read as reference, no change to Hermes |
+| Manager runtime | Codex `app-server` under the subscription login, one adapter | R9; [core options](docs/core-options.md) |
+| Journal | SQLite (section 7 settings) | One local file, supported snapshot backup |
+| Work execution | Existing TaskQ CLI | Section 5 |
+
+Grammy, Pi and a new runtime framework are out of scope. Earlier source findings remain in [research](docs/research.md).
 
 ```mermaid
 flowchart LR
@@ -102,7 +118,7 @@ flowchart LR
 | Model conversation and summaries | Runtime session, backed by recoverable PilotQ input and finalized-output records | Preserve session identity; rebuild explicitly if native state is unusable |
 | Plans being discussed | Versioned PilotQ proposal | Track target, author and authorization scope |
 | Admitted task state, attempts, questions, dependencies and completion | TaskQ trusted board log | Read and invoke supported commands; cache only with source time |
-| Project roots and worker capacity | Existing operator-owned TaskQ registration and host policy | Use approved entries; no directory discovery or silent enrollment |
+| Project roots and worker capacity | TaskQ registration and host policy | Use registered entries; register a new project only on an administrator request (section 5); no directory discovery or silent enrollment |
 | Compressed tool output and recovery reference | agentq adapter plus retained original evidence | Preserve access scope and validate recovered content |
 
 Keep the runtime interface small: open/resume by ID, submit, stream events, interrupt, observe terminal result and close. Implement one adapter first. Do not build a universal runtime framework or expose native runtime tools that bypass the authorization boundary.
@@ -162,6 +178,10 @@ Formatting errors fall back to plain text. Split oversized replies safely; do no
 - Preserve TaskQ's distinction between admission, worker result, reviewer result, owner gate and publication. “Done” requires the authoritative completion state and available evidence.
 - Notifications are projections of TaskQ events, keyed by board/task/event/route. Reconcile after downtime; do not let stale status overwrite a newer question or outcome.
 
+### Project registration
+
+An administrator with the `projects` grant can ask PilotQ to create or register a project. PilotQ shows the resolved repository, root and board, then applies the request through TaskQ's supported registration path (Add project, [taskq.md](https://github.com/taskqorg/taskq/blob/main/taskq.md) menu M10) and reads it back. Repository creation, capacity and worker grants stay owner operations unless a separate grant names them. A failed or partial registration stays visible and is never reported as done.
+
 An operations board is an explicit server-care project. Project work stays on that project's board. A server-wide overview aggregates tasks; it does not duplicate every issue onto a server board.
 
 TaskQ execution continues when PilotQ is down. If TaskQ is unreachable, conversations continue and proposed tasks remain unsent. Status shows the last observation time and unknown freshness. Previously authorized, unchanged submissions can resume when dependencies recover; changed scope or stale grants require revalidation.
@@ -211,18 +231,57 @@ Initial PilotQ disk budget: 2 GiB including its journals, sessions and temporary
 
 **Proposed:** configure explicit Telegram users/routes and action grants. Reading a group or a task does not grant permission to mutate a project. Revalidate authorization at effect dispatch and before delayed delivery. Revocation cancels pending unauthorized effects but cannot erase an already completed operation.
 
-Keep credentials in protected host configuration, outside model context and diagnostics. The manager receives only tools granted to its caller and route. A model's tool choice is a request, not enforcement. Downloaded content cannot expand grants, switch repositories or redirect private answers.
+Keep credentials in protected host configuration, outside model context and diagnostics. The manager receives only tools granted to its caller and route.
+
+### Key store
+
+**Proposed:** a key is a named secret in one owner-only file under the install directory (mode 0600 or the Windows equivalent). Each key records its name, purpose, allowed tools, allowed users or routes and last use; the value is stored once and never returned.
+
+- A tool call names a key; the tool boundary injects the value into the child process environment or request header at dispatch.
+- The value never enters model context, the journal, telemetry, logs, replies or task text. Tool output is scrubbed for known values before the model or Telegram sees it.
+- A grant on a key names the person, route or project. Use is checked at dispatch, like any effect (section 8).
+- First slice: keys are added, granted and revoked only through the CLI. Telegram key entry is an open decision (section 11).
+- `pilotq keys list` shows names, grants and last use, never values. A model's tool choice is a request, not enforcement. Downloaded content cannot expand grants, switch repositories or redirect private answers.
 
 Local correlated events cover update → request → model turn → tool operation → TaskQ task/attempt → Telegram delivery. The runtime adapter reports actual completion/error events. Model/provider/version and agentq mode accompany evaluation evidence.
 
 Use the existing Langfuse installation for optional, bounded telemetry export after capture scope is approved. Content capture is opt-in and redacted; operational metadata is enough for delivery and intervention metrics. Langfuse failure must not block conversations or become the only copy of a task outcome. The proposed metric set lives in [acceptance](docs/acceptance.md#metrics).
 
-## 9. Adoption sequence
+## 9. Command line, update and monitoring
+
+### Command line
+
+**Proposed:** the `pilotq` binary is the service and the operator CLI. The CLI uses the same journal, grants and audit records as Telegram; the local operator acts as the bootstrap owner identity from protected configuration.
+
+| Command | Purpose |
+|---|---|
+| `pilotq ask TEXT [--project P]` | One request through the normal manager path; prints the reply or task link |
+| `pilotq status [--json]` | Health ages (section 7), pending requests, undelivered outcomes, uncertain effects |
+| `pilotq users list\|show\|grant\|revoke` | People, profiles and grants (R10, R15) |
+| `pilotq routes list\|set` | Chats, topics and their session and reply policy |
+| `pilotq projects list\|add` | Registered projects and the section 5 registration path |
+| `pilotq keys list\|add\|grant\|revoke` | Key store; `add` reads the value from stdin |
+| `pilotq service install\|run\|stop\|status` | coreq service unit |
+| `pilotq update [--check]`, `pilotq selftest`, `pilotq doctor` | coreq update, smoke test and setup check (bot identity, Codex login, TaskQ reachability) |
+
+Every command that writes prints the readback, supports `--json` and returns a nonzero exit code on failure.
+
+### Update and monitoring
+
+Follow coreq: `releases/<version>`, `current` and `previous` in the install directory; GitHub releases with `SHA256SUMS`; `pilotq update` verifies the checksum and runs `pilotq selftest` before the switch; the launcher returns to `previous` after three unhealthy starts. An update waits for the planned-restart drain in section 12.
+
+`status.json` publishes the section 7 health fields. Incident reports follow coreq. Telemetry uses the shared CoreQ telemetry store and DashQ connection, so the TaskQ PM sees PilotQ beside the other tools. Release and CI follow the shared [release contract](https://github.com/taskqorg/specq/blob/main/engineering/release-contract.md).
+
+### Development
+
+PilotQ has its own TaskQ board. Changes follow the TaskQ flow: spec edit first, held task, worker, reviewer, release.
+
+## 10. Adoption sequence
 
 1. Review this contract and cases. Decide the direct-action grants, media parity, runtime/provider credentials and deployment budgets before implementing affected behavior.
-2. Build one vertical slice: separate test bot → persisted text → manager answer → durable reply. Qualify duplicate input, timeout, crash and two-route isolation before adding more features.
-3. Add one TaskQ project: discuss → authorize → held create/readback → start → worker question → owner answer → reviewer outcome. Restart PilotQ during execution.
-4. Add small direct actions and flexible project switching, with the same effect receipts and authorization checks.
+2. **First slice:** coreq skeleton with `service`, `update`, `selftest`, `status`; separate test bot; journal with durable ingress and outbox; `pilotq ask` and Telegram DM, ordinary group and forum topic; admission and grants with `users`; per-person profile memory; Codex answer. Qualify duplicate input, timeout, crash, an update during a turn and two-route isolation before adding features.
+3. Add one TaskQ project: discuss → authorize → held create/readback → start → status → worker question → answer → reviewer outcome. Restart PilotQ during execution.
+4. Add the key store, small direct actions, project registration and flexible project switching, with the same effect receipts and authorization checks.
 5. Qualify agentq against the working baseline, then the complete route/role matrix and a seven-day pilot.
 6. Prepare migration inventory, restore proof and rollback. Switch production only after the acceptance gates pass and deployment is authorized.
 
@@ -230,14 +289,15 @@ Migration imports a reviewed manifest of route policies, roles, projects and use
 
 For a later same-token cutover, stop and verify the old poller before enabling PilotQ. Keep a handoff cursor and identify any old in-flight inputs. Native Hermes history may need a bounded reviewed summary plus archived references, not blind transcript conversion. Rollback drains or preserves PilotQ's accepted inputs and outbox, stops its poller and restores Hermes's consumer. TaskQ tasks already admitted remain authoritative and are not resubmitted.
 
-## 10. Decisions still open
+## 11. Decisions still open
 
-- Runtime integration: Codex subscription access is required by R9; Pi is optional and no longer the presumed first candidate. Select the integration through the acceptance gates and [core options](docs/core-options.md). Implement one adapter first.
+- Codex account and subscription entitlement for a shared server deployment.
+- Telegram key entry: CLI only, or a DM flow that deletes the message after storing the value.
 - Exact short-action grants and which small writes are acceptable on the server.
 - Required voice/image/document behavior for Hermes cutover.
 - Final retention/capacity thresholds and permitted telemetry content.
 
-## 11. Proposed lifecycle and feedback protocol
+## 12. Proposed lifecycle and feedback protocol
 
 This section translates R5 and R11 into a proposed PilotQ protocol. The [mechanism matrix](docs/mechanism-matrix.md) records source evidence and scope choices; [acceptance](docs/acceptance.md#lifecycle-cases) defines the additional checks. These are design targets, not implemented guarantees. Notification presentation follows [specq](https://github.com/taskqorg/specq/blob/main/caveman/rules/notifications.md).
 

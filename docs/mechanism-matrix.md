@@ -1,6 +1,6 @@
 # Agent reliability mechanisms for PilotQ
 
-Source review: 2026-10-16. Governing decisions: [pilotq.md](../pilotq.md), especially R5, R9–R11 and section 11. This research compares mechanisms, identifies specification gaps and maps them to acceptance. It does not rank measured uptime, adopt another agent, or claim that source code and upstream tests prove a working PilotQ.
+Source review: 2026-10-16. Governing decisions: [pilotq.md](../pilotq.md), especially R5, R9–R11 and section 12. This research compares mechanisms, identifies specification gaps and maps them to acceptance. It does not rank measured uptime, adopt another agent, or claim that source code and upstream tests prove a working PilotQ.
 
 ## Scope and evidence
 
@@ -126,7 +126,7 @@ Implementation owners are **PilotQ**, **Codex**, **TaskQ**, **agentq**, or the e
 
 ## What changed in the specification
 
-The matrix contains 60 mechanism decisions, not 60 services or a promise to reimplement four agents. Previously under-specified areas are now proposed in [contract section 11](../pilotq.md#11-proposed-lifecycle-and-feedback-protocol): startup and independent activity clocks, typing/progress lifecycle, notification semantics, prioritized controls, stale-event fences, chunk-level delivery, subscription wait/renewal, capability readiness, lost-wakeup reconciliation and safe runtime lifecycle.
+The matrix contains 60 mechanism decisions, not 60 services or a promise to reimplement four agents. Previously under-specified areas are now proposed in [contract section 12](../pilotq.md#12-proposed-lifecycle-and-feedback-protocol): startup and independent activity clocks, typing/progress lifecycle, notification semantics, prioritized controls, stale-event fences, chunk-level delivery, subscription wait/renewal, capability readiness, lost-wakeup reconciliation and safe runtime lifecycle.
 
 Twenty lifecycle cases L01–L20 extend the existing 42 functional/fault/context cases to 62 cases. They are scenario families with concrete fault points, not executed tests. A required mechanism cannot be accepted solely because the equivalent upstream module exists. The release report must map each required matrix row to results on the exact candidate, with unknowns visible. Out-of-scope rows receive configuration/dependency review rather than invented runtime tests.
 
