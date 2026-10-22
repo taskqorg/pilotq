@@ -32,6 +32,7 @@ Supporting documents, README, instructions, tests and code follow this contract.
 - **R14 Operated like our tools:** PilotQ is monitored, updates itself through releases and is developed spec-first through its own TaskQ board.
 - **R15 Administration by request:** an authorized administrator can tell PilotQ to remember a person with given rights and to create or register projects.
 - **R16 Keys:** tools can use credentials on an authorized person's behalf; the model never sees a credential value.
+- **R17 Request audit and telemetry:** every request leaves one durable record of who asked, when, where, what was asked, what PilotQ did and the outcome, joined to CoreQ telemetry. The record answers later service investigations, a person's questions about their own history and PilotQ self-improvement analysis.
 
 **Proposed scope for the first release**
 
@@ -223,7 +224,7 @@ These are initial acceptance targets, not observed performance or a production S
 
 Storage: SQLite WAL with `synchronous=FULL`, one writer, local disk and bounded transactions. A healthy process is not evidence of a healthy ingress path. Run liveness checks outside the model process; use the existing host monitoring path for an outage that prevents Telegram alerts.
 
-Proposed retention: raw conversations 30 days; inactive native session files 30 days; request/effect receipts 90 days after reconciliation; diagnostic logs 7 days; temporary attachments 7 days with a 20 MiB per-file cap. Keep active plans, unresolved effects, unanswered questions and undelivered outcomes until resolved. Keep minimal deduplication/receipt tombstones beyond content pruning where replay remains possible.
+Proposed retention: raw conversations 30 days; request audit records (section 8) 365 days for metadata and 90 days for message text; inactive native session files 30 days; request/effect receipts 90 days after reconciliation; diagnostic logs 7 days; temporary attachments 7 days with a 20 MiB per-file cap. Keep active plans, unresolved effects, unanswered questions and undelivered outcomes until resolved. Keep minimal deduplication/receipt tombstones beyond content pruning where replay remains possible.
 
 Initial PilotQ disk budget: 2 GiB including its journals, sessions and temporary files. At 80%, prune only eligible data and alert. At the hard limit, preserve unresolved records, stop new admission and report pressure through the host channel. Do not advance the Telegram cursor for an input that could not be stored. This limit can cause a Telegram retention gap during a prolonged outage; report it. Back up with SQLite's supported snapshot mechanism; prove restoration separately.
 
@@ -243,6 +244,18 @@ Keep credentials in protected host configuration, outside model context and diag
 - First slice: keys are added, granted and revoked only through the CLI. Telegram key entry is an open decision (section 11).
 - `pilotq keys list` shows names, grants and last use, never values. A model's tool choice is a request, not enforcement. Downloaded content cannot expand grants, switch repositories or redirect private answers.
 
+### Request audit
+
+**Proposed:** the journal keeps one audit record per request from the CLI or Telegram (R17). It is written in the same transaction as the admitted input and updated as the request moves.
+
+- Who: person ID, display name at that time and the grant set used. When: receive, start, each effect and delivery times. Where: front end, chat, topic and project.
+- What: the request text, its edits and cancellations, and the reply sent. Key values never appear (section 8 Key store).
+- Done: model, version and agentq mode; each tool call and effect with its target and result; TaskQ tasks filed, answered or followed; the final outcome or failure.
+- One request ID joins the audit record, the CoreQ telemetry trace and TaskQ task text, so an investigation can move from a Telegram message to a task attempt and back.
+- Readers: the owner and administrators with an `audit` grant read all records; every person can read their own. Reading is itself recorded.
+- Use: service investigation, answers to a person about their history, and self-improvement analysis. Analysis exports leave out message text unless the owner approves a specific export.
+- The person learns at admission that their requests are recorded and for how long.
+
 Local correlated events cover update → request → model turn → tool operation → TaskQ task/attempt → Telegram delivery. The runtime adapter reports actual completion/error events. Model/provider/version and agentq mode accompany evaluation evidence.
 
 Use the existing Langfuse installation for optional, bounded telemetry export after capture scope is approved. Content capture is opt-in and redacted; operational metadata is enough for delivery and intervention metrics. Langfuse failure must not block conversations or become the only copy of a task outcome. The proposed metric set lives in [acceptance](docs/acceptance.md#metrics).
@@ -261,6 +274,7 @@ Use the existing Langfuse installation for optional, bounded telemetry export af
 | `pilotq routes list\|set` | Chats, topics and their session and reply policy |
 | `pilotq projects list\|add` | Registered projects and the section 5 registration path |
 | `pilotq keys list\|add\|grant\|revoke` | Key store; `add` reads the value from stdin |
+| `pilotq audit [--user U] [--route R] [--project P] [--since T] [--request ID] [--json]` | Request audit records (section 8, R17), filtered by who, where, what and when |
 | `pilotq service install\|run\|stop\|status` | coreq service unit |
 | `pilotq update [--check]`, `pilotq selftest`, `pilotq doctor` | coreq update, smoke test and setup check (bot identity, Codex login, TaskQ reachability) |
 
@@ -279,7 +293,7 @@ PilotQ has its own TaskQ board. Changes follow the TaskQ flow: spec edit first, 
 ## 10. Adoption sequence
 
 1. Review this contract and cases. Decide the direct-action grants, media parity, runtime/provider credentials and deployment budgets before implementing affected behavior.
-2. **First slice:** coreq skeleton with `service`, `update`, `selftest`, `status`; separate test bot; journal with durable ingress and outbox; `pilotq ask` and Telegram DM, ordinary group and forum topic; admission and grants with `users`; per-person profile memory; Codex answer. Qualify duplicate input, timeout, crash, an update during a turn and two-route isolation before adding features.
+2. **First slice:** coreq skeleton with `service`, `update`, `selftest`, `status`; separate test bot; journal with durable ingress and outbox; `pilotq ask` and Telegram DM, ordinary group and forum topic; admission and grants with `users`; per-person profile memory; Codex answer; request audit records and CoreQ telemetry from the first request. Qualify duplicate input, timeout, crash, an update during a turn and two-route isolation before adding features.
 3. Add one TaskQ project: discuss → authorize → held create/readback → start → status → worker question → answer → reviewer outcome. Restart PilotQ during execution.
 4. Add the key store, small direct actions, project registration and flexible project switching, with the same effect receipts and authorization checks.
 5. Qualify agentq against the working baseline, then the complete route/role matrix and a seven-day pilot.
@@ -295,7 +309,7 @@ For a later same-token cutover, stop and verify the old poller before enabling P
 - Telegram key entry: CLI only, or a DM flow that deletes the message after storing the value.
 - Exact short-action grants and which small writes are acceptable on the server.
 - Required voice/image/document behavior for Hermes cutover.
-- Final retention/capacity thresholds and permitted telemetry content.
+- Final retention/capacity thresholds and permitted telemetry content, including the proposed audit retention (365 days metadata, 90 days message text).
 
 ## 12. Proposed lifecycle and feedback protocol
 
