@@ -45,7 +45,7 @@ fn health(j: &Shared, source: &str, state: &str, reason: Option<&str>) {
 }
 
 /// Polls until a Telegram conflict shows another consumer of this token; that is an incident, not a retry loop (§ 4 Ingress).
-pub async fn poll(bot: Bot, j: Shared, owner: i64, wake: Arc<Notify>) {
+pub async fn poll(bot: Bot, j: Shared, wake: Arc<Notify>) {
     loop {
         let cursor = j.lock().unwrap().cursor();
         let offset = match cursor {
@@ -61,7 +61,7 @@ pub async fn poll(bot: Bot, j: Shared, owner: i64, wake: Arc<Notify>) {
                 fault("after-fetch");
                 let batch: Vec<(i64, Option<Input>)> = updates.iter().map(|u| (u.id.0 as i64, input(&u.kind))).collect();
                 // the cursor commits with the dispositions; on failure the next call repeats the same offset
-                let r = j.lock().unwrap().admit(&batch, owner, now());
+                let r = j.lock().unwrap().admit(&batch, now());
                 match r {
                     Ok(n) => {
                         health(&j, "poll", "ok", None);

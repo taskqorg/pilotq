@@ -247,3 +247,38 @@ fn f05_delivery_faults_are_bounded() {
     drop(f);
     fs::remove_dir_all(d).unwrap();
 }
+
+fn cli(d: &Path, args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_pilotq")).args(args).env("PILOTQ_INSTALL", d).output().unwrap()
+}
+
+// U18 through the CLI and the running service: a stranger is ignored silently; `users grant` admits only new requests;
+// revoke ignores them again. Writes print a readback, --json parses, and a refused write exits nonzero.
+#[test]
+fn u18_cli_grant_admits_only_new_requests() {
+    let (d, st) = setup("u18", vec![update(1, 41, 41)]);
+    let mut c = spawn(&d, None);
+    wait("stranger ignored", 15, || try_query(&d, "SELECT count(*) FROM updates WHERE update_id=1 AND disposition='ignored'") == Some(1));
+
+    let g = cli(&d, &["users", "grant", "41", "chat", "--json"]);
+    assert!(g.status.success(), "{}", String::from_utf8_lossy(&g.stderr));
+    let v: Value = serde_json::from_slice(&g.stdout).unwrap();
+    assert_eq!(v["grants"], json!(["chat"]));
+    assert_eq!(v["log"][0]["by"], OWNER, "the CLI acts as the configured owner");
+    assert!(!cli(&d, &["users", "grant", "@alice", "chat"]).status.success(), "names are not user IDs");
+    assert!(!cli(&d, &["users", "grant", "41", "root"]).status.success());
+    assert!(String::from_utf8_lossy(&cli(&d, &["users", "show", "41"]).stdout).contains("41 grants: chat"));
+
+    st.lock().unwrap().updates.push(update(2, 41, 41));
+    wait("new request acknowledged", 15, || st.lock().unwrap().sent.len() == 1);
+    assert_eq!(query(&d, "SELECT count(*) FROM requests"), 1, "the ignored update is not replayed");
+    assert_eq!(query(&d, "SELECT update_id FROM requests"), 2);
+
+    assert!(cli(&d, &["users", "revoke", "41"]).status.success());
+    st.lock().unwrap().updates.push(update(3, 41, 41));
+    wait("revoked input ignored", 15, || try_query(&d, "SELECT count(*) FROM updates WHERE update_id=3 AND disposition='ignored'") == Some(1));
+    assert_eq!(st.lock().unwrap().sent.len(), 1, "no reply to revoked input");
+    c.kill().unwrap();
+    c.wait().unwrap();
+    fs::remove_dir_all(d).unwrap();
+}
