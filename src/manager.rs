@@ -1,0 +1,253 @@
+//! Codex app-server manager runtime (pilotq.md § 3, § 4 Runs, § 12 Runtime). One adapter, one process per turn: the process is the
+//! fault boundary, so stop and deadlines end it, and its thread ID carries the conversation to the next turn.
+
+use crate::journal::{Journal, Run};
+use serde_json::{Value, json};
+use std::io::{BufRead, BufReader, Write};
+use std::path::PathBuf;
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::Mutex;
+use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
+use std::time::{Duration, Instant};
+
+/// Cancellation grace before the process group is killed (§ 7).
+const GRACE: Duration = Duration::from_secs(5);
+/// Item types that act outside the model; once one starts, a missing terminal outcome is uncertain, never a clean failure.
+const TOOLS: [&str; 4] = ["commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall"];
+
+/// Section 7 budgets: first event, silence between events and the absolute turn deadline.
+pub struct Limits {
+    pub first_event: Duration,
+    pub silent: Duration,
+    pub deadline: Duration,
+}
+
+pub struct Codex {
+    pub bin: String,
+    /// Neutral workspace; no project directory becomes the runtime's current directory (§ 3).
+    pub workspace: PathBuf,
+    /// PilotQ's own Codex home: its subscription login and an empty config, so no personal MCP server or plugin loads.
+    pub home: PathBuf,
+    pub limits: Limits,
+}
+
+/// What one turn established. Only `Answered` is success.
+#[derive(Debug, PartialEq)]
+pub enum Outcome {
+    Answered(String),
+    Failed(String),
+    /// A tool item started and the turn ended without a native terminal outcome: never replayed automatically.
+    Uncertain(String),
+    /// The journal fenced this run (stop or replacement); it may not record a reply.
+    Fenced,
+}
+
+struct Proc {
+    child: Child,
+    stdin: ChildStdin,
+    rx: Receiver<Value>,
+}
+
+impl Proc {
+    fn send(&mut self, v: Value) {
+        // a closed pipe surfaces as EOF on the reader, which ends the turn
+        let _ = writeln!(self.stdin, "{v}").and_then(|_| self.stdin.flush());
+    }
+
+    /// Interrupts the turn, waits up to GRACE for it to end, then kills the process group.
+    fn stop(&mut self, thread: &Option<String>, turn: &Option<String>) {
+        if let (Some(t), Some(u)) = (thread, turn) {
+            self.send(json!({"id": 9, "method": "turn/interrupt", "params": {"threadId": t, "turnId": u}}));
+            let end = Instant::now() + GRACE;
+            while let Some(left) = end.checked_duration_since(Instant::now()) {
+                match self.rx.recv_timeout(left) {
+                    Ok(m) if m["method"] == "turn/completed" => break,
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+            }
+        }
+    }
+}
+
+impl Drop for Proc {
+    fn drop(&mut self) {
+        // ponytail: `kill` on the process group; a pidfd/cgroup supervisor if children escape the group
+        #[cfg(unix)]
+        let _ = Command::new("kill").args(["-9", &format!("-{}", self.child.id())]).stderr(Stdio::null()).status();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Codex {
+    fn spawn(&self) -> Result<Proc, String> {
+        std::fs::create_dir_all(&self.workspace).map_err(|e| format!("workspace: {e}"))?;
+        std::fs::create_dir_all(&self.home).map_err(|e| format!("codex home: {e}"))?;
+        let mut c = Command::new(&self.bin);
+        // subscription login only, no API-key fallback (R9); native tools that reach past PilotQ's effect boundary are off (§ 12)
+        c.arg("app-server");
+        for f in ["shell_tool", "apps", "plugins", "browser_use", "computer_use", "multi_agent", "image_generation"] {
+            c.args(["--disable", f]);
+        }
+        c.args(["-c", "forced_login_method=\"chatgpt\"", "-c", "web_search=\"disabled\""])
+            .env("CODEX_HOME", &self.home)
+            .env_remove("OPENAI_API_KEY")
+            .env_remove("CODEX_API_KEY")
+            .current_dir(&self.workspace)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        #[cfg(unix)]
+        std::os::unix::process::CommandExt::process_group(&mut c, 0);
+        let mut child = c.spawn().map_err(|e| format!("codex app-server did not start: {e}"))?;
+        let (stdin, stdout) = (child.stdin.take().unwrap(), child.stdout.take().unwrap());
+        let (tx, rx) = channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                // ponytail: a non-JSON line is diagnostic output, never a control event
+                if let Ok(v) = serde_json::from_str::<Value>(&line)
+                    && tx.send(v).is_err()
+                {
+                    break;
+                }
+            }
+        });
+        Ok(Proc { child, stdin, rx })
+    }
+
+    /// Runs one turn on `thread` (a new thread when None). `alive` reports whether the journal still holds this run's fence;
+    /// `tool` persists that a tool item started. Returns the thread ID Codex used and the outcome.
+    pub fn turn(&self, thread: Option<&str>, text: &str, mut alive: impl FnMut() -> bool, mut tool: impl FnMut()) -> (Option<String>, Outcome) {
+        let start = Instant::now();
+        let mut p = match self.spawn() {
+            Ok(p) => p,
+            Err(e) => return (None, Outcome::Failed(e)),
+        };
+        let (mut thread, mut turn, mut answer, mut tooled) = (thread.map(str::to_string), None::<String>, String::new(), false);
+        let (mut first, mut last, mut error) = (false, start, None::<String>);
+        let lim = &self.limits;
+        p.send(json!({"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "pilotq", "title": "PilotQ", "version": env!("CARGO_PKG_VERSION")}}}));
+        let fail = |tooled: bool, why: String| if tooled { Outcome::Uncertain(why) } else { Outcome::Failed(why) };
+        loop {
+            if !alive() {
+                p.stop(&thread, &turn);
+                return (thread, Outcome::Fenced);
+            }
+            let total = start + lim.deadline;
+            let (limit, why) = if first { (last + lim.silent, "Codex sent no event for") } else { (start + lim.first_event, "Codex sent no first event within") };
+            let (limit, why, secs) = if total < limit { (total, "Codex did not finish within", lim.deadline) } else { (limit, why, if first { lim.silent } else { lim.first_event }) };
+            let wait = limit.saturating_duration_since(Instant::now()).min(Duration::from_secs(1));
+            let m = match p.rx.recv_timeout(wait) {
+                Ok(m) => m,
+                Err(RecvTimeoutError::Timeout) if Instant::now() >= limit => {
+                    p.stop(&thread, &turn);
+                    return (thread, fail(tooled, format!("{why} {} s", secs.as_secs())));
+                }
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => {
+                    let why = error.map_or("Codex exited without a terminal event".to_string(), |e| format!("Codex exited without a terminal event after: {e}"));
+                    return (thread, fail(tooled, why));
+                }
+            };
+            (first, last) = (true, Instant::now());
+            let method = m["method"].as_str().unwrap_or("");
+            if m.get("id").is_some() && !method.is_empty() {
+                // a server request (approval, user input, tool call): PilotQ grants no native capability in this slice
+                p.send(json!({"id": m["id"], "error": {"code": -32601, "message": "PilotQ does not grant this request"}}));
+                continue;
+            }
+            if let Some(e) = m.get("error") {
+                p.stop(&thread, &turn);
+                return (thread, fail(tooled, format!("Codex refused {}: {}", m["id"], e["message"].as_str().unwrap_or("error"))));
+            }
+            match (m["id"].as_i64(), method) {
+                (Some(1), _) => {
+                    p.send(json!({"method": "initialized"}));
+                    let params = json!({"cwd": self.workspace, "approvalPolicy": "never", "sandbox": "read-only"});
+                    match &thread {
+                        Some(t) => p.send(json!({"id": 2, "method": "thread/resume", "params": {"threadId": t, "cwd": params["cwd"], "approvalPolicy": "never", "sandbox": "read-only"}})),
+                        None => p.send(json!({"id": 2, "method": "thread/start", "params": params})),
+                    }
+                }
+                (Some(2), _) => {
+                    let Some(t) = m["result"]["thread"]["id"].as_str() else {
+                        return (thread, Outcome::Failed("Codex returned no thread ID".into()));
+                    };
+                    thread = Some(t.to_string());
+                    p.send(json!({"id": 3, "method": "turn/start", "params": {"threadId": t, "input": [{"type": "text", "text": text}]}}));
+                }
+                (Some(3), _) => turn = m["result"]["turn"]["id"].as_str().map(str::to_string),
+                (_, "item/started") if TOOLS.contains(&m["params"]["item"]["type"].as_str().unwrap_or("")) => {
+                    if !tooled {
+                        tooled = true;
+                        tool();
+                    }
+                }
+                (_, "item/completed") if m["params"]["item"]["type"] == "agentMessage" => {
+                    answer = m["params"]["item"]["text"].as_str().unwrap_or("").to_string();
+                }
+                (_, "error") => error = m["params"]["error"]["message"].as_str().map(str::to_string),
+                (_, "turn/completed") => {
+                    let t = &m["params"]["turn"];
+                    let outcome = match t["status"].as_str() {
+                        Some("completed") if !answer.trim().is_empty() => Outcome::Answered(answer),
+                        Some("completed") => Outcome::Failed("Codex ended the turn without an answer".into()),
+                        Some(s) => fail(tooled, format!("Codex turn {s}: {}", t["error"]["message"].as_str().or(error.as_deref()).unwrap_or("no reason given"))),
+                        None => fail(tooled, "Codex sent a terminal event without a status".into()),
+                    };
+                    return (thread, outcome);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Runs one claimed request through Codex and records the outcome under its fence. The CLI and Telegram share this path (R13).
+pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64) -> Result<Outcome, String> {
+    let (thread, outcome) = codex.turn(
+        r.thread.as_deref(),
+        &r.text,
+        || j.lock().unwrap().fenced(r).map(|f| !f).unwrap_or(true),
+        || {
+            if let Err(e) = j.lock().unwrap().tool_started(r.id) {
+                eprintln!("run {}: {e}", r.id);
+            }
+        },
+    );
+    let j = j.lock().unwrap();
+    let health = match &outcome {
+        Outcome::Answered(_) => ("ok", None),
+        Outcome::Failed(e) | Outcome::Uncertain(e) => ("failed", Some(e.as_str())),
+        Outcome::Fenced => ("ok", None),
+    };
+    j.set_health("model", now(), health.0, health.1)?;
+    j.finish(r, thread.as_deref(), &outcome, now())?;
+    Ok(outcome)
+}
+
+/// Service loop: claims queued Telegram requests, one run per conversation and `MODELS` at once, oldest first.
+pub fn serve(codex: Codex, j: crate::telegram::Shared, wake: std::sync::Arc<tokio::sync::Notify>, now: fn() -> i64) {
+    const MODELS: usize = 4;
+    let codex = std::sync::Arc::new(codex);
+    loop {
+        let claimed = j.lock().unwrap().claim_next(MODELS, now());
+        match claimed {
+            Ok(runs) => {
+                for r in runs {
+                    let (codex, j, wake) = (codex.clone(), j.clone(), wake.clone());
+                    std::thread::spawn(move || {
+                        if let Err(e) = run(&codex, &j, &r, now) {
+                            eprintln!("run {}: {e}", r.id);
+                        }
+                        wake.notify_one();
+                    });
+                }
+            }
+            Err(e) => eprintln!("manager: {e}"),
+        }
+        // ponytail: 0.5 s journal poll; a wake channel from ingress if admission latency matters
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}

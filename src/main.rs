@@ -1,6 +1,7 @@
 //! PilotQ service and operator CLI on coreq (pilotq.md § 9).
 
 mod journal;
+mod manager;
 mod telegram;
 
 use coreq::Tool;
@@ -8,7 +9,7 @@ use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const USAGE: &str = "usage: pilotq service install|run|stop|status | status [--json] | update [--check] | selftest | version
+const USAGE: &str = "usage: pilotq service install|run|stop|status | status [--json] | update [--check] | selftest | version | ask TEXT [--json]
   users list | users show ID | users grant ID GRANT.. | users revoke ID [GRANT..] | users remember ID KEY VALUE [--private] | users forget ID KEY
   routes list | routes set CHAT[:TOPIC] shared|isolated        (users and routes accept --json)";
 /// A status.json older than this reads unknown (coreq.md § status.json).
@@ -26,6 +27,7 @@ struct Config {
     token: String,
     owner: i64,
     api_url: Option<url::Url>,
+    codex: manager::Codex,
 }
 
 /// None when no bot is configured yet; an unsafe or malformed file is an error, never ignored.
@@ -44,7 +46,10 @@ fn config(t: &Tool) -> Result<Option<Config>, String> {
     let token = v["bot_token"].as_str().filter(|s| !s.is_empty()).ok_or("config.json: bot_token missing")?.to_string();
     let owner = v["owner_id"].as_i64().ok_or("config.json: owner_id missing")?;
     let api_url = v["api_url"].as_str().map(url::Url::parse).transpose().map_err(|e| format!("config.json: api_url: {e}"))?;
-    Ok(Some(Config { token, owner, api_url }))
+    let secs = |k: &str, d: u64| v["codex_limits"][k].as_u64().map_or(Ok(Duration::from_secs(d)), |n| if n > 0 { Ok(Duration::from_secs(n)) } else { Err(format!("config.json: codex_limits.{k} must be positive")) });
+    let limits = manager::Limits { first_event: secs("first_event", 30)?, silent: secs("silent", 30)?, deadline: secs("deadline", 60)? };
+    let codex = manager::Codex { bin: v["codex"].as_str().unwrap_or("codex").to_string(), workspace: t.install.join("workspace"), home: t.install.join("codex"), limits };
+    Ok(Some(Config { token, owner, api_url, codex }))
 }
 
 fn now() -> u64 {
@@ -91,6 +96,8 @@ fn service_run(t: &Tool) -> ! {
     if let Some(c) = &cfg {
         journal.bootstrap(c.owner, now() as i64).unwrap_or_else(|e| t.die(&e));
     }
+    // § 12: reconcile runs a dead process left behind before anything new starts
+    journal.reconcile(now() as i64).unwrap_or_else(|e| t.die(&e));
     let j: telegram::Shared = Arc::new(Mutex::new(journal));
     let _lock = cfg.map(|c| {
         // one OS-held lock per installation; it is released only when this process ends
@@ -103,6 +110,8 @@ fn service_run(t: &Tool) -> ! {
             bot = bot.set_api_url(u);
         }
         let (j, wake) = (j.clone(), Arc::new(tokio::sync::Notify::new()));
+        let (mj, mwake, codex) = (j.clone(), wake.clone(), c.codex);
+        std::thread::spawn(move || manager::serve(codex, mj, mwake, || now() as i64));
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("tokio runtime");
             rt.block_on(async { tokio::join!(telegram::poll(bot.clone(), j.clone(), wake.clone()), telegram::deliver(bot, j, wake)) });
@@ -125,6 +134,22 @@ fn service_run(t: &Tool) -> ! {
         }
         std::thread::sleep(PASS);
     }
+}
+
+/// `pilotq ask` (§ 9, R13): one request through the Telegram path's grant check, request record and manager run, as the
+/// configured owner. Prints the reply; a request that does not end answered exits nonzero.
+fn ask(t: &Tool, text: &str) -> Result<Value, (Value, String)> {
+    let plain = |e: String| (Value::Null, e);
+    let cfg = config(t).map_err(plain)?.ok_or_else(|| plain("no config.json: the CLI acts as its configured owner_id".into()))?;
+    std::fs::create_dir_all(&t.install).map_err(|e| plain(e.to_string()))?;
+    let mut j = journal::Journal::open(&t.install.join("journal.sqlite")).map_err(plain)?;
+    j.bootstrap(cfg.owner, now() as i64).map_err(plain)?;
+    let r = j.ask(cfg.owner, text, now() as i64).map_err(plain)?;
+    let j = Mutex::new(j);
+    manager::run(&cfg.codex, &j, &r, || now() as i64).map_err(plain)?;
+    let (state, reply, error) = j.lock().unwrap().request(r.request).map_err(plain)?;
+    let v = json!({"request": r.request, "state": state, "reply": reply, "error": error});
+    if state == "answered" { Ok(v) } else { Err((v, format!("request #{} {state}: {}", r.request, error.unwrap_or_default()))) }
 }
 
 fn fact(f: &journal::Fact) -> Value {
@@ -259,6 +284,23 @@ fn main() {
             let rest: Vec<&str> = a.iter().copied().filter(|x| *x != "--json").collect();
             let v = admin(&t, &rest).unwrap_or_else(|e| t.die(&format!("{cmd}: {e}")));
             if json { println!("{v}") } else { show(&v) }
+        }
+        ["ask", rest @ ..] => {
+            let json = rest.contains(&"--json");
+            let text = rest.iter().copied().filter(|x| *x != "--json").collect::<Vec<_>>().join(" ");
+            if text.trim().is_empty() {
+                t.die(USAGE);
+            }
+            match ask(&t, &text) {
+                Ok(v) if json => println!("{v}"),
+                Ok(v) => println!("{}", v["reply"].as_str().unwrap_or("")),
+                Err((v, e)) => {
+                    if json && !v.is_null() {
+                        println!("{v}");
+                    }
+                    t.die(&format!("ask: {e}"));
+                }
+            }
         }
         ["selftest"] => selftest(&t).unwrap_or_else(|e| t.die(&e)),
         ["version"] => println!("pilotq {}", t.version),
