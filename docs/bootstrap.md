@@ -10,3 +10,7 @@ Observed on 2026-10-16. This is setup evidence, not an exception to the [specq s
 - The current CLI API token cannot create or read this new private repository. Repository creation used the authorized browser session; publishing used existing SSH access. API-based project automation needs separately authorized access before use.
 
 No application, bot, production service, queue admission or runtime qualification exists yet. The project is ready for specification review, not a production claim.
+
+## 2026-10-22 update
+
+The owner chose a public repository so the `main` ruleset applies on the current plan. TaskQ setup adds `taskq.json` (`publish: pr`, incident reports on) and names the CI job `tests` with a `merge_group` trigger, matching the other TaskQ projects. The ruleset, token access and queue registration are verified after the visibility change.
