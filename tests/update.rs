@@ -34,7 +34,8 @@ fn update(d: &Path, ver: &str, exe: &[u8]) -> Output {
     // coreq runs `curl -fsSL --max-time 300 -o <to> <url>`
     executable(&bin.join("curl"), format!("#!/bin/sh\ncp \"{}/$(basename \"$6\")\" \"$5\"\n", site.display()).as_bytes());
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
-    Command::new(env!("CARGO_BIN_EXE_pilotq")).arg("update").env("PILOTQ_INSTALL", &install).env("PATH", path).output().unwrap()
+    // HOME points at the scratch folder, so the host's own launchd unit is never seen or restarted by a test
+    Command::new(env!("CARGO_BIN_EXE_pilotq")).arg("update").env("PILOTQ_INSTALL", &install).env("PATH", path).env("HOME", d).output().unwrap()
 }
 
 #[test]
