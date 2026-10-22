@@ -8,8 +8,8 @@ use teloxide::types::{MessageId, ParseMode, ReplyParameters, ThreadId, UpdateKin
 use teloxide::{ApiError, RequestError};
 use tokio::sync::Notify;
 
-/// Long-poll wait in seconds; teloxide adds it to its 17 s client timeout.
-const POLL: u32 = 25;
+/// Long-poll wait in seconds; it must stay below teloxide's 17 s client timeout, or every idle poll fails.
+const POLL: u32 = 10;
 
 pub type Shared = Arc<Mutex<Journal>>;
 

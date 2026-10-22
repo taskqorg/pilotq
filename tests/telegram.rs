@@ -25,6 +25,8 @@ struct Fake {
     faults: VecDeque<&'static str>,
     conflict: bool,
     polls: usize,
+    /// Hold an empty getUpdates for its `timeout`, as Telegram does.
+    hold: bool,
 }
 
 type State = Arc<Mutex<Fake>>;
@@ -70,7 +72,8 @@ fn handle(stream: std::net::TcpStream, st: &State) {
             f.updates.clone()
         };
         if ready.is_empty() {
-            std::thread::sleep(Duration::from_millis(100));
+            let hold = st.lock().unwrap().hold;
+            std::thread::sleep(if hold { Duration::from_secs(body["timeout"].as_u64().unwrap_or(0)) } else { Duration::from_millis(100) });
         }
         return respond(&mut out, 200, &json!({"ok": true, "result": ready}).to_string());
     }
@@ -207,6 +210,20 @@ fn f02_duplicate_lock_and_conflict() {
     assert!(st.lock().unwrap().sent.iter().all(|s| s["chat_id"] == 21), "nothing sent to the stranger");
     c.kill().unwrap();
     c.wait().unwrap();
+    fs::remove_dir_all(d).unwrap();
+}
+
+// Live F02 run found every idle poll failing: Telegram holds an empty getUpdates for the whole timeout,
+// which exceeded the HTTP client timeout. An idle long poll must end as poll health ok.
+#[test]
+fn idle_long_poll_is_healthy() {
+    let (d, st) = setup("idle", vec![]);
+    st.lock().unwrap().hold = true;
+    let mut c = spawn(&d, None);
+    wait("idle poll health", 25, || try_query(&d, "SELECT count(*) FROM health WHERE source='poll'") == Some(1));
+    c.kill().unwrap();
+    c.wait().unwrap();
+    assert_eq!(query(&d, "SELECT count(*) FROM health WHERE source='poll' AND state='ok'"), 1, "idle long poll reported as failed");
     fs::remove_dir_all(d).unwrap();
 }
 
