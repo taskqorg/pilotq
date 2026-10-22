@@ -4,7 +4,7 @@ A server agent for Telegram conversations, short actions and TaskQ management.
 
 PilotQ answers questions and performs bounded actions directly. It turns longer work into TaskQ tasks, relays questions, and returns verified outcomes to the originating conversation. TaskQ continues execution while PilotQ is offline.
 
-**Status: specification, no runtime or deployment.** The owner approved the name, a private `taskqorg/pilotq` repository, and Codex-only subscription access on 2026-10-16. Runtime integration remains open; the initial Pi proposal is under review.
+**Status: specification plus a Rust skeleton on [coreq](https://github.com/taskqorg/coreq); no Telegram, model or deployment.** The `pilotq` binary has `service install|run|stop|status`, `update [--check]`, `selftest`, `status [--json]` and `version`. Every health source in `status` reads unknown until the journal, Telegram and TaskQ parts exist. Checks: `cargo test --locked`. A `v*` tag publishes `linux-x86_64` with `SHA256SUMS` and `latest.json`.
 
 - [Product contract](pilotq.md): behavior, ownership, reliability and context requirements.
 - [Runtime research](docs/research.md): source findings, alternatives and adoption decisions.

@@ -1,0 +1,62 @@
+# pilotq.md § 9 and coreq.md § Release: static linux-x86_64 binary, SHA256SUMS, latest.json. A failing selftest publishes nothing.
+# Pull requests and the merge queue run the same build and selftest; only a v* tag publishes.
+name: release
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+  merge_group:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      PILOTQ_SELFTEST_OFFLINE: '1'
+      TARGET: x86_64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: rustup update stable --no-self-update && rustup default stable && rustup target add "$TARGET"
+      - name: Tag equals Cargo.toml version
+        run: |
+          ver="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          test -n "$ver"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then test "${GITHUB_REF_NAME#v}" = "$ver"; fi
+          echo "VER=$ver" >> "$GITHUB_ENV"
+      - if: github.ref_type == 'tag'
+        run: cargo test --locked
+      - run: cargo build --locked --release --target "$TARGET"
+      - name: Selftest and stage
+        run: |
+          bin="target/$TARGET/release/pilotq"
+          file "$bin" | grep -Eq 'static(ally|-pie) linked'
+          "$bin" selftest
+          mkdir dist
+          cp "$bin" "dist/pilotq-$VER-linux-x86_64"
+      - if: github.ref_type == 'tag'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linux-x86_64
+          path: dist/*
+  publish:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Describe
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          cd dist
+          sha256sum pilotq-* > SHA256SUMS
+          printf '{"version":"%s","files":{"linux-x86_64":"pilotq-%s-linux-x86_64"}}\n' "$ver" "$ver" > latest.json
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "PilotQ $GITHUB_REF_NAME" --notes "pilotq $GITHUB_REF_NAME"

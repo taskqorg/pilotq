@@ -1,4 +1,4 @@
-name: Documentation
+name: tests
 
 on:
   push:
@@ -23,3 +23,8 @@ jobs:
           test -s docs/acceptance.md
           test -s docs/projects.md
           git show --format= --check HEAD
+      - run: rustup update stable --no-self-update && rustup default stable
+      - name: cargo checks
+        run: |
+          cargo test --locked
+          cargo run --locked -- selftest
