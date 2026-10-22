@@ -228,12 +228,13 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64) ->
     Ok(outcome)
 }
 
-/// Service loop: claims queued Telegram requests, one run per conversation and `MODELS` at once, oldest first.
-pub fn serve(codex: Codex, j: crate::telegram::Shared, wake: std::sync::Arc<tokio::sync::Notify>, now: fn() -> i64) {
+/// Service loop: claims queued Telegram requests, one run per conversation and `MODELS` at once, oldest first. While the
+/// `drain` file exists (`pilotq update`), nothing new starts; running turns finish (§ 12 planned restart).
+pub fn serve(codex: Codex, j: crate::telegram::Shared, wake: std::sync::Arc<tokio::sync::Notify>, now: fn() -> i64, drain: PathBuf) {
     const MODELS: usize = 4;
     let codex = std::sync::Arc::new(codex);
     loop {
-        let claimed = j.lock().unwrap().claim_next(MODELS, now());
+        let claimed = if drain.exists() { Ok(vec![]) } else { j.lock().unwrap().claim_next(MODELS, now()) };
         match claimed {
             Ok(runs) => {
                 for r in runs {

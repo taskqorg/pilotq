@@ -4,7 +4,7 @@ use crate::journal::{Delivery, Input, Journal, Sent};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use teloxide::prelude::*;
-use teloxide::types::{MessageId, ParseMode, ReplyParameters, ThreadId, UpdateKind};
+use teloxide::types::{MediaKind, MessageId, MessageKind, ParseMode, ReplyParameters, ThreadId, UpdateKind};
 use teloxide::{ApiError, RequestError};
 use tokio::sync::Notify;
 
@@ -26,8 +26,14 @@ fn fault(point: &str) {
     }
 }
 
+/// A person's message, else None. Service messages (topic created, chat migrated, member joined, pin) are not input: they get an
+/// ID-only disposition and no reply. Found on the live test bot, where each one drew an "unsupported" reply.
 fn input(kind: &UpdateKind) -> Option<Input> {
     let UpdateKind::Message(m) = kind else { return None };
+    let MessageKind::Common(c) = &m.kind else { return None };
+    if matches!(c.media_kind, MediaKind::Migration(_)) {
+        return None;
+    }
     Some(Input {
         chat: m.chat.id.0,
         topic: m.thread_id.map(|t| t.0.0 as i64),
