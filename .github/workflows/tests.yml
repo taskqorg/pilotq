@@ -27,4 +27,6 @@ jobs:
       - name: cargo checks
         run: |
           cargo test --locked
+          # a test that leaves its service running fails the build, even when the test itself passed
+          if pgrep -fl "^$PWD/target/[^ ]*/pilotq service run"; then echo "tests left pilotq service run alive"; exit 1; fi
           cargo run --locked -- selftest

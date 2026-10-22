@@ -196,13 +196,40 @@ fn texts(st: &State) -> Vec<String> {
     st.lock().unwrap().sent.iter().map(|s| s["text"].as_str().unwrap_or("").to_string()).collect()
 }
 
-fn spawn(d: &Path, fault: Option<&str>) -> Child {
+fn service(d: &Path, fault: Option<&str>) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_pilotq"));
     c.args(["service", "run"]).env("PILOTQ_INSTALL", d).stdout(Stdio::null()).stderr(Stdio::piped());
     if let Some(f) = fault {
         c.env("PILOTQ_FAULT", f);
     }
-    c.spawn().unwrap()
+    c
+}
+
+/// A running `pilotq service run` that is killed and reaped when dropped, so a failed or panicking test leaves no orphan.
+struct Svc(Child);
+
+impl std::ops::Deref for Svc {
+    type Target = Child;
+    fn deref(&self) -> &Child {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Svc {
+    fn deref_mut(&mut self) -> &mut Child {
+        &mut self.0
+    }
+}
+
+impl Drop for Svc {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn spawn(d: &Path, fault: Option<&str>) -> Svc {
+    Svc(service(d, fault).spawn().unwrap())
 }
 
 fn wait(what: &str, secs: u64, mut ok: impl FnMut() -> bool) {
@@ -223,7 +250,7 @@ fn try_query(d: &Path, sql: &str) -> Option<i64> {
     c.query_row(sql, [], |r| r.get(0)).ok()
 }
 
-fn killed(mut c: Child) {
+fn killed(mut c: Svc) {
     let s = c.wait().unwrap();
     assert_eq!(s.signal(), Some(9), "the fault point must SIGKILL the service: {s:?}");
 }
@@ -277,7 +304,7 @@ fn f02_duplicate_lock_and_conflict() {
     assert_eq!(query(&d, "SELECT count(*) FROM requests"), 1);
     assert_eq!(query(&d, "SELECT count(*) FROM updates WHERE update_id=6 AND disposition='ignored' AND request_id IS NULL"), 1);
 
-    let second = spawn(&d, None).wait_with_output().unwrap();
+    let second = service(&d, None).output().unwrap();
     assert!(!second.status.success());
     assert!(String::from_utf8_lossy(&second.stderr).contains("poll lock held"), "{}", String::from_utf8_lossy(&second.stderr));
 
@@ -367,7 +394,7 @@ fn sent_has(st: &State, needle: &str) -> bool {
     texts(st).iter().any(|t| t.contains(needle))
 }
 
-fn stop(mut c: Child, d: PathBuf) {
+fn stop(mut c: Svc, d: PathBuf) {
     c.kill().unwrap();
     c.wait().unwrap();
     fs::remove_dir_all(d).unwrap();
