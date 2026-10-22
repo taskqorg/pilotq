@@ -8,7 +8,9 @@ use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const USAGE: &str = "usage: pilotq service install|run|stop|status | status [--json] | update [--check] | selftest | version";
+const USAGE: &str = "usage: pilotq service install|run|stop|status | status [--json] | update [--check] | selftest | version
+  users list | users show ID | users grant ID GRANT.. | users revoke ID [GRANT..] | users remember ID KEY VALUE [--private] | users forget ID KEY
+  routes list | routes set CHAT[:TOPIC] shared|isolated        (users and routes accept --json)";
 /// A status.json older than this reads unknown (coreq.md § status.json).
 const FRESH: u64 = 60;
 const PASS: Duration = Duration::from_secs(30);
@@ -85,7 +87,11 @@ fn service_run(t: &Tool) -> ! {
     // readiness order (§ 12): config and storage, then the poll lock, then polling
     let cfg = config(t).unwrap_or_else(|e| t.die(&e));
     std::fs::create_dir_all(&t.install).unwrap_or_else(|e| t.die(&e.to_string()));
-    let j: telegram::Shared = Arc::new(Mutex::new(journal::Journal::open(&t.install.join("journal.sqlite")).unwrap_or_else(|e| t.die(&e))));
+    let mut journal = journal::Journal::open(&t.install.join("journal.sqlite")).unwrap_or_else(|e| t.die(&e));
+    if let Some(c) = &cfg {
+        journal.bootstrap(c.owner, now() as i64).unwrap_or_else(|e| t.die(&e));
+    }
+    let j: telegram::Shared = Arc::new(Mutex::new(journal));
     let _lock = cfg.map(|c| {
         // one OS-held lock per installation; it is released only when this process ends
         let lock = coreq::file_lock::try_lock(&t.install.join("poll.lock")).unwrap_or_else(|e| match e {
@@ -99,7 +105,7 @@ fn service_run(t: &Tool) -> ! {
         let (j, wake) = (j.clone(), Arc::new(tokio::sync::Notify::new()));
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("tokio runtime");
-            rt.block_on(async { tokio::join!(telegram::poll(bot.clone(), j.clone(), c.owner, wake.clone()), telegram::deliver(bot, j, wake)) });
+            rt.block_on(async { tokio::join!(telegram::poll(bot.clone(), j.clone(), wake.clone()), telegram::deliver(bot, j, wake)) });
         });
         lock
     });
@@ -118,6 +124,80 @@ fn service_run(t: &Tool) -> ! {
             let _ = std::fs::write(release.with_file_name("healthy"), "");
         }
         std::thread::sleep(PASS);
+    }
+}
+
+fn fact(f: &journal::Fact) -> Value {
+    json!({"key": f.key, "value": f.value, "private": f.private, "source": f.source, "revision": f.revision})
+}
+
+/// `users` and `routes` (§ 9, R10). The operator acts as the bootstrap owner from protected config; writes return the readback.
+fn admin(t: &Tool, a: &[&str]) -> Result<Value, String> {
+    let cfg = config(t)?.ok_or("no config.json: the CLI acts as its configured owner_id")?;
+    std::fs::create_dir_all(&t.install).map_err(|e| e.to_string())?;
+    let mut j = journal::Journal::open(&t.install.join("journal.sqlite"))?;
+    let (me, at) = (cfg.owner, now() as i64);
+    j.bootstrap(me, at)?;
+    let id = |s: &str| s.parse::<i64>().map_err(|_| format!("{s}: expected an exact Telegram user ID"));
+    let user = |j: &journal::Journal, u: i64| -> Result<Value, String> {
+        let log: Vec<Value> = j.grant_log(u)?.into_iter().map(|(at, by, before, after)| json!({"at": at, "by": by, "before": before, "after": after})).collect();
+        Ok(json!({"id": u, "grants": j.grants(u)?, "facts": j.facts(u, me)?.iter().map(fact).collect::<Vec<_>>(), "log": log}))
+    };
+    let owned = |g: &[&str]| g.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    Ok(match a {
+        ["users", "list"] => j.users()?.into_iter().map(|(u, g)| json!({"id": u, "grants": g})).collect(),
+        ["users", "show", u] => user(&j, id(u)?)?,
+        ["users", "grant", u, g @ ..] if !g.is_empty() => {
+            j.grant(me, id(u)?, &owned(g), at)?;
+            user(&j, id(u)?)?
+        }
+        ["users", "revoke", u, g @ ..] => {
+            j.revoke(me, id(u)?, &owned(g), at)?;
+            user(&j, id(u)?)?
+        }
+        ["users", "remember", u, key, value, flag @ ..] if flag.is_empty() || flag == ["--private"] => {
+            j.remember(me, id(u)?, key, value, !flag.is_empty(), at)?;
+            user(&j, id(u)?)?
+        }
+        ["users", "forget", u, key] => {
+            if !j.forget(me, id(u)?, key)? {
+                return Err(format!("{u} has no fact {key}"));
+            }
+            user(&j, id(u)?)?
+        }
+        ["routes", "list"] => j.routes()?.iter().map(|r| json!({"chat": r.chat, "topic": r.topic, "session": if r.shared { "shared" } else { "isolated" }, "by": r.by, "at": r.at})).collect(),
+        ["routes", "set", route, policy @ ("shared" | "isolated")] => {
+            let (chat, topic) = route.split_once(':').unwrap_or((route, "0"));
+            let n = |s: &str| s.parse::<i64>().map_err(|_| format!("{route}: expected CHAT or CHAT:TOPIC"));
+            let r = j.set_route(me, n(chat)?, n(topic)?, *policy == "shared", at)?;
+            json!({"chat": r.chat, "topic": r.topic, "session": policy, "by": r.by, "at": r.at})
+        }
+        _ => return Err(USAGE.into()),
+    })
+}
+
+/// Human form of an `admin` readback: one line per person or route, facts and grant history indented.
+fn show(v: &Value) {
+    let one = |v: &Value| {
+        if v.get("session").is_some() {
+            let topic = if v["topic"] == 0 { String::new() } else { format!(":{}", v["topic"]) };
+            return println!("{}{topic} {} (set by {})", v["chat"], v["session"].as_str().unwrap_or(""), v["by"]);
+        }
+        let g: Vec<&str> = v["grants"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+        println!("{} grants: {}", v["id"], if g.is_empty() { "none (ignored)".to_string() } else { g.join(",") });
+        for f in v["facts"].as_array().into_iter().flatten() {
+            let scope = if f["private"] == true { "private" } else { "shared" };
+            println!("  {} = {} ({scope}, revision {}, {})", f["key"].as_str().unwrap_or(""), f["value"].as_str().unwrap_or(""), f["revision"], f["source"].as_str().unwrap_or(""));
+        }
+        for l in v["log"].as_array().into_iter().flatten() {
+            let by = if l["by"].is_null() { "config".to_string() } else { l["by"].to_string() };
+            println!("  at {} by {by}: [{}] -> [{}]", l["at"], l["before"].as_str().unwrap_or(""), l["after"].as_str().unwrap_or(""));
+        }
+    };
+    match v.as_array() {
+        Some(rows) if rows.is_empty() => println!("none"),
+        Some(rows) => rows.iter().for_each(one),
+        None => one(v),
     }
 }
 
@@ -173,6 +253,12 @@ fn main() {
                 }
                 None => println!("update: up to date"),
             }
+        }
+        [cmd @ ("users" | "routes"), ..] => {
+            let json = a.contains(&"--json");
+            let rest: Vec<&str> = a.iter().copied().filter(|x| *x != "--json").collect();
+            let v = admin(&t, &rest).unwrap_or_else(|e| t.die(&format!("{cmd}: {e}")));
+            if json { println!("{v}") } else { show(&v) }
         }
         ["selftest"] => selftest(&t).unwrap_or_else(|e| t.die(&e)),
         ["version"] => println!("pilotq {}", t.version),
