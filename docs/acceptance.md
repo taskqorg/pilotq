@@ -175,7 +175,7 @@ Results for the [section 10](../pilotq.md#10-adoption-sequence) step 2 slice, ta
 | L11 | Yes | `journal::long_reply_is_chunked_in_order`, `f05_delivery_faults_are_bounded` |
 | L12 | No | Step 3 (status message edits) |
 | L13 | Partial | A blocked chat is held, never rerouted (`f05_delivery_faults_are_bounded`). Administrative remap: step 5 |
-| L14 | Partial | Unsupported media gets an explicit outcome (`journal::strangers_and_claims_change_nothing`); no cross-person merge (`journal::u02_route_session_policy`). Edits and albums: step 5 with the media decision (section 11) |
+| L14 | Partial | Unsupported media gets an explicit outcome and service messages are not input (`journal::strangers_and_claims_change_nothing`, `service_messages_are_not_input`); no cross-person merge (`journal::u02_route_session_policy`). Edits and albums: step 5 with the media decision (section 11) |
 | L15 | Partial | `crash_during_turn_requeues_once`, `update_waits_for_the_running_turn`, process-group kill at a deadline (`f03_provider_faults_are_bounded`). A Codex child of a SIGKILLed service ends only on stdin EOF. Linux service proof: step 6 |
 | L16 | Partial | The manager rescans the journal every 0.5 s and delivery rescans the outbox, so a lost wake loses no work (every service trace above). Missed TaskQ events: step 3 |
 | L17 | Partial | Model attempts persist across restarts (`journal::runs_reconcile_and_fence`); live deadlines use the monotonic clock. No trace injects a wall-clock jump |
@@ -187,6 +187,18 @@ Results for the [section 10](../pilotq.md#10-adoption-sequence) step 2 slice, ta
 
 Applicable to the first slice: U01, U02, U12, U14 (unsupported input only), U16, U17 and U18. Owned by later steps: U05–U08, U10, U13 and U15 (step 3); U03, U04, U09 and U11 (step 4).
 
-Status on 2026-10-22: **not run.** The test bot answers `getMe`; PilotQ's own Codex home has no login yet, so no real Codex turn has run.
+Run on 2026-10-22 on one Mac (macOS 27.0.1), pilotq 0.1.0 at commit `56199c9` built `--release`, codex-cli 0.159.3 in PilotQ's own Codex home (subscription login, model `gpt-6.1-sol`), the separate test bot and a test forum group (General and one named topic) with the owner and a second test user. No production bot and no Hermes change.
+
+| Case | Result | Evidence |
+|---|---|---|
+| A3 service | **Blocked** | `pilotq service install` wrote the launchd unit, but `launchctl bootstrap gui/501` returned `Bootstrap failed: 5: Input/output error` from the worker session. The live run below used `pilotq service run` started directly from the installed release |
+| Real Codex turn | Pass | `pilotq ask` answered in 10.7 s; 13 Telegram turns answered in 8–11 s each and were delivered |
+| U02 | Partial pass | Owner messages in General and in the topic ran as separate conversations, and each reply went to its own topic. Requests from two granted people in one shared topic are not run yet |
+| U14 | Partial pass | A photo got the explicit unsupported reply; replies to the old group, which Telegram had migrated to a supergroup, were held with the migration error instead of rerouted. **Defect found:** Telegram service messages (group created, migration, topic created) were answered as unsupported input. Fixed; `service_messages_are_not_input` failed before the fix |
+| U17 | Partial pass | Through the CLI: two people's facts stay distinct, a correction bumps the revision to 2 and leaves grants unchanged, and the administrator's readback omits the other person's private fact. Telegram profile commands are not part of the slice |
+| U18 | Partial pass | Twelve messages from the ungranted second user left only ID-only dispositions and no reply. After `pilotq users grant 728914418 chat` (logged with the acting owner), none of them was replayed. A new request after the grant, and revoke, are not run yet |
+| U19, U23 | Pass | 21 audit records (one CLI, 20 Telegram) with who, where, model and delivery; 21 CoreQ events, one per ended request |
+| F05 | Live pass | A Telegram `retry-after` was honored and the reply delivered later |
+| U01, U12, U16 | Not run | Each needs new messages from a person in a DM or a topic |
 
 Completion evidence is a report with exact versions, mechanism-to-case results, unresolved failures, recovery receipts, task links and aggregate metrics. Maintain 62 scenario-family entries: U01–U18, F01–F17, C01–C07 and L01–L20. Record deterministic and live/platform results separately, including not run. Runtime research, a healthy service or green repository CI cannot replace it.

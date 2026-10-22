@@ -586,3 +586,32 @@ fn crash_during_turn_requeues_once() {
     assert_eq!(texts(&st).iter().filter(|t| t.contains("is queued")).count(), 1, "the acknowledgement is not repeated: {:?}", texts(&st));
     stop(c, d);
 }
+
+// Live test-bot run found Telegram service messages (forum topic created, group migrated, group created) answered as unsupported
+// input. They leave an ID-only disposition and no reply; a person's photo still gets the explicit unsupported outcome (U14).
+#[test]
+fn service_messages_are_not_input() {
+    let mut topic = text(1, -100, Some(3), OWNER, "x");
+    topic["message"].as_object_mut().unwrap().remove("text");
+    topic["message"]["forum_topic_created"] = json!({"name": "Topic 2", "icon_color": 7322096});
+    let mut migrated = update(2, -50, OWNER);
+    migrated["message"]["chat"] = json!({"id": -50, "type": "group", "title": "G"});
+    migrated["message"].as_object_mut().unwrap().remove("text");
+    migrated["message"]["migrate_to_chat_id"] = json!(-100);
+    let mut created = migrated.clone();
+    created["update_id"] = json!(3);
+    created["message"].as_object_mut().unwrap().remove("migrate_to_chat_id");
+    created["message"]["group_chat_created"] = json!(true);
+    let mut photo = text(4, -100, Some(3), OWNER, "x");
+    photo["message"].as_object_mut().unwrap().remove("text");
+    photo["message"]["photo"] = json!([{"file_id": "f", "file_unique_id": "u", "width": 1, "height": 1}]);
+    let (d, st) = setup("service", vec![topic, migrated, created, photo]);
+    let c = spawn(&d, None);
+    wait("dispositions", 15, || try_query(&d, "SELECT count(*) FROM updates") == Some(4));
+    wait("photo outcome", 15, || sent_has(&st, "not supported yet"));
+    assert_eq!(query(&d, "SELECT count(*) FROM requests"), 1, "only the photo is a request");
+    assert_eq!(query(&d, "SELECT count(*) FROM updates WHERE disposition='unsupported' AND request_id IS NULL"), 3);
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(st.lock().unwrap().sent.len(), 1, "no reply to service messages: {:?}", texts(&st));
+    stop(c, d);
+}
