@@ -13,3 +13,5 @@ PilotQ joins taskqorg as a private, specification-stage project. Its scope is th
 | [specq](https://github.com/taskqorg/specq) | Shared engineering, design and writing rules | Binding shared contract |
 
 Repository membership does not register an execution root, grant host access, install a service or enable TaskQ admission. Those belong to later setup work.
+
+PilotQ files its own tasks on the [pilotq board](https://github.com/taskqorg/pilotq/issues), as section 9 of [pilotq.md](../pilotq.md#development) requires.
