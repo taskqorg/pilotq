@@ -4,7 +4,7 @@ use crate::journal::{Delivery, Input, Journal, Sent};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use teloxide::prelude::*;
-use teloxide::types::{MediaKind, MessageId, MessageKind, ParseMode, ReplyParameters, ThreadId, UpdateKind};
+use teloxide::types::{ChatAction, MediaKind, MessageId, MessageKind, ParseMode, ReplyParameters, ThreadId, UpdateKind};
 use teloxide::{ApiError, RequestError};
 use tokio::sync::Notify;
 
@@ -42,6 +42,7 @@ fn input(kind: &UpdateKind) -> Option<Input> {
         message: m.id.0 as i64,
         kind: if m.text().is_some() { "text" } else { "other" },
         text: m.text().map(str::to_string),
+        reply_to: m.reply_to_message().map(|r| r.id.0 as i64),
     })
 }
 
@@ -97,8 +98,33 @@ pub async fn poll(bot: Bot, j: Shared, wake: Arc<Notify>) {
     }
 }
 
+/// Maps a Bot API failure to what the outbox does next.
+fn failed(e: RequestError, backoff: i64) -> Sent {
+    match e {
+        RequestError::Api(ApiError::CantParseEntities(_)) => Sent::Plain,
+        RequestError::Api(e) => {
+            let s = e.to_string();
+            if s.starts_with("Forbidden") || s.contains("chat not found") || s.contains("thread not found") { Sent::Held(s) } else { Sent::Failed(s) }
+        }
+        e @ RequestError::MigrateToChatId(_) => Sent::Held(e.to_string()),
+        RequestError::RetryAfter(s) => Sent::Retry { after: s.seconds() as i64, ambiguous: false, error: "Telegram retry-after".into() },
+        // a refused connection never reached Telegram; any later loss may have produced a visible message
+        RequestError::Network(e) => Sent::Retry { after: backoff, ambiguous: !e.is_connect(), error: e.to_string() },
+        e => Sent::Retry { after: backoff, ambiguous: true, error: e.to_string() },
+    }
+}
+
 async fn send(bot: &Bot, d: &Delivery) -> Sent {
     let backoff = d.attempts + 1;
+    // a task status update edits its status message in place; a deleted one is replaced by a new message in the same route (L12)
+    if let Some(m) = d.edit {
+        match bot.edit_message_text(ChatId(d.chat), MessageId(m as i32), &d.text).await {
+            Ok(m) => return Sent::Ok(m.id.0 as i64),
+            Err(RequestError::Api(ApiError::MessageNotModified)) => return Sent::Ok(m),
+            Err(RequestError::Api(ApiError::MessageToEditNotFound)) => {}
+            Err(e) => return failed(e, backoff),
+        }
+    }
     let mut r = bot.send_message(ChatId(d.chat), d.html.as_deref().unwrap_or(&d.text));
     if d.html.is_some() {
         r = r.parse_mode(ParseMode::Html);
@@ -111,16 +137,24 @@ async fn send(bot: &Bot, d: &Delivery) -> Sent {
     }
     match r.await {
         Ok(m) => Sent::Ok(m.id.0 as i64),
-        Err(RequestError::Api(ApiError::CantParseEntities(_))) => Sent::Plain,
-        Err(RequestError::Api(e)) => {
-            let s = e.to_string();
-            if s.starts_with("Forbidden") || s.contains("chat not found") || s.contains("thread not found") { Sent::Held(s) } else { Sent::Failed(s) }
+        Err(e) => failed(e, backoff),
+    }
+}
+
+/// Best-effort typing in the exact originating chat and topic while a turn runs, refreshed every 4 s (§ 12, L02). It stops
+/// when the run ends or its deadline passes; a failure is ignored and never touches the run.
+// ponytail: bounded by the run's absolute deadline, not by its last useful event; an event clock in the journal if stale turns need it
+pub async fn typing(bot: Bot, j: Shared, deadline: Duration) {
+    loop {
+        let routes = j.lock().unwrap().typing(now(), deadline.as_secs() as i64).unwrap_or_default();
+        for (chat, topic) in routes {
+            let mut r = bot.send_chat_action(ChatId(chat), ChatAction::Typing);
+            if let Some(t) = topic {
+                r = r.message_thread_id(ThreadId(MessageId(t as i32)));
+            }
+            let _ = r.await;
         }
-        Err(e @ RequestError::MigrateToChatId(_)) => Sent::Held(e.to_string()),
-        Err(RequestError::RetryAfter(s)) => Sent::Retry { after: s.seconds() as i64, ambiguous: false, error: "Telegram retry-after".into() },
-        // a refused connection never reached Telegram; any later loss may have produced a visible message
-        Err(RequestError::Network(e)) => Sent::Retry { after: backoff, ambiguous: !e.is_connect(), error: e.to_string() },
-        Err(e) => Sent::Retry { after: backoff, ambiguous: true, error: e.to_string() },
+        tokio::time::sleep(Duration::from_secs(4)).await;
     }
 }
 

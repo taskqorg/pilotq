@@ -179,6 +179,30 @@ Formatting errors fall back to plain text. Split oversized replies safely; do no
 - Preserve TaskQ's distinction between admission, worker result, reviewer result, owner gate and publication. “Done” requires the authoritative completion state and available evidence.
 - Notifications are projections of TaskQ events, keyed by board/task/event/route. Reconcile after downtime; do not let stale status overwrite a newer question or outcome.
 
+### First TaskQ tool contract
+
+**Owner-scoped (task #18, section 10 step 3):** one board, `taskqorg/pilotq`, through the TaskQ CLI on the PilotQ host.
+
+- Configuration: `config.json` `taskq` names the CLI binary and the project root. PilotQ runs it with an argument array, `TASKQ_ROOT` set to that root and no `TASKQ_ATTEMPT`. The root's `taskq.json` must name `taskqorg/pilotq`; another board disables every TaskQ tool.
+- Project scope is `project:pilotq`, or `projects` for an administrator. The owner holds `projects` from protected configuration.
+- The manager gets these tools as Codex dynamic tools. Each one is checked at dispatch against the caller's current grants and the run's fence. A refusal writes nothing and says why.
+
+| Tool | Grants | Effect |
+|---|---|---|
+| `task_plan` | project scope | Saves the conversation's next plan revision: one to three tickets, each a title, goal, acceptance and scope. No board write |
+| `task_run_plan` | `taskq` and project scope | Files every ticket of the named revision held, reads each back, then starts them |
+| `task_status` | project scope | Fresh board read of one task by number or `taskqorg/pilotq` issue URL. Never creates |
+| `task_park` | `taskq` and project scope | `later` with the person's reason; the worker's own lifecycle stays TaskQ's |
+| `queue_pause` | `queue` | `taskq service pause`: stops new admission on the host. Running workers continue and are listed as running |
+
+- `task_run_plan` runs only the latest revision, saved by an earlier request of the same conversation. A revision saved in the same request is refused, so a plan-only request starts nothing. One revision runs at most once.
+- Creation uses `add --op-id` only, never plain `add`. It needs `create_claim_issue` in the root's `taskq.json`; without it creation is disabled with that reason. Op IDs are `pilotq-<installation>-p<plan>-t<ticket>`, and `.start` for the start. Each ticket body carries one scope line with the request trace ID, the Telegram author, the route and the plan revision.
+- Start follows only after every ticket of the revision reads back held. An unavailable board leaves the remaining tickets unsent with the reason. The periodic scan retries the same op IDs until every ticket is held and started; changed grants are rechecked before each retry.
+- The manager never answers a worker question. PilotQ relays the question to the originating route; a person answers by replying to that message. The answer binds to task, question revision and the replying person: it needs `taskq` and project scope, and the task must still be in `ask` at that revision on a fresh read. A stale or foreign answer writes nothing and replies with the current question or the missing grant. A written answer uses `answer --op-id --revision`.
+- Each filed task has one status message in its originating route, edited in place on each fresh transition and naming what it waits for. A question and the closing outcome are separate messages; nothing edits them. A projection older than the stored task revision is ignored.
+- A periodic scan of `taskq status --json` recovers missed transitions; restart and `/new` keep subscriptions. An incomplete snapshot reads unknown and closes nothing.
+- **Owner, 2026-10-23:** the live evidence for this step is a scripted run, not a person on the test bot. It uses the real PilotQ binary, real Codex under PilotQ's subscription login, the `taskqorg/pilotq` board and the TaskQ CLI. A local fake Bot API replaces Telegram, with updates from two synthetic users, and records every send. One small real docs task goes from discussion to the reviewer outcome with a PilotQ restart mid-run. The run checks the journal, audit record, board and recorded messages, U23 links included. A later owner check on the test bot is optional.
+
 ### Project registration
 
 An administrator with the `projects` grant can ask PilotQ to create or register a project. PilotQ shows the resolved repository, root and board, then applies the request through TaskQ's supported registration path (Add project, [taskq.md](https://github.com/taskqorg/taskq/blob/main/taskq.md) menu M10) and reads it back. Repository creation, capacity and worker grants stay owner operations unless a separate grant names them. A failed or partial registration stays visible and is never reported as done.

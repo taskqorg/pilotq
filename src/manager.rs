@@ -46,7 +46,15 @@ struct Proc {
     child: Child,
     stdin: ChildStdin,
     rx: Receiver<Value>,
+    /// Codex's last stderr line, the only reason it gives when it exits early. Operator log only: it can name paths or account
+    /// details, so it never reaches a reply, the journal or telemetry.
+    last_err: std::sync::Arc<Mutex<Option<String>>>,
 }
+
+/// Held from spawn until Codex answers `initialize`. Found in the A8 run: app-servers started together on a fresh Codex home race
+/// its SQLite state setup and all but one exit with `failed to initialize sqlite state runtime`.
+// ponytail: process-wide startup lock; a hung startup delays other conversations by at most the first-event bound
+static START: Mutex<()> = Mutex::new(());
 
 impl Proc {
     fn send(&mut self, v: Value) {
@@ -97,11 +105,18 @@ impl Codex {
             .current_dir(&self.workspace)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
         #[cfg(unix)]
         std::os::unix::process::CommandExt::process_group(&mut c, 0);
         let mut child = c.spawn().map_err(|e| format!("codex app-server did not start: {e}"))?;
-        let (stdin, stdout) = (child.stdin.take().unwrap(), child.stdout.take().unwrap());
+        let (stdin, stdout, stderr) = (child.stdin.take().unwrap(), child.stdout.take().unwrap(), child.stderr.take().unwrap());
+        let last_err = std::sync::Arc::new(Mutex::new(None));
+        let keep = last_err.clone();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok).filter(|l| !l.trim().is_empty()) {
+                *keep.lock().unwrap() = Some(line.chars().take(200).collect());
+            }
+        });
         let (tx, rx) = channel();
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -113,12 +128,23 @@ impl Codex {
                 }
             }
         });
-        Ok(Proc { child, stdin, rx })
+        Ok(Proc { child, stdin, rx, last_err })
     }
 
     /// Runs one turn on `thread` (a new thread when None). `alive` reports whether the journal still holds this run's fence;
-    /// `tool` persists a tool item's type, ID and, once completed, its status. Returns the thread ID and model Codex used and the outcome.
-    pub fn turn(&self, thread: Option<&str>, text: &str, mut alive: impl FnMut() -> bool, mut tool: impl FnMut(&str, &str, Option<&str>)) -> (Option<String>, Option<String>, Outcome) {
+    /// `tool` persists a tool item's type, ID and, once completed, its status. `dynamic` offers PilotQ's own tools on a new thread
+    /// (their specs and instructions); `call` answers one complete call of them. Returns the thread ID and model Codex used and the outcome.
+    pub fn turn(
+        &self,
+        thread: Option<&str>,
+        text: &str,
+        dynamic: Option<(&Value, &str)>,
+        mut alive: impl FnMut() -> bool,
+        mut tool: impl FnMut(&str, &str, Option<&str>),
+        mut call: impl FnMut(&str, &Value) -> (bool, String),
+    ) -> (Option<String>, Option<String>, Outcome) {
+        // the first-event watch starts once this turn may spawn, before Codex runs (§ 12)
+        let mut starting = Some(START.lock().unwrap_or_else(|e| e.into_inner()));
         let start = Instant::now();
         let mut p = match self.spawn() {
             Ok(p) => p,
@@ -127,7 +153,9 @@ impl Codex {
         let (mut thread, mut turn, mut answer, mut tooled, mut model) = (thread.map(str::to_string), None::<String>, String::new(), false, None::<String>);
         let (mut first, mut last, mut error) = (false, start, None::<String>);
         let lim = &self.limits;
-        p.send(json!({"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "pilotq", "title": "PilotQ", "version": env!("CARGO_PKG_VERSION")}}}));
+        // dynamic tools are an experimental app-server field, negotiated only when PilotQ offers some
+        let caps = dynamic.map(|_| json!({"experimentalApi": true}));
+        p.send(json!({"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "pilotq", "title": "PilotQ", "version": env!("CARGO_PKG_VERSION")}, "capabilities": caps}}));
         let fail = |tooled: bool, why: String| if tooled { Outcome::Uncertain(why) } else { Outcome::Failed(why) };
         loop {
             if !alive() {
@@ -146,14 +174,25 @@ impl Codex {
                 }
                 Err(RecvTimeoutError::Timeout) => continue,
                 Err(RecvTimeoutError::Disconnected) => {
+                    // stdout closed; give the stderr reader a moment to take Codex's last words for the operator log
+                    std::thread::sleep(Duration::from_millis(200));
+                    if let Some(e) = p.last_err.lock().unwrap().as_deref() {
+                        eprintln!("codex exited: {e}");
+                    }
                     let why = error.map_or("Codex exited without a terminal event".to_string(), |e| format!("Codex exited without a terminal event after: {e}"));
                     return (thread, model, fail(tooled, why));
                 }
             };
             (first, last) = (true, Instant::now());
             let method = m["method"].as_str().unwrap_or("");
+            if method == "item/tool/call" && m.get("id").is_some() {
+                // a complete call of PilotQ's own tool: the boundary checks grants and the fence and answers (§ 5, § 12)
+                let (ok, out) = call(m["params"]["tool"].as_str().unwrap_or(""), &m["params"]["arguments"]);
+                p.send(json!({"id": m["id"], "result": {"contentItems": [{"type": "inputText", "text": out}], "success": ok}}));
+                continue;
+            }
             if m.get("id").is_some() && !method.is_empty() {
-                // a server request (approval, user input, tool call): PilotQ grants no native capability in this slice
+                // any other server request (approval, user input): PilotQ grants no native capability
                 p.send(json!({"id": m["id"], "error": {"code": -32601, "message": "PilotQ does not grant this request"}}));
                 continue;
             }
@@ -163,8 +202,14 @@ impl Codex {
             }
             match (m["id"].as_i64(), method) {
                 (Some(1), _) => {
+                    drop(starting.take());
                     p.send(json!({"method": "initialized"}));
-                    let params = json!({"cwd": self.workspace, "approvalPolicy": "never", "sandbox": "read-only"});
+                    let mut params = json!({"cwd": self.workspace, "approvalPolicy": "never", "sandbox": "read-only"});
+                    if let Some((tools, instructions)) = dynamic {
+                        // ponytail: tools ride on thread/start and persist with the thread; a resumed thread keeps the set it started with
+                        params["dynamicTools"] = tools.clone();
+                        params["developerInstructions"] = json!(instructions);
+                    }
                     match &thread {
                         Some(t) => p.send(json!({"id": 2, "method": "thread/resume", "params": {"threadId": t, "cwd": params["cwd"], "approvalPolicy": "never", "sandbox": "read-only"}})),
                         None => p.send(json!({"id": 2, "method": "thread/start", "params": params})),
@@ -205,16 +250,23 @@ impl Codex {
     }
 }
 
-/// Runs one claimed request through Codex and records the outcome under its fence. The CLI and Telegram share this path (R13).
-pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64) -> Result<Outcome, String> {
+/// Runs one claimed request through Codex and records the outcome under its fence. The CLI and Telegram share this path (R13),
+/// with the TaskQ tools when TaskQ is configured.
+pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq: Option<&crate::taskq::Taskq>) -> Result<Outcome, String> {
+    let tools = tq.map(|_| crate::taskq::tools());
     let (thread, model, outcome) = codex.turn(
         r.thread.as_deref(),
         &r.text,
+        tools.as_ref().map(|t| (t, crate::taskq::INSTRUCTIONS)),
         || j.lock().unwrap().fenced(r).map(|f| !f).unwrap_or(true),
         |kind, item, result| {
             if let Err(e) = j.lock().unwrap().tool(r, kind, item, result, now()) {
                 eprintln!("run {}: {e}", r.id);
             }
+        },
+        |name, args| match tq {
+            Some(tq) => crate::taskq::call(tq, j, r, name, args),
+            None => (false, "TaskQ is not configured".into()),
         },
     );
     let j = j.lock().unwrap();
@@ -230,7 +282,7 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64) ->
 
 /// Service loop: claims queued Telegram requests, one run per conversation and `MODELS` at once, oldest first. While the
 /// `drain` file exists (`pilotq update`), nothing new starts; running turns finish (§ 12 planned restart).
-pub fn serve(codex: Codex, j: crate::telegram::Shared, wake: std::sync::Arc<tokio::sync::Notify>, now: fn() -> i64, drain: PathBuf) {
+pub fn serve(codex: Codex, j: crate::telegram::Shared, wake: std::sync::Arc<tokio::sync::Notify>, now: fn() -> i64, drain: PathBuf, tq: Option<std::sync::Arc<crate::taskq::Taskq>>) {
     const MODELS: usize = 4;
     let codex = std::sync::Arc::new(codex);
     loop {
@@ -238,9 +290,9 @@ pub fn serve(codex: Codex, j: crate::telegram::Shared, wake: std::sync::Arc<toki
         match claimed {
             Ok(runs) => {
                 for r in runs {
-                    let (codex, j, wake) = (codex.clone(), j.clone(), wake.clone());
+                    let (codex, j, wake, tq) = (codex.clone(), j.clone(), wake.clone(), tq.clone());
                     std::thread::spawn(move || {
-                        if let Err(e) = run(&codex, &j, &r, now) {
+                        if let Err(e) = run(&codex, &j, &r, now, tq.as_deref()) {
                             eprintln!("run {}: {e}", r.id);
                         }
                         wake.notify_one();

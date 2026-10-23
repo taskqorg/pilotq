@@ -30,6 +30,10 @@ struct Fake {
     hold: bool,
     /// getUpdates fails with 401 while sendMessage keeps working (F06).
     poll_fail: bool,
+    /// sendChatAction bodies (typing), kept apart from messages.
+    actions: Vec<Value>,
+    /// editMessageText answers "message to edit not found" (a deleted status message, L12).
+    edit_gone: bool,
 }
 
 type State = Arc<Mutex<Fake>>;
@@ -85,8 +89,20 @@ fn handle(stream: std::net::TcpStream, st: &State) {
         return respond(&mut out, 200, &json!({"ok": true, "result": ready}).to_string());
     }
     let mut f = st.lock().unwrap();
+    if method == "sendchataction" {
+        f.actions.push(body);
+        return respond(&mut out, 200, r#"{"ok":true,"result":true}"#);
+    }
+    let mut body = body;
+    if method == "editmessagetext" {
+        if f.edit_gone {
+            return respond(&mut out, 400, r#"{"ok":false,"error_code":400,"description":"Bad Request: message to edit not found"}"#);
+        }
+        body["edit"] = json!(true);
+    }
     f.attempts += 1;
-    let ok = json!({"ok": true, "result": {"message_id": 900 + f.attempts, "date": 0, "chat": {"id": body["chat_id"], "type": "private", "first_name": "A"}, "text": body["text"]}});
+    let id = if method == "editmessagetext" { body["message_id"].as_i64().unwrap() } else { 900 + f.attempts as i64 };
+    let ok = json!({"ok": true, "result": {"message_id": id, "date": 0, "chat": {"id": body["chat_id"], "type": "private", "first_name": "A"}, "text": body["text"]}});
     match f.faults.pop_front() {
         Some("drop") => f.sent.push(body), // accepted, then the response is lost
         Some("parse") if body.get("parse_mode").is_some() => respond(&mut out, 400, r#"{"ok":false,"error_code":400,"description":"Bad Request: can't parse entities: unsupported start tag"}"#),
@@ -96,6 +112,7 @@ fn handle(stream: std::net::TcpStream, st: &State) {
         }
         Some("forbidden") => respond(&mut out, 403, r#"{"ok":false,"error_code":403,"description":"Forbidden: bot was blocked by the user"}"#),
         _ => {
+            body["id"] = json!(id);
             f.sent.push(body);
             respond(&mut out, 200, &ok.to_string());
         }
@@ -614,6 +631,32 @@ fn crash_during_turn_requeues_once() {
     stop(c, d);
 }
 
+// Found in the A8 run: three conversations started Codex together on a fresh Codex home, and all but one app-server exited with
+// `failed to initialize sqlite state runtime`, read by PilotQ only as "Codex exited without a terminal event". Startup is now
+// serialized until `initialize` answers, so every request is answered; a Codex that exits early names its stderr reason in the
+// operator log only, never in the reply.
+#[test]
+fn concurrent_codex_starts_do_not_race() {
+    let (d, st) = setup("race", vec![text(1, 11, None, OWNER, "a"), text(2, -100, Some(5), OWNER, "b"), text(3, -100, Some(6), OWNER, "c")]);
+    script(&d, "fake-codex", FAKE);
+    // like Codex's state setup: an app-server starting while another initializes the home fails
+    let racy = script(&d, "racy-codex", r#"d=$(dirname "$0")
+mkdir "$d/init.lock" 2>/dev/null || { echo 'Error: failed to initialize sqlite state runtime' >&2; exit 1; }
+sleep 0.5; rmdir "$d/init.lock"; exec "$d/fake-codex""#);
+    use_codex(&d, &racy);
+    let c = spawn(&d, None);
+    wait("three answers", 20, || ["re: a @", "re: b @", "re: c @"].iter().all(|t| sent_has(&st, t)));
+    assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE state='answered'"), 3);
+    stop(c, d);
+
+    let (d, _st) = setup("dead", vec![]);
+    use_codex(&d, &script(&d, "dead-codex", "echo 'Error: boom' >&2; exit 1"));
+    let o = cli(&d, &["ask", "--json", "hi"]);
+    assert_eq!(serde_json::from_slice::<Value>(&o.stdout).unwrap()["error"], "Codex exited without a terminal event", "the reply carries no raw stderr");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("codex exited: Error: boom"), "the operator log names the reason");
+    fs::remove_dir_all(d).unwrap();
+}
+
 // Live test-bot run found Telegram service messages (forum topic created, group migrated, group created) answered as unsupported
 // input. They leave an ID-only disposition and no reply; a person's photo still gets the explicit unsupported outcome (U14).
 #[test]
@@ -641,4 +684,531 @@ fn service_messages_are_not_input() {
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(st.lock().unwrap().sent.len(), 1, "no reply to service messages: {:?}", texts(&st));
     stop(c, d);
+}
+
+// Section 10 step 3 (task #18): the TaskQ tools against a fake TaskQ CLI and a fake Codex that makes one dynamic tool call per
+// turn. Board state lives in the fake's JSON file; tests change it as workers and reviewers would. The live board is separate.
+
+/// A fake `taskq` CLI: logs every argument array, keeps tasks and op-id receipts in `taskq-state.json`, returns the first
+/// receipt for a seen op ID, refuses an answer at another revision as stale. `board-down` fails every call; `lose-add-K`
+/// creates the K-th task, then loses the response and takes the board down.
+const FAKE_TASKQ: &str = r#"#!/usr/bin/env python3
+import json, os, sys, fcntl
+d = os.path.dirname(os.path.abspath(__file__))
+a = sys.argv[1:]
+with open(os.path.join(d, "taskq.log"), "a") as f:
+    f.write(json.dumps({"args": a, "root": os.environ.get("TASKQ_ROOT"), "attempt": os.environ.get("TASKQ_ATTEMPT")}) + "\n")
+lock = open(os.path.join(d, "taskq.lock"), "w"); fcntl.flock(lock, fcntl.LOCK_EX)
+path = os.path.join(d, "taskq-state.json")
+st = json.load(open(path)) if os.path.exists(path) else {"tasks": {}, "ops": {}, "next": 19, "rev": 100, "creates": 0}
+def save():
+    json.dump(st, open(path + ".tmp", "w")); os.replace(path + ".tmp", path)
+def opt(k):
+    return a[a.index(k) + 1] if k in a else None
+def bump():
+    st["rev"] += 1; return st["rev"]
+def receipt(n, outcome, reason=None):
+    t = st["tasks"].get(str(n), {})
+    return {"task": n, "op_id": opt("--op-id"), "outcome": outcome, "state": t.get("state"), "revision": t.get("revision"), "reason": reason, "next": None}
+def out(r, code=0):
+    if r["outcome"] == "accepted" and opt("--op-id"): st["ops"][opt("--op-id")] = r
+    save(); print(json.dumps(r)); sys.exit(code)
+if os.path.exists(os.path.join(d, "board-down")):
+    print("Error: board unreachable: connection refused", file=sys.stderr); sys.exit(1)
+cmd, op = a[0], opt("--op-id")
+if op in st["ops"]:
+    print(json.dumps(st["ops"][op])); sys.exit(0)
+if cmd == "status":
+    tasks = [dict(t, n=int(n), url="https://github.com/taskqorg/pilotq/issues/" + n) for n, t in st["tasks"].items() if not t.get("closed")]
+    print(json.dumps({"schema": 1, "source": "board", "observed": 1, "complete": True, "reason": None, "board": {"repo": "taskqorg/pilotq"}, "tasks": tasks})); sys.exit(0)
+if cmd == "add":
+    st["creates"] += 1; n = st["next"]; st["next"] += 1
+    st["tasks"][str(n)] = {"title": a[1], "state": "held", "revision": bump(), "card": None, "args": a}
+    r = receipt(n, "accepted")
+    lose = os.path.join(d, "lose-add-%d" % st["creates"])
+    if os.path.exists(lose):
+        os.remove(lose); st["ops"][op] = r; save(); open(os.path.join(d, "board-down"), "w").close()
+        print("Error: connection reset by peer", file=sys.stderr); sys.exit(1)
+    out(r)
+if cmd == "service":
+    st["paused"] = True; save(); print("service pause: ok"); sys.exit(0)
+n = a[1].split(".")[0]; t = st["tasks"][n]
+if cmd == "start":
+    t["state"] = "ready"; t["revision"] = bump(); out(receipt(int(n), "accepted"))
+if cmd == "answer":
+    if t["state"] != "ask": out(receipt(int(n), "rejected", "not in ask"), 1)
+    if int(opt("--revision")) != t["revision"]: out(receipt(int(n), "stale", "current revision %d" % t["revision"]), 1)
+    t.update(state="doing", card=None, answer=opt("--text") or a[1], revision=bump()); out(receipt(int(n), "accepted"))
+if cmd == "later":
+    t["state"] = "later"; t["revision"] = bump(); out(receipt(int(n), "accepted"))
+print("Error: unknown command", file=sys.stderr); sys.exit(1)
+"#;
+
+/// A fake `codex app-server` in Python: `call NAME JSON` makes one complete dynamic tool call and answers "re: ok: RESULT" or
+/// "re: refused: RESULT"; `slow S` sleeps S seconds; anything else answers "re: TEXT".
+const FAKE_TOOLS: &str = r#"#!/usr/bin/env python3
+import json, os, sys, time
+d = os.path.dirname(os.path.abspath(__file__))
+log = open(os.path.join(d, "codex.log"), "a")
+def send(v):
+    print(json.dumps(v), flush=True)
+th = None
+for line in sys.stdin:
+    log.write(line); log.flush()
+    m = json.loads(line); meth = m.get("method")
+    if meth == "initialize":
+        send({"id": 1, "result": {}})
+    elif meth == "thread/start":
+        p = os.path.join(d, "threads"); n = int(open(p).read()) + 1 if os.path.exists(p) else 1
+        open(p, "w").write(str(n)); th = "th-%d" % n
+        send({"id": 2, "result": {"thread": {"id": th}, "model": "gpt-test"}})
+    elif meth == "thread/resume":
+        th = m["params"]["threadId"]; send({"id": 2, "result": {"thread": {"id": th}}})
+    elif meth == "turn/start":
+        text = m["params"]["input"][0]["text"]
+        send({"id": 3, "result": {"turn": {"id": "u1", "status": "inProgress", "items": []}}})
+        if text.startswith("slow "):
+            time.sleep(float(text.split()[1]))
+        if text.startswith("call "):
+            _, name, args = text.split(" ", 2)
+            item = {"type": "dynamicToolCall", "id": "k1", "tool": name, "arguments": json.loads(args), "status": "inProgress"}
+            send({"method": "item/started", "params": {"threadId": th, "turnId": "u1", "item": item}})
+            send({"id": 50, "method": "item/tool/call", "params": {"threadId": th, "turnId": "u1", "callId": "k1", "tool": name, "arguments": json.loads(args)}})
+            r = {}
+            while r.get("id") != 50:
+                r = json.loads(sys.stdin.readline()); log.write(json.dumps(r) + "\n"); log.flush()
+            res = r["result"]
+            text = ("ok: " if res["success"] else "refused: ") + res["contentItems"][0]["text"]
+            send({"method": "item/completed", "params": {"threadId": th, "turnId": "u1", "item": dict(item, status="completed")}})
+        send({"method": "item/completed", "params": {"threadId": th, "turnId": "u1", "completedAtMs": 0, "item": {"type": "agentMessage", "id": "m1", "text": "re: " + text}}})
+        send({"method": "turn/completed", "params": {"threadId": th, "turn": {"id": "u1", "status": "completed", "items": []}}})
+"#;
+
+/// An install wired to the fake Codex and fake TaskQ with a 1 s board scan; `claim` sets `create_claim_issue` on the root.
+fn tq_setup(tag: &str, claim: bool) -> (PathBuf, State) {
+    let (d, st) = setup(tag, vec![]);
+    let (codex, taskq) = (d.join("fake-codex"), d.join("fake-taskq"));
+    for (p, body) in [(&codex, FAKE_TOOLS), (&taskq, FAKE_TASKQ)] {
+        fs::write(p, body).unwrap();
+        fs::set_permissions(p, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    fs::create_dir_all(d.join("root")).unwrap();
+    root(&d, claim);
+    limits(&d, &codex, json!({"first_event": 10, "silent": 10, "deadline": 20}));
+    let cfg = d.join("config.json");
+    let mut c: Value = serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
+    c["taskq"] = json!({"bin": taskq, "root": d.join("root"), "poll": 1});
+    fs::write(&cfg, c.to_string()).unwrap();
+    (d, st)
+}
+
+fn root(d: &Path, claim: bool) {
+    let mut t = json!({"board": "github", "repo": "taskqorg/pilotq", "publish": "pr"});
+    if claim {
+        t["create_claim_issue"] = json!(1);
+    }
+    fs::write(d.join("root").join("taskq.json"), t.to_string()).unwrap();
+}
+
+fn board(d: &Path) -> Value {
+    serde_json::from_str(&fs::read_to_string(d.join("taskq-state.json")).unwrap_or("{}".into())).unwrap()
+}
+
+/// Changes one fake task as a worker, reviewer or the board would, and gives it a newer revision unless `f` sets one.
+fn set_task(d: &Path, n: i64, f: impl FnOnce(&mut Value)) {
+    let mut s = board(d);
+    s["rev"] = json!(s["rev"].as_i64().unwrap() + 1);
+    let rev = s["rev"].clone();
+    let t = &mut s["tasks"][n.to_string()];
+    t["revision"] = rev;
+    f(t);
+    fs::write(d.join("taskq-state.json.t"), s.to_string()).unwrap();
+    fs::rename(d.join("taskq-state.json.t"), d.join("taskq-state.json")).unwrap();
+}
+
+/// TaskQ argument arrays in call order, without the periodic status reads.
+fn tq_calls(d: &Path) -> Vec<Vec<String>> {
+    let log = fs::read_to_string(d.join("taskq.log")).unwrap_or_default();
+    let v = log.lines().map(|l| serde_json::from_str::<Value>(l).unwrap());
+    v.filter(|v| v["args"][0] != "status").map(|v| v["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap().to_string()).collect()).collect()
+}
+
+fn call(id: i64, chat: i64, topic: Option<i64>, sender: i64, tool: &str, args: Value) -> Value {
+    text(id, chat, topic, sender, &format!("call {tool} {args}"))
+}
+
+fn plan(titles: &[&str]) -> Value {
+    json!({"tickets": titles.iter().map(|t| json!({"title": t, "goal": "Make the README name the ask command.", "acceptance": ["README names pilotq ask."]})).collect::<Vec<_>>()})
+}
+
+fn reply(id: i64, chat: i64, topic: Option<i64>, sender: i64, to: i64, body: &str) -> Value {
+    let mut u = text(id, chat, topic, sender, body);
+    u["message"]["reply_to_message"] = json!({"message_id": to, "date": 0, "chat": u["message"]["chat"].clone(), "text": "question"});
+    u
+}
+
+fn push(st: &State, u: Value) {
+    st.lock().unwrap().updates.push(u);
+}
+
+/// Messages and edits Telegram accepted, in order.
+fn sent(st: &State) -> Vec<Value> {
+    st.lock().unwrap().sent.clone()
+}
+
+// U05, U06, L01, L03, L12, F14: three plan revisions start nothing; authorizing revision 2 cannot run revision 3; revision 3
+// is filed held with an op ID, read back and started, with the author, route and revision in the task. One status message
+// names what the task waits for and is edited in place; a stale observation changes nothing; the closing outcome is its own
+// message and nothing edits it afterwards; no hung or stall warning appears.
+#[test]
+fn u06_plan_revisions_then_held_create_start_and_one_status_message() {
+    let (d, st) = tq_setup("u06", true);
+    let c = spawn(&d, None);
+    for (i, t) in ["Draft one", "Draft two", "Draft three"].into_iter().enumerate() {
+        push(&st, call(i as i64 + 1, OWNER, None, OWNER, "task_plan", plan(&[t])));
+        wait("plan revision", 15, || sent_has(&st, &format!("re: ok: Plan revision {} saved", i + 1)));
+    }
+    assert!(tq_calls(&d).is_empty(), "a plan-only request writes nothing to the board: {:?}", tq_calls(&d));
+    push(&st, call(4, OWNER, None, OWNER, "task_run_plan", json!({"revision": 2})));
+    wait("revision 2 refused", 15, || sent_has(&st, "re: refused: revision 2 is not the latest plan revision (3)"));
+    assert!(tq_calls(&d).is_empty(), "an older revision files nothing");
+
+    push(&st, call(5, OWNER, None, OWNER, "task_run_plan", json!({"revision": 3})));
+    wait("filed and started", 15, || sent_has(&st, "re: ok: Plan revision 3: filed held, read back and started: #19 https://github.com/taskqorg/pilotq/issues/19"));
+    let calls = tq_calls(&d);
+    assert_eq!((calls.len(), calls[0][0].as_str(), calls[0][1].as_str(), calls[1][0].as_str(), calls[1][1].as_str()), (2, "add", "Draft three", "start", "19"), "{calls:?}");
+    let op = calls[0].iter().skip_while(|a| *a != "--op-id").nth(1).unwrap().clone();
+    assert!(op.starts_with("pilotq-") && op.ends_with("-t1"), "{op}");
+    assert!(calls[1].contains(&format!("{op}.start")), "{calls:?}");
+    assert!(calls[0].contains(&"Filed by PilotQ pilotq.request.5 for Telegram user 7 in DM 7, plan revision 3.".to_string()), "{calls:?}");
+    let log = fs::read_to_string(d.join("taskq.log")).unwrap();
+    assert!(log.contains(&format!("\"root\": \"{}\"", d.join("root").display())) && log.contains("\"attempt\": null"), "{log}");
+
+    wait("status message", 15, || sent_has(&st, "Task #19 ready: waiting for a free worker."));
+    let status = sent(&st).into_iter().find(|s| s["text"].as_str().unwrap().starts_with("Task #19 ready")).unwrap();
+    let id = status["id"].as_i64().unwrap();
+    set_task(&d, 19, |t| t["state"] = json!("doing"));
+    wait("edit to doing", 15, || sent(&st).iter().any(|s| s["edit"] == true && s["message_id"] == id && s["text"].as_str().unwrap().starts_with("Task #19 doing")));
+    // F14: an observation older than the stored revision is ignored
+    set_task(&d, 19, |t| {
+        t["state"] = json!("ready");
+        t["revision"] = json!(50);
+    });
+    std::thread::sleep(Duration::from_millis(2500));
+    assert!(!sent(&st).iter().any(|s| s["edit"] == true && s["text"].as_str().unwrap().starts_with("Task #19 ready")), "a stale projection overwrote a newer status");
+    set_task(&d, 19, |t| t["state"] = json!("review"));
+    wait("edit to review", 15, || sent(&st).iter().any(|s| s["edit"] == true && s["message_id"] == id && s["text"].as_str().unwrap().contains("a reviewer checks it")));
+    set_task(&d, 19, |t| t["closed"] = json!(true));
+    wait("closing outcome", 15, || sent_has(&st, "Task #19 is closed on the board"));
+    let fin = sent(&st).into_iter().find(|s| s["text"].as_str().unwrap().starts_with("Task #19 is closed")).unwrap();
+    assert!(fin.get("edit").is_none() && fin["id"] != id, "the outcome is its own message");
+    std::thread::sleep(Duration::from_millis(2000));
+    let all = sent(&st);
+    assert!(!all.iter().any(|s| s["edit"] == true && s["message_id"] == fin["id"]), "nothing edits the final outcome");
+    assert_eq!(all.iter().filter(|s| s.get("edit").is_none() && s["text"].as_str().unwrap().starts_with("Task #19 ")).count(), 2, "one status message and one outcome: {all:?}");
+    assert!(!all.iter().any(|s| s["text"].as_str().unwrap().contains("stall") || s["text"].as_str().unwrap().contains("hung")));
+    let a: Value = serde_json::from_slice(&cli(&d, &["audit", "--request", "5", "--json"]).stdout).unwrap();
+    assert_eq!(a[0]["tasks"].as_array().unwrap().iter().map(|t| t["target"].as_str().unwrap()).collect::<Vec<_>>(), ["add #19", "start #19"]);
+    stop(c, d);
+}
+
+// U15: a three-ticket plan loses the network after the board created ticket two. Tickets one and two stay held and nothing
+// starts; after a restart the scan retries the same op IDs, finds ticket two instead of creating it again, files ticket three
+// and starts all three only after every ticket read back held.
+#[test]
+fn u15_network_loss_after_ticket_two_reconciles_the_same_ids() {
+    let (d, st) = tq_setup("u15", true);
+    fs::write(d.join("lose-add-2"), "").unwrap();
+    let c = spawn(&d, None);
+    push(&st, call(1, OWNER, None, OWNER, "task_plan", plan(&["One", "Two", "Three"])));
+    wait("plan", 15, || sent_has(&st, "Plan revision 1 saved"));
+    push(&st, call(2, OWNER, None, OWNER, "task_run_plan", json!({"revision": 1})));
+    wait("unsent reply", 15, || sent_has(&st, "ticket 2 is unsent (taskq add failed: Error: connection reset by peer). Filed so far (held, not started): #19"));
+    let b = board(&d);
+    assert_eq!((b["tasks"]["19"]["state"].as_str(), b["tasks"]["20"]["state"].as_str()), (Some("held"), Some("held")), "created tickets stay held");
+    assert!(tq_calls(&d).iter().all(|c| c[0] == "add"), "nothing starts before every ticket reads back");
+    drop(c);
+
+    fs::remove_file(d.join("board-down")).unwrap();
+    let c = spawn(&d, None);
+    wait("started after restart", 20, || sent_has(&st, "Plan revision 1: filed held, read back and started: #19"));
+    let b = board(&d);
+    assert_eq!(b["creates"], 3, "ticket two was found by its op ID, not created again");
+    assert!(["19", "20", "21"].iter().all(|n| b["tasks"][n]["state"] == "ready"), "{b}");
+    let calls = tq_calls(&d);
+    let op = |c: &Vec<String>| c.iter().skip_while(|a| *a != "--op-id").nth(1).cloned().unwrap_or_default();
+    let adds: Vec<String> = calls.iter().filter(|c| c[0] == "add").map(op).collect();
+    assert!(adds.iter().filter(|o| o.ends_with("-t2")).count() >= 2 && adds.iter().filter(|o| o.ends_with("-t1")).count() == 1, "{adds:?}");
+    let first_start = calls.iter().position(|c| c[0] == "start").unwrap();
+    assert!(calls[first_start..].iter().all(|c| c[0] == "start") && calls[first_start..].len() == 3, "start only after every create: {calls:?}");
+    assert!(sent_has(&st, "#20 https://github.com/taskqorg/pilotq/issues/20, #21"));
+    stop(c, d);
+}
+
+// U07, U08, L02: the worker question reaches the originating forum topic; a reply to the older question writes nothing and
+// shows the current one; a person without the taskq grant writes nothing and is told why; the owner's reply to the current
+// question is written with its revision and op ID. Typing goes to the same topic while a turn runs and stops after it.
+#[test]
+fn u07_question_relay_and_bound_answers() {
+    let (d, st) = tq_setup("u07", true);
+    assert!(cli(&d, &["users", "grant", "8", "chat"]).status.success());
+    let c = spawn(&d, None);
+    let topic = Some(5);
+    push(&st, text(1, -100, topic, OWNER, "slow 5"));
+    wait("typing in the topic", 15, || st.lock().unwrap().actions.iter().any(|a| a["chat_id"] == -100 && a["message_thread_id"] == 5 && a["action"] == "typing"));
+    wait("slow answer", 15, || sent_has(&st, "re: slow 5"));
+    let typed = st.lock().unwrap().actions.len();
+    std::thread::sleep(Duration::from_secs(5));
+    assert_eq!(st.lock().unwrap().actions.len(), typed, "typing stops after the terminal state");
+    assert!(st.lock().unwrap().actions.iter().all(|a| a["message_thread_id"] == 5), "typing only in the originating topic");
+
+    push(&st, call(2, -100, topic, OWNER, "task_plan", plan(&["Docs"])));
+    wait("plan", 15, || sent_has(&st, "Plan revision 1 saved"));
+    push(&st, call(3, -100, topic, OWNER, "task_run_plan", json!({"revision": 1})));
+    wait("started", 15, || sent_has(&st, "started: #19"));
+    set_task(&d, 19, |t| {
+        t["state"] = json!("ask");
+        t["card"] = json!("Done: drafted\nProblem: pick a wording\n1. short ★\n2. long");
+    });
+    let question = |needle: &str| sent(&st).into_iter().find(|s| s["text"].as_str().unwrap().starts_with("Task #19 asks:") && s["text"].as_str().unwrap().contains(needle));
+    wait("first question", 15, || question("short ★").is_some());
+    let q1 = question("short ★").unwrap();
+    assert_eq!((q1["chat_id"].as_i64(), q1["message_thread_id"].as_i64()), (Some(-100), Some(5)), "the question reaches the originating topic");
+    set_task(&d, 19, |t| t["card"] = json!("Done: drafted twice\nProblem: pick again\n1. tiny ★\n2. huge"));
+    wait("second question", 15, || question("tiny ★").is_some());
+    let q2 = question("tiny ★").unwrap();
+
+    push(&st, reply(4, -100, topic, OWNER, q1["id"].as_i64().unwrap(), "short"));
+    wait("stale answer refused", 15, || sent_has(&st, "That question is no longer current; nothing was written. Task #19 now asks:\nDone: drafted twice"));
+    push(&st, reply(5, -100, topic, 8, q2["id"].as_i64().unwrap(), "2"));
+    wait("foreign answer refused", 15, || sent_has(&st, "Not written to task #19: 8 has no project:pilotq grant"));
+    assert!(!tq_calls(&d).iter().any(|c| c[0] == "answer"), "a stale or foreign answer writes nothing");
+
+    push(&st, reply(6, -100, topic, OWNER, q2["id"].as_i64().unwrap(), "2"));
+    wait("answer written", 15, || sent_has(&st, "Answer written to task #19; it is now doing: a worker is on it."));
+    let answers: Vec<_> = tq_calls(&d).into_iter().filter(|c| c[0] == "answer").collect();
+    let rev = board(&d)["tasks"]["19"]["revision"].as_i64().unwrap() - 1;
+    assert_eq!(answers.len(), 1);
+    assert_eq!(&answers[0][..4], ["answer", "19.2", "--revision", &rev.to_string()], "{answers:?}");
+    assert!(answers[0].iter().any(|a| a.starts_with("pilotq-") && a.contains("-a")), "{answers:?}");
+    assert!(sent(&st).iter().filter(|s| s["text"].as_str().unwrap().contains("written")).all(|s| s["message_thread_id"] == 5));
+    assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE kind='answer'"), 3, "each reply is one recorded request");
+    stop(c, d);
+}
+
+// U10, U13, L06, L12, L16: a transition made while PilotQ is down is found by the scan after restart; /new keeps the task;
+// status by issue URL creates nothing; another board's URL is refused; a queue pause reports that the worker still runs;
+// parking reports TaskQ's later state; a person without the grant changes nothing; a deleted status message is replaced.
+#[test]
+fn u10_restart_new_status_pause_and_park() {
+    let (d, st) = tq_setup("u10", true);
+    assert!(cli(&d, &["users", "grant", "8", "chat"]).status.success());
+    let c = spawn(&d, None);
+    push(&st, call(1, OWNER, None, OWNER, "task_plan", plan(&["Docs"])));
+    wait("plan", 15, || sent_has(&st, "Plan revision 1 saved"));
+    push(&st, call(2, OWNER, None, OWNER, "task_run_plan", json!({"revision": 1})));
+    wait("status", 15, || sent_has(&st, "Task #19 ready"));
+    drop(c);
+    set_task(&d, 19, |t| t["state"] = json!("doing"));
+    let c = spawn(&d, None);
+    wait("missed transition recovered", 15, || sent(&st).iter().any(|s| s["edit"] == true && s["text"].as_str().unwrap().starts_with("Task #19 doing")));
+    push(&st, text(3, OWNER, None, OWNER, "/new"));
+    wait("new", 15, || sent_has(&st, "New conversation started"));
+    push(&st, call(4, OWNER, None, OWNER, "task_status", json!({"task": "https://github.com/taskqorg/pilotq/issues/19"})));
+    wait("status by URL", 15, || sent_has(&st, "re: ok: Task #19 doing: a worker is on it"));
+    push(&st, call(5, OWNER, None, OWNER, "task_status", json!({"task": "https://github.com/taskqorg/other/issues/19"})));
+    wait("other board refused", 15, || sent_has(&st, "re: refused: https://github.com/taskqorg/other/issues/19 is not a task on taskqorg/pilotq"));
+    push(&st, call(6, 8, None, 8, "task_park", json!({"task": "19", "reason": "x"})));
+    wait("ungranted park refused", 15, || sent_has(&st, "re: refused: 8 has no project:pilotq grant; nothing was done"));
+    push(&st, call(7, OWNER, None, OWNER, "queue_pause", json!({})));
+    wait("pause", 15, || sent_has(&st, "re: ok: TaskQ admission is paused on this host; no new task starts. Running workers continue. Still running: #19."));
+    assert_eq!(board(&d)["tasks"]["19"]["state"], "doing", "a queue pause does not stop the worker");
+    // L12: the status message was deleted, so the next update goes out as a new message in the same route
+    st.lock().unwrap().edit_gone = true;
+    push(&st, call(8, OWNER, None, OWNER, "task_park", json!({"task": "#19", "reason": "owner asked"})));
+    wait("park", 15, || sent_has(&st, "re: ok: Task #19 is parked: TaskQ state later."));
+    wait("status parked", 15, || sent(&st).iter().any(|s| s.get("edit").is_none() && s["chat_id"] == OWNER && s["text"].as_str().unwrap().starts_with("Task #19 parked")));
+    let b = board(&d);
+    assert_eq!((b["creates"].as_i64(), b["paused"].as_bool()), (Some(1), Some(true)), "status reads never create");
+    assert_eq!(tq_calls(&d).iter().map(|c| c[0].as_str()).collect::<Vec<_>>(), ["add", "start", "service", "later"]);
+    stop(c, d);
+}
+
+// F07, L16: without create_claim_issue creation is disabled with that reason and plain add never runs; the conversation goes
+// on. With the claim but the board down, the authorized create stays unsent with its reason, and the periodic scan files and
+// starts it once the board is back, telling the route.
+#[test]
+fn f07_board_unavailable_or_no_create_claim() {
+    let (d, st) = tq_setup("f07", false);
+    let c = spawn(&d, None);
+    push(&st, call(1, OWNER, None, OWNER, "task_plan", plan(&["Docs"])));
+    wait("plan", 15, || sent_has(&st, "Plan revision 1 saved"));
+    push(&st, call(2, OWNER, None, OWNER, "task_run_plan", json!({"revision": 1})));
+    wait("disabled", 15, || sent_has(&st, "re: refused: task creation is disabled: create_claim_issue is not configured"));
+    push(&st, text(3, OWNER, None, OWNER, "hello"));
+    wait("conversation continues", 15, || sent_has(&st, "re: hello"));
+    assert!(tq_calls(&d).is_empty(), "no plain add fallback");
+
+    root(&d, true);
+    fs::write(d.join("board-down"), "").unwrap();
+    push(&st, call(4, OWNER, None, OWNER, "task_run_plan", json!({"revision": 1})));
+    wait("unsent", 15, || sent_has(&st, "ticket 1 is unsent (taskq add failed: Error: board unreachable: connection refused)"));
+    wait("taskq health", 15, || try_query(&d, "SELECT count(*) FROM plan_runs WHERE state='creating' AND reason LIKE '%board unreachable%'") == Some(1));
+    fs::remove_file(d.join("board-down")).unwrap();
+    wait("scan files it", 15, || sent_has(&st, "Plan revision 1: filed held, read back and started: #19"));
+    assert_eq!(board(&d)["creates"], 1);
+    stop(c, d);
+}
+
+/// Runs `taskq` against the real board from `root`, without any attempt identity.
+fn real_taskq(root: &Path, args: &[&str]) -> String {
+    let o = Command::new(std::env::var("PILOTQ_A8_TASKQ").unwrap()).args(args).env("TASKQ_ROOT", root).env_remove("TASKQ_ATTEMPT").env_remove("TASKQ_TASK").env_remove("TASKQ_ROLE").current_dir(root).output().unwrap();
+    String::from_utf8_lossy(&o.stdout).to_string()
+}
+
+// A8 (owner, 2026-10-23): the real PilotQ binary, real Codex under PilotQ's subscription login, the real taskqorg/pilotq board
+// and TaskQ CLI. Telegram is the local fake Bot API with two synthetic users. One small real docs task goes from discussion to
+// the reviewer outcome with a PilotQ restart while it is `doing`; the journal, audit record, board and every recorded message
+// are checked, U23 links included, and the U02/U18 two-user cases are rerun. It files and publishes a real task, so it runs
+// only on request:
+//   PILOTQ_A8_ROOT=<pilotq checkout with create_claim_issue> PILOTQ_A8_TASKQ=<taskq> PILOTQ_A8_CODEX_HOME=<logged-in Codex home> \
+//   cargo test --locked --test telegram a8_live -- --ignored --nocapture
+#[test]
+#[ignore = "files and publishes a real task on taskqorg/pilotq"]
+fn a8_live_board_run() {
+    let root = PathBuf::from(std::env::var("PILOTQ_A8_ROOT").expect("PILOTQ_A8_ROOT"));
+    let (d, st) = setup("a8", vec![]);
+    // PilotQ's own Codex home: only the subscription login is copied, so no personal config loads
+    fs::create_dir_all(d.join("codex")).unwrap();
+    fs::copy(PathBuf::from(std::env::var("PILOTQ_A8_CODEX_HOME").expect("PILOTQ_A8_CODEX_HOME")).join("auth.json"), d.join("codex/auth.json")).unwrap();
+    fs::set_permissions(d.join("codex/auth.json"), fs::Permissions::from_mode(0o600)).unwrap();
+    // the login copy goes when the test ends, passed or failed; the rest of a failed run stays for a8_after_recheck
+    struct Login(PathBuf);
+    impl Drop for Login {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+    let _login = Login(d.join("codex/auth.json"));
+    limits(&d, Path::new("codex"), json!({"first_event": 60, "silent": 60, "deadline": 240}));
+    let cfg = d.join("config.json");
+    let mut c: Value = serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
+    c["taskq"] = json!({"bin": std::env::var("PILOTQ_A8_TASKQ").unwrap(), "root": root, "poll": 15});
+    fs::write(&cfg, c.to_string()).unwrap();
+    let say = |m: &str| eprintln!("a8 {}: {m}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+    let model = |id: i64| query(&d, &format!("SELECT count(*) FROM requests WHERE id={id} AND state='answered'")) == 1;
+
+    // U18: an ungranted person is ignored silently and not replayed after the grant
+    let mut c = spawn(&d, None);
+    push(&st, text(1, 8, None, 8, "hello before any grant"));
+    wait("stranger ignored", 30, || try_query(&d, "SELECT count(*) FROM updates WHERE update_id=1 AND disposition='ignored'") == Some(1));
+    assert!(cli(&d, &["users", "grant", "8", "chat"]).status.success());
+    // U02: a DM per person, then two people in one shared forum topic
+    assert!(cli(&d, &["routes", "set", "-100:5", "shared"]).status.success());
+    push(&st, text(2, 8, None, 8, "Reply with one short sentence: what is PilotQ?"));
+    push(&st, text(3, -100, Some(5), 8, "Reply with one word: hello."));
+    push(&st, text(4, -100, Some(5), OWNER, "Reply with one word: thanks."));
+    wait("three answers", 300, || [1, 2, 3].iter().all(|id| try_query(&d, &format!("SELECT count(*) FROM requests WHERE id={id} AND state='answered'")) == Some(1)));
+    assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE update_id=1"), 0, "the ignored update is not replayed");
+    assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE session='-100:5' AND sender IN (7, 8)"), 2, "one shared topic conversation keeps both authors");
+    assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE id=1 AND session='dm:8'"), 1);
+    say("U02/U18 answered");
+
+    // U05: discussion files nothing
+    push(&st, text(5, OWNER, None, OWNER, "Plan one pilotq docs task with task_plan and show me the saved revision; do not run it. The task: in docs/projects.md, add one sentence saying that PilotQ files its own tasks on the pilotq board."));
+    wait("plan answered", 300, || try_query(&d, "SELECT count(*) FROM requests WHERE id=4 AND state IN ('answered','failed','uncertain')") == Some(1));
+    assert!(model(4), "plan request: {:?}", texts(&st));
+    assert_eq!((query(&d, "SELECT count(*) FROM plans WHERE revision=1"), query(&d, "SELECT count(*) FROM plan_runs")), (1, 0), "a plan revision is saved and nothing is filed");
+    say("plan revision 1 saved");
+
+    // U06: an authorized revision is filed held, read back and started
+    push(&st, text(6, OWNER, None, OWNER, "Run plan revision 1 now with task_run_plan."));
+    wait("run answered", 300, || try_query(&d, "SELECT count(*) FROM requests WHERE id=5 AND state IN ('answered','failed','uncertain')") == Some(1));
+    assert_eq!(query(&d, "SELECT count(*) FROM plan_runs WHERE state='started'"), 1, "plan run: {:?}", texts(&st));
+    let n = query(&d, "SELECT number FROM tasks");
+    let url = format!("https://github.com/taskqorg/pilotq/issues/{n}");
+    let run_reply = query_text(&d, "SELECT reply FROM requests WHERE id=5");
+    assert!(run_reply.contains(&format!("#{n}")), "the reply names the task: {run_reply}");
+    let issue = real_taskq(&root, &["inbox", &n.to_string()]);
+    assert!(issue.contains("Filed by PilotQ pilotq.request.5 for Telegram user 7 in DM 7, plan revision 1."), "{issue}");
+    assert!(issue.contains("taskq: hold") && issue.contains("taskq: start"), "held, then started: {issue}");
+    say(&format!("filed and started #{n}"));
+
+    let status = |s: &str| format!("Task #{n} {s}.\n{url}");
+    let doing = status("doing: a worker is on it");
+    let exact = |t: &str| sent(&st).iter().any(|s| s["text"] == t);
+    wait("doing", 1800, || exact(&doing));
+    // a PilotQ restart while the worker runs: TaskQ keeps the task; the scan keeps reporting it
+    c.kill().unwrap();
+    c.wait().unwrap();
+    say("PilotQ killed while doing; restarting");
+    c = spawn(&d, None);
+    let closed = format!("Task #{n} is closed on the board; its verdict and evidence are on the issue: {url}");
+    let end = Instant::now() + Duration::from_secs(7200);
+    while !exact(&closed) {
+        assert!(Instant::now() < end, "timed out waiting for the reviewer outcome: {:?}", texts(&st));
+        // a worker question is answered by the synthetic owner with its recommended option, by reply
+        let q = sent(&st).into_iter().filter(|s| s["text"].as_str().unwrap().starts_with(&format!("Task #{n} asks:"))).last();
+        if let Some(q) = q.filter(|q| try_query(&d, &format!("SELECT count(*) FROM requests WHERE reply_to={}", q["id"])) == Some(0)) {
+            let k = q["text"].as_str().unwrap().lines().find(|l| l.ends_with('★')).and_then(|l| l.split('.').next()).unwrap_or("1").to_string();
+            say(&format!("answering the worker question with {k}"));
+            let id = 100 + query(&d, "SELECT count(*) FROM requests");
+            push(&st, reply(id, OWNER, None, OWNER, q["id"].as_i64().unwrap(), &k));
+        }
+        std::thread::sleep(Duration::from_secs(5));
+    }
+    say("reviewer outcome reached");
+    std::thread::sleep(Duration::from_secs(20));
+
+    // recorded messages: one status message edited in place, the outcome its own message, nothing after it, all in the DM
+    let all = sent(&st);
+    let task_msgs: Vec<&Value> = all.iter().filter(|s| s["text"].as_str().unwrap().starts_with(&format!("Task #{n} "))).collect();
+    let news: Vec<&&Value> = task_msgs.iter().filter(|s| s.get("edit").is_none() && !s["text"].as_str().unwrap().contains(" asks:")).collect();
+    assert_eq!(news.len(), 2, "one status message and one outcome: {task_msgs:?}");
+    assert!(news[0]["text"].as_str().unwrap().starts_with(&format!("Task #{n} ")) && news[1]["text"] == closed.as_str());
+    let edits = task_msgs.iter().filter(|s| s["edit"] == true);
+    assert!(edits.clone().all(|s| s["message_id"] == news[0]["id"]), "every update edits the status message");
+    assert!(edits.clone().any(|s| s["text"] == doing.as_str()) && edits.clone().any(|s| s["text"] == status("review: the worker handed in a result; a reviewer checks it").as_str()));
+    assert!(task_msgs.iter().all(|s| s["chat_id"] == OWNER), "task messages stay in the originating route");
+    assert!(!all.iter().any(|s| s["edit"] == true && s["message_id"] == news[1]["id"]), "nothing edits the outcome");
+    assert!(!all.iter().any(|s| { let t = s["text"].as_str().unwrap(); t.contains("stall") || t.contains("hung") }));
+    for (id, chat, topic) in [(1, 8, None), (2, -100, Some(5)), (3, -100, Some(5))] {
+        let r = query_text(&d, &format!("SELECT reply FROM requests WHERE id={id}"));
+        assert!(all.iter().any(|s| s["text"] == r.as_str() && s["chat_id"] == chat && s.get("message_thread_id").and_then(Value::as_i64) == topic), "reply {id} in its route");
+    }
+    // acknowledgements go out as HTML: `Received. Request <b>#N</b> is queued.`
+    let acks = all.iter().filter(|s| s["text"].as_str().unwrap().starts_with("Received. Request <b>#")).count() as i64;
+    assert_eq!(acks, query(&d, "SELECT count(*) FROM requests"), "one acknowledgement per request");
+    c.kill().unwrap();
+    c.wait().unwrap();
+    a8_after(&d, n);
+    say(&format!("A8 passed: task #{n}"));
+    fs::remove_dir_all(d).unwrap();
+}
+
+/// A8's checks on the stopped install: U23 audit record and CoreQ trace, and the board's closing state.
+fn a8_after(d: &Path, n: i64) {
+    // U23: the audit record joins the request to its task and trace; the task text carries the trace ID
+    let a: Value = serde_json::from_slice(&cli(d, &["audit", "--request", "5", "--json"]).stdout).unwrap();
+    assert_eq!(a[0]["tasks"].as_array().unwrap().iter().map(|t| t["target"].as_str().unwrap().to_string()).collect::<Vec<_>>(), [format!("add #{n}"), format!("start #{n}")]);
+    assert_eq!((a[0]["trace"].as_str(), a[0]["who"]["id"].as_i64(), a[0]["outcome"].as_str()), (Some("pilotq.request.5"), Some(OWNER), Some("answered")));
+    let tel = coreq::telemetry::Reader::open(&d.join("telemetry.sqlite")).unwrap().export(0, 0, 1000).unwrap().to_string();
+    assert!(tel.contains("\"pilotq.request.5\""), "the request's CoreQ trace exists");
+    let state = Command::new("gh").args(["api", &format!("repos/taskqorg/pilotq/issues/{n}"), "--jq", ".state + \" \" + .state_reason"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&state.stdout).trim(), "closed completed", "the board shows the task completed");
+    let body = Command::new("gh").args(["api", &format!("repos/taskqorg/pilotq/issues/{n}"), "--jq", ".body"]).output().unwrap();
+    let body = String::from_utf8_lossy(&body.stdout);
+    assert!(body.contains("Filed by PilotQ pilotq.request.5 for Telegram user 7 in DM 7, plan revision 1.") && body.contains("op-id: pilotq-"), "{body}");
+}
+
+/// Reruns A8's post-run checks on a kept install, for a run that ended before them: PILOTQ_A8_DIR=<install> PILOTQ_A8_TASK=<N>.
+#[test]
+#[ignore = "checks a kept A8 install against the real board"]
+fn a8_after_recheck() {
+    a8_after(Path::new(&std::env::var("PILOTQ_A8_DIR").expect("PILOTQ_A8_DIR")), std::env::var("PILOTQ_A8_TASK").expect("PILOTQ_A8_TASK").parse().unwrap());
+}
+
+fn query_text(d: &Path, sql: &str) -> String {
+    let c = rusqlite::Connection::open_with_flags(d.join("journal.sqlite"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    c.query_row(sql, [], |r| r.get(0)).unwrap()
 }

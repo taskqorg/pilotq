@@ -202,7 +202,57 @@ Run on 2026-10-22 on one Mac (macOS 27.0.1), pilotq 0.1.0 at commit `56199c9` bu
 | U01 | Pass | In the DM, `hi` and a follow-up ran as requests #23 and #24 in one conversation, the second resuming the stored Codex thread; both were answered and delivered after their acknowledgements. The follow-up repeated the greeting, so the run shows thread continuity, not a reply that uses the earlier answer |
 | U12 | Pass | `/stop` cancelled the running request in the DM (#27) and in the shared topic (#31). Both runs ended `fenced`, and neither posted a late reply. `/status` in the topic then read `Nothing is running or queued` |
 | U16 | Pass | During a running turn `/status` answered `Running: #24. Queued: none.` without the model. `/new` advanced the DM and topic conversation generations and cleared their threads; earlier requests stayed in the journal |
-| U02, U18 two-user | Open | On 2026-10-23 the owner accepted the deterministic evidence (`journal::u02_route_session_policy`, `u18_cli_grant_admits_only_new_requests`) for the first slice. A live second-user request after the grant stays unproven until a later live run |
+| U02, U18 two-user | Covered by the step 3 scripted run (synthetic users, fake Bot API; see A8 below). Earlier: open | On 2026-10-23 the owner accepted the deterministic evidence (`journal::u02_route_session_policy`, `u18_cli_grant_admits_only_new_requests`) for the first slice. A live second-user request after the grant stays unproven until a later live run |
 | DM topics | Note | The test bot has topics enabled, so DM messages carry a thread ID (`1065394`); replies went to that thread. Request #22, a non-text DM update on the pre-fix build, drew the unsupported reply |
+
+## Step 3 qualification
+
+Results for the [section 10](../pilotq.md#10-adoption-sequence) step 3 slice, task [#18](https://github.com/taskqorg/pilotq/issues/18), against the [first TaskQ tool contract](../pilotq.md#first-taskq-tool-contract). Deterministic traces run in `cargo test --locked` with a fake TaskQ CLI (`FAKE_TASKQ` in `tests/telegram.rs`: argument log, op-id receipts, revision-checked answers, board-down and lost-response faults), a fake Codex that makes one complete dynamic tool call per turn, the fake Bot API (messages, edits, typing) and a 1 s board scan. Fakes do not qualify the real board, Codex dynamic tools or Telegram; the live run is listed separately.
+
+| Case | Deterministic result | Traces |
+|---|---|---|
+| U05 | Pass | `u06_plan_revisions_then_held_create_start_and_one_status_message` (three revisions write nothing; revision 2 cannot run once revision 3 exists), `journal::plans_and_task_projections` (a revision cannot be run by the request that saved it) |
+| U06 | Pass | `u06_plan_revisions_then_held_create_start_and_one_status_message`: `add --op-id` held, readback, `start --op-id <op>.start`, author, route and revision in the task, one task URL, the closing outcome links the issue |
+| U07 | Pass | `u07_question_relay_and_bound_answers`: the question reaches the originating topic; the owner's reply writes `answer 19.2 --revision R --op-id` |
+| U08 | Pass | `u07_question_relay_and_bound_answers`: a reply to the older question and a reply from a person without the grant write nothing and say why |
+| U10 | Pass | `u10_restart_new_status_pause_and_park`: restart and `/new` keep the task; status by issue URL creates nothing; another board's URL is refused |
+| U13 | Pass | `u10_restart_new_status_pause_and_park`: a queue pause reports the running worker as still running; park reports TaskQ's `later` |
+| U15 | Pass | `u15_network_loss_after_ticket_two_reconciles_the_same_ids`: the board created ticket two and the response was lost; after restart the same op ID finds it, ticket three is filed, all three start only after |
+| F04 | Partial | Task creation: lost create response reconciled by op ID (U15 trace). Direct-effect receipts: step 4 |
+| F07 | Pass | `f07_board_unavailable_or_no_create_claim`: no `create_claim_issue` disables creation with that reason and never runs plain `add`; a down board leaves the create unsent with its reason |
+| F09 | Partial | Ticket URLs of another board are refused (U10 trace); Telegram text reaches TaskQ only as argument-array items. Tool output and project redirection: step 4 |
+| F14 | Pass | `u06_…` (an observation older than the stored revision changes nothing), `journal::plans_and_task_projections` |
+| L01 | Pass | `u06_…`: the status message names what the task waits for (`ready: waiting for a free worker`); no hung or stall warning. Fast-answer suppression stays unimplemented |
+| L02 | Partial | `u07_…`: typing goes only to the originating topic while the turn runs and stops after it. Typing is bounded by the absolute deadline, not by the last useful event |
+| L03 | Partial | `journal::plans_and_task_projections`: a burst leaves one pending status update; the question and the outcome are never coalesced. Incident notices across restart: step 5 |
+| L06 | Pass | `u10_…`: `/new` keeps the task and its subscription; an ungranted person's TaskQ call changes nothing. Earlier traces cover stop, status and stale runs |
+| L12 | Pass | `u06_…`: one status message edited in place; the outcome is its own message and nothing edits it; `journal::…` (a superseded update is never sent). A deleted status message is replaced by a new one in the same route (`u10_…`) |
+| L16 | Pass | `u10_…` (a transition made while PilotQ was down is found by the scan after restart), `f07_…` (the scan files a deferred create when the board returns), `u15_…` |
+| U23 | Partial | The request that filed a task lists `add #N` and `start #N` in its audit record (`u06_…`); the task carries the request trace ID. Live check below |
+
+### Scripted live-board run (A8)
+
+The owner replaced the human test-bot run on 2026-10-23 (root [section 5](../pilotq.md#first-taskq-tool-contract)). `a8_live_board_run` in `tests/telegram.rs` runs the real PilotQ binary with real Codex (PilotQ's own Codex home holding only the subscription login), the real `taskqorg/pilotq` board and TaskQ CLI. Telegram is the local fake Bot API with two synthetic users, 7 (configured owner) and 8. It files and publishes a real task, so it is `#[ignore]` and runs only on request:
+
+```sh
+PILOTQ_A8_ROOT=<pilotq checkout with create_claim_issue> PILOTQ_A8_TASKQ=<taskq binary> PILOTQ_A8_CODEX_HOME=<logged-in Codex home> \
+  cargo test --locked --test telegram a8_live -- --ignored --nocapture
+```
+
+It checks, in order: U18 (an ungranted message is ignored and not replayed after `users grant`), U02 (a DM per person and two people in one shared topic, each reply in its own route), U05 (a plan request saves revision 1 and files nothing), U06 (the next request files it held, reads it back and starts it; the issue carries the request trace ID, author, route and revision), then a PilotQ restart while the task is `doing`, the status message edited in place through `review`, the closing outcome as its own message, U23 (the audit record lists `add #N` and `start #N`, the CoreQ trace exists) and the issue closed as completed. A worker question gets the recommended option as a reply.
+
+**Result, 2026-10-23, macOS 27.0.1:** pass on run 2, with one test-side assertion rechecked. Build `867fabc` (debug), codex-cli 0.159.3 (model `gpt-6.1-sol`), TaskQ CLI on the Mac host, root = the PR worktree with `create_claim_issue` #20.
+
+| Step | Result | Evidence |
+|---|---|---|
+| U18, U02 | Pass | The ungranted update stayed `ignored` and was not replayed after `users grant 8 chat`; person 8's DM ran as `dm:8`; persons 7 and 8 in the shared topic ran as one `-100:5` conversation with their own authors; each reply went to its own chat and thread |
+| U05 | Pass | Real Codex called `task_plan`; revision 1 saved, no plan run, no board write |
+| U06 | Pass | The next request ran `task_run_plan`: [#21](https://github.com/taskqorg/pilotq/issues/21) filed held with `op-id: pilotq-196702e68ba09fa0-p1-t1`, read back, started; its scope line reads `Filed by PilotQ pilotq.request.5 for Telegram user 7 in DM 7, plan revision 1.` |
+| Restart mid-run | Pass | PilotQ was killed once the status message read `doing` and restarted; the worker continued under TaskQ |
+| Reviewer outcome | Pass | One status message edited in place through `review`; the closing outcome arrived as its own message and nothing edited it. The worker's PR [#22](https://github.com/taskqorg/pilotq/pull/22) merged; #21 reads `closed completed`. About 9 minutes from start to close; no worker question was asked |
+| Acknowledgements | Rechecked | The run's own assertion expected a plain-text prefix, but acknowledgements are HTML (`Request <b>#N</b>`), so it failed after all checks above had passed. The journal holds one acknowledgement per request (5 of 5). The assertion is fixed |
+| U23 | Pass | `a8_after_recheck` on run 2's kept install: the audit record of request 5 lists `add #21` and `start #21` with trace `pilotq.request.5`; the CoreQ store holds that trace; the issue carries it |
+
+Run 1 failed before any board write and exposed a defect. Three requests started Codex together on a fresh Codex home, and one app-server exited with `failed to initialize sqlite state runtime`. PilotQ reported it only as `Codex exited without a terminal event`. Fix: Codex startup is serialized until `initialize` answers, and the stderr reason goes to the operator log, never to a reply (`concurrent_codex_starts_do_not_race`, which failed without the lock). The live test bot was not used. It ran the pre-step3 build and journal throughout, restored after the earlier attempt. A later owner check there is optional.
 
 Completion evidence is a report with exact versions, mechanism-to-case results, unresolved failures, recovery receipts, task links and aggregate metrics. Maintain 62 scenario-family entries: U01–U18, F01–F17, C01–C07 and L01–L20. Record deterministic and live/platform results separately, including not run. Runtime research, a healthy service or green repository CI cannot replace it.
