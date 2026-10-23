@@ -19,7 +19,7 @@ fn now() -> i64 {
 
 /// Test hook for F01: SIGKILL this process at a named point, so no destructor or flush runs.
 // ponytail: env-gated fault point; a fault-injection framework only if more points appear.
-fn fault(point: &str) {
+pub(crate) fn fault(point: &str) {
     if std::env::var("PILOTQ_FAULT").is_ok_and(|p| p == point) {
         let _ = std::process::Command::new("kill").args(["-9", &std::process::id().to_string()]).status();
         std::thread::sleep(Duration::from_secs(10));

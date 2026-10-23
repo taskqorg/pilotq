@@ -1,6 +1,8 @@
 //! PilotQ service and operator CLI on coreq (pilotq.md § 9).
 
+mod direct;
 mod journal;
+mod keys;
 mod manager;
 mod taskq;
 mod telegram;
@@ -12,7 +14,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const USAGE: &str = "usage: pilotq service install|run|stop|status | status [--json] | update [--check] | selftest | version | ask TEXT [--json]
   users list | users show ID | users grant ID GRANT.. | users revoke ID [GRANT..] | users remember ID KEY VALUE [--private] | users forget ID KEY
-  routes list | routes set CHAT[:TOPIC] shared|isolated        (users and routes accept --json)
+  routes list | routes set CHAT[:TOPIC] shared|isolated | projects list | projects add NAME ROOT
+  keys list | keys add NAME PURPOSE TOOL.. (value on stdin) | keys grant NAME ID|route:CHAT[:TOPIC].. | keys revoke NAME [WHO..]
+  (users, routes, projects and keys accept --json)
   audit [--user ID] [--route cli|CHAT[:TOPIC]] [--project P] [--since UNIX_SECONDS] [--request ID] [--json]";
 /// A status.json older than this reads unknown (coreq.md § status.json).
 const FRESH: u64 = 60;
@@ -57,6 +61,12 @@ struct Config {
     api_url: Option<url::Url>,
     codex: manager::Codex,
     taskq: Option<taskq::Taskq>,
+    direct: direct::Direct,
+}
+
+/// The key store and the GitHub CLI the direct tools use (§ 5, § 8).
+fn direct(t: &Tool, gh: Option<&str>) -> direct::Direct {
+    direct::Direct { gh: gh.unwrap_or("gh").into(), keys: keys::Keys(t.install.join("keys.json")) }
 }
 
 /// None when no bot is configured yet; an unsafe or malformed file is an error, never ignored.
@@ -85,7 +95,7 @@ fn config(t: &Tool) -> Result<Option<Config>, String> {
         (None, None) => None,
         _ => return Err("config.json: taskq needs bin and root".into()),
     };
-    Ok(Some(Config { token, owner, api_url, codex, taskq }))
+    Ok(Some(Config { token, owner, api_url, codex, taskq, direct: direct(t, v["gh"].as_str()) }))
 }
 
 fn now() -> u64 {
@@ -134,6 +144,12 @@ fn service_run(t: &Tool) -> ! {
     }
     // § 12: reconcile runs a dead process left behind before anything new starts
     journal.reconcile(now() as i64).unwrap_or_else(|e| t.die(&e));
+    // F04: an effect written without a receipt is read back, never repeated
+    if let Some(c) = &cfg
+        && let Err(e) = direct::reconcile(&c.direct, &journal)
+    {
+        eprintln!("effects: {e}");
+    }
     // a drain left by an update applies to the process it restarted, not to this one
     let _ = std::fs::remove_file(t.install.join(DRAIN));
     let j: telegram::Shared = Arc::new(Mutex::new(journal));
@@ -150,8 +166,8 @@ fn service_run(t: &Tool) -> ! {
         let (j, wake) = (j.clone(), Arc::new(tokio::sync::Notify::new()));
         let deadline = c.codex.limits.deadline;
         let tq = c.taskq.map(Arc::new);
-        let (mj, mwake, codex, drain, mtq) = (j.clone(), wake.clone(), c.codex, t.install.join(DRAIN), tq.clone());
-        std::thread::spawn(move || manager::serve(codex, mj, mwake, || now() as i64, drain, mtq));
+        let (mj, mwake, codex, drain, mtq, d) = (j.clone(), wake.clone(), c.codex, t.install.join(DRAIN), tq.clone(), Arc::new(c.direct));
+        std::thread::spawn(move || manager::serve(codex, mj, mwake, || now() as i64, drain, mtq, d));
         if let Some(tq) = tq {
             let (wj, wwake) = (j.clone(), wake.clone());
             std::thread::spawn(move || taskq::watch(tq, wj, wwake));
@@ -192,7 +208,7 @@ fn ask(t: &Tool, text: &str) -> Result<Value, (Value, String)> {
     j.bootstrap(cfg.owner, now() as i64).map_err(plain)?;
     let r = j.ask(cfg.owner, text, now() as i64).map_err(plain)?;
     let j = Mutex::new(j);
-    manager::run(&cfg.codex, &j, &r, || now() as i64, cfg.taskq.as_ref()).map_err(plain)?;
+    manager::run(&cfg.codex, &j, &r, || now() as i64, cfg.taskq.as_ref(), &cfg.direct).map_err(plain)?;
     let (state, reply, error) = j.lock().unwrap().request(r.request).map_err(plain)?;
     let v = json!({"request": r.request, "state": state, "reply": reply, "error": error});
     if state == "answered" { Ok(v) } else { Err((v, format!("request #{} {state}: {}", r.request, error.unwrap_or_default()))) }
@@ -223,7 +239,7 @@ fn fact(f: &journal::Fact) -> Value {
     json!({"key": f.key, "value": f.value, "private": f.private, "source": f.source, "revision": f.revision})
 }
 
-/// `users` and `routes` (§ 9, R10). The operator acts as the bootstrap owner from protected config; writes return the readback.
+/// `users`, `routes` and `projects` (§ 5, § 9, R10). The operator acts as the bootstrap owner from protected config; writes return the readback.
 fn admin(t: &Tool, a: &[&str]) -> Result<Value, String> {
     let cfg = config(t)?.ok_or("no config.json: the CLI acts as its configured owner_id")?;
     std::fs::create_dir_all(&t.install).map_err(|e| e.to_string())?;
@@ -257,6 +273,21 @@ fn admin(t: &Tool, a: &[&str]) -> Result<Value, String> {
             }
             user(&j, id(u)?)?
         }
+        ["projects", "list"] => j.projects()?.into_iter().map(|(name, repo, root, by, at)| json!({"name": name, "repo": repo, "root": root, "by": by, "at": at})).collect(),
+        ["projects", "add", name, root] => {
+            // § 5 Project registration: the root's taskq.json names the repository; a fresh TaskQ read must show the same board
+            let tq = cfg.taskq.as_ref().ok_or("projects add needs taskq.bin in config.json to read the board back")?;
+            let root = std::fs::canonicalize(root).map_err(|e| format!("{root}: {e}"))?;
+            let tj: Value = std::fs::read_to_string(root.join("taskq.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).ok_or(format!("{}: no readable taskq.json", root.display()))?;
+            let repo = tj["repo"].as_str().ok_or("taskq.json names no repo")?;
+            let board = taskq::Taskq { bin: tq.bin.clone(), root: root.clone(), poll: tq.poll }.board()?;
+            if !board.eq_ignore_ascii_case(repo) {
+                return Err(format!("taskq reads board {board} under {}, not {repo}; nothing was registered", root.display()));
+            }
+            j.add_project(me, name, repo, &root.to_string_lossy(), at)?;
+            let p = j.projects()?.into_iter().find(|p| p.0 == *name).ok_or("registration did not read back")?;
+            json!({"name": p.0, "repo": p.1, "root": p.2, "by": p.3, "at": p.4})
+        }
         ["routes", "list"] => j.routes()?.iter().map(|r| json!({"chat": r.chat, "topic": r.topic, "session": if r.shared { "shared" } else { "isolated" }, "by": r.by, "at": r.at})).collect(),
         ["routes", "set", route, policy @ ("shared" | "isolated")] => {
             let (chat, topic) = route.split_once(':').unwrap_or((route, "0"));
@@ -268,9 +299,34 @@ fn admin(t: &Tool, a: &[&str]) -> Result<Value, String> {
     })
 }
 
-/// Human form of an `admin` readback: one line per person or route, facts and grant history indented.
+/// `keys` (§ 8 Key store, § 9). Keys enter only here; `add` reads the value from stdin and no command prints a value.
+fn keys(t: &Tool, a: &[&str]) -> Result<Value, String> {
+    let k = keys::Keys(t.install.join("keys.json"));
+    std::fs::create_dir_all(&t.install).map_err(|e| e.to_string())?;
+    let owned = |g: &[&str]| g.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    match a {
+        ["keys", "list"] => k.list(),
+        ["keys", "add", name, purpose, tools @ ..] => {
+            let mut value = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut value).map_err(|e| format!("stdin: {e}"))?;
+            k.add(name, purpose, &owned(tools), value.trim_end_matches(['\n', '\r']))
+        }
+        ["keys", "grant", name, who @ ..] if !who.is_empty() => k.grant(name, &owned(who)),
+        ["keys", "revoke", name, who @ ..] => k.revoke(name, &owned(who)),
+        _ => Err(USAGE.into()),
+    }
+}
+
+/// Human form of an `admin` or `keys` readback: one line per person, route, project or key, facts and grant history indented.
 fn show(v: &Value) {
     let one = |v: &Value| {
+        if v.get("repo").is_some() {
+            return println!("{} {} {} (registered by {})", v["name"].as_str().unwrap_or(""), v["repo"].as_str().unwrap_or(""), v["root"].as_str().unwrap_or(""), v["by"]);
+        }
+        if v.get("purpose").is_some() || v.get("removed").is_some() {
+            let list = |k: &str| v[k].as_array().map_or(String::new(), |a| a.iter().map(|x| x.as_str().map_or(x.to_string(), str::to_string)).collect::<Vec<_>>().join(","));
+            return println!("{} {}: tools {} users {} routes {} last use {}", v["name"].as_str().unwrap_or(""), v["purpose"].as_str().unwrap_or("removed"), list("tools"), list("users"), list("routes"), v["last_use"]);
+        }
         if v.get("session").is_some() {
             let topic = if v["topic"] == 0 { String::new() } else { format!(":{}", v["topic"]) };
             return println!("{}{topic} {} (set by {})", v["chat"], v["session"].as_str().unwrap_or(""), v["by"]);
@@ -354,10 +410,10 @@ fn main() {
                 None => println!("update: up to date"),
             }
         }
-        [cmd @ ("users" | "routes"), ..] => {
+        [cmd @ ("users" | "routes" | "projects" | "keys"), ..] => {
             let json = a.contains(&"--json");
             let rest: Vec<&str> = a.iter().copied().filter(|x| *x != "--json").collect();
-            let v = admin(&t, &rest).unwrap_or_else(|e| t.die(&format!("{cmd}: {e}")));
+            let v = if *cmd == "keys" { keys(&t, &rest) } else { admin(&t, &rest) }.unwrap_or_else(|e| t.die(&format!("{cmd}: {e}")));
             if json { println!("{v}") } else { show(&v) }
         }
         ["audit", ..] => {
@@ -372,6 +428,9 @@ fn main() {
                 let place = if w["front"] == "cli" { "cli".to_string() } else if w["topic"].is_null() { w["chat"].to_string() } else { format!("{}:{}", w["chat"], w["topic"]) };
                 let who = r["who"]["name"].as_str().map_or(r["who"]["id"].to_string(), |n| format!("{} ({n})", r["who"]["id"]));
                 println!("#{} at {} {place} by {who} {}: {}", r["request"], r["received"], r["outcome"].as_str().unwrap_or(""), r["text"].as_str().unwrap_or(""));
+                for x in r["direct"].as_array().into_iter().flatten() {
+                    println!("  direct {} {}", x["target"].as_str().unwrap_or(""), x["result"].as_str().unwrap_or(""));
+                }
                 for x in r["tools"].as_array().into_iter().flatten() {
                     println!("  tool {} {}", x["target"].as_str().unwrap_or(""), x["result"].as_str().unwrap_or("started"));
                 }

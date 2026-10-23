@@ -98,10 +98,16 @@ impl Codex {
         for f in ["shell_tool", "apps", "plugins", "browser_use", "computer_use", "multi_agent", "image_generation"] {
             c.args(["--disable", f]);
         }
+        // Found in the A7 run: Codex writes its environment into shell snapshots under its home, and the host's GitHub token was
+        // there. It gets only what it needs, so no host credential or API key reaches the model's side (R9, § 8).
+        c.env_clear();
+        for k in ["PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR", "SSL_CERT_FILE"] {
+            if let Some(v) = std::env::var_os(k) {
+                c.env(k, v);
+            }
+        }
         c.args(["-c", "forced_login_method=\"chatgpt\"", "-c", "web_search=\"disabled\""])
             .env("CODEX_HOME", &self.home)
-            .env_remove("OPENAI_API_KEY")
-            .env_remove("CODEX_API_KEY")
             .current_dir(&self.workspace)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -251,22 +257,42 @@ impl Codex {
 }
 
 /// Runs one claimed request through Codex and records the outcome under its fence. The CLI and Telegram share this path (R13),
-/// with the TaskQ tools when TaskQ is configured.
-pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq: Option<&crate::taskq::Taskq>) -> Result<Outcome, String> {
-    let tools = tq.map(|_| crate::taskq::tools());
+/// with the direct tools and, when TaskQ is configured, the TaskQ tools, at most `direct::BUDGET` calls per request.
+pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq: Option<&crate::taskq::Taskq>, d: &crate::direct::Direct) -> Result<Outcome, String> {
+    use crate::direct;
+    let mut tools = direct::tools();
+    let instructions = match tq {
+        Some(_) => {
+            tools.extend(crate::taskq::tools().as_array().cloned().unwrap_or_default());
+            format!("{} {}", crate::taskq::INSTRUCTIONS, direct::INSTRUCTIONS)
+        }
+        None => format!("You are PilotQ. {}", direct::INSTRUCTIONS),
+    };
+    let tools = Value::Array(tools);
+    let mut calls = 0;
     let (thread, model, outcome) = codex.turn(
         r.thread.as_deref(),
         &r.text,
-        tools.as_ref().map(|t| (t, crate::taskq::INSTRUCTIONS)),
+        Some((&tools, &instructions)),
         || j.lock().unwrap().fenced(r).map(|f| !f).unwrap_or(true),
         |kind, item, result| {
             if let Err(e) = j.lock().unwrap().tool(r, kind, item, result, now()) {
                 eprintln!("run {}: {e}", r.id);
             }
         },
-        |name, args| match tq {
-            Some(tq) => crate::taskq::call(tq, j, r, name, args),
-            None => (false, "TaskQ is not configured".into()),
+        |name, args| {
+            // § 7 direct action: a request's sixth tool call is refused and writes nothing (U11)
+            calls += 1;
+            if calls > direct::BUDGET {
+                return (false, format!("This request reached its budget of {} tool calls; nothing was done. Answer with the evidence so far and offer to plan the rest as a task, or ask the person.", direct::BUDGET));
+            }
+            let (ok, out) = match tq {
+                _ if direct::NAMES.contains(&name) => direct::call(d, j, r, name, args),
+                Some(tq) => crate::taskq::call(tq, j, r, name, args),
+                None => (false, "TaskQ is not configured".into()),
+            };
+            // no key value reaches the model, whichever tool printed it (§ 8)
+            (ok, d.keys.scrub(&out))
         },
     );
     let j = j.lock().unwrap();
@@ -282,7 +308,16 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
 
 /// Service loop: claims queued Telegram requests, one run per conversation and `MODELS` at once, oldest first. While the
 /// `drain` file exists (`pilotq update`), nothing new starts; running turns finish (§ 12 planned restart).
-pub fn serve(codex: Codex, j: crate::telegram::Shared, wake: std::sync::Arc<tokio::sync::Notify>, now: fn() -> i64, drain: PathBuf, tq: Option<std::sync::Arc<crate::taskq::Taskq>>) {
+#[allow(clippy::too_many_arguments)]
+pub fn serve(
+    codex: Codex,
+    j: crate::telegram::Shared,
+    wake: std::sync::Arc<tokio::sync::Notify>,
+    now: fn() -> i64,
+    drain: PathBuf,
+    tq: Option<std::sync::Arc<crate::taskq::Taskq>>,
+    d: std::sync::Arc<crate::direct::Direct>,
+) {
     const MODELS: usize = 4;
     let codex = std::sync::Arc::new(codex);
     loop {
@@ -290,9 +325,9 @@ pub fn serve(codex: Codex, j: crate::telegram::Shared, wake: std::sync::Arc<toki
         match claimed {
             Ok(runs) => {
                 for r in runs {
-                    let (codex, j, wake, tq) = (codex.clone(), j.clone(), wake.clone(), tq.clone());
+                    let (codex, j, wake, tq, d) = (codex.clone(), j.clone(), wake.clone(), tq.clone(), d.clone());
                     std::thread::spawn(move || {
-                        if let Err(e) = run(&codex, &j, &r, now, tq.as_deref()) {
+                        if let Err(e) = run(&codex, &j, &r, now, tq.as_deref(), &d) {
                             eprintln!("run {}: {e}", r.id);
                         }
                         wake.notify_one();
