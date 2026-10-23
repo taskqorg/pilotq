@@ -230,6 +230,17 @@ Results for the [section 10](../pilotq.md#10-adoption-sequence) step 3 slice, ta
 | L16 | Pass | `u10_…` (a transition made while PilotQ was down is found by the scan after restart), `f07_…` (the scan files a deferred create when the board returns), `u15_…` |
 | U23 | Partial | The request that filed a task lists `add #N` and `start #N` in its audit record (`u06_…`); the task carries the request trace ID. Live check below |
 
-**Live run (A8):** not run yet. It needs `create_claim_issue` on the pilotq board and the test bot with a second person: one real pilotq docs task from discussion to reviewer outcome with a PilotQ restart mid-run, the U23 task-link checks and the U02/U18 two-user rerun.
+### Scripted live-board run (A8)
+
+The owner replaced the human test-bot run on 2026-10-23 (root [section 5](../pilotq.md#first-taskq-tool-contract)). `a8_live_board_run` in `tests/telegram.rs` runs the real PilotQ binary with real Codex (PilotQ's own Codex home holding only the subscription login), the real `taskqorg/pilotq` board and TaskQ CLI. Telegram is the local fake Bot API with two synthetic users, 7 (configured owner) and 8. It files and publishes a real task, so it is `#[ignore]` and runs only on request:
+
+```sh
+PILOTQ_A8_ROOT=<pilotq checkout with create_claim_issue> PILOTQ_A8_TASKQ=<taskq binary> PILOTQ_A8_CODEX_HOME=<logged-in Codex home> \
+  cargo test --locked --test telegram a8_live -- --ignored --nocapture
+```
+
+It checks, in order: U18 (an ungranted message is ignored and not replayed after `users grant`), U02 (a DM per person and two people in one shared topic, each reply in its own route), U05 (a plan request saves revision 1 and files nothing), U06 (the next request files it held, reads it back and starts it; the issue carries the request trace ID, author, route and revision), then a PilotQ restart while the task is `doing`, the status message edited in place through `review`, the closing outcome as its own message, U23 (the audit record lists `add #N` and `start #N`, the CoreQ trace exists) and the issue closed as completed. A worker question gets the recommended option as a reply.
+
+RUN_RESULT
 
 Completion evidence is a report with exact versions, mechanism-to-case results, unresolved failures, recovery receipts, task links and aggregate metrics. Maintain 62 scenario-family entries: U01–U18, F01–F17, C01–C07 and L01–L20. Record deterministic and live/platform results separately, including not run. Runtime research, a healthy service or green repository CI cannot replace it.

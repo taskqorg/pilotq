@@ -46,7 +46,14 @@ struct Proc {
     child: Child,
     stdin: ChildStdin,
     rx: Receiver<Value>,
+    /// Codex's last stderr line, the only reason it gives when it exits early.
+    last_err: std::sync::Arc<Mutex<Option<String>>>,
 }
+
+/// Held from spawn until Codex answers `initialize`. Found in the A8 run: app-servers started together on a fresh Codex home race
+/// its SQLite state setup and all but one exit with `failed to initialize sqlite state runtime`.
+// ponytail: process-wide startup lock; a hung startup delays other conversations by at most the first-event bound
+static START: Mutex<()> = Mutex::new(());
 
 impl Proc {
     fn send(&mut self, v: Value) {
@@ -97,11 +104,18 @@ impl Codex {
             .current_dir(&self.workspace)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
         #[cfg(unix)]
         std::os::unix::process::CommandExt::process_group(&mut c, 0);
         let mut child = c.spawn().map_err(|e| format!("codex app-server did not start: {e}"))?;
-        let (stdin, stdout) = (child.stdin.take().unwrap(), child.stdout.take().unwrap());
+        let (stdin, stdout, stderr) = (child.stdin.take().unwrap(), child.stdout.take().unwrap(), child.stderr.take().unwrap());
+        let last_err = std::sync::Arc::new(Mutex::new(None));
+        let keep = last_err.clone();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok).filter(|l| !l.trim().is_empty()) {
+                *keep.lock().unwrap() = Some(line.chars().take(200).collect());
+            }
+        });
         let (tx, rx) = channel();
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -113,7 +127,7 @@ impl Codex {
                 }
             }
         });
-        Ok(Proc { child, stdin, rx })
+        Ok(Proc { child, stdin, rx, last_err })
     }
 
     /// Runs one turn on `thread` (a new thread when None). `alive` reports whether the journal still holds this run's fence;
@@ -128,6 +142,8 @@ impl Codex {
         mut tool: impl FnMut(&str, &str, Option<&str>),
         mut call: impl FnMut(&str, &Value) -> (bool, String),
     ) -> (Option<String>, Option<String>, Outcome) {
+        // the first-event watch starts once this turn may spawn, before Codex runs (§ 12)
+        let mut starting = Some(START.lock().unwrap_or_else(|e| e.into_inner()));
         let start = Instant::now();
         let mut p = match self.spawn() {
             Ok(p) => p,
@@ -157,6 +173,9 @@ impl Codex {
                 }
                 Err(RecvTimeoutError::Timeout) => continue,
                 Err(RecvTimeoutError::Disconnected) => {
+                    // stdout closed; give the stderr reader a moment to take Codex's last words
+                    std::thread::sleep(Duration::from_millis(200));
+                    let error = error.or_else(|| p.last_err.lock().unwrap().clone());
                     let why = error.map_or("Codex exited without a terminal event".to_string(), |e| format!("Codex exited without a terminal event after: {e}"));
                     return (thread, model, fail(tooled, why));
                 }
@@ -180,6 +199,7 @@ impl Codex {
             }
             match (m["id"].as_i64(), method) {
                 (Some(1), _) => {
+                    starting = None;
                     p.send(json!({"method": "initialized"}));
                     let mut params = json!({"cwd": self.workspace, "approvalPolicy": "never", "sandbox": "read-only"});
                     if let Some((tools, instructions)) = dynamic {

@@ -631,6 +631,30 @@ fn crash_during_turn_requeues_once() {
     stop(c, d);
 }
 
+// Found in the A8 run: three conversations started Codex together on a fresh Codex home, and all but one app-server exited with
+// `failed to initialize sqlite state runtime`, read by PilotQ only as "Codex exited without a terminal event". Startup is now
+// serialized until `initialize` answers, so every request is answered; a Codex that exits early names its stderr reason.
+#[test]
+fn concurrent_codex_starts_do_not_race() {
+    let (d, st) = setup("race", vec![text(1, 11, None, OWNER, "a"), text(2, -100, Some(5), OWNER, "b"), text(3, -100, Some(6), OWNER, "c")]);
+    script(&d, "fake-codex", FAKE);
+    // like Codex's state setup: an app-server starting while another initializes the home fails
+    let racy = script(&d, "racy-codex", r#"d=$(dirname "$0")
+mkdir "$d/init.lock" 2>/dev/null || { echo 'Error: failed to initialize sqlite state runtime' >&2; exit 1; }
+sleep 0.5; rmdir "$d/init.lock"; exec "$d/fake-codex""#);
+    use_codex(&d, &racy);
+    let c = spawn(&d, None);
+    wait("three answers", 20, || ["re: a @", "re: b @", "re: c @"].iter().all(|t| sent_has(&st, t)));
+    assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE state='answered'"), 3);
+    stop(c, d);
+
+    let (d, _st) = setup("dead", vec![]);
+    use_codex(&d, &script(&d, "dead-codex", "echo 'Error: boom' >&2; exit 1"));
+    let o = cli(&d, &["ask", "--json", "hi"]);
+    assert_eq!(serde_json::from_slice::<Value>(&o.stdout).unwrap()["error"], "Codex exited without a terminal event after: Error: boom");
+    fs::remove_dir_all(d).unwrap();
+}
+
 // Live test-bot run found Telegram service messages (forum topic created, group migrated, group created) answered as unsupported
 // input. They leave an ID-only disposition and no reply; a person's photo still gets the explicit unsupported outcome (U14).
 #[test]
@@ -1032,4 +1056,134 @@ fn f07_board_unavailable_or_no_create_claim() {
     wait("scan files it", 15, || sent_has(&st, "Plan revision 1: filed held, read back and started: #19"));
     assert_eq!(board(&d)["creates"], 1);
     stop(c, d);
+}
+
+/// Runs `taskq` against the real board from `root`, without any attempt identity.
+fn real_taskq(root: &Path, args: &[&str]) -> String {
+    let o = Command::new(std::env::var("PILOTQ_A8_TASKQ").unwrap()).args(args).env("TASKQ_ROOT", root).env_remove("TASKQ_ATTEMPT").env_remove("TASKQ_TASK").env_remove("TASKQ_ROLE").current_dir(root).output().unwrap();
+    String::from_utf8_lossy(&o.stdout).to_string()
+}
+
+// A8 (owner, 2026-10-23): the real PilotQ binary, real Codex under PilotQ's subscription login, the real taskqorg/pilotq board
+// and TaskQ CLI. Telegram is the local fake Bot API with two synthetic users. One small real docs task goes from discussion to
+// the reviewer outcome with a PilotQ restart while it is `doing`; the journal, audit record, board and every recorded message
+// are checked, U23 links included, and the U02/U18 two-user cases are rerun. It files and publishes a real task, so it runs
+// only on request:
+//   PILOTQ_A8_ROOT=<pilotq checkout with create_claim_issue> PILOTQ_A8_TASKQ=<taskq> PILOTQ_A8_CODEX_HOME=<logged-in Codex home> \
+//   cargo test --locked --test telegram a8_live -- --ignored --nocapture
+#[test]
+#[ignore = "files and publishes a real task on taskqorg/pilotq"]
+fn a8_live_board_run() {
+    let root = PathBuf::from(std::env::var("PILOTQ_A8_ROOT").expect("PILOTQ_A8_ROOT"));
+    let (d, st) = setup("a8", vec![]);
+    // PilotQ's own Codex home: only the subscription login is copied, so no personal config loads
+    fs::create_dir_all(d.join("codex")).unwrap();
+    fs::copy(PathBuf::from(std::env::var("PILOTQ_A8_CODEX_HOME").expect("PILOTQ_A8_CODEX_HOME")).join("auth.json"), d.join("codex/auth.json")).unwrap();
+    fs::set_permissions(d.join("codex/auth.json"), fs::Permissions::from_mode(0o600)).unwrap();
+    limits(&d, Path::new("codex"), json!({"first_event": 60, "silent": 60, "deadline": 240}));
+    let cfg = d.join("config.json");
+    let mut c: Value = serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
+    c["taskq"] = json!({"bin": std::env::var("PILOTQ_A8_TASKQ").unwrap(), "root": root, "poll": 15});
+    fs::write(&cfg, c.to_string()).unwrap();
+    let say = |m: &str| eprintln!("a8 {}: {m}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+    let model = |id: i64| query(&d, &format!("SELECT count(*) FROM requests WHERE id={id} AND state='answered'")) == 1;
+
+    // U18: an ungranted person is ignored silently and not replayed after the grant
+    let mut c = spawn(&d, None);
+    push(&st, text(1, 8, None, 8, "hello before any grant"));
+    wait("stranger ignored", 30, || try_query(&d, "SELECT count(*) FROM updates WHERE update_id=1 AND disposition='ignored'") == Some(1));
+    assert!(cli(&d, &["users", "grant", "8", "chat"]).status.success());
+    // U02: a DM per person, then two people in one shared forum topic
+    assert!(cli(&d, &["routes", "set", "-100:5", "shared"]).status.success());
+    push(&st, text(2, 8, None, 8, "Reply with one short sentence: what is PilotQ?"));
+    push(&st, text(3, -100, Some(5), 8, "Reply with one word: hello."));
+    push(&st, text(4, -100, Some(5), OWNER, "Reply with one word: thanks."));
+    wait("three answers", 300, || [1, 2, 3].iter().all(|id| try_query(&d, &format!("SELECT count(*) FROM requests WHERE id={id} AND state='answered'")) == Some(1)));
+    assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE update_id=1"), 0, "the ignored update is not replayed");
+    assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE session='-100:5' AND sender IN (7, 8)"), 2, "one shared topic conversation keeps both authors");
+    assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE id=1 AND session='dm:8'"), 1);
+    say("U02/U18 answered");
+
+    // U05: discussion files nothing
+    push(&st, text(5, OWNER, None, OWNER, "Plan one pilotq docs task with task_plan and show me the saved revision; do not run it. The task: in docs/projects.md, add one sentence saying that PilotQ files its own tasks on the pilotq board."));
+    wait("plan answered", 300, || try_query(&d, "SELECT count(*) FROM requests WHERE id=4 AND state IN ('answered','failed','uncertain')") == Some(1));
+    assert!(model(4), "plan request: {:?}", texts(&st));
+    assert_eq!((query(&d, "SELECT count(*) FROM plans WHERE revision=1"), query(&d, "SELECT count(*) FROM plan_runs")), (1, 0), "a plan revision is saved and nothing is filed");
+    say("plan revision 1 saved");
+
+    // U06: an authorized revision is filed held, read back and started
+    push(&st, text(6, OWNER, None, OWNER, "Run plan revision 1 now with task_run_plan."));
+    wait("run answered", 300, || try_query(&d, "SELECT count(*) FROM requests WHERE id=5 AND state IN ('answered','failed','uncertain')") == Some(1));
+    assert_eq!(query(&d, "SELECT count(*) FROM plan_runs WHERE state='started'"), 1, "plan run: {:?}", texts(&st));
+    let n = query(&d, "SELECT number FROM tasks");
+    let url = format!("https://github.com/taskqorg/pilotq/issues/{n}");
+    let run_reply = query_text(&d, "SELECT reply FROM requests WHERE id=5");
+    assert!(run_reply.contains(&format!("#{n}")), "the reply names the task: {run_reply}");
+    let issue = real_taskq(&root, &["inbox", &n.to_string()]);
+    assert!(issue.contains("Filed by PilotQ pilotq.request.5 for Telegram user 7 in DM 7, plan revision 1."), "{issue}");
+    assert!(issue.contains("taskq: hold") && issue.contains("taskq: start"), "held, then started: {issue}");
+    say(&format!("filed and started #{n}"));
+
+    let status = |s: &str| format!("Task #{n} {s}.\n{url}");
+    let doing = status("doing: a worker is on it");
+    let exact = |t: &str| sent(&st).iter().any(|s| s["text"] == t);
+    wait("doing", 1800, || exact(&doing));
+    // a PilotQ restart while the worker runs: TaskQ keeps the task; the scan keeps reporting it
+    c.kill().unwrap();
+    c.wait().unwrap();
+    say("PilotQ killed while doing; restarting");
+    c = spawn(&d, None);
+    let closed = format!("Task #{n} is closed on the board; its verdict and evidence are on the issue: {url}");
+    let end = Instant::now() + Duration::from_secs(7200);
+    while !exact(&closed) {
+        assert!(Instant::now() < end, "timed out waiting for the reviewer outcome: {:?}", texts(&st));
+        // a worker question is answered by the synthetic owner with its recommended option, by reply
+        let q = sent(&st).into_iter().filter(|s| s["text"].as_str().unwrap().starts_with(&format!("Task #{n} asks:"))).last();
+        if let Some(q) = q.filter(|q| try_query(&d, &format!("SELECT count(*) FROM requests WHERE reply_to={}", q["id"])) == Some(0)) {
+            let k = q["text"].as_str().unwrap().lines().find(|l| l.ends_with('★')).and_then(|l| l.split('.').next()).unwrap_or("1").to_string();
+            say(&format!("answering the worker question with {k}"));
+            let id = 100 + query(&d, "SELECT count(*) FROM requests");
+            push(&st, reply(id, OWNER, None, OWNER, q["id"].as_i64().unwrap(), &k));
+        }
+        std::thread::sleep(Duration::from_secs(5));
+    }
+    say("reviewer outcome reached");
+    std::thread::sleep(Duration::from_secs(20));
+
+    // recorded messages: one status message edited in place, the outcome its own message, nothing after it, all in the DM
+    let all = sent(&st);
+    let task_msgs: Vec<&Value> = all.iter().filter(|s| s["text"].as_str().unwrap().starts_with(&format!("Task #{n} "))).collect();
+    let news: Vec<&&Value> = task_msgs.iter().filter(|s| s.get("edit").is_none() && !s["text"].as_str().unwrap().contains(" asks:")).collect();
+    assert_eq!(news.len(), 2, "one status message and one outcome: {task_msgs:?}");
+    assert!(news[0]["text"].as_str().unwrap().starts_with(&format!("Task #{n} ")) && news[1]["text"] == closed.as_str());
+    let edits = task_msgs.iter().filter(|s| s["edit"] == true);
+    assert!(edits.clone().all(|s| s["message_id"] == news[0]["id"]), "every update edits the status message");
+    assert!(edits.clone().any(|s| s["text"] == doing.as_str()) && edits.clone().any(|s| s["text"] == status("review: the worker handed in a result; a reviewer checks it").as_str()));
+    assert!(task_msgs.iter().all(|s| s["chat_id"] == OWNER), "task messages stay in the originating route");
+    assert!(!all.iter().any(|s| s["edit"] == true && s["message_id"] == news[1]["id"]), "nothing edits the outcome");
+    assert!(!all.iter().any(|s| { let t = s["text"].as_str().unwrap(); t.contains("stall") || t.contains("hung") }));
+    for (id, chat, topic) in [(1, 8, None), (2, -100, Some(5)), (3, -100, Some(5))] {
+        let r = query_text(&d, &format!("SELECT reply FROM requests WHERE id={id}"));
+        assert!(all.iter().any(|s| s["text"] == r.as_str() && s["chat_id"] == chat && s.get("message_thread_id").and_then(Value::as_i64) == topic), "reply {id} in its route");
+    }
+    let acks = all.iter().filter(|s| s["text"].as_str().unwrap().starts_with("Received. Request #")).count() as i64;
+    assert_eq!(acks, query(&d, "SELECT count(*) FROM requests"), "one acknowledgement per request");
+
+    // U23: the audit record joins the request to its task and trace; the task text carries the trace ID
+    let a: Value = serde_json::from_slice(&cli(&d, &["audit", "--request", "5", "--json"]).stdout).unwrap();
+    assert_eq!(a[0]["tasks"].as_array().unwrap().iter().map(|t| t["target"].as_str().unwrap().to_string()).collect::<Vec<_>>(), [format!("add #{n}"), format!("start #{n}")]);
+    assert_eq!((a[0]["trace"].as_str(), a[0]["who"]["id"].as_i64(), a[0]["outcome"].as_str()), (Some("pilotq.request.5"), Some(OWNER), Some("answered")));
+    c.kill().unwrap();
+    c.wait().unwrap();
+    let tel = coreq::telemetry::Reader::open(&d.join("telemetry.sqlite")).unwrap().export(0, 0, 1000).unwrap().to_string();
+    assert!(tel.contains("\"pilotq.request.5\""), "the request's CoreQ trace exists");
+    let state = Command::new("gh").args(["api", &format!("repos/taskqorg/pilotq/issues/{n}"), "--jq", ".state + \" \" + .state_reason"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&state.stdout).trim(), "closed completed", "the board shows the task completed");
+    say(&format!("A8 passed: task #{n}"));
+    fs::remove_dir_all(d).unwrap();
+}
+
+fn query_text(d: &Path, sql: &str) -> String {
+    let c = rusqlite::Connection::open_with_flags(d.join("journal.sqlite"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    c.query_row(sql, [], |r| r.get(0)).unwrap()
 }
