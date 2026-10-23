@@ -468,6 +468,10 @@ impl Journal {
         up("CREATE TABLE IF NOT EXISTS tool_sizes(id INTEGER PRIMARY KEY, request_id INTEGER NOT NULL, run_id INTEGER NOT NULL,
             at INTEGER NOT NULL, tool TEXT NOT NULL, result_bytes INTEGER NOT NULL, codex_version TEXT NOT NULL, pilotq_version TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS tool_sizes_at ON tool_sizes(at);")?;
+        if version < 7 {
+            // section 10 step 5: manual interventions and provider outages recorded during the pilot (gate 4)
+            up("CREATE TABLE pilot_notes(id INTEGER PRIMARY KEY, at INTEGER NOT NULL, by INTEGER NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL);")?;
+        }
         // TaskQ op IDs are permanent board claims; a random installation ID keeps a fresh journal from reusing another's
         let salt = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as i64) ^ ((std::process::id() as i64) << 40);
         c.execute("INSERT INTO meta(key, value) VALUES ('instance', ?1) ON CONFLICT(key) DO NOTHING", [salt & i64::MAX]).map_err(|e| e.to_string())?;
@@ -482,7 +486,7 @@ impl Journal {
     }
 
     /// Nearest-rank p95 of UTF-8 result text bytes, in the half-open window [since, until).
-    pub fn pilot_report(&self, since: i64, until: i64) -> Result<Value, String> {
+    pub fn tool_size_report(&self, since: i64, until: i64) -> Result<Value, String> {
         let mut q = self.0.prepare("SELECT tool, result_bytes FROM tool_sizes WHERE at>=?1 AND at<?2 ORDER BY tool, result_bytes").map_err(|e| e.to_string())?;
         let mut tools = std::collections::BTreeMap::<String, Vec<i64>>::new();
         let rows = q.query_map(params![since, until], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))).map_err(|e| e.to_string())?;
@@ -1198,6 +1202,62 @@ impl Journal {
         q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).and_then(Iterator::collect).map_err(|e| e.to_string())
     }
 
+    /// Records the pilot start once (section 10 step 5); a later start keeps the first. Returns the stored start.
+    pub fn pilot_start(&self, at: i64) -> Result<i64, String> {
+        self.0.execute("INSERT INTO meta(key, value) VALUES ('pilot_start', ?1) ON CONFLICT(key) DO NOTHING", [at]).map_err(|e| e.to_string())?;
+        self.0.query_row("SELECT value FROM meta WHERE key='pilot_start'", [], |r| r.get(0)).map_err(|e| e.to_string())
+    }
+
+    /// Records one manual intervention or provider outage seen during the pilot (gate 4).
+    pub fn pilot_note(&self, by: i64, kind: &str, text: &str, at: i64) -> Result<(), String> {
+        if !["intervention", "outage"].contains(&kind) {
+            return Err(format!("{kind}: expected intervention or outage"));
+        }
+        self.0.execute("INSERT INTO pilot_notes(at, by, kind, text) VALUES (?1,?2,?3,?4)", params![at, by, kind, text]).map(drop).map_err(|e| e.to_string())
+    }
+
+    /// Gate 4 counts since `since`, or since the pilot start: accepted and simple requests, users, routes, projects, TaskQ tasks,
+    /// interventions and outages, and failed requests read from CoreQ telemetry. A simple request was answered with no plan or task.
+    pub fn pilot_report(&self, since: Option<i64>) -> Result<Value, String> {
+        let e = |e: rusqlite::Error| e.to_string();
+        let start: Option<i64> = self.0.query_row("SELECT value FROM meta WHERE key='pilot_start'", [], |r| r.get(0)).optional().map_err(e)?;
+        let Some(since) = since.or(start) else { return Err("no pilot start: run pilotq pilot start or pass --since".into()) };
+        let n = |sql: &str| self.0.query_row(sql, [since], |r| r.get::<_, i64>(0)).map_err(e);
+        let mine = "SELECT id FROM requests WHERE received_at >= ?1";
+        let notes = |kind: &str| n(&format!("SELECT count(*) FROM pilot_notes WHERE kind='{kind}' AND at >= ?1"));
+        // unknown is never zero: a telemetry store that cannot be read gives null with its reason
+        let failed = (|| -> Result<i64, String> {
+            let r = coreq::telemetry::Reader::open(&self.1)?;
+            let (mut after, mut count) = (0, 0);
+            loop {
+                let page = r.export_kinds(&["pilotq.request"], since * 1000, after, 1024)?;
+                count += page["events"].as_array().into_iter().flatten().filter(|v| v.to_string().contains("\"outcome\":\"failed\"")).count() as i64;
+                after = page["next"].as_i64().unwrap_or(after);
+                if page["more"] != true {
+                    return Ok(count);
+                }
+            }
+        })();
+        Ok(json!({
+            "since": since,
+            "pilot_start": start,
+            "accepted": n("SELECT count(*) FROM requests WHERE received_at >= ?1")?,
+            "simple": n("SELECT count(*) FROM requests WHERE received_at >= ?1 AND state='answered'
+                AND id NOT IN (SELECT request_id FROM tasks) AND id NOT IN (SELECT request_id FROM plans) AND id NOT IN (SELECT request_id FROM plan_runs)")?,
+            "users": n("SELECT count(DISTINCT sender) FROM requests WHERE received_at >= ?1")?,
+            "routes": n("SELECT count(*) FROM (SELECT DISTINCT chat, topic FROM requests WHERE received_at >= ?1 AND front='telegram')")?,
+            // ponytail: TaskQ tools serve only the `pilotq` board (section 5) and leave requests.project empty; a per-board project
+            // column on tasks and plans when TaskQ tools serve a second board
+            "projects": n(&format!("SELECT count(*) FROM (SELECT project FROM requests WHERE received_at >= ?1 AND project IS NOT NULL
+                UNION SELECT 'pilotq' FROM tasks WHERE request_id IN ({mine}) UNION SELECT 'pilotq' FROM plans WHERE request_id IN ({mine}))"))?,
+            "tasks": n(&format!("SELECT count(*) FROM tasks WHERE request_id IN ({mine})"))?,
+            "interventions": notes("intervention")?,
+            "outages": notes("outage")?,
+            "failed": failed.as_ref().ok(),
+            "failed_reason": failed.err(),
+        }))
+    }
+
     /// The conversation's current project, set only by an explicit switch.
     pub fn current_project(&self, session: &str) -> Result<Option<String>, String> {
         self.0.query_row("SELECT project FROM conversations WHERE session=?1", [session], |r| r.get(0)).optional().map(Option::flatten).map_err(|e| e.to_string())
@@ -1361,7 +1421,7 @@ mod tests {
         for n in 1..=20 { j.tool_size(&r, "read", n, "test", 10).unwrap(); }
         j.tool_size(&r, "other", 99, "test", 10).unwrap();
         j.tool_size(&r, "read", 999, "test", 11).unwrap();
-        let v = j.pilot_report(10, 11).unwrap();
+        let v = j.tool_size_report(10, 11).unwrap();
         assert_eq!(v["tools"], json!([
             {"tool": "other", "calls": 1, "p95_result_bytes": 99, "max_result_bytes": 99},
             {"tool": "read", "calls": 20, "p95_result_bytes": 19, "max_result_bytes": 20}
@@ -1490,8 +1550,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(p);
     }
 
+    // Gate 4 (section 10 step 5): the pilot report counts only requests since the start, keeps the first start, splits simple
+    // answers from task work, counts users, Telegram routes, projects and notes, and reads failed requests from telemetry.
+    #[test]
+    fn pilot_report_counts_gate_4() {
+        let (mut j, p) = journal("pilot");
+        assert!(j.pilot_report(None).unwrap_err().contains("no pilot start"));
+        assert_eq!(j.admit(&[(1, msg(7, 7, 1))], 5).unwrap(), 1);
+        assert_eq!(j.pilot_start(10).unwrap(), 10);
+        assert_eq!(j.pilot_start(20).unwrap(), 10, "a later start keeps the first");
+        j.grant(7, 8, &["chat".into()], 0).unwrap();
+        assert_eq!(j.admit(&[(2, msg(7, 7, 2)), (3, msg(-5, 8, 3)), (4, msg(-5, 8, 4))], 11).unwrap(), 3);
+        j.0.execute_batch(
+            "UPDATE requests SET state='answered' WHERE update_id IN (2, 3, 4); UPDATE requests SET project='agentq' WHERE update_id=3;
+            INSERT INTO tasks(number, request_id, chat, topic, state, revision, observed) SELECT 30, id, chat, topic, 'doing', 1, 11 FROM requests WHERE update_id=4;",
+        )
+        .unwrap();
+        j.pilot_note(7, "intervention", "restarted Codex login", 12).unwrap();
+        j.pilot_note(7, "outage", "provider 5xx", 12).unwrap();
+        assert!(j.pilot_note(7, "other", "x", 12).is_err());
+        let r = j.pilot_report(None).unwrap();
+        for (k, v) in [("since", 10), ("accepted", 3), ("simple", 2), ("users", 2), ("routes", 2), ("projects", 2), ("tasks", 1), ("interventions", 1), ("outages", 1)] {
+            assert_eq!(r[k], v, "{k} in {r}");
+        }
+        assert!(r["failed"].is_null() && r["failed_reason"].is_string(), "unread telemetry is unknown, never zero: {r}");
+        assert_eq!(j.pilot_report(Some(0)).unwrap()["accepted"], 4);
+        drop(j);
+        let _ = std::fs::remove_dir_all(p);
+    }
+
     // A schema 1 journal from an earlier release gains the session column, the schema 3 run tables, the schema 4 audit tables, the
-    // schema 5 TaskQ tables and the schema 6 project and effect tables.
+    // schema 5 TaskQ tables, the schema 6 project and effect tables and the schema 7 pilot notes.
     #[test]
     fn schema_1_journal_upgrades() {
         let (j, p) = journal("upgrade");
@@ -1500,7 +1589,7 @@ mod tests {
             ALTER TABLE requests DROP COLUMN error; ALTER TABLE requests DROP COLUMN name; ALTER TABLE requests DROP COLUMN grants;
             ALTER TABLE requests DROP COLUMN project; DROP TABLE conversations; DROP TABLE runs; DROP TABLE audit_events; DROP TABLE audit_reads;
             ALTER TABLE requests DROP COLUMN reply_to; ALTER TABLE outbox DROP COLUMN kind; ALTER TABLE outbox DROP COLUMN task; ALTER TABLE outbox DROP COLUMN revision;
-            DROP TABLE plans; DROP TABLE plan_runs; DROP TABLE tickets; DROP TABLE tasks; DROP TABLE projects; DROP TABLE effects; PRAGMA user_version=1",
+            DROP TABLE plans; DROP TABLE plan_runs; DROP TABLE tickets; DROP TABLE tasks; DROP TABLE projects; DROP TABLE effects; DROP TABLE pilot_notes; PRAGMA user_version=1",
         )
         .unwrap();
         drop(j);

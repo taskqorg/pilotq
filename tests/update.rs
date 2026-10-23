@@ -120,3 +120,42 @@ done
     assert!(!install.join("drain").exists(), "the drain marker is cleared");
     fs::remove_dir_all(d).unwrap();
 }
+
+// §10 step 5 / A4: both CLI formats must expose gate counts; tool measurements retain their own window.
+#[test]
+fn pilot_report_prints_gate_counts_and_tool_window() {
+    let d = scratch("pilot-report");
+    fs::write(d.join("config.json"), r#"{"bot_token":"123:fake","owner_id":7}"#).unwrap();
+    fs::set_permissions(d.join("config.json"), fs::Permissions::from_mode(0o600)).unwrap();
+    let run = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_pilotq")).args(args).env("PILOTQ_INSTALL", &d).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        out.stdout
+    };
+    run(&["pilot", "start", "--json"]);
+    let db = rusqlite::Connection::open(d.join("journal.sqlite")).unwrap();
+    db.execute("INSERT INTO pilot_notes(at, by, kind, text) VALUES (30, 7, 'intervention', 'invented fixture')", []).unwrap();
+    for (at, bytes) in [(10, 99), (20, 42), (30, 100)] {
+        db.execute("INSERT INTO tool_sizes(request_id, run_id, at, tool, result_bytes, codex_version, pilotq_version) VALUES (1,1,?1,'issue_read',?2,'fixture','fixture')", rusqlite::params![at, bytes]).unwrap();
+    }
+    let args = ["pilot", "report", "--since", "20", "--until", "30"];
+    let text = String::from_utf8(run(&args)).unwrap();
+    let mut json_args = args.to_vec();
+    json_args.push("--json");
+    let json: serde_json::Value = serde_json::from_slice(&run(&json_args)).unwrap();
+    for key in ["accepted", "simple", "users", "routes", "projects", "tasks", "interventions", "outages"] {
+        let expected = if key == "interventions" { 1 } else { 0 };
+        assert_eq!(json[key], expected, "{key}");
+        assert!(text.contains(&format!("{key}: {expected}\n")), "missing {key}: {text}");
+    }
+    assert!(json["failed"].is_null());
+    assert!(json["failed_reason"].is_string());
+    assert!(text.contains("failed: unknown ("), "{text}");
+    assert!(text.contains(json["failed_reason"].as_str().unwrap()));
+    assert!(text.contains("Tool result bytes [20 .. 30)"));
+    assert!(text.contains("issue_read: calls=1 p95=42 max=42"));
+    assert_eq!(json["tools"], serde_json::json!([{"tool":"issue_read","calls":1,"p95_result_bytes":42,"max_result_bytes":42}]));
+    assert_eq!(json["since"], 20);
+    assert_eq!(json["until"], 30);
+    fs::remove_dir_all(d).unwrap();
+}

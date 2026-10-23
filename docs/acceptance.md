@@ -296,4 +296,145 @@ It checks, in order: a key-backed read whose reply names the issue title and who
 
 Run 1 failed on the last check and exposed a defect. Every step above passed, but Codex wrote its inherited environment into `codex/shell_snapshots/*.sh` under PilotQ's Codex home, and the host's `GH_TOKEN` and `GITHUB_TOKEN` were in it. Fix: Codex starts with a cleared environment plus `PATH`, `HOME`, `USER`, `LANG`, `LC_ALL`, `TMPDIR`, `SSL_CERT_FILE` and `CODEX_HOME`. `f03_provider_faults_are_bounded` now passes `GH_TOKEN` and `GITHUB_TOKEN` to the service and failed without the fix. The run 1 install was deleted. Run 1 also left one comment ([6357708343](https://github.com/taskqorg/pilotq/issues/21#issuecomment-6357708343)) on #21; run 2 added one more, and the label was already present.
 
+## Step 5 qualification
+
+Results for the [section 10](../pilotq.md#10-adoption-sequence) step 5 slice, task [#26](https://github.com/taskqorg/pilotq/issues/26). The owner decided on 2026-10-23 that the pilot runs on the native compaction baseline: agentq 0.9.0 compresses only Codex shell results (`exec_command`, `shell`), PilotQ starts Codex with the shell tool disabled, and PilotQ's own tools are Codex dynamic tools whose results agentq passes unchanged. agentq qualification follows the adapter task [taskqorg/agentq#167](https://github.com/taskqorg/agentq/issues/167).
+
+Versions: pilotq 0.1.0 (this branch), codex-cli 0.159.3 in PilotQ's own Codex home (subscription login), model `gpt-6.1-sol`, TaskQ CLI 4.6.36-dev on the Mac host, agentq 0.9.0 (installed, its Codex integration detached and its service not running), macOS 27.0.1.
+
+### Context cases, agentq off (live)
+
+`c_live_context_runs` in `tests/telegram.rs` runs the real PilotQ binary and Codex with the fake Bot API, synthetic people 7 (owner) to 11 and a fresh install per repetition. Native compaction is forced early with `model_auto_compact_token_limit` in PilotQ's Codex home (default 12000 tokens). C06 comments on a real closed issue, so the test is `#[ignore]` and runs only on request:
+
+```sh
+PILOTQ_A8_ROOT=<pilotq checkout> PILOTQ_A8_TASKQ=<taskq binary> PILOTQ_A8_CODEX_HOME=<logged-in Codex home> PILOTQ_A7_ISSUE=<closed pilotq issue> \
+  [PILOTQ_C_REPEAT=3] [PILOTQ_C_COMPACT=<tokens>] cargo test --locked --test telegram c_live -- --ignored --nocapture
+```
+
+It prints one `c-live` JSON line per case and repetition: outcome, evidence, provider usage from Codex's session files (input, cached input, output tokens), native compaction count, the longest run and nudges (always 0: the script never retries a person's request).
+
+**Result, 2026-10-23, macOS 27.0.1:** three repetitions of every case, all with agentq off and 12000-token compaction. C01, C04 and C05 pass 3 of 3; C06 and C07 fail 3 of 3 and expose two defects, filed as [#29](https://github.com/taskqorg/pilotq/issues/29) and [#28](https://github.com/taskqorg/pilotq/issues/28). No run needed a nudge. C06 added one comment per run to the closed issue [#21](https://github.com/taskqorg/pilotq/issues/21).
+
+| Case | Result | Evidence |
+|---|---|---|
+| C01 | Pass 3/3 | 3, 4 and 3 native compactions. After them, each reply listed the corrected project `pilotq`, the forbidden word only spelled with dashes, the open question and the task link `issues/26` |
+| C02 | Not applicable | It needs agentq compression. With agentq off nothing compresses a tool result; PilotQ's only large read, `issue_read`, returns a bounded excerpt |
+| C03 | Not applicable | Same reason as C02: there is no compression step that can fail |
+| C04 | Pass 3/3 | The shared topic's thread had compacted once. Person 10's `ALPHA` request was running when person 11's `BRAVO` arrived. Runs in the session did not overlap, and each reply named only its own author. No compaction fell exactly inside the ALPHA run, so the run shows serialization on a compacted thread, not a message during the compaction step itself |
+| C05 | Pass 3/3 | With agentq off no recovery references exist; the route-isolation half was checked. Person 9 told a code word in a DM; asked in the shared topic, the owner got `I don't know` each time |
+| C06 | Fail 3/3 | The owner's comment was written once with a receipt and never repeated (one effect, one new comment per run). After the conversation's rollout file was damaged, the next request failed with `Codex refused 2: failed to read thread: …`, and every later request in that conversation would fail until `/new`. PilotQ does not rebuild the conversation from its records, and the failure reply carries a local file path. Task [#29](https://github.com/taskqorg/pilotq/issues/29) |
+| C07 | Fail 3/3 | Person 10 said `Call me Ana`; then `users remember 10 preferred_name Bea`. After compaction and a PilotQ restart, Codex answered `Ana` each time. Profile facts never reach the model, so a correction cannot win over conversation history. Task [#28](https://github.com/taskqorg/pilotq/issues/28) |
+
+Provider usage for C01, from Codex's session files (all input, cached input, output tokens): 133953 / 111360 / 2249, 135139 / 96640 / 3194 and 123605 / 100736 / 3140. The longest single run in each repetition took 51, 62 and 46 s. `c-live` lines for the other cases carry cumulative usage per install.
+
+### agentq on
+
+Not run for C01–C07. With agentq attached, PilotQ's model-visible tool results would pass unchanged, so a paired run would measure only run-to-run noise. The P1 agentq gate therefore cannot pass, and agentq stays disabled for the pilot (task #26 A2). The paired comparison runs after [agentq#167](https://github.com/taskqorg/agentq/issues/167).
+
+### Pilot report
+
+`pilotq pilot start` records the pilot start once; `pilotq pilot note intervention|outage TEXT` records a manual intervention or a provider outage as the configured owner; `pilotq pilot report [--since T] [--json]` prints the gate 4 counts since the start:
+
+| Field | Source |
+|---|---|
+| `accepted` | Requests received since the start, any front end |
+| `simple` | Of those, answered with no plan, plan run or TaskQ task |
+| `users`, `routes`, `projects` | Distinct senders; distinct Telegram chat and topic pairs; distinct request projects, plus `pilotq` for a request that planned or filed a TaskQ task |
+| `tasks` | TaskQ tasks filed by those requests |
+| `interventions`, `outages` | Notes recorded with `pilot note` |
+| `failed` | `pilotq.request` CoreQ events with outcome `failed`; null with `failed_reason` when the telemetry store cannot be read |
+
+`journal::pilot_report_counts_gate_4` covers the counts, the first-start rule and unknown telemetry.
+
+### Pilot start
+
+The seven-day FRA pilot started on 2026-10-23 at 09:12:26 UTC (`pilot_start` 1792746746) on the separate test bot. The earliest gate 4 readout is 2026-10-30 at 09:12:26 UTC, and only once the counts reach 500 accepted requests, 200 simple requests, two users, three routes, two projects and ten TaskQ tasks.
+
+| Item | Setting |
+|---|---|
+| Build | FRA `hermes-fra1`, Linux 6.8.0-142-generic; pilotq 0.1.0 built `--release --locked` from `a2165805a1c13db30a24e77ca9ce14d32febe9e7`; binary SHA256 `655731731f2f085435d77cd7626a6a96203ed69949a40f2cd1188eee22e43bd1` |
+| Runtime | FRA codex-cli 0.162.0 in PilotQ's own Codex home, its own owner device-auth ChatGPT login (PM confirmation); model `gpt-6.1-sol`, native compaction, agentq off |
+| People | Owner `134142744` (every grant); second user `728914418` with `chat`, `taskq`, `project:pilotq`, `project:agentq` (owner, 2026-10-23) |
+| Routes | The owner's DM, the second user's DM, the test group's shared topic `-1003995096980:3` (three registered routes) |
+| Projects | `pilotq` (`taskqorg/pilotq`, TaskQ tools, `create_claim_issue` 20) and `agentq` (`taskqorg/agentq`, direct reads) |
+| TaskQ | The host TaskQ CLI, root = the owner's `pilotq` checkout, 60 s board scan |
+| Keys | None yet: `issue_read` and the owner's comments and labels need a key the owner adds with `pilotq keys add` |
+
+The earlier Mac start at 06:17:54 UTC failed A5's host requirement and does not count toward this pilot. The PM verified the Mac poller stopped before FRA activation (§4). Before remediation, FRA had no second-user grants, routes, projects or isolated login. After the PM ran the prepared setup, read-only journal inspection confirmed the approved grants, all three routes, both projects and the stored start. Request 1 ended `answered` with `FRA pilot readiness confirmed.` before the start; no requests had been accepted since the start at readback. The installed binary hash matches the built artifact. FRA status showed fresh successful poll/storage observations and model success; TaskQ observation and Telegram delivery remained `unknown: not-observed`, not qualified by this CLI check (§7, §12). The PM confirmed the user service active. Service-bus access and administrative CLI writes remain sandbox-blocked in the worker.
+
+The deployed artifact predates the rebase integration with #33. The candidate's `pilot report` retains gate counts and adds #33's `tools`, `since` and `until` measurement fields. `--until` bounds tool-size measurements only; gate counts remain since-start or since-argument counts. The rebased artifact has deterministic evidence below, not a claim of deployment.
+
+A4 regression remediation (§10 step 5): before the fix, `pilot report --since 20 --until 30` printed only tool sizes and omitted every gate count. `cargo test --locked --test update pilot_report_prints_gate_counts_and_tool_window -- --nocapture` reproduced the missing `accepted` count, then passed after text output included all gate counts. The CLI check verifies both text and JSON, unavailable telemetry as unknown with its reason, and the retained tool-size window `[since, until)`. An intervention at `until` remains counted, confirming that `--until` bounds tool measurements only. This correction changes the candidate, not the deployed FRA artifact or pilot start.
+
+Record each manual intervention and provider outage with `pilotq pilot note`. Rollback on FRA: stop and drain the test service; preserve the schema 7 journal and protected configuration. No previous FRA release exists. Do not downgrade its journal or reactivate the Mac poller automatically. Resume only a compatible verified build (§12).
+
+### Case matrix
+
+All 62 scenario families at the end of step 5. "Deterministic" names `cargo test --locked` traces on fakes; "Live" names runs with real Codex, the real board or the test bot; "Not run" names what neither covers and where it belongs. Live results on fakes for Telegram (A7, A8, C live) do not qualify the real Bot API.
+
+| Case | Deterministic | Live | Not run |
+|---|---|---|---|
+| U01 | Pass | Pass (test bot) | — |
+| U02 | Pass | Pass (A8, synthetic people); partial on the test bot | Second real person on the test bot: pilot |
+| U03 | Pass | Pass (A7) | — |
+| U04 | Pass | Pass (A7) | — |
+| U05 | Pass | Pass (A8) | — |
+| U06 | Pass | Pass (A8) | — |
+| U07 | Pass | — | Live worker question: A8 asked none; pilot |
+| U08 | Pass | — | Live stale answer: pilot |
+| U09 | Pass | Pass (A7) | — |
+| U10 | Pass | Pass (A8 restart while `doing`) | — |
+| U11 | Pass | — | Live budget: pilot |
+| U12 | Pass | Pass (test bot) | — |
+| U13 | Pass | — | Live pause and park: pilot |
+| U14 | Partial: unsupported media, service messages | Partial (test bot) | Edits and media interpretation: section 11 decision |
+| U15 | Pass | — | Live network loss: deterministic only |
+| U16 | Pass | Pass (test bot) | — |
+| U17 | Pass | Partial (CLI) | Telegram profile flow: not built |
+| U18 | Pass | Pass (A8); partial on the test bot | Live revoke: deterministic only |
+| F01 | Pass | — | Power loss: storage-level proof, step 6 |
+| F02 | Pass | — | Cross-host token conflict: step 6 |
+| F03 | Pass | — | — |
+| F04 | Pass | Pass (A7 receipts) | — |
+| F05 | Pass | Pass (test bot `retry-after`) | — |
+| F06 | Partial | — | Host alert path: step 6 |
+| F07 | Pass | — | — |
+| F08 | Partial: newer schema, corrupt journal | Fail: truncated native transcript (C06) | Rebuild: #29; disk full: step 6 |
+| F09 | Pass | Partial (A7 project redirection) | — |
+| F10 | Pass | — | — |
+| F11 | Partial: stale run fenced, one poller | — | Backup restore: step 6 |
+| F12 | Pass | — | — |
+| F13 | — | — | Cutover and rollback: step 6 |
+| F14 | Pass | — | — |
+| F15 | Pass | Pass (test bot, ignored person) | — |
+| F16 | Pass | — | — |
+| F17 | Pass | — | — |
+| C01 | — | Pass 3/3, agentq off | agentq on: [agentq#167](https://github.com/taskqorg/agentq/issues/167) |
+| C02 | — | — | Needs agentq compression: agentq#167 |
+| C03 | — | — | Needs agentq compression: agentq#167 |
+| C04 | Pass (`u12_stop_is_scoped_and_fences_the_run`: a message during a turn waits) | Pass 3/3, agentq off | agentq on: agentq#167 |
+| C05 | Pass (`journal::u02_route_session_policy`, `journal::u17_profiles_distinct_and_private`) | Pass 3/3, route isolation, agentq off | Recovery references: agentq#167 |
+| C06 | — | **Fail 3/3**: no rebuild after a damaged session; the effect is not repeated | Fix: #29 |
+| C07 | Partial (`journal::u17_profiles_distinct_and_private`: profile revisions) | **Fail 3/3**: profile facts never reach the model | Fix: #28 |
+| L01 | Pass | Pass (A8) | Fast-answer suppression: not implemented |
+| L02 | Partial | — | Typing bounded by last useful event |
+| L03 | Partial | — | Incident notices across restart |
+| L04 | Pass | — | — |
+| L05 | Partial: deadline, tool budget | C01 compaction below | Ineffective-compaction loop |
+| L06 | Pass | Pass (test bot `/stop`, `/new`) | — |
+| L07 | Pass | — | Real Codex tool inventory: A7 and A8 used only PilotQ tools |
+| L08 | Partial | — | 401, 429 retry-after and 5xx from the provider |
+| L09 | — | — | Credential expiry and account change |
+| L10 | Partial | — | Bot identity and permission manifest: step 6 |
+| L11 | Pass | — | — |
+| L12 | Pass | Pass (A8) | — |
+| L13 | Partial | Partial (test bot group migration) | Administrative remap |
+| L14 | Partial | — | Edits and albums: section 11 media decision |
+| L15 | Partial | Pass (A8 restart) | Linux service: step 6 |
+| L16 | Pass | Pass (A8 scan after restart) | — |
+| L17 | Partial | — | Wall-clock jump |
+| L18 | Partial | — | External monitor: step 6 |
+| L19 | Partial | — | Storage full and contention: step 6 |
+| L20 | Partial | — | Rollback with accepted work and restore: step 6 |
+
 Completion evidence is a report with exact versions, mechanism-to-case results, unresolved failures, recovery receipts, task links and aggregate metrics. Maintain 62 scenario-family entries: U01–U18, F01–F17, C01–C07 and L01–L20. Record deterministic and live/platform results separately, including not run. Runtime research, a healthy service or green repository CI cannot replace it.

@@ -1673,11 +1673,197 @@ fn pilot_tool_sizes_metadata_and_window() {
     assert!(rows.iter().all(|r| r.0 == "unknown_tool" && r.2 == "codex/0.0.0-test" && r.3 == env!("CARGO_PKG_VERSION")));
     let columns: Vec<String> = c.prepare("PRAGMA table_info(tool_sizes)").unwrap().query_map([], |r| r.get(1)).unwrap().map(Result::unwrap).collect();
     assert_eq!(columns, ["id", "request_id", "run_id", "at", "tool", "result_bytes", "codex_version", "pilotq_version"]);
-    let since = rows.first().unwrap().4.to_string();
+    let since = "0".to_string();
     let until = (rows.last().unwrap().4 + 1).to_string();
     let report = ok(cli(&d, &["pilot", "report", "--since", &since, "--until", &until, "--json"]));
+    assert_eq!(report["accepted"], 1, "gate counts remain available beside tool sizes");
     assert_eq!(report["tools"][0], json!({"tool": "unknown_tool", "calls": 6, "p95_result_bytes": sizes.iter().max(), "max_result_bytes": sizes.iter().max()}));
     let empty = ok(cli(&d, &["pilot", "report", "--since", &until, "--until", &(until.parse::<i64>().unwrap()+1).to_string(), "--json"]));
     assert_eq!(empty["tools"], json!([]));
+    let start = ok(cli(&d, &["pilot", "start", "--json"]));
+    let gate = ok(cli(&d, &["pilot", "report", "--json"]));
+    assert_eq!(gate["pilot_start"], start["pilot_start"]);
+    assert_eq!(gate["since"], start["pilot_start"]);
+    assert!(gate["tools"].is_array());
     fs::remove_dir_all(d).unwrap();
+}
+
+/// Files under `d` with the given extension, at any depth.
+fn files_ending(d: &Path, ext: &str) -> Vec<PathBuf> {
+    let mut found = vec![];
+    for e in fs::read_dir(d).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            found.extend(files_ending(&p, ext));
+        } else if p.extension().is_some_and(|x| x == ext) {
+            found.push(p);
+        }
+    }
+    found
+}
+
+/// Provider usage and native compactions from Codex's own session files: the last `token_count` total of each thread
+/// (input, cached input, output) and the number of `compacted` entries. A thread without a usage event counts as unknown.
+fn codex_usage(d: &Path) -> Value {
+    let (mut usage, mut unknown, mut compactions) = ([0i64; 3], 0, 0);
+    for f in files_ending(&d.join("codex/sessions"), "jsonl") {
+        let mut last = None;
+        for l in fs::read_to_string(&f).unwrap_or_default().lines() {
+            let Ok(v) = serde_json::from_str::<Value>(l) else { continue };
+            if v["type"] == "compacted" {
+                compactions += 1;
+            }
+            if v["payload"]["type"] == "token_count" && v["payload"]["info"]["total_token_usage"].is_object() {
+                last = Some(v["payload"]["info"]["total_token_usage"].clone());
+            }
+        }
+        match last {
+            Some(t) => {
+                for (i, k) in ["input_tokens", "cached_input_tokens", "output_tokens"].iter().enumerate() {
+                    usage[i] += t[k].as_i64().unwrap_or(0);
+                }
+            }
+            None => unknown += 1,
+        }
+    }
+    json!({"input": usage[0], "cached_input": usage[1], "output": usage[2], "threads_without_usage": unknown, "compactions": compactions})
+}
+
+// C01–C07 live with agentq off (owner, 2026-10-23, task #26): the real PilotQ binary and Codex in PilotQ's own Codex home, the
+// fake Bot API with synthetic people and native compaction forced early by `model_auto_compact_token_limit`. Each repetition
+// gets a fresh install. It prints one JSON line per case and repetition (`c-live {...}`) with the outcome, evidence, provider
+// usage from Codex's session files and latency, and fails at the end if a case failed. C06 comments on a real closed issue, so
+// it runs only on request:
+//   PILOTQ_A8_ROOT=<pilotq checkout> PILOTQ_A8_TASKQ=<taskq> PILOTQ_A8_CODEX_HOME=<logged-in Codex home> PILOTQ_A7_ISSUE=<closed issue> \
+//   [PILOTQ_C_REPEAT=3] [PILOTQ_C_FIRST=1] [PILOTQ_C_COMPACT=<tokens>] cargo test --locked --test telegram c_live -- --ignored --nocapture
+#[test]
+#[ignore = "real Codex turns; C06 comments on a real taskqorg/pilotq issue"]
+fn c_live_context_runs() {
+    let root = PathBuf::from(std::env::var("PILOTQ_A8_ROOT").expect("PILOTQ_A8_ROOT"));
+    let issue: i64 = std::env::var("PILOTQ_A7_ISSUE").expect("PILOTQ_A7_ISSUE").parse().unwrap();
+    let repeat: usize = std::env::var("PILOTQ_C_REPEAT").ok().and_then(|s| s.parse().ok()).unwrap_or(3);
+    let compact: i64 = std::env::var("PILOTQ_C_COMPACT").ok().and_then(|s| s.parse().ok()).unwrap_or(12000);
+    let token = String::from_utf8(Command::new("gh").args(["auth", "token"]).output().unwrap().stdout).unwrap().trim().to_string();
+    let comments = || gh_json(&format!("repos/taskqorg/pilotq/issues/{issue}/comments?per_page=100")).as_array().unwrap().len();
+    let mut failed = vec![];
+    let filler = [
+        "In about 300 words, explain what a write-ahead log is.",
+        "In about 300 words, explain how SQLite WAL checkpoints work.",
+        "In about 300 words, explain Telegram long polling and update offsets.",
+        "In about 300 words, explain at-least-once delivery and idempotency keys.",
+    ];
+    let first: usize = std::env::var("PILOTQ_C_FIRST").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
+    for rep in first..first + repeat {
+        let (d, st) = setup(&format!("c{rep}"), vec![]);
+        let _login = live_login(&d);
+        limits(&d, Path::new("codex"), json!({"first_event": 60, "silent": 60, "deadline": 240}));
+        fs::write(d.join("codex/config.toml"), format!("model_auto_compact_token_limit = {compact}\n")).unwrap();
+        let cfg = d.join("config.json");
+        let mut c: Value = serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
+        c["taskq"] = json!({"bin": std::env::var("PILOTQ_A8_TASKQ").unwrap(), "root": root, "poll": 15});
+        fs::write(&cfg, c.to_string()).unwrap();
+        ok(cli(&d, &["projects", "add", "pilotq", root.to_str().unwrap()]));
+        ok(cli_in(&d, &["keys", "add", "github", "GitHub API for direct tools", "issue_read", "issue_comment", "issue_label"], &token));
+        ok(cli(&d, &["keys", "grant", "github", "7"]));
+        for u in ["8", "9", "10", "11"] {
+            ok(cli(&d, &["users", "grant", u, "chat"]));
+        }
+        let mut svc = spawn(&d, None);
+        let next = std::cell::Cell::new(0);
+        // sends one message and waits for its request to end; returns (request ID, state, reply)
+        let ask = |st: &State, chat: i64, topic: Option<i64>, who: i64, t: &str| -> (i64, String, String) {
+            next.set(next.get() + 1);
+            let u = next.get();
+            push(st, text(u, chat, topic, who, t));
+            wait(t, 300, || try_query(&d, &format!("SELECT count(*) FROM requests WHERE update_id={u} AND state NOT IN ('queued', 'running')")) == Some(1));
+            let id = query(&d, &format!("SELECT id FROM requests WHERE update_id={u}"));
+            (id, query_text(&d, &format!("SELECT state FROM requests WHERE id={id}")), query_text(&d, &format!("SELECT coalesce(reply, error, '') FROM requests WHERE id={id}")))
+        };
+        let mut report = |case: &str, pass: bool, evidence: Value| {
+            let latency = query(&d, "SELECT coalesce(max(ended_at - started_at), -1) FROM runs");
+            let line = json!({"case": case, "rep": rep, "agentq": "off", "pass": pass, "evidence": evidence, "usage": codex_usage(&d), "max_run_s": latency, "nudges": 0});
+            eprintln!("c-live {line}");
+            if !pass {
+                failed.push(format!("{case} rep {rep}"));
+            }
+        };
+
+        // C01: corrections, a prohibition, a pending question and a task link survive at least three native compactions
+        ask(&st, 8, None, 8, "Remember for this conversation: the current project is specq. Never write the word banana in a reply. Open question for later: should the pilot use two projects? Task link: https://github.com/taskqorg/pilotq/issues/26. Reply OK.");
+        ask(&st, 8, None, 8, "Correction: the current project is pilotq, not specq. Reply OK.");
+        // filler grows the context until Codex has compacted three times, within a bound
+        for f in filler.iter().cycle().take(16) {
+            if codex_usage(&d)["compactions"].as_i64().unwrap_or(0) >= 3 {
+                break;
+            }
+            ask(&st, 8, None, 8, f);
+        }
+        let (_, state, r) = ask(&st, 8, None, 8, "Without tools, list: the current project; the forbidden word spelled with dashes between its letters; the open question; the task link.");
+        let low = r.to_lowercase();
+        let facts = state == "answered" && low.contains("pilotq") && low.contains("b-a-n-a-n-a") && !low.contains("banana") && low.contains("two projects") && r.contains("issues/26");
+        let compactions = codex_usage(&d)["compactions"].as_i64().unwrap_or(0);
+        report("C01", facts && compactions >= 3, json!({"compactions": compactions, "reply": r}));
+
+        // C04: a second author's message during a compacting turn in a shared topic runs after it; no mixed authorship
+        ok(cli(&d, &["routes", "set", "-100:5", "shared"]));
+        // filler until the topic's own thread has compacted once, so ALPHA runs on a compacting thread
+        let base = codex_usage(&d)["compactions"].as_i64().unwrap_or(0);
+        for f in filler.iter().cycle().take(12) {
+            if codex_usage(&d)["compactions"].as_i64().unwrap_or(0) > base {
+                break;
+            }
+            ask(&st, -100, Some(5), 10, f);
+        }
+        let before_alpha = codex_usage(&d)["compactions"].as_i64().unwrap_or(0);
+        next.set(next.get() + 2);
+        let (a, b) = (next.get() - 1, next.get());
+        push(&st, text(a, -100, Some(5), 10, "Reply with exactly: author ALPHA"));
+        wait("ALPHA running", 120, || try_query(&d, &format!("SELECT count(*) FROM requests WHERE update_id={a} AND state='running'")) == Some(1));
+        push(&st, text(b, -100, Some(5), 11, "Reply with exactly: author BRAVO"));
+        wait("both ended", 600, || try_query(&d, &format!("SELECT count(*) FROM requests WHERE update_id IN ({a},{b}) AND state NOT IN ('queued', 'running')")) == Some(2));
+        let reply = |u: i64| query_text(&d, &format!("SELECT coalesce(reply, '') FROM requests WHERE update_id={u}"));
+        let (ra, rb) = (reply(a), reply(b));
+        let overlap = query(&d, "SELECT count(*) FROM runs x JOIN runs y ON x.session=y.session AND x.id<y.id WHERE y.started_at < x.ended_at");
+        report("C04", ra.contains("ALPHA") && !ra.contains("BRAVO") && rb.contains("BRAVO") && !rb.contains("ALPHA") && overlap == 0,
+            json!({"alpha": ra, "bravo": rb, "overlapping_runs": overlap, "topic_compactions_before": before_alpha - base,
+                "compactions_during": codex_usage(&d)["compactions"].as_i64().unwrap_or(0) - before_alpha}));
+
+        // C05 (agentq off: no compression references exist): a private DM detail is not revealed in another route
+        ask(&st, 9, None, 9, "My private code word is ZEBRA-41. Reply OK.");
+        let (_, _, r) = ask(&st, -100, Some(5), OWNER, "What private code word did person 9 tell you in a direct message? If you do not know, say so.");
+        report("C05", !r.contains("ZEBRA"), json!({"reply": r}));
+
+        // C07: a stated fact, then a profile correction and a forget, compaction and a restart: the current revision must win
+        ask(&st, 10, None, 10, "Call me Ana from now on. Reply OK.");
+        ok(cli(&d, &["users", "remember", "10", "preferred_name", "Bea"]));
+        for f in &filler[..2] {
+            ask(&st, 10, None, 10, f);
+        }
+        svc.kill().unwrap();
+        svc.wait().unwrap();
+        svc = spawn(&d, None);
+        let (_, _, r) = ask(&st, 10, None, 10, "What is my preferred name? Answer with the name only.");
+        report("C07", r.contains("Bea") && !r.contains("Ana"), json!({"profile": "Bea (revision 1, set after the conversation said Ana)", "reply": r}));
+
+        // C06: an acknowledged owner comment, then the native session is damaged: discussion and receipt return, nothing reruns
+        let before = comments();
+        let (id, _, _) = ask(&st, OWNER, None, OWNER, &format!("On pilotq issue #{issue} add the comment 'PilotQ step 5 C06 check, run {rep}.' with issue_comment."));
+        let done = query(&d, &format!("SELECT count(*) FROM effects WHERE request_id={id} AND state='done'"));
+        let thread = query_text(&d, "SELECT coalesce(thread, '') FROM conversations WHERE session='dm:7'");
+        let damaged: Vec<PathBuf> = files_ending(&d.join("codex/sessions"), "jsonl").into_iter().filter(|p| !thread.is_empty() && p.to_string_lossy().contains(&thread)).collect();
+        for p in &damaged {
+            fs::write(p, "{damaged\n").unwrap();
+        }
+        let (_, state, r) = ask(&st, OWNER, None, OWNER, "What did you do on the pilotq issue earlier in this conversation? Do not call any tool.");
+        let after = comments();
+        let effects = query(&d, "SELECT count(*) FROM effects");
+        report("C06", done == 1 && after == before + 1 && effects == 1 && state == "answered" && r.contains(&issue.to_string()),
+            json!({"effect_done": done, "comments_added": after as i64 - before as i64, "effects": effects, "damaged_files": damaged.len(), "state": state, "reply": r}));
+
+        let log = stderr_of(svc);
+        assert!(!log.contains(&token) && files_with(&d, &token, &["keys.json"]).is_empty(), "the key value leaked");
+        drop(_login);
+        fs::remove_dir_all(&d).unwrap();
+    }
+    assert!(failed.is_empty(), "failed: {failed:?}");
 }
