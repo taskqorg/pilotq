@@ -2,5 +2,6 @@
   "board": "github",
   "repo": "taskqorg/pilotq",
   "publish": "pr",
-  "incident_reports": true
+  "incident_reports": true,
+  "create_claim_issue": 20
 }
