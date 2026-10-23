@@ -140,6 +140,7 @@ impl Codex {
     /// Runs one turn on `thread` (a new thread when None). `alive` reports whether the journal still holds this run's fence;
     /// `tool` persists a tool item's type, ID and, once completed, its status. `dynamic` offers PilotQ's own tools on a new thread
     /// (their specs and instructions); `call` answers one complete call of them. Returns the thread ID and model Codex used and the outcome.
+    #[allow(clippy::too_many_arguments)]
     pub fn turn(
         &self,
         thread: Option<&str>,
@@ -148,6 +149,7 @@ impl Codex {
         mut alive: impl FnMut() -> bool,
         mut tool: impl FnMut(&str, &str, Option<&str>),
         mut call: impl FnMut(&str, &Value, &str) -> (bool, String),
+        mut rebuild: impl FnMut() -> Result<Value, String>,
     ) -> (Option<String>, Option<String>, Outcome) {
         // the first-event watch starts once this turn may spawn, before Codex runs (§ 12)
         let mut starting = Some(START.lock().unwrap_or_else(|e| e.into_inner()));
@@ -158,6 +160,8 @@ impl Codex {
         };
         let (mut thread, mut turn, mut answer, mut tooled, mut model) = (thread.map(str::to_string), None::<String>, String::new(), false, None::<String>);
         let (mut first, mut last, mut error) = (false, start, None::<String>);
+        let mut input = input.clone();
+        let mut resuming = thread.is_some();
         let lim = &self.limits;
         let mut version = String::from("unknown");
         // dynamic tools are an experimental app-server field, negotiated only when PilotQ offers some
@@ -204,6 +208,29 @@ impl Codex {
                 continue;
             }
             if let Some(e) = m.get("error") {
+                if m["id"] == 2 && resuming && !tooled && turn.is_none() {
+                    resuming = false;
+                    let message = e["message"].as_str().unwrap_or("");
+                    if message.contains("failed to read thread") || message.contains("thread not found") || message.contains("no rollout found") {
+                        let history = match rebuild() {
+                            Ok(v) => v,
+                            Err(_) => return (thread, model, Outcome::Failed("Conversation recovery could not be prepared; no work was repeated.".into())),
+                        };
+                        input.as_array_mut().unwrap().insert(0, json!({"type": "text", "text": history.to_string()}));
+                        thread = None;
+                        let mut params = json!({"cwd": self.workspace, "approvalPolicy": "never", "sandbox": "read-only"});
+                        if let Some((tools, instructions)) = dynamic {
+                            params["dynamicTools"] = tools.clone();
+                            params["developerInstructions"] = json!(instructions);
+                        }
+                        p.send(json!({"id": 2, "method": "thread/start", "params": params}));
+                        continue;
+                    }
+                    return (thread, model, Outcome::Failed("Codex could not resume this conversation; check login and runtime health.".into()));
+                }
+                if m["id"] == 2 {
+                    return (thread, model, Outcome::Failed("Codex could not open the conversation; no work was repeated.".into()));
+                }
                 p.stop(&thread, &turn);
                 return (thread, model, fail(tooled, format!("Codex refused {}: {}", m["id"], e["message"].as_str().unwrap_or("error"))));
             }
@@ -306,6 +333,7 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
             }
             (ok, out)
         },
+        || j.lock().unwrap().rebuild(r, now()),
     );
     let j = j.lock().unwrap();
     let health = match &outcome {
