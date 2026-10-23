@@ -269,7 +269,6 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
         None => format!("You are PilotQ. {}", direct::INSTRUCTIONS),
     };
     let tools = Value::Array(tools);
-    let mut calls = 0;
     let (thread, model, outcome) = codex.turn(
         r.thread.as_deref(),
         &r.text,
@@ -281,10 +280,11 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
             }
         },
         |name, args| {
-            // § 7 direct action: a request's sixth tool call is refused and writes nothing (U11)
-            calls += 1;
-            if calls > direct::BUDGET {
-                return (false, format!("This request reached its budget of {} tool calls; nothing was done. Answer with the evidence so far and offer to plan the rest as a task, or ask the person.", direct::BUDGET));
+            // § 7 direct action: a request's sixth tool call, counting earlier runs of it, is refused and writes nothing (U11)
+            match j.lock().unwrap().spend(r, name, direct::BUDGET, now()) {
+                Ok(true) => {}
+                Ok(false) => return (false, format!("This request reached its budget of {} tool calls; nothing was done. Answer with the evidence so far and offer to plan the rest as a task, or ask the person.", direct::BUDGET)),
+                Err(e) => return (false, format!("the tool-call budget could not be read ({e}); nothing was done")),
             }
             let (ok, out) = match tq {
                 _ if direct::NAMES.contains(&name) => direct::call(d, j, r, name, args),

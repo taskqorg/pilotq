@@ -15,7 +15,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const USAGE: &str = "usage: pilotq service install|run|stop|status | status [--json] | update [--check] | selftest | version | ask TEXT [--json]
   users list | users show ID | users grant ID GRANT.. | users revoke ID [GRANT..] | users remember ID KEY VALUE [--private] | users forget ID KEY
   routes list | routes set CHAT[:TOPIC] shared|isolated | projects list | projects add NAME ROOT
-  keys list | keys add NAME PURPOSE TOOL.. (value on stdin) | keys grant NAME ID|route:CHAT[:TOPIC].. | keys revoke NAME [WHO..]
+  keys list | keys add NAME PURPOSE TOOL.. (value on stdin) | keys grant NAME ID|route:CHAT[:TOPIC]|project:NAME.. | keys revoke NAME [WHO..]
   (users, routes, projects and keys accept --json)
   audit [--user ID] [--route cli|CHAT[:TOPIC]] [--project P] [--since UNIX_SECONDS] [--request ID] [--json]";
 /// A status.json older than this reads unknown (coreq.md § status.json).
@@ -325,7 +325,7 @@ fn show(v: &Value) {
         }
         if v.get("purpose").is_some() || v.get("removed").is_some() {
             let list = |k: &str| v[k].as_array().map_or(String::new(), |a| a.iter().map(|x| x.as_str().map_or(x.to_string(), str::to_string)).collect::<Vec<_>>().join(","));
-            return println!("{} {}: tools {} users {} routes {} last use {}", v["name"].as_str().unwrap_or(""), v["purpose"].as_str().unwrap_or("removed"), list("tools"), list("users"), list("routes"), v["last_use"]);
+            return println!("{} {}: tools {} users {} routes {} projects {} last use {}", v["name"].as_str().unwrap_or(""), v["purpose"].as_str().unwrap_or("removed"), list("tools"), list("users"), list("routes"), list("projects"), v["last_use"]);
         }
         if v.get("session").is_some() {
             let topic = if v["topic"] == 0 { String::new() } else { format!(":{}", v["topic"]) };

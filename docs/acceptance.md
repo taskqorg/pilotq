@@ -269,6 +269,8 @@ Results for the [section 10](../pilotq.md#10-adoption-sequence) step 4 slice, ta
 | F04 | Pass | `u04_…`: killed after the write and before the receipt, startup reads the comment back by its operation ID, records it done and tells the route that it was found once; killed before the write, the readback finds nothing and the route is told it was not written. Neither is repeated. Task creation: step 3 (U15) |
 | F09 | Pass | `u09_…`: calls that name `pilotq` while the person's message does not, under a quoted message that names it, neither switch nor read it, by name or by issue URL |
 | F10 | Pass | `u09_…`: after `users revoke 8 project:other` the person's next read is refused; earlier records stay. User grants: step 2 |
+| U21 (key holders) | Pass | `a1_key_grants_by_route_and_project` ([#25](https://github.com/taskqorg/pilotq/issues/25)): `keys grant ro project:other` lets a person with `project:other` read that project and nothing else; `route:CHAT:TOPIC` lets the same person read from that topic only; after `keys revoke` of the project or the route the next call is refused and `gh` never runs. Person grants: `u03_…`. Failed before #25: the CLI refused `project:` |
+| U11 (retries) | Pass | `a2_budget_holds_across_a_retry` (#25): four reads run, PilotQ is killed mid-turn, the restart retries the request and its four reads run one more; five reads in total, three refused, five `call` events in the audit record. Failed before #25: the retry ran all four again |
 | L05 | Partial | `u11_…`: the tool-call budget and the deadline apply; the deadline despite endless tokens stays `f03_provider_faults_are_bounded`. Compaction: step 5 |
 
 ### Scripted live run (A7)

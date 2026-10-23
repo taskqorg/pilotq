@@ -12,7 +12,7 @@ pub struct Keys(pub PathBuf);
 
 /// A key's readback: everything but its value.
 fn entry(name: &str, k: &Value) -> Value {
-    json!({"name": name, "purpose": k["purpose"], "tools": k["tools"], "users": k["users"], "routes": k["routes"], "last_use": k["last_use"]})
+    json!({"name": name, "purpose": k["purpose"], "tools": k["tools"], "users": k["users"], "routes": k["routes"], "projects": k["projects"], "last_use": k["last_use"]})
 }
 
 impl Keys {
@@ -71,27 +71,31 @@ impl Keys {
             if m.contains_key(name) {
                 return Err(format!("key {name} exists; revoke it first to replace its value"));
             }
-            let k = json!({"purpose": purpose, "value": value, "tools": tools, "users": [], "routes": [], "last_use": null});
+            let k = json!({"purpose": purpose, "value": value, "tools": tools, "users": [], "routes": [], "projects": [], "last_use": null});
             let e = entry(name, &k);
             m.insert(name.into(), k);
             Ok(e)
         })
     }
 
-    /// Adds holders: a Telegram user ID, or `route:CHAT[:TOPIC]` / `route:cli`.
+    /// Adds holders: a Telegram user ID, `route:CHAT[:TOPIC]` / `route:cli`, or `project:NAME` (§ 8: a grant names the person,
+    /// route or project).
     pub fn grant(&self, name: &str, who: &[String]) -> Result<Value, String> {
         let mut parsed = vec![];
         for w in who {
-            parsed.push(match w.strip_prefix("route:") {
-                Some(r) if r == "cli" || r.split(':').count() <= 2 && r.split(':').all(|p| p.parse::<i64>().is_ok()) => ("routes", json!(r)),
-                None => ("users", json!(w.parse::<i64>().map_err(|_| format!("{w}: expected a Telegram user ID or route:CHAT[:TOPIC]"))?)),
-                _ => return Err(format!("{w}: expected route:CHAT, route:CHAT:TOPIC or route:cli")),
+            parsed.push(match (w.strip_prefix("route:"), w.strip_prefix("project:")) {
+                (Some(r), _) if r == "cli" || r.split(':').count() <= 2 && r.split(':').all(|p| p.parse::<i64>().is_ok()) => ("routes", json!(r)),
+                (Some(_), _) => return Err(format!("{w}: expected route:CHAT, route:CHAT:TOPIC or route:cli")),
+                (_, Some(p)) if !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) => ("projects", json!(p)),
+                (_, Some(_)) => return Err(format!("{w}: a project name is letters, digits, -, _ or .")),
+                _ => ("users", json!(w.parse::<i64>().map_err(|_| format!("{w}: expected a Telegram user ID, route:CHAT[:TOPIC] or project:NAME"))?)),
             });
         }
         self.change(|m| {
             let k = m.get_mut(name).ok_or(format!("no key {name}"))?;
             for (field, v) in parsed {
-                let list = k[field].as_array_mut().ok_or("key store is malformed")?;
+                // a key stored before project grants has no `projects` list yet
+                let list = k.as_object_mut().ok_or("key store is malformed")?.entry(field).or_insert(json!([])).as_array_mut().ok_or("key store is malformed")?;
                 if !list.contains(&v) {
                     list.push(v);
                 }
@@ -109,9 +113,10 @@ impl Keys {
             }
             let k = m.get_mut(name).ok_or(format!("no key {name}"))?;
             for w in who {
-                let (field, v) = match w.strip_prefix("route:") {
-                    Some(r) => ("routes", json!(r)),
-                    None => ("users", w.parse::<i64>().map(|n| json!(n)).unwrap_or(json!(w))),
+                let (field, v) = match (w.strip_prefix("route:"), w.strip_prefix("project:")) {
+                    (Some(r), _) => ("routes", json!(r)),
+                    (_, Some(p)) => ("projects", json!(p)),
+                    _ => ("users", w.parse::<i64>().map(|n| json!(n)).unwrap_or(json!(w))),
                 };
                 if let Some(list) = k[field].as_array_mut() {
                     list.retain(|x| *x != v);
@@ -125,13 +130,15 @@ impl Keys {
         Ok(self.load()?.iter().map(|(n, k)| entry(n, k)).collect())
     }
 
-    /// The value of the key a call may use, checked at dispatch (§ 8): the key allows `tool` and names `user` or `route`.
-    /// `name` None picks the only such key. Records the use time; the value goes only into the tool's child process.
-    pub fn take(&self, name: Option<&str>, tool: &str, user: i64, route: &str, at: i64) -> Result<(String, String), String> {
+    /// The value of the key a call may use, checked at dispatch (§ 8): the key allows `tool` and names `user`, `route` or the
+    /// call's resolved `project`. `name` None picks the only such key. Records the use time; the value goes only into the tool's
+    /// child process.
+    pub fn take(&self, name: Option<&str>, tool: &str, user: i64, route: &str, project: &str, at: i64) -> Result<(String, String), String> {
         self.change(|m| {
+            let holds = |k: &Value, field: &str, v: Value| k[field].as_array().is_some_and(|l| l.contains(&v));
             let fits = |k: &Value| {
                 k["tools"].as_array().is_some_and(|t| t.iter().any(|x| x == tool))
-                    && (k["users"].as_array().is_some_and(|u| u.contains(&json!(user))) || k["routes"].as_array().is_some_and(|r| r.contains(&json!(route))))
+                    && (holds(k, "users", json!(user)) || holds(k, "routes", json!(route)) || holds(k, "projects", json!(project)))
             };
             let usable: Vec<String> = m.iter().filter(|(_, k)| fits(k)).map(|(n, _)| n.clone()).collect();
             let name = match name {
@@ -139,7 +146,7 @@ impl Keys {
                 None if usable.len() == 1 => usable[0].clone(),
                 _ => {
                     let list = if usable.is_empty() { "none".to_string() } else { usable.join(", ") };
-                    return Err(format!("no key {}granted to {user} for {tool}; keys you may use for it: {list}. Nothing was done", name.map_or(String::new(), |n| format!("{n} "))));
+                    return Err(format!("no key {}granted to {user}, this route or project {project} for {tool}; keys you may use for it: {list}. Nothing was done", name.map_or(String::new(), |n| format!("{n} "))));
                 }
             };
             let k = m.get_mut(&name).ok_or("key store is malformed")?;

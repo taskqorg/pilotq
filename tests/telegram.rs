@@ -749,8 +749,9 @@ print("Error: unknown command", file=sys.stderr); sys.exit(1)
 
 /// A fake `codex app-server` in Python: `call NAME JSON` makes one complete dynamic tool call and answers "re: ok: RESULT" or
 /// "re: refused: RESULT"; `multi {"calls": [[NAME, ARGS]..], "sleep": S}` makes several, then sleeps S seconds; `hex HEX` is
-/// `multi` hex-encoded, so the person's text names nothing the calls use (a model steered by tool output); `slow S` sleeps;
-/// anything else answers "re: TEXT".
+/// `multi` hex-encoded, so the person's text names nothing the calls use (a model steered by tool output); in `multi`, `"bare"`
+/// sends no tool item events (a run PilotQ may retry) and `"sleep_once": S` sleeps S seconds on the first run only; `slow S`
+/// sleeps; anything else answers "re: TEXT".
 const FAKE_TOOLS: &str = r#"#!/usr/bin/env python3
 import json, os, sys, time
 d = os.path.dirname(os.path.abspath(__file__))
@@ -785,15 +786,19 @@ for line in sys.stdin:
         outs = []
         for i, (name, args) in enumerate(spec["calls"]):
             item = {"type": "dynamicToolCall", "id": "k%d" % i, "tool": name, "arguments": args, "status": "inProgress"}
-            send({"method": "item/started", "params": {"threadId": th, "turnId": "u1", "item": item}})
+            if not spec.get("bare"):
+                send({"method": "item/started", "params": {"threadId": th, "turnId": "u1", "item": item}})
             send({"id": 50 + i, "method": "item/tool/call", "params": {"threadId": th, "turnId": "u1", "callId": item["id"], "tool": name, "arguments": args}})
             r = {}
             while r.get("id") != 50 + i:
                 r = json.loads(sys.stdin.readline()); log.write(json.dumps(r) + "\n"); log.flush()
             res = r["result"]
             outs.append(("ok: " if res["success"] else "refused: ") + res["contentItems"][0]["text"])
-            send({"method": "item/completed", "params": {"threadId": th, "turnId": "u1", "item": dict(item, status="completed")}})
+            if not spec.get("bare"):
+                send({"method": "item/completed", "params": {"threadId": th, "turnId": "u1", "item": dict(item, status="completed")}})
         time.sleep(spec.get("sleep", 0))
+        if spec.get("sleep_once") and not os.path.exists(os.path.join(d, "slept")):
+            open(os.path.join(d, "slept"), "w").close(); time.sleep(spec["sleep_once"])
         if outs:
             text = " | ".join(outs)
         send({"method": "item/completed", "params": {"threadId": th, "turnId": "u1", "completedAtMs": 0, "item": {"type": "agentMessage", "id": "m1", "text": "re: " + text}}})
@@ -1206,7 +1211,7 @@ fn u03_u21_key_backed_read_and_no_value_anywhere() {
     assert!(r.contains("Source time: updated 2026-10-20T10:00:00Z on GitHub; read at Unix time"), "{r}");
     assert!(r.contains("token [key github]"), "the echoed value is scrubbed: {r}");
     push(&st, call(2, 8, None, 8, "issue_read", json!({"project": "pilotq", "issue": "3"})));
-    wait("no key", 15, || sent_has(&st, "re: refused: no key granted to 8 for issue_read; keys you may use for it: none. Nothing was done"));
+    wait("no key", 15, || sent_has(&st, "re: refused: no key granted to 8, this route or project pilotq for issue_read; keys you may use for it: none. Nothing was done"));
     let calls = gh_calls(&d);
     assert_eq!(calls.len(), 1, "the refused read never ran: {calls:?}");
     assert_eq!((calls[0]["token"].as_str(), &calls[0]["github_token"], &calls[0]["args"]), (Some("ok"), &Value::Null, &json!(["api", "repos/taskqorg/pilotq/issues/3"])));
@@ -1342,6 +1347,61 @@ fn u11_l05_budget_and_deadline_keep_evidence() {
     push(&st, text(2, OWNER, None, OWNER, &format!("multi {}", json!({"calls": [["issue_read", {"project": "pilotq", "issue": "7"}]], "sleep": 8}))));
     wait("deadline", 20, || sent_has(&st, "Codex did not finish within 4 s\nEvidence kept: issue_read taskqorg/pilotq#7: updated 2026-10-20T10:00:00Z. The rest can become a task: ask me to plan it."));
     assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE id=2 AND state='uncertain'"), 1);
+    stop(c, d);
+}
+
+// A2 (#25): the budget is per request, not per run. Four reads run, PilotQ is killed before the turn ends, the restart retries
+// the request (no tool item started, so it is a pure model run), and the retry's four reads run one more: five in total, the
+// rest refused with nothing written. The fake's tool calls send no item events, as a retried run would.
+#[test]
+fn a2_budget_holds_across_a_retry() {
+    let (d, st) = direct_setup("a2");
+    let c = spawn(&d, None);
+    let four: Vec<Value> = (1..=4).map(|n| json!(["issue_read", {"project": "pilotq", "issue": n.to_string()}])).collect();
+    push(&st, text(1, OWNER, None, OWNER, &format!("multi {}", json!({"calls": four, "bare": true, "sleep_once": 30}))));
+    // the fake marks the first run once its four calls are answered and it starts to sleep
+    wait("first run's reads", 15, || d.join("slept").exists());
+    drop(c);
+    assert_eq!(gh_calls(&d).len(), 4);
+    let c = spawn(&d, None);
+    wait("retry answered", 15, || sent_has(&st, "re: ok: taskqorg/pilotq#1 (open)"));
+    let r = texts(&st).into_iter().find(|t| t.starts_with("re: ok: taskqorg/pilotq#1")).unwrap();
+    assert_eq!(r.matches("refused: This request reached its budget of 5 tool calls; nothing was done.").count(), 3, "{r}");
+    assert_eq!(gh_calls(&d).len(), 5, "five reads in total across both runs");
+    assert_eq!(query(&d, "SELECT count(*) FROM runs WHERE request_id=1"), 2, "the request was retried");
+    assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE request_id=1 AND kind='call'"), 5, "a refused call records nothing");
+    stop(c, d);
+}
+
+// A1 (#25): a key grant names a person, a route or a project (§ 8 Key store); dispatch checks all three, and revoking a route or
+// project grant refuses the next call. Person grants: `u03_…`.
+#[test]
+fn a1_key_grants_by_route_and_project() {
+    let (d, st) = direct_setup("a1");
+    ok(cli(&d, &["users", "grant", "8", "chat", "project:pilotq", "project:other"]));
+    ok(cli_in(&d, &["keys", "add", "ro", "read only", "issue_read"], &format!("{TOKEN}\n")));
+    assert!(!cli(&d, &["keys", "grant", "ro", "project:"]).status.success(), "an empty project name is refused");
+    let k = ok(cli(&d, &["keys", "grant", "ro", "project:other", "--json"]));
+    assert_eq!(k["projects"], json!(["other"]), "{k}");
+    let c = spawn(&d, None);
+    push(&st, call(1, 8, None, 8, "issue_read", json!({"project": "other", "issue": "4"})));
+    wait("project grant", 15, || sent_has(&st, "re: ok: taskqorg/other#4"));
+    push(&st, call(2, 8, None, 8, "issue_read", json!({"project": "pilotq", "issue": "3"})));
+    wait("other project", 15, || sent_has(&st, "re: refused: no key granted to 8, this route or project pilotq for issue_read; keys you may use for it: none."));
+    ok(cli(&d, &["keys", "revoke", "ro", "project:other"]));
+    push(&st, call(3, 8, None, 8, "issue_read", json!({"project": "other", "issue": "4"})));
+    wait("project revoked", 15, || sent_has(&st, "re: refused: no key granted to 8, this route or project other for issue_read"));
+
+    ok(cli(&d, &["keys", "grant", "ro", "route:-100:5"]));
+    push(&st, call(4, -100, Some(5), 8, "issue_read", json!({"project": "pilotq", "issue": "3"})));
+    wait("route grant", 15, || sent_has(&st, "re: ok: taskqorg/pilotq#3"));
+    push(&st, call(5, 8, None, 8, "issue_read", json!({"project": "pilotq", "issue": "3"})));
+    wait("other route", 15, || texts(&st).iter().filter(|t| t.starts_with("re: refused: no key granted to 8, this route or project pilotq")).count() == 2);
+    ok(cli(&d, &["keys", "revoke", "ro", "route:-100:5"]));
+    push(&st, call(6, -100, Some(5), 8, "issue_read", json!({"project": "pilotq", "issue": "3"})));
+    wait("route revoked", 15, || texts(&st).iter().filter(|t| t.starts_with("re: refused: no key granted to 8, this route or project pilotq")).count() == 3);
+    let reads: Vec<Value> = gh_calls(&d).into_iter().map(|c| c["args"][1].clone()).collect();
+    assert_eq!(reads, [json!("repos/taskqorg/other/issues/4"), json!("repos/taskqorg/pilotq/issues/3")], "refused calls run nothing");
     stop(c, d);
 }
 
