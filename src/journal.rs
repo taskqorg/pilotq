@@ -813,6 +813,20 @@ impl Journal {
         tx.commit().map_err(e)
     }
 
+    /// Spends one of the request's PilotQ tool calls (§ 5 Budget), counted in its audit record across runs and restarts, so a
+    /// retried run continues the budget instead of starting a new one. False once `budget` are spent; a refused call records nothing.
+    pub fn spend(&self, r: &Run, tool: &str, budget: usize, at: i64) -> Result<bool, String> {
+        // one statement, so the count and the insert are a single write
+        self.0
+            .execute(
+                "INSERT INTO audit_events(request_id, run_id, at, kind, target) SELECT ?1,?2,?3,'call',?4
+                WHERE (SELECT count(*) FROM audit_events WHERE request_id=?1 AND kind='call') < ?5",
+                params![r.request, r.id, at, tool, budget as i64],
+            )
+            .map(|n| n == 1)
+            .map_err(|e| e.to_string())
+    }
+
     /// Records a run's outcome, reply and native thread in one transaction, only while its fence holds. Returns false for a
     /// fenced run, which changes nothing but its own run row.
     pub fn finish(&self, r: &Run, thread: Option<&str>, model: Option<&str>, outcome: &crate::manager::Outcome, at: i64) -> Result<bool, String> {

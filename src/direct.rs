@@ -178,7 +178,7 @@ fn dispatch(d: &Direct, j: &Mutex<Journal>, r: &Run, name: &str, args: &Value) -
         }
         "issue_read" => {
             let (project, repo, n) = target(&j.lock().unwrap(), r, user, args)?;
-            let (key, token) = d.keys.take(key, name, user, &route, now())?;
+            let (key, token) = d.keys.take(key, name, user, &route, &project, now())?;
             let v = d.gh(&token, &[format!("repos/{repo}/issues/{n}")])?;
             let updated = v["updated_at"].as_str().unwrap_or("unknown");
             let labels: Vec<&str> = v["labels"].as_array().into_iter().flatten().filter_map(|l| l["name"].as_str()).collect();
@@ -205,7 +205,7 @@ fn dispatch(d: &Direct, j: &Mutex<Journal>, r: &Run, name: &str, args: &Value) -
                 "issue_comment" => args["body"].as_str().filter(|b| !b.trim().is_empty() && b.chars().count() <= 2000).ok_or("body is 1-2000 characters")?,
                 _ => args["label"].as_str().filter(|l| (1..=50).contains(&l.len()) && l.chars().all(|c| c.is_ascii_alphanumeric() || " ._:-".contains(c))).ok_or("label is 1-50 characters: letters, digits, space, . _ : -")?,
             };
-            let (key, token) = d.keys.take(key, name, user, &route, now())?;
+            let (key, token) = d.keys.take(key, name, user, &route, &project, now())?;
             let op = j.lock().unwrap().intent(r, &project, name, &repo, n, value, &key, now())?;
             crate::telegram::fault("before-effect");
             let write = match name {
