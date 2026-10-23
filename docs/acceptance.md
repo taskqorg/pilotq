@@ -255,4 +255,43 @@ It checks, in order: U18 (an ungranted message is ignored and not replayed after
 
 Run 1 failed before any board write and exposed a defect. Three requests started Codex together on a fresh Codex home, and one app-server exited with `failed to initialize sqlite state runtime`. PilotQ reported it only as `Codex exited without a terminal event`. Fix: Codex startup is serialized until `initialize` answers, and the stderr reason goes to the operator log, never to a reply (`concurrent_codex_starts_do_not_race`, which failed without the lock). The live test bot was not used. It ran the pre-step3 build and journal throughout, restored after the earlier attempt. A later owner check there is optional.
 
+## Step 4 qualification
+
+Results for the [section 10](../pilotq.md#10-adoption-sequence) step 4 slice, task [#23](https://github.com/taskqorg/pilotq/issues/23), against [direct actions, keys and project switching](../pilotq.md#direct-actions-keys-and-project-switching). Deterministic traces run in `cargo test --locked` with a fake `gh` (`FAKE_GH` in `tests/telegram.rs`: argument log, a token check that never records the token, issues, comments and labels in a state file, an option that makes an issue body echo the token), the fake TaskQ CLI as the registration readback, a fake Codex that makes several dynamic tool calls per turn (`multi`, or `hex` so that the person's text names nothing the calls use), the fake Bot API and the `PILOTQ_FAULT` crash points `before-effect` and `after-effect`. Fakes do not qualify GitHub, real Codex tool choice or Telegram; the live run is listed separately.
+
+| Case | Deterministic result | Traces |
+|---|---|---|
+| U03 | Pass | `u03_u21_key_backed_read_and_no_value_anywhere`: the owner's read returns title, state, labels, body excerpt and `Source time: updated … on GitHub; read at …`; the audit record lists `issue_read taskqorg/pilotq#3` with the key name and the project |
+| U04 | Pass | `u04_f04_owner_comment_and_label_once_and_crash_readback`: one comment carrying its operation ID and one label, each read back with a receipt; a person holding every grant but not owner gets `only the owner may comment on or label board issues`; another project is read-only |
+| U09 | Pass | `u09_f09_f10_switch_ambiguity_redirect_and_revoke`: a bare `#3` with two accessible projects and no current one is refused with the list; a switch the person names makes the next bare number read that project; a project named in the message is read without switching |
+| U11 | Pass | `u11_l05_budget_and_deadline_keep_evidence`: six reads in one request run five, the sixth is refused and runs nothing; a request cut off at its deadline replies with `Evidence kept: …` and offers to plan the rest |
+| U21, U23 (key values) | Pass | `u03_…`: the CLI reads the value from stdin into an owner-only `keys.json`, refuses a second value for the same name and never prints it; a person without the key is refused at dispatch and `gh` never runs; the value the tool echoed reaches the model and Telegram as `[key github]`; no file under the install (journal, WAL, telemetry, Codex log), log, reply, `audit` or `keys list` output contains it. Failed with the scrub removed |
+| F04 | Pass | `u04_…`: killed after the write and before the receipt, startup reads the comment back by its operation ID, records it done and tells the route that it was found once; killed before the write, the readback finds nothing and the route is told it was not written. Neither is repeated. Task creation: step 3 (U15) |
+| F09 | Pass | `u09_…`: calls that name `pilotq` while the person's message does not, under a quoted message that names it, neither switch nor read it, by name or by issue URL |
+| F10 | Pass | `u09_…`: after `users revoke 8 project:other` the person's next read is refused; earlier records stay. User grants: step 2 |
+| L05 | Partial | `u11_…`: the tool-call budget and the deadline apply; the deadline despite endless tokens stays `f03_provider_faults_are_bounded`. Compaction: step 5 |
+
+### Scripted live run (A7)
+
+`a7_live_direct_run` in `tests/telegram.rs` runs the real PilotQ binary with real Codex in PilotQ's own Codex home, the fake Bot API with the owner 7 and a second synthetic person 8, the TaskQ CLI as registration readback, the real `taskqorg/pilotq` board and `taskqorg/specq` as the second, read-only project. The key is the host's GitHub CLI login, passed on stdin. It comments on and labels a real issue, so it is `#[ignore]` and runs only on request:
+
+```sh
+PILOTQ_A8_ROOT=<pilotq checkout> PILOTQ_A8_TASKQ=<taskq binary> PILOTQ_A8_CODEX_HOME=<logged-in Codex home> PILOTQ_A7_ISSUE=<closed pilotq issue> \
+  cargo test --locked --test telegram a7_live -- --ignored --nocapture
+```
+
+It checks, in order: a key-backed read whose reply names the issue title and whose audit record holds the source time; one owner comment and the existing label `documentation`, each read back on GitHub (the comment once, by its operation ID); a non-owner's comment request that writes nothing; a named switch to `specq` and a bare `#1` read there; and no key value in any install file, log or message.
+
+**Result, 2026-10-23, macOS 27.0.1:** pass on run 2. Debug build of this branch, codex-cli 0.159.3, TaskQ CLI on the Mac host, issue [#21](https://github.com/taskqorg/pilotq/issues/21) (closed, PilotQ's earlier A8 task).
+
+| Step | Result | Evidence |
+|---|---|---|
+| U03 key-backed read | Pass | Real Codex called `issue_read`; the reply names the title of #21; the audit record holds `issue_read taskqorg/pilotq#21` with `updated 2026-…` and the key name |
+| U04 owner writes | Pass | [Comment](https://github.com/taskqorg/pilotq/issues/21#issuecomment-6357737347) and label `documentation`: two effects `done` with receipts; GitHub shows the comment once by its operation ID and the label on the issue |
+| A4 non-owner | Pass | Person 8, holding the key and `project:pilotq`, asked for a comment; Codex called `issue_comment`, the boundary refused it (`only the owner may comment on or label board issues`), no effect row, the issue's comment count unchanged |
+| U09 switch | Pass | `project_use specq` set `dm:7` to `specq`; the next bare `#1` read `taskqorg/specq#1` |
+| Key value | Pass | No install file at any depth, log or message holds the value |
+
+Run 1 failed on the last check and exposed a defect. Every step above passed, but Codex wrote its inherited environment into `codex/shell_snapshots/*.sh` under PilotQ's Codex home, and the host's `GH_TOKEN` and `GITHUB_TOKEN` were in it. Fix: Codex starts with a cleared environment plus `PATH`, `HOME`, `USER`, `LANG`, `LC_ALL`, `TMPDIR`, `SSL_CERT_FILE` and `CODEX_HOME`. `f03_provider_faults_are_bounded` now passes `GH_TOKEN` and `GITHUB_TOKEN` to the service and failed without the fix. The run 1 install was deleted. Run 1 also left one comment ([6357708343](https://github.com/taskqorg/pilotq/issues/21#issuecomment-6357708343)) on #21; run 2 added one more, and the label was already present.
+
 Completion evidence is a report with exact versions, mechanism-to-case results, unresolved failures, recovery receipts, task links and aggregate metrics. Maintain 62 scenario-family entries: U01–U18, F01–F17, C01–C07 and L01–L20. Record deterministic and live/platform results separately, including not run. Runtime research, a healthy service or green repository CI cannot replace it.

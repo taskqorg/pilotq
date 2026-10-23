@@ -71,7 +71,7 @@ Direct work must satisfy all of these conditions:
 - A read-only operation or a small mutation with an explicit grant and a verifiable outcome.
 - Execution fits the short-action budget in section 7.
 
-Examples: inspect one service, read a bounded log interval, look up a ticket, explain an error, or update a small approved note. A fast action can still be consequential: deployment, money, permissions or deletion do not become direct-safe because they take seconds.
+Examples: inspect one service, read a bounded log interval, look up a ticket or explain an error. The only direct writes are the owner's board comments and labels ([section 5](#direct-actions-keys-and-project-switching)). A fast action can still be consequential: deployment, money, permissions or deletion do not become direct-safe because they take seconds.
 
 Multi-file implementation, long research, broad audits, repeated experiments, deployment work and uncertain-duration work go to TaskQ. On reaching a direct-action budget, preserve observations and completed effects; propose the remaining task. Reuse existing authorization if it covers the delegation. Never describe a task as created until board readback identifies it.
 
@@ -203,9 +203,29 @@ Formatting errors fall back to plain text. Split oversized replies safely; do no
 - A periodic scan of `taskq status --json` recovers missed transitions; restart and `/new` keep subscriptions. An incomplete snapshot reads unknown and closes nothing.
 - **Owner, 2026-10-23:** the live evidence for this step is a scripted run, not a person on the test bot. It uses the real PilotQ binary, real Codex under PilotQ's subscription login, the `taskqorg/pilotq` board and the TaskQ CLI. A local fake Bot API replaces Telegram, with updates from two synthetic users, and records every send. One small real docs task goes from discussion to the reviewer outcome with a PilotQ restart mid-run. The run checks the journal, audit record, board and recorded messages, U23 links included. A later owner check on the test bot is optional.
 
+### Direct actions, keys and project switching
+
+**Owner decision 2026-10-23 (option B, task #23, section 10 step 4):** direct actions are reads. Only the owner (`owner_id` from protected configuration) may write directly, and only a comment or a label on an issue of the `taskqorg/pilotq` board; there are no other direct writes. Keys enter only through the CLI.
+
+The manager gets these tools beside the TaskQ tools, checked at dispatch like them:
+
+| Tool | Grants | Effect |
+|---|---|---|
+| `project_use` | project scope | Sets the conversation's current project. The project must be registered and named in the person's own message |
+| `issue_read` | project scope and a key granted for the tool | Reads one issue of a registered project: title, state, labels, a bounded body excerpt, the issue's update time (source time) and the read time |
+| `issue_comment` | owner, a key | Adds one comment to a `taskqorg/pilotq` issue |
+| `issue_label` | owner, a key | Adds one label to a `taskqorg/pilotq` issue |
+
+- Target: a tool resolves one registered project from an explicit `project` argument, an issue URL or the conversation's current project. An explicit project or URL must be named in the person's own message or be the current project; quoted messages, issue text and tool output never select one. A bare number with no current project and several accessible projects is refused with the list, never guessed. Another project stays read-only.
+- Budget: one request makes at most 5 PilotQ tool calls within the section 7 direct-action deadline. The sixth call is refused and writes nothing. A request that ends at its deadline replies with the evidence it kept, and the rest can become a planned task.
+- Effects: a comment or label persists its intent and operation ID `pilotq-<installation>-r<request>-e<n>` before the write, and its receipt after a readback. A comment carries its operation ID as a hidden marker. After a crash between write and receipt, startup reads the target back: found means written once; absent means not written. Neither is repeated automatically, and the route is told. A readback that fails leaves the effect uncertain.
+- Revoking a project or key grant refuses every later call; a completed effect stays recorded.
+
 ### Project registration
 
 An administrator with the `projects` grant can ask PilotQ to create or register a project. PilotQ shows the resolved repository, root and board, then applies the request through TaskQ's supported registration path (Add project, [taskq.md](https://github.com/taskqorg/taskq/blob/main/taskq.md) menu M10) and reads it back. Repository creation, capacity and worker grants stay owner operations unless a separate grant names them. A failed or partial registration stays visible and is never reported as done.
+
+Step 4 registers through the CLI: `pilotq projects add NAME ROOT` accepts a root whose `taskq.json` names a repository only when a fresh `taskq status --json` under that root reads back the same board, and records who registered it. TaskQ's Add project conversation stays the owner's way to create the TaskQ side.
 
 An operations board is an explicit server-care project. Project work stays on that project's board. A server-wide overview aggregates tasks; it does not duplicate every issue onto a server board.
 
@@ -265,7 +285,7 @@ Keep credentials in protected host configuration, outside model context and diag
 - A tool call names a key; the tool boundary injects the value into the child process environment or request header at dispatch.
 - The value never enters model context, the journal, telemetry, logs, replies or task text. Tool output is scrubbed for known values before the model or Telegram sees it.
 - A grant on a key names the person, route or project. Use is checked at dispatch, like any effect (section 8).
-- First slice: keys are added, granted and revoked only through the CLI. Telegram key entry is an open decision (section 11).
+- Keys are added, granted and revoked only through the CLI (owner decision 2026-10-23). Telegram key entry is not built.
 - `pilotq keys list` shows names, grants and last use, never values. A model's tool choice is a request, not enforcement. Downloaded content cannot expand grants, switch repositories or redirect private answers.
 
 ### Request audit
@@ -330,10 +350,10 @@ For a later same-token cutover, stop and verify the old poller before enabling P
 ## 11. Decisions still open
 
 - Codex account and subscription entitlement for a shared server deployment.
-- Telegram key entry: CLI only, or a DM flow that deletes the message after storing the value.
-- Exact short-action grants and which small writes are acceptable on the server.
 - Required voice/image/document behavior for Hermes cutover.
 - Final retention/capacity thresholds and permitted telemetry content, including the proposed audit retention (365 days metadata, 90 days message text).
+
+Closed 2026-10-23 (owner, option B): short-action grants and Telegram key entry. Direct actions are reads per grant, the owner alone comments on and labels board issues, nothing else is written directly, and keys enter only through the CLI ([section 5](#direct-actions-keys-and-project-switching)).
 
 ## 12. Proposed lifecycle and feedback protocol
 

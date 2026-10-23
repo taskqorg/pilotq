@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 /// Schema this binary writes; a newer journal is refused rather than guessed (F08).
-const SCHEMA: i64 = 5;
+const SCHEMA: i64 = 6;
 /// Model attempts per request across restarts (§ 7 dependency retry).
 const RUNS: i64 = 3;
 /// Delivery attempts per episode, persisted across restart (§ 7).
@@ -315,6 +315,7 @@ fn records(c: &Connection, reader: i64, front: &str, f: &Filter, at: i64) -> Res
         let event = |r: &rusqlite::Row| Ok(json!({"at": r.get::<_, i64>(0)?, "target": r.get::<_, Option<String>>(1)?, "item": r.get::<_, Option<String>>(2)?, "result": r.get::<_, Option<String>>(3)?}));
         v["tools"] = list("SELECT at, target, item, result FROM audit_events WHERE request_id=?1 AND kind='tool' ORDER BY id", &event)?.into();
         v["tasks"] = list("SELECT at, target, item, result FROM audit_events WHERE request_id=?1 AND kind='task' ORDER BY id", &event)?.into();
+        v["direct"] = list("SELECT at, target, item, result FROM audit_events WHERE request_id=?1 AND kind='direct' ORDER BY id", &event)?.into();
         v["deliveries"] = list("SELECT state, sent_message, attempts, possible_duplicate, error FROM outbox WHERE request_id=?1 ORDER BY id", &|r| {
             Ok(json!({"state": r.get::<_, String>(0)?, "message": r.get::<_, Option<i64>>(1)?, "attempts": r.get::<_, i64>(2)?, "possible_duplicate": r.get::<_, bool>(3)?,
                 "error": r.get::<_, Option<String>>(4)?}))
@@ -454,6 +455,15 @@ impl Journal {
                     PRIMARY KEY(run_id, idx));
                 CREATE TABLE tasks(number INTEGER PRIMARY KEY, request_id INTEGER NOT NULL, chat INTEGER NOT NULL, topic INTEGER, state TEXT NOT NULL,
                     revision INTEGER NOT NULL, card TEXT, closed INTEGER NOT NULL DEFAULT 0, observed INTEGER NOT NULL);")?;
+        }
+        if version < 6 {
+            // § 5 Direct actions: registered projects, each conversation's current project and its author, and direct effects
+            up("CREATE TABLE projects(name TEXT PRIMARY KEY, repo TEXT NOT NULL, root TEXT NOT NULL, by INTEGER NOT NULL, at INTEGER NOT NULL);
+                ALTER TABLE conversations ADD COLUMN project TEXT;
+                ALTER TABLE conversations ADD COLUMN project_by INTEGER;
+                ALTER TABLE conversations ADD COLUMN project_at INTEGER;
+                CREATE TABLE effects(id INTEGER PRIMARY KEY, request_id INTEGER NOT NULL, op_id TEXT NOT NULL UNIQUE, tool TEXT NOT NULL, repo TEXT NOT NULL,
+                    issue INTEGER NOT NULL, value TEXT NOT NULL, key TEXT NOT NULL, state TEXT NOT NULL, receipt TEXT, at INTEGER NOT NULL);")?;
         }
         // TaskQ op IDs are permanent board claims; a random installation ID keeps a fresh journal from reusing another's
         let salt = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as i64) ^ ((std::process::id() as i64) << 40);
@@ -612,7 +622,13 @@ impl Journal {
 
     /// The owner from protected configuration holds every named grant; a message can never make someone the owner (§ 2).
     pub fn bootstrap(&mut self, owner: i64, at: i64) -> Result<(), String> {
-        self.change(None, owner, at, |g| g.extend(GRANTS.map(String::from))).map(drop)
+        self.change(None, owner, at, |g| g.extend(GRANTS.map(String::from)))?;
+        self.0.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('owner', ?1)", [owner]).map(drop).map_err(|e| e.to_string())
+    }
+
+    /// The configured owner, the only person who may write directly (§ 5 Direct actions); None before bootstrap.
+    pub fn owner(&self) -> Result<Option<i64>, String> {
+        self.0.query_row("SELECT value FROM meta WHERE key='owner'", [], |r| r.get(0)).optional().map_err(|e| e.to_string())
     }
 
     pub fn grants(&self, user: i64) -> Result<Vec<String>, String> {
@@ -803,7 +819,7 @@ impl Journal {
         use crate::manager::Outcome;
         let e = |e: rusqlite::Error| e.to_string();
         let tx = self.0.unchecked_transaction().map_err(e)?;
-        let (state, text, error) = match outcome {
+        let (state, mut text, error) = match outcome {
             _ if self.fenced(r)? => ("fenced", String::new(), None),
             Outcome::Fenced => ("fenced", String::new(), None),
             Outcome::Answered(a) => ("answered", a.clone(), None),
@@ -811,6 +827,14 @@ impl Journal {
             Outcome::Uncertain(x) => ("uncertain", format!("Request #{} has an uncertain outcome and will not be repeated automatically: {x}", r.request), Some(x)),
         };
         tx.execute("UPDATE runs SET state=?2, ended_at=?3, outcome=?4, model=?5 WHERE id=?1", params![r.id, state, at, error, model]).map_err(e)?;
+        // a request cut short at its budget keeps what it found (§ 5 Direct actions, U11)
+        if matches!(state, "failed" | "uncertain") {
+            let mut q = tx.prepare("SELECT target || ': ' || coalesce(result, '') FROM audit_events WHERE request_id=?1 AND kind='direct' ORDER BY id").map_err(e)?;
+            let kept: Vec<String> = q.query_map([r.request], |x| x.get(0)).and_then(Iterator::collect).map_err(e)?;
+            if !kept.is_empty() {
+                text += &format!("\nEvidence kept: {}. The rest can become a task: ask me to plan it.", kept.join("; "));
+            }
+        }
         if state == "fenced" {
             tx.commit().map_err(e)?;
             return Ok(false);
@@ -1110,6 +1134,99 @@ impl Journal {
             .map_err(|e| e.to_string())
     }
 
+    /// The route of a request as key grants and audit filters name it: `cli`, `CHAT` or `CHAT:TOPIC`.
+    pub fn route(&self, request: i64) -> Result<String, String> {
+        self.0
+            .query_row("SELECT CASE WHEN front='cli' THEN 'cli' ELSE chat || coalesce(':' || topic, '') END FROM requests WHERE id=?1", [request], |r| r.get(0))
+            .map_err(|e| e.to_string())
+    }
+
+    /// Registers a project root, or moves a registered name to another root; the actor needs `projects` (§ 5 Project registration).
+    pub fn add_project(&self, actor: i64, name: &str, repo: &str, root: &str, at: i64) -> Result<(), String> {
+        if !valid_grant(&format!("project:{name}")) {
+            return Err(format!("{name}: a project name is letters, digits, -, _ or ."));
+        }
+        if !has(&self.0, actor, "projects")? {
+            return Err(format!("{actor} has no projects grant"));
+        }
+        self.0
+            .execute("INSERT OR REPLACE INTO projects(name, repo, root, by, at) VALUES (?1,?2,?3,?4,?5)", params![name, repo, root, actor, at])
+            .map(drop)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Registered projects by name: (name, repo, root, by, at).
+    pub fn projects(&self) -> Result<Vec<(String, String, String, i64, i64)>, String> {
+        let mut q = self.0.prepare("SELECT name, repo, root, by, at FROM projects ORDER BY name").map_err(|e| e.to_string())?;
+        q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).and_then(Iterator::collect).map_err(|e| e.to_string())
+    }
+
+    /// The conversation's current project, set only by an explicit switch.
+    pub fn current_project(&self, session: &str) -> Result<Option<String>, String> {
+        self.0.query_row("SELECT project FROM conversations WHERE session=?1", [session], |r| r.get(0)).optional().map(Option::flatten).map_err(|e| e.to_string())
+    }
+
+    /// Switches the run's conversation to `project` while its fence holds, with who switched and when (§ 6). `/new` keeps it.
+    pub fn use_project(&self, r: &Run, project: &str, actor: i64, at: i64) -> Result<(), String> {
+        if self.fenced(r)? {
+            return Err("this run was stopped; nothing changed".into());
+        }
+        self.0
+            .execute("UPDATE conversations SET project=?2, project_by=?3, project_at=?4 WHERE session=?1", params![r.session, project, actor, at])
+            .map(drop)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Records a direct read or effect in the request's audit record and names the project there.
+    pub fn direct_event(&self, request: i64, project: &str, target: &str, item: Option<&str>, result: &str, at: i64) -> Result<(), String> {
+        let e = |e: rusqlite::Error| e.to_string();
+        let tx = self.0.unchecked_transaction().map_err(e)?;
+        tx.execute("INSERT INTO audit_events(request_id, at, kind, target, item, result) VALUES (?1,?2,'direct',?3,?4,?5)", params![request, at, target, item, result])
+            .map_err(e)?;
+        tx.execute("UPDATE requests SET project=?2 WHERE id=?1", params![request, project]).map_err(e)?;
+        tx.commit().map_err(e)
+    }
+
+    /// Persists an effect's intent and operation ID before its write (§ 4 Runs), while the run's fence holds.
+    #[allow(clippy::too_many_arguments)]
+    pub fn intent(&self, r: &Run, project: &str, tool: &str, repo: &str, issue: i64, value: &str, key: &str, at: i64) -> Result<String, String> {
+        let inst = self.instance()?;
+        if self.fenced(r)? {
+            return Err("this run was stopped; nothing was written".into());
+        }
+        let n: i64 = self.0.query_row("SELECT count(*) + 1 FROM effects WHERE request_id=?1", [r.request], |x| x.get(0)).map_err(|e| e.to_string())?;
+        let op = format!("pilotq-{inst}-r{}-e{n}", r.request);
+        self.0
+            .execute(
+                "INSERT INTO effects(request_id, op_id, tool, repo, issue, value, key, state, at) VALUES (?1,?2,?3,?4,?5,?6,?7,'intent',?8)",
+                params![r.request, op, tool, repo, issue, value, key, at],
+            )
+            .map_err(|e| e.to_string())?;
+        self.direct_event(r.request, project, &format!("{tool} {repo}#{issue}"), Some(&op), "intent", at)?;
+        Ok(op)
+    }
+
+    /// Settles an effect from its readback: `done` with a receipt, `absent`, `failed` or `uncertain`. The audit record gets the
+    /// result; `notice` goes to the request's Telegram route (restart reconciliation).
+    pub fn settle(&self, op: &str, state: &str, receipt: Option<&str>, notice: Option<&str>, at: i64) -> Result<(), String> {
+        let e = |e: rusqlite::Error| e.to_string();
+        let tx = self.0.unchecked_transaction().map_err(e)?;
+        let request: i64 = tx.query_row("UPDATE effects SET state=?2, receipt=?3 WHERE op_id=?1 RETURNING request_id", params![op, state, receipt], |r| r.get(0)).map_err(e)?;
+        let result = receipt.map_or(state.to_string(), |r| format!("{state}: {r}"));
+        tx.execute("UPDATE audit_events SET result=?2, at=?3 WHERE kind='direct' AND item=?1", params![op, result, at]).map_err(e)?;
+        let dest: (String, i64, Option<i64>) = tx.query_row("SELECT front, chat, topic FROM requests WHERE id=?1", [request], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(e)?;
+        if let (Some(text), "telegram") = (notice, dest.0.as_str()) {
+            outbox(&tx, request, dest.1, dest.2, None, None, text, at)?;
+        }
+        tx.commit().map_err(e)
+    }
+
+    /// Effects whose write may have happened without a receipt: (op, tool, repo, issue, value, key).
+    pub fn intents(&self) -> Result<Vec<(String, String, String, i64, String, String)>, String> {
+        let mut q = self.0.prepare("SELECT op_id, tool, repo, issue, value, key FROM effects WHERE state='intent' ORDER BY id").map_err(|e| e.to_string())?;
+        q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).and_then(Iterator::collect).map_err(|e| e.to_string())
+    }
+
     /// Telegram routes with a running turn started within `window` seconds: they show typing (§ 12, L02).
     pub fn typing(&self, now: i64, window: i64) -> Result<Vec<(i64, Option<i64>)>, String> {
         let mut q = self
@@ -1319,8 +1436,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(p);
     }
 
-    // A schema 1 journal from an earlier release gains the session column, the schema 3 run tables, the schema 4 audit tables and the
-    // schema 5 TaskQ tables.
+    // A schema 1 journal from an earlier release gains the session column, the schema 3 run tables, the schema 4 audit tables, the
+    // schema 5 TaskQ tables and the schema 6 project and effect tables.
     #[test]
     fn schema_1_journal_upgrades() {
         let (j, p) = journal("upgrade");
@@ -1329,7 +1446,7 @@ mod tests {
             ALTER TABLE requests DROP COLUMN error; ALTER TABLE requests DROP COLUMN name; ALTER TABLE requests DROP COLUMN grants;
             ALTER TABLE requests DROP COLUMN project; DROP TABLE conversations; DROP TABLE runs; DROP TABLE audit_events; DROP TABLE audit_reads;
             ALTER TABLE requests DROP COLUMN reply_to; ALTER TABLE outbox DROP COLUMN kind; ALTER TABLE outbox DROP COLUMN task; ALTER TABLE outbox DROP COLUMN revision;
-            DROP TABLE plans; DROP TABLE plan_runs; DROP TABLE tickets; DROP TABLE tasks; PRAGMA user_version=1",
+            DROP TABLE plans; DROP TABLE plan_runs; DROP TABLE tickets; DROP TABLE tasks; DROP TABLE projects; DROP TABLE effects; PRAGMA user_version=1",
         )
         .unwrap();
         drop(j);

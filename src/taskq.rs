@@ -103,6 +103,11 @@ impl Taskq {
         serde_json::from_str(out.trim()).map_err(|_| format!("taskq {} returned no receipt", args[0]))
     }
 
+    /// The board a fresh, complete `status --json` reads under this root (§ 5 Project registration readback).
+    pub fn board(&self) -> Result<String, String> {
+        self.snapshot()?["board"]["repo"].as_str().map(str::to_string).ok_or("taskq status names no board".into())
+    }
+
     /// `status --json`; an incomplete snapshot is unknown, never a list of closed tasks.
     fn snapshot(&self) -> Result<Value, String> {
         let s: Value = serde_json::from_str(self.cli(&["status".into(), "--json".into()])?.trim()).map_err(|_| "taskq status returned no snapshot".to_string())?;
