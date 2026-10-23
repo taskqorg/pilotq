@@ -458,6 +458,15 @@ fn main() {
             let args: Vec<&str> = rest.iter().copied().filter(|x| *x != "--json").collect();
             let v = pilot_report(&t, &args).unwrap_or_else(|e| t.die(&format!("pilot report: {e}")));
             if rest.contains(&"--json") { println!("{v}"); } else {
+                println!("Pilot gate counts since {} (pilot start: {})", v["since"], v["pilot_start"]);
+                for key in ["accepted", "simple", "users", "routes", "projects", "tasks", "interventions", "outages"] {
+                    println!("{key}: {}", v[key]);
+                }
+                if v["failed"].is_null() {
+                    println!("failed: unknown ({})", v["failed_reason"].as_str().unwrap_or("telemetry unavailable"));
+                } else {
+                    println!("failed: {}", v["failed"]);
+                }
                 println!("Tool result bytes [{} .. {})", v["since"], v["until"]);
                 for row in v["tools"].as_array().into_iter().flatten() {
                     println!("{}: calls={} p95={} max={}", row["tool"].as_str().unwrap_or(""), row["calls"], row["p95_result_bytes"], row["max_result_bytes"]);

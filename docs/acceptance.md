@@ -364,6 +364,8 @@ The earlier Mac start at 06:17:54 UTC failed A5's host requirement and does not 
 
 The deployed artifact predates the rebase integration with #33. The candidate's `pilot report` retains gate counts and adds #33's `tools`, `since` and `until` measurement fields. `--until` bounds tool-size measurements only; gate counts remain since-start or since-argument counts. The rebased artifact has deterministic evidence below, not a claim of deployment.
 
+A4 regression remediation (§10 step 5): before the fix, `pilot report --since 20 --until 30` printed only tool sizes and omitted every gate count. `cargo test --locked --test update pilot_report_prints_gate_counts_and_tool_window -- --nocapture` reproduced the missing `accepted` count, then passed after text output included all gate counts. The CLI check verifies both text and JSON, unavailable telemetry as unknown with its reason, and the retained tool-size window `[since, until)`. An intervention at `until` remains counted, confirming that `--until` bounds tool measurements only. This correction changes the candidate, not the deployed FRA artifact or pilot start.
+
 Record each manual intervention and provider outage with `pilotq pilot note`. Rollback on FRA: stop and drain the test service; preserve the schema 7 journal and protected configuration. No previous FRA release exists. Do not downgrade its journal or reactivate the Mac poller automatically. Resume only a compatible verified build (§12).
 
 ### Case matrix
