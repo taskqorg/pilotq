@@ -415,7 +415,7 @@ All 62 scenario families at the end of step 5. "Deterministic" names `cargo test
 | C04 | Pass (`u12_stop_is_scoped_and_fences_the_run`: a message during a turn waits) | Pass 3/3, agentq off | agentq on: agentq#167 |
 | C05 | Pass (`journal::u02_route_session_policy`, `journal::u17_profiles_distinct_and_private`) | Pass 3/3, route isolation, agentq off | Recovery references: agentq#167 |
 | C06 | — | **Fail 3/3**: no rebuild after a damaged session; the effect is not repeated | Fix: #29 |
-| C07 | Partial (`journal::u17_profiles_distinct_and_private`: profile revisions) | **Fail 3/3**: profile facts never reach the model | Fix: #28 |
+| C07 | Pass (`c07_current_profiles_reach_each_turn`): corrections, forget, sender and route privacy | Pass 3/3 on FRA after #28; original Mac failure retained above | Agentq comparison: agentq#167 |
 | L01 | Pass | Pass (A8) | Fast-answer suppression: not implemented |
 | L02 | Partial | — | Typing bounded by last useful event |
 | L03 | Partial | — | Incident notices across restart |
@@ -436,5 +436,32 @@ All 62 scenario families at the end of step 5. "Deterministic" names `cargo test
 | L18 | Partial | — | External monitor: step 6 |
 | L19 | Partial | — | Storage full and contention: step 6 |
 | L20 | Partial | — | Rollback with accepted work and restore: step 6 |
+
+## Step 5 profile correction follow-up (#28)
+
+Task [#28](https://github.com/taskqorg/pilotq/issues/28) applies R10, R13 and [section 6](../pilotq.md#6-memory-and-agentq): every turn loads the sender's current route-visible profile, with revisions, before the person's request. An empty snapshot after forgetting supersedes earlier conversation and summary values. Profile values remain data, never grants or instructions. The contract is unchanged.
+
+**Before:** #26's C07 live runs failed 3/3: conversation history said Ana after `users remember` set Bea. Inspection on base `6bad757` found no profile read in the manager. The new `c07_current_profiles_reach_each_turn` fake-Codex trace failed because the first turn input was request text rather than a profile snapshot.
+
+**After, development check (Linux, 2026-10-23):** the same trace passed after the fix, covering revision 1 Ana → revision 2 Bea → forgotten, a resumed CLI thread, subject isolation and private-fact exclusion from a group topic. It was then extended to inspect Telegram DM visibility and another sender's turn. Its isolated runs were sandbox-blocked (exit 137); the extended trace subsequently passed in the frozen candidate suite. That suite passed all 15 journal tests but was later sandbox-blocked (exit 137), so the full suite is not a pass. `cargo run --locked -- selftest` passed. The trace inspects actual `turn/start` input, not fake model assertions about memory.
+
+**Live C07: pass 3/3 on FRA, 2026-10-23.** The C07 slice of #26's `c_live_context_runs` is available as `c_live_context_runs_c07`. It uses three fresh installs, the real binary, synthetic Telegram input through a local Bot API, subscription Codex, verified native compaction, a restart after correction and another after forgetting. Run with:
+
+```sh
+PILOTQ_A8_CODEX_HOME=<subscription-authenticated-Codex-home> \
+  cargo test --locked --test telegram c_live_context_runs_c07 -- --ignored --nocapture
+```
+
+The earlier worker run used codex-cli 0.162.0 and exited 137 in the sandbox during the first request; it established no live pass. The PM subsequently ran the command above outside the worker sandbox on `9dab603b70017bfa9a830fab097ea13978ae1b44`, using a separate owner-approved subscription login for tests. [PM evidence and owner answer](https://github.com/taskqorg/pilotq/issues/28#issuecomment-6362362439) authorize reuse without rerunning live calls when the tested code is unchanged. The check passed in 263.09 seconds (1 test passed, 30 filtered out).
+
+| Repetition | Correction / forget | Input / cached input / output tokens | Compactions | Missing usage threads |
+|---|---|---|---|---|
+| 1 | Bea (revision 2) / UNKNOWN | 44761 / 17664 / 531 | 3 | 0 |
+| 2 | Bea (revision 2) / UNKNOWN | 44556 / 17664 / 536 | 3 | 0 |
+| 3 | Bea (revision 2) / UNKNOWN | 44853 / 26496 / 545 | 3 | 0 |
+
+After rebasing on `dae24fa`, `cargo test --locked` passed all 17 journal tests, then exited 137 as Telegram integration tests began (sandbox-blocked, not a full-suite pass). `cargo run --locked -- selftest`, specification-file checks and whitespace checks passed. No service process remained after the test attempt.
+
+All three repetitions report `pass: true`, agentq off. The rebase retains the profile implementation and both C07 tests unchanged; conflict resolution only joins the independent upstream tests and acceptance evidence. This establishes A3 for the tested implementation; it does not qualify real Telegram, production deployment or agentq. Merge-result CI remains the publication gate (TaskQ §7).
 
 Completion evidence is a report with exact versions, mechanism-to-case results, unresolved failures, recovery receipts, task links and aggregate metrics. Maintain 62 scenario-family entries: U01–U18, F01–F17, C01–C07 and L01–L20. Record deterministic and live/platform results separately, including not run. Runtime research, a healthy service or green repository CI cannot replace it.
