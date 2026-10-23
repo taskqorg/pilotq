@@ -769,6 +769,10 @@ for line in sys.stdin:
         open(p, "w").write(str(n)); th = "th-%d" % n
         send({"id": 2, "result": {"thread": {"id": th}, "model": "gpt-test"}})
     elif meth == "thread/resume":
+        if os.path.exists(os.path.join(d, "damaged")):
+            os.unlink(os.path.join(d, "damaged"))
+            send({"id": 2, "error": {"message": "failed to read thread: /private/native/rollout.jsonl"}})
+            continue
         th = m["params"]["threadId"]; send({"id": 2, "result": {"thread": {"id": th}}})
     elif meth == "turn/start":
         text = m["params"]["input"][-1]["text"]
@@ -1958,6 +1962,87 @@ fn c_live_context_runs_c07() {
         assert_eq!(forgotten.trim(), "UNKNOWN");
         eprintln!("c-live {}", json!({"case": "C07", "rep": rep, "pass": true, "corrected_revision": 2, "corrected": corrected, "forgotten": forgotten, "usage": codex_usage(&d), "agentq": "off"}));
         let _ = stderr_of(svc);
+        drop(_login);
+        fs::remove_dir_all(d).unwrap();
+    }
+}
+
+// R5, §4: a damaged native thread recovers conversation data, not execution. Keep a verified mutation exactly once.
+#[test]
+fn c06_resume_failure_rebuilds_without_replaying_effects() {
+    let (d, st) = direct_setup("c06-rebuild");
+    let c = spawn(&d, None);
+    push(&st, call(1, OWNER, None, OWNER, "issue_comment", json!({"project": "pilotq", "issue": "3", "body": "remember this receipt"})));
+    wait("effect completed", 20, || try_query(&d, "SELECT count(*) FROM effects WHERE state='done'") == Some(1));
+    wait("first answered", 10, || try_query(&d, "SELECT count(*) FROM requests WHERE state='answered'") == Some(1));
+    let calls = gh_calls(&d).len();
+    fs::write(d.join("damaged"), "").unwrap();
+    push(&st, text(2, OWNER, None, OWNER, "recall earlier result without tools"));
+    wait("rebuilt answer", 20, || try_query(&d, "SELECT count(*) FROM requests WHERE state='answered'") == Some(2));
+    push(&st, text(3, OWNER, None, OWNER, "follow up without tools"));
+    wait("replacement resumed", 15, || try_query(&d, "SELECT count(*) FROM requests WHERE state='answered'") == Some(3));
+    wait("notice delivered", 10, || sent_has(&st, "rebuilding from recorded"));
+    assert_eq!(gh_calls(&d).len(), calls, "recovery never calls GitHub");
+    assert_eq!(query(&d, "SELECT count(*) FROM effects"), 1);
+    assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE kind='rebuild'"), 1);
+    assert_eq!(texts(&st).iter().filter(|t| t.contains("rebuilding from recorded")).count(), 1);
+    assert!(!texts(&st).join(" ").contains("/private/native"));
+    let log = fs::read_to_string(d.join("codex.log")).unwrap();
+    let turns: Vec<Value> = log.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter(|v| v["method"] == "turn/start").collect();
+    let recovered: Value = serde_json::from_str(turns[1]["params"]["input"][0]["text"].as_str().unwrap()).unwrap();
+    assert!(recovered["recent"].to_string().contains("remember this receipt"));
+    assert!(recovered["receipts"].to_string().contains("issue_comment"), "{recovered}");
+    assert_eq!(query_text(&d, "SELECT thread FROM conversations WHERE session='dm:7'"), "th-2");
+    stop(c, d);
+}
+
+// C06 slice of c_live_context_runs: real subscription Codex and exactly one real owner comment per repetition.
+#[test]
+#[ignore = "real Codex; adds three comments to the explicitly selected closed issue"]
+fn c_live_context_runs_c06() {
+    let root = PathBuf::from(std::env::var("PILOTQ_A8_ROOT").expect("PILOTQ_A8_ROOT"));
+    let issue: i64 = std::env::var("PILOTQ_A7_ISSUE").expect("PILOTQ_A7_ISSUE").parse().unwrap();
+    assert_eq!(gh_json(&format!("repos/taskqorg/pilotq/issues/{issue}"))["state"], "closed");
+    let token = String::from_utf8(Command::new("gh").args(["auth", "token"]).output().unwrap().stdout).unwrap().trim().to_string();
+    assert!(!token.is_empty(), "board token absent");
+    let comments = || gh_json(&format!("repos/taskqorg/pilotq/issues/{issue}/comments?per_page=100")).as_array().unwrap().len();
+    for rep in 1..=3 {
+        let (d, st) = setup(&format!("c06-live-{rep}"), vec![]);
+        let _login = live_login(&d);
+        limits(&d, Path::new("codex"), json!({"first_event": 60, "silent": 60, "deadline": 240}));
+        let cfg = d.join("config.json");
+        let mut config: Value = serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
+        config["taskq"] = json!({"bin": std::env::var("PILOTQ_A8_TASKQ").unwrap(), "root": root, "poll": 15});
+        fs::write(cfg, config.to_string()).unwrap();
+        ok(cli(&d, &["projects", "add", "pilotq", root.to_str().unwrap()]));
+        ok(cli_in(&d, &["keys", "add", "github", "GitHub for C06", "issue_comment"], &token));
+        ok(cli(&d, &["keys", "grant", "github", "7"]));
+        let svc = spawn(&d, None);
+        let ask = |id: i64, t: &str| -> String {
+            push(&st, text(id, OWNER, None, OWNER, t));
+            wait("C06 terminal", 300, || try_query(&d, &format!("SELECT count(*) FROM requests WHERE update_id={id} AND state NOT IN ('queued','running')")) == Some(1));
+            assert_eq!(query_text(&d, &format!("SELECT state FROM requests WHERE update_id={id}")), "answered");
+            query_text(&d, &format!("SELECT reply FROM requests WHERE update_id={id}"))
+        };
+        let before = comments();
+        ask(1, &format!("On pilotq issue #{issue}, add exactly one comment 'PilotQ C06 recovery check {rep}.' with issue_comment."));
+        assert_eq!(query(&d, "SELECT count(*) FROM effects WHERE state='done'"), 1);
+        let old = query_text(&d, "SELECT thread FROM conversations WHERE session='dm:7'");
+        let damaged: Vec<_> = files_ending(&d.join("codex/sessions"), "jsonl").into_iter().filter(|p| p.to_string_lossy().contains(&old)).collect();
+        assert_eq!(damaged.len(), 1, "damage the actual native session");
+        fs::write(&damaged[0], "{damaged\n").unwrap();
+        let recovered = ask(2, "What did you do on the pilotq issue earlier? Include the issue number and the verified result. Do not call any tool.");
+        assert!(recovered.contains(&issue.to_string()), "{recovered}");
+        ask(3, "Reply OK without tools.");
+        assert_ne!(query_text(&d, "SELECT thread FROM conversations WHERE session='dm:7'"), old);
+        assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE kind='rebuild'"), 1);
+        assert_eq!(query(&d, "SELECT count(*) FROM effects"), 1);
+        assert_eq!(comments(), before + 1);
+        wait("recovery notice", 15, || texts(&st).iter().filter(|t| t.contains("rebuilding from recorded")).count() == 1);
+        assert!(!texts(&st).join(" ").contains(d.to_str().unwrap()));
+        let log = stderr_of(svc);
+        assert!(!log.contains(&token) && files_with(&d, &token, &["keys.json"]).is_empty());
+        eprintln!("c-live {}", json!({"case":"C06", "rep":rep, "pass":true, "agentq":"off", "comments_added":1, "effects":1, "rebuilds":1, "notice":1, "reply":recovered, "usage":codex_usage(&d)}));
         drop(_login);
         fs::remove_dir_all(d).unwrap();
     }
