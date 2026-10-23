@@ -771,7 +771,7 @@ for line in sys.stdin:
     elif meth == "thread/resume":
         th = m["params"]["threadId"]; send({"id": 2, "result": {"thread": {"id": th}}})
     elif meth == "turn/start":
-        text = m["params"]["input"][0]["text"]
+        text = m["params"]["input"][-1]["text"]
         send({"id": 3, "result": {"turn": {"id": "u1", "status": "inProgress", "items": []}}})
         if text.startswith("slow "):
             time.sleep(float(text.split()[1]))
@@ -1688,6 +1688,51 @@ fn pilot_tool_sizes_metadata_and_window() {
     fs::remove_dir_all(d).unwrap();
 }
 
+// § 6 / R10, R13: inspect actual turn input, not model prose. Protect correction/forget on resumed sessions and route privacy.
+#[test]
+fn c07_current_profiles_reach_each_turn() {
+    let (d, st) = setup("c07-profile", vec![]);
+    use_codex(&d, &script(&d, "fake-codex", FAKE));
+    let ok = |args: &[&str]| { let o = cli(&d, args); assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr)); };
+    ok(&["users", "remember", "7", "preferred_name", "Ana"]);
+    ok(&["users", "remember", "7", "secret", "private-note", "--private"]);
+    ok(&["users", "remember", "8", "other", "other-person"]);
+    ok(&["ask", "first"]);
+    ok(&["users", "remember", "7", "preferred_name", "Bea"]);
+    ok(&["ask", "corrected"]);
+    ok(&["users", "forget", "7", "preferred_name"]);
+    ok(&["ask", "forgotten"]);
+    let c = spawn(&d, None);
+    push(&st, text(1, -100, Some(5), OWNER, "group"));
+    wait("group reply", 15, || sent_has(&st, "re: group"));
+    push(&st, text(2, OWNER, None, OWNER, "dm"));
+    wait("DM reply", 15, || sent_has(&st, "re: dm"));
+    ok(&["users", "grant", "8", "chat"]);
+    push(&st, text(3, -100, Some(5), 8, "other"));
+    wait("other sender reply", 15, || sent_has(&st, "re: other"));
+    let log = fs::read_to_string(d.join("codex.log")).unwrap();
+    let turns: Vec<Value> = log.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter(|v| v["method"] == "turn/start").collect();
+    assert_eq!(turns.len(), 6);
+    let snapshot = |i: usize| -> Value { serde_json::from_str(turns[i]["params"]["input"][0]["text"].as_str().unwrap()).expect("each turn must carry a JSON profile snapshot before the person's text") };
+    let first = snapshot(0);
+    assert_eq!(first["subject"], OWNER);
+    assert!(first["policy"].as_str().unwrap().contains("earlier conversation"));
+    assert_eq!(first["facts"][0]["value"], "Ana");
+    assert_eq!(first["facts"][0]["revision"], 1);
+    assert!(first.to_string().contains("private-note"));
+    assert!(!first.to_string().contains("other-person"));
+    assert_eq!(snapshot(1)["facts"][0]["value"], "Bea");
+    assert_eq!(snapshot(1)["facts"][0]["revision"], 2);
+    assert!(!snapshot(2).to_string().contains("preferred_name"));
+    assert_eq!(snapshot(3)["facts"], json!([]));
+    assert!(snapshot(4).to_string().contains("private-note"));
+    assert_eq!(snapshot(5)["subject"], 8);
+    assert_eq!(snapshot(5)["facts"][0]["value"], "other-person");
+    assert!(!snapshot(5).to_string().contains("private-note"));
+    assert_eq!(turns[1]["params"]["threadId"], turns[0]["params"]["threadId"]);
+    stop(c, d);
+}
+
 /// Files under `d` with the given extension, at any depth.
 fn files_ending(d: &Path, ext: &str) -> Vec<PathBuf> {
     let mut found = vec![];
@@ -1866,4 +1911,54 @@ fn c_live_context_runs() {
         fs::remove_dir_all(&d).unwrap();
     }
     assert!(failed.is_empty(), "failed: {failed:?}");
+}
+
+
+// C07 slice of #26's c_live_context_runs: no board writes or production bot. Real Codex, native compaction, restart,
+// correction and forget; three independent installs. PILOTQ_A8_CODEX_HOME names a subscription-authenticated home.
+#[test]
+#[ignore = "real subscription Codex turns, three repetitions"]
+fn c_live_context_runs_c07() {
+    for rep in 1..=3 {
+        let (d, st) = setup(&format!("c07-live-{rep}"), vec![]);
+        let _login = live_login(&d);
+        limits(&d, Path::new("codex"), json!({"first_event": 60, "silent": 60, "deadline": 240}));
+        fs::write(d.join("codex/config.toml"), "model_auto_compact_token_limit = 4000\n").unwrap();
+        let ok = |args: &[&str]| { let o = cli(&d, args); assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr)); };
+        ok(&["users", "grant", "10", "chat"]);
+        let mut svc = spawn(&d, None);
+        let next = std::cell::Cell::new(0);
+        let ask = |t: &str| -> String {
+            next.set(next.get() + 1);
+            let u = next.get();
+            push(&st, text(u, 10, None, 10, t));
+            wait(t, 300, || try_query(&d, &format!("SELECT count(*) FROM requests WHERE update_id={u} AND state NOT IN ('queued', 'running')")) == Some(1));
+            assert_eq!(query_text(&d, &format!("SELECT state FROM requests WHERE update_id={u}")), "answered");
+            query_text(&d, &format!("SELECT reply FROM requests WHERE update_id={u}"))
+        };
+        ask("Call me Ana from now on. Reply OK.");
+        ok(&["users", "remember", "10", "preferred_name", "Ana"]);
+        ok(&["users", "remember", "10", "preferred_name", "Bea"]);
+        for _ in 0..8 {
+            if codex_usage(&d)["compactions"].as_i64().unwrap() > 0 { break; }
+            ask("In about 400 words, explain SQLite write-ahead logs and checkpoints.");
+        }
+        let compactions = codex_usage(&d)["compactions"].as_i64().unwrap();
+        assert!(compactions > 0, "C07 must exercise native compaction");
+        svc.kill().unwrap();
+        svc.wait().unwrap();
+        svc = spawn(&d, None);
+        let corrected = ask("What is my preferred name? Answer with the name only.");
+        assert!(corrected.contains("Bea") && !corrected.contains("Ana"), "{corrected}");
+        ok(&["users", "forget", "10", "preferred_name"]);
+        svc.kill().unwrap();
+        svc.wait().unwrap();
+        svc = spawn(&d, None);
+        let forgotten = ask("What is my current remembered preferred name? If none is currently remembered, reply UNKNOWN. Answer with the name or UNKNOWN only.");
+        assert_eq!(forgotten.trim(), "UNKNOWN");
+        eprintln!("c-live {}", json!({"case": "C07", "rep": rep, "pass": true, "corrected_revision": 2, "corrected": corrected, "forgotten": forgotten, "usage": codex_usage(&d), "agentq": "off"}));
+        let _ = stderr_of(svc);
+        drop(_login);
+        fs::remove_dir_all(d).unwrap();
+    }
 }

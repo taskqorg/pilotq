@@ -143,7 +143,7 @@ impl Codex {
     pub fn turn(
         &self,
         thread: Option<&str>,
-        text: &str,
+        input: &Value,
         dynamic: Option<(&Value, &str)>,
         mut alive: impl FnMut() -> bool,
         mut tool: impl FnMut(&str, &str, Option<&str>),
@@ -229,7 +229,7 @@ impl Codex {
                     };
                     thread = Some(t.to_string());
                     model = m["result"]["model"].as_str().map(str::to_string);
-                    p.send(json!({"id": 3, "method": "turn/start", "params": {"threadId": t, "input": [{"type": "text", "text": text}]}}));
+                    p.send(json!({"id": 3, "method": "turn/start", "params": {"threadId": t, "input": input}}));
                 }
                 (Some(3), _) => turn = m["result"]["turn"]["id"].as_str().map(str::to_string),
                 (_, phase @ ("item/started" | "item/completed")) if TOOLS.contains(&m["params"]["item"]["type"].as_str().unwrap_or("")) => {
@@ -271,9 +271,13 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
         None => format!("You are PilotQ. {}", direct::INSTRUCTIONS),
     };
     let tools = Value::Array(tools);
+    // Read on every turn, including resumed threads and empty profiles after forget (§ 6, R10, R13).
+    // Keep the person's text separate: neither profile values nor old summaries are authorization.
+    let profile = j.lock().unwrap().profile(r.request)?;
+    let input = json!([{"type": "text", "text": profile.to_string()}, {"type": "text", "text": r.text}]);
     let (thread, model, outcome) = codex.turn(
         r.thread.as_deref(),
-        &r.text,
+        &input,
         Some((&tools, &instructions)),
         || j.lock().unwrap().fenced(r).map(|f| !f).unwrap_or(true),
         |kind, item, result| {
