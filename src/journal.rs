@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 /// Schema this binary writes; a newer journal is refused rather than guessed (F08).
-const SCHEMA: i64 = 6;
+const SCHEMA: i64 = 7;
 /// Model attempts per request across restarts (§ 7 dependency retry).
 const RUNS: i64 = 3;
 /// Delivery attempts per episode, persisted across restart (§ 7).
@@ -465,11 +465,34 @@ impl Journal {
                 CREATE TABLE effects(id INTEGER PRIMARY KEY, request_id INTEGER NOT NULL, op_id TEXT NOT NULL UNIQUE, tool TEXT NOT NULL, repo TEXT NOT NULL,
                     issue INTEGER NOT NULL, value TEXT NOT NULL, key TEXT NOT NULL, state TEXT NOT NULL, receipt TEXT, at INTEGER NOT NULL);")?;
         }
+        up("CREATE TABLE IF NOT EXISTS tool_sizes(id INTEGER PRIMARY KEY, request_id INTEGER NOT NULL, run_id INTEGER NOT NULL,
+            at INTEGER NOT NULL, tool TEXT NOT NULL, result_bytes INTEGER NOT NULL, codex_version TEXT NOT NULL, pilotq_version TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS tool_sizes_at ON tool_sizes(at);")?;
         // TaskQ op IDs are permanent board claims; a random installation ID keeps a fresh journal from reusing another's
         let salt = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as i64) ^ ((std::process::id() as i64) << 40);
         c.execute("INSERT INTO meta(key, value) VALUES ('instance', ?1) ON CONFLICT(key) DO NOTHING", [salt & i64::MAX]).map_err(|e| e.to_string())?;
         up(&format!("PRAGMA user_version={SCHEMA};"))?;
         Ok(Journal(c, path.with_file_name("telemetry.sqlite"), std::sync::OnceLock::new()))
+    }
+
+    /// R17, § 6: metadata only, measured after scrubbing; no arguments or result content enter this record.
+    pub fn tool_size(&self, r: &Run, tool: &str, bytes: usize, codex: &str, at: i64) -> Result<(), String> {
+        self.0.execute("INSERT INTO tool_sizes(request_id, run_id, at, tool, result_bytes, codex_version, pilotq_version) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            params![r.request, r.id, at, tool, bytes as i64, codex, env!("CARGO_PKG_VERSION")]).map(drop).map_err(|e| e.to_string())
+    }
+
+    /// Nearest-rank p95 of UTF-8 result text bytes, in the half-open window [since, until).
+    pub fn pilot_report(&self, since: i64, until: i64) -> Result<Value, String> {
+        let mut q = self.0.prepare("SELECT tool, result_bytes FROM tool_sizes WHERE at>=?1 AND at<?2 ORDER BY tool, result_bytes").map_err(|e| e.to_string())?;
+        let mut tools = std::collections::BTreeMap::<String, Vec<i64>>::new();
+        let rows = q.query_map(params![since, until], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))).map_err(|e| e.to_string())?;
+        for row in rows {
+            let (tool, bytes) = row.map_err(|e| e.to_string())?;
+            tools.entry(tool).or_default().push(bytes);
+        }
+        let tools: Vec<Value> = tools.into_iter().map(|(tool, bytes)| json!({"tool": tool, "calls": bytes.len(),
+            "p95_result_bytes": bytes[(95 * bytes.len()).div_ceil(100) - 1], "max_result_bytes": bytes.last()})).collect();
+        Ok(json!({"since": since, "until": until, "tools": tools}))
     }
 
     /// Offset for the next getUpdates call; it confirms everything already committed.
@@ -1328,6 +1351,23 @@ mod tests {
 
     fn count(j: &Journal, sql: &str) -> i64 {
         j.0.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    // #31 A2: p95 must differ from max for a sufficiently large sample; windows and tools stay separate.
+    #[test]
+    fn pilot_report_percentile_and_tool_windows() {
+        let (mut j, p) = journal("pilot-report");
+        let r = j.ask(7, "measure", 0).unwrap();
+        for n in 1..=20 { j.tool_size(&r, "read", n, "test", 10).unwrap(); }
+        j.tool_size(&r, "other", 99, "test", 10).unwrap();
+        j.tool_size(&r, "read", 999, "test", 11).unwrap();
+        let v = j.pilot_report(10, 11).unwrap();
+        assert_eq!(v["tools"], json!([
+            {"tool": "other", "calls": 1, "p95_result_bytes": 99, "max_result_bytes": 99},
+            {"tool": "read", "calls": 20, "p95_result_bytes": 19, "max_result_bytes": 20}
+        ]));
+        drop(j);
+        std::fs::remove_dir_all(p).unwrap();
     }
 
     // F02, F15: a repeated update ID admits nothing new; a stranger leaves only an ID-only disposition; the cursor follows the batch.

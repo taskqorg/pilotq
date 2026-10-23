@@ -763,7 +763,7 @@ for line in sys.stdin:
     log.write(line); log.flush()
     m = json.loads(line); meth = m.get("method")
     if meth == "initialize":
-        send({"id": 1, "result": {}})
+        send({"id": 1, "result": {"userAgent": "codex/0.0.0-test"}})
     elif meth == "thread/start":
         p = os.path.join(d, "threads"); n = int(open(p).read()) + 1 if os.path.exists(p) else 1
         open(p, "w").write(str(n)); th = "th-%d" % n
@@ -1654,5 +1654,30 @@ fn a7_live_direct_run() {
         eprintln!("a7 sent: {t}");
     }
     drop(_login);
+    fs::remove_dir_all(d).unwrap();
+}
+
+// #31 A1–A3, R17: count complete calls once, including refusals, without copying result text into measurement records.
+#[test]
+fn pilot_tool_sizes_metadata_and_window() {
+    let (d, _) = tq_setup("tool-sizes", true);
+    let calls: Vec<Value> = (0..6).map(|_| json!(["unknown_tool", {}])).collect();
+    ok(cli(&d, &["ask", &format!("multi {}", json!({"calls": calls})), "--json"]));
+    let c = rusqlite::Connection::open(d.join("journal.sqlite")).unwrap();
+    let rows: Vec<(String, i64, String, String, i64)> = c.prepare("SELECT tool,result_bytes,codex_version,pilotq_version,at FROM tool_sizes ORDER BY id").unwrap()
+        .query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).unwrap().map(Result::unwrap).collect();
+    assert_eq!(rows.len(), 6);
+    let log = fs::read_to_string(d.join("codex.log")).unwrap();
+    let sizes: Vec<i64> = log.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter_map(|v| v["result"]["contentItems"][0]["text"].as_str().map(|s| s.len() as i64)).collect();
+    assert_eq!(rows.iter().map(|r| r.1).collect::<Vec<_>>(), sizes);
+    assert!(rows.iter().all(|r| r.0 == "unknown_tool" && r.2 == "codex/0.0.0-test" && r.3 == env!("CARGO_PKG_VERSION")));
+    let columns: Vec<String> = c.prepare("PRAGMA table_info(tool_sizes)").unwrap().query_map([], |r| r.get(1)).unwrap().map(Result::unwrap).collect();
+    assert_eq!(columns, ["id", "request_id", "run_id", "at", "tool", "result_bytes", "codex_version", "pilotq_version"]);
+    let since = rows.first().unwrap().4.to_string();
+    let until = (rows.last().unwrap().4 + 1).to_string();
+    let report = ok(cli(&d, &["pilot", "report", "--since", &since, "--until", &until, "--json"]));
+    assert_eq!(report["tools"][0], json!({"tool": "unknown_tool", "calls": 6, "p95_result_bytes": sizes.iter().max(), "max_result_bytes": sizes.iter().max()}));
+    let empty = ok(cli(&d, &["pilot", "report", "--since", &until, "--until", &(until.parse::<i64>().unwrap()+1).to_string(), "--json"]));
+    assert_eq!(empty["tools"], json!([]));
     fs::remove_dir_all(d).unwrap();
 }
