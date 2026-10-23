@@ -633,7 +633,8 @@ fn crash_during_turn_requeues_once() {
 
 // Found in the A8 run: three conversations started Codex together on a fresh Codex home, and all but one app-server exited with
 // `failed to initialize sqlite state runtime`, read by PilotQ only as "Codex exited without a terminal event". Startup is now
-// serialized until `initialize` answers, so every request is answered; a Codex that exits early names its stderr reason.
+// serialized until `initialize` answers, so every request is answered; a Codex that exits early names its stderr reason in the
+// operator log only, never in the reply.
 #[test]
 fn concurrent_codex_starts_do_not_race() {
     let (d, st) = setup("race", vec![text(1, 11, None, OWNER, "a"), text(2, -100, Some(5), OWNER, "b"), text(3, -100, Some(6), OWNER, "c")]);
@@ -651,7 +652,8 @@ sleep 0.5; rmdir "$d/init.lock"; exec "$d/fake-codex""#);
     let (d, _st) = setup("dead", vec![]);
     use_codex(&d, &script(&d, "dead-codex", "echo 'Error: boom' >&2; exit 1"));
     let o = cli(&d, &["ask", "--json", "hi"]);
-    assert_eq!(serde_json::from_slice::<Value>(&o.stdout).unwrap()["error"], "Codex exited without a terminal event after: Error: boom");
+    assert_eq!(serde_json::from_slice::<Value>(&o.stdout).unwrap()["error"], "Codex exited without a terminal event", "the reply carries no raw stderr");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("codex exited: Error: boom"), "the operator log names the reason");
     fs::remove_dir_all(d).unwrap();
 }
 
@@ -1080,6 +1082,14 @@ fn a8_live_board_run() {
     fs::create_dir_all(d.join("codex")).unwrap();
     fs::copy(PathBuf::from(std::env::var("PILOTQ_A8_CODEX_HOME").expect("PILOTQ_A8_CODEX_HOME")).join("auth.json"), d.join("codex/auth.json")).unwrap();
     fs::set_permissions(d.join("codex/auth.json"), fs::Permissions::from_mode(0o600)).unwrap();
+    // the login copy goes when the test ends, passed or failed; the rest of a failed run stays for a8_after_recheck
+    struct Login(PathBuf);
+    impl Drop for Login {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+    let _login = Login(d.join("codex/auth.json"));
     limits(&d, Path::new("codex"), json!({"first_event": 60, "silent": 60, "deadline": 240}));
     let cfg = d.join("config.json");
     let mut c: Value = serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
@@ -1166,21 +1176,36 @@ fn a8_live_board_run() {
         let r = query_text(&d, &format!("SELECT reply FROM requests WHERE id={id}"));
         assert!(all.iter().any(|s| s["text"] == r.as_str() && s["chat_id"] == chat && s.get("message_thread_id").and_then(Value::as_i64) == topic), "reply {id} in its route");
     }
-    let acks = all.iter().filter(|s| s["text"].as_str().unwrap().starts_with("Received. Request #")).count() as i64;
+    // acknowledgements go out as HTML: `Received. Request <b>#N</b> is queued.`
+    let acks = all.iter().filter(|s| s["text"].as_str().unwrap().starts_with("Received. Request <b>#")).count() as i64;
     assert_eq!(acks, query(&d, "SELECT count(*) FROM requests"), "one acknowledgement per request");
-
-    // U23: the audit record joins the request to its task and trace; the task text carries the trace ID
-    let a: Value = serde_json::from_slice(&cli(&d, &["audit", "--request", "5", "--json"]).stdout).unwrap();
-    assert_eq!(a[0]["tasks"].as_array().unwrap().iter().map(|t| t["target"].as_str().unwrap().to_string()).collect::<Vec<_>>(), [format!("add #{n}"), format!("start #{n}")]);
-    assert_eq!((a[0]["trace"].as_str(), a[0]["who"]["id"].as_i64(), a[0]["outcome"].as_str()), (Some("pilotq.request.5"), Some(OWNER), Some("answered")));
     c.kill().unwrap();
     c.wait().unwrap();
+    a8_after(&d, n);
+    say(&format!("A8 passed: task #{n}"));
+    fs::remove_dir_all(d).unwrap();
+}
+
+/// A8's checks on the stopped install: U23 audit record and CoreQ trace, and the board's closing state.
+fn a8_after(d: &Path, n: i64) {
+    // U23: the audit record joins the request to its task and trace; the task text carries the trace ID
+    let a: Value = serde_json::from_slice(&cli(d, &["audit", "--request", "5", "--json"]).stdout).unwrap();
+    assert_eq!(a[0]["tasks"].as_array().unwrap().iter().map(|t| t["target"].as_str().unwrap().to_string()).collect::<Vec<_>>(), [format!("add #{n}"), format!("start #{n}")]);
+    assert_eq!((a[0]["trace"].as_str(), a[0]["who"]["id"].as_i64(), a[0]["outcome"].as_str()), (Some("pilotq.request.5"), Some(OWNER), Some("answered")));
     let tel = coreq::telemetry::Reader::open(&d.join("telemetry.sqlite")).unwrap().export(0, 0, 1000).unwrap().to_string();
     assert!(tel.contains("\"pilotq.request.5\""), "the request's CoreQ trace exists");
     let state = Command::new("gh").args(["api", &format!("repos/taskqorg/pilotq/issues/{n}"), "--jq", ".state + \" \" + .state_reason"]).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&state.stdout).trim(), "closed completed", "the board shows the task completed");
-    say(&format!("A8 passed: task #{n}"));
-    fs::remove_dir_all(d).unwrap();
+    let body = Command::new("gh").args(["api", &format!("repos/taskqorg/pilotq/issues/{n}"), "--jq", ".body"]).output().unwrap();
+    let body = String::from_utf8_lossy(&body.stdout);
+    assert!(body.contains("Filed by PilotQ pilotq.request.5 for Telegram user 7 in DM 7, plan revision 1.") && body.contains("op-id: pilotq-"), "{body}");
+}
+
+/// Reruns A8's post-run checks on a kept install, for a run that ended before them: PILOTQ_A8_DIR=<install> PILOTQ_A8_TASK=<N>.
+#[test]
+#[ignore = "checks a kept A8 install against the real board"]
+fn a8_after_recheck() {
+    a8_after(Path::new(&std::env::var("PILOTQ_A8_DIR").expect("PILOTQ_A8_DIR")), std::env::var("PILOTQ_A8_TASK").expect("PILOTQ_A8_TASK").parse().unwrap());
 }
 
 fn query_text(d: &Path, sql: &str) -> String {

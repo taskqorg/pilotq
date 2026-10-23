@@ -46,7 +46,8 @@ struct Proc {
     child: Child,
     stdin: ChildStdin,
     rx: Receiver<Value>,
-    /// Codex's last stderr line, the only reason it gives when it exits early.
+    /// Codex's last stderr line, the only reason it gives when it exits early. Operator log only: it can name paths or account
+    /// details, so it never reaches a reply, the journal or telemetry.
     last_err: std::sync::Arc<Mutex<Option<String>>>,
 }
 
@@ -173,9 +174,11 @@ impl Codex {
                 }
                 Err(RecvTimeoutError::Timeout) => continue,
                 Err(RecvTimeoutError::Disconnected) => {
-                    // stdout closed; give the stderr reader a moment to take Codex's last words
+                    // stdout closed; give the stderr reader a moment to take Codex's last words for the operator log
                     std::thread::sleep(Duration::from_millis(200));
-                    let error = error.or_else(|| p.last_err.lock().unwrap().clone());
+                    if let Some(e) = p.last_err.lock().unwrap().as_deref() {
+                        eprintln!("codex exited: {e}");
+                    }
                     let why = error.map_or("Codex exited without a terminal event".to_string(), |e| format!("Codex exited without a terminal event after: {e}"));
                     return (thread, model, fail(tooled, why));
                 }
@@ -199,7 +202,7 @@ impl Codex {
             }
             match (m["id"].as_i64(), method) {
                 (Some(1), _) => {
-                    starting = None;
+                    drop(starting.take());
                     p.send(json!({"method": "initialized"}));
                     let mut params = json!({"cwd": self.workspace, "approvalPolicy": "never", "sandbox": "read-only"});
                     if let Some((tools, instructions)) = dynamic {
