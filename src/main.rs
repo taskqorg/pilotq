@@ -17,8 +17,8 @@ const USAGE: &str = "usage: pilotq service install|run|stop|status | status [--j
   routes list | routes set CHAT[:TOPIC] shared|isolated | projects list | projects add NAME ROOT
   keys list | keys add NAME PURPOSE TOOL.. (value on stdin) | keys grant NAME ID|route:CHAT[:TOPIC]|project:NAME.. | keys revoke NAME [WHO..]
   (users, routes, projects and keys accept --json)
-  pilot report --since UNIX_SECONDS [--until UNIX_SECONDS] [--json]
-  audit [--user ID] [--route cli|CHAT[:TOPIC]] [--project P] [--since UNIX_SECONDS] [--request ID] [--json]";
+  audit [--user ID] [--route cli|CHAT[:TOPIC]] [--project P] [--since UNIX_SECONDS] [--request ID] [--json]
+  pilot start | pilot note intervention|outage TEXT | pilot report [--since UNIX_SECONDS] [--until UNIX_SECONDS] (pilot accepts --json)";
 /// A status.json older than this reads unknown (coreq.md § status.json).
 const FRESH: u64 = 60;
 const PASS: Duration = Duration::from_secs(30);
@@ -237,7 +237,7 @@ fn audit(t: &Tool, a: &[&str]) -> Result<Value, String> {
 }
 
 fn pilot_report(t: &Tool, a: &[&str]) -> Result<Value, String> {
-    let (mut since, mut until) = (None, now() as i64);
+    let (mut since, mut until) = (None, now() as i64 + 1);
     for pair in a.chunks(2) {
         match pair {
             ["--since", v] => since = Some(v.parse::<i64>().map_err(|_| "--since: expected Unix seconds")?),
@@ -245,11 +245,15 @@ fn pilot_report(t: &Tool, a: &[&str]) -> Result<Value, String> {
             _ => return Err(USAGE.into()),
         }
     }
-    let since = since.ok_or("--since is required")?;
-    if since < 0 || until <= since { return Err("expected 0 <= since < until".into()); }
     let path = t.install.join("journal.sqlite");
     if !path.exists() { return Err("no journal: pilot measurements unavailable".into()); }
-    journal::Journal::open(&path)?.pilot_report(since, until)
+    let j = journal::Journal::open(&path)?;
+    let mut report = j.pilot_report(since)?;
+    let since = report["since"].as_i64().ok_or("pilot report has no start")?;
+    if since < 0 || until <= since { return Err("expected 0 <= since < until".into()); }
+    report["tools"] = j.tool_size_report(since, until)?["tools"].clone();
+    report["until"] = until.into();
+    Ok(report)
 }
 
 fn fact(f: &journal::Fact) -> Value {
@@ -314,6 +318,23 @@ fn admin(t: &Tool, a: &[&str]) -> Result<Value, String> {
         }
         _ => return Err(USAGE.into()),
     })
+}
+
+/// `pilot` (section 10 step 5): the pilot start, intervention and outage notes as the configured owner, and the gate 4 report.
+fn pilot(t: &Tool, a: &[&str]) -> Result<Value, String> {
+    let cfg = config(t)?.ok_or("no config.json: the CLI acts as its configured owner_id")?;
+    let j = journal::Journal::open(&t.install.join("journal.sqlite"))?;
+    let at = now() as i64;
+    match a {
+        ["pilot", "start"] => Ok(json!({"pilot_start": j.pilot_start(at)?})),
+        ["pilot", "note", kind, text @ ..] if !text.is_empty() => {
+            j.pilot_note(cfg.owner, kind, &text.join(" "), at)?;
+            j.pilot_report(None)
+        }
+        ["pilot", "report"] => j.pilot_report(None),
+        ["pilot", "report", "--since", s] => j.pilot_report(Some(s.parse().map_err(|_| format!("--since {s}: expected a number"))?)),
+        _ => Err(USAGE.into()),
+    }
 }
 
 /// `keys` (§ 8 Key store, § 9). Keys enter only here; `add` reads the value from stdin and no command prints a value.
@@ -463,6 +484,18 @@ fn main() {
                 }
                 if let Some(reply) = r["reply"].as_str() {
                     println!("  reply: {reply}");
+                }
+            }
+        }
+        ["pilot", ..] => {
+            let json = a.contains(&"--json");
+            let rest: Vec<&str> = a.iter().copied().filter(|x| *x != "--json").collect();
+            let v = pilot(&t, &rest).unwrap_or_else(|e| t.die(&format!("pilot: {e}")));
+            if json {
+                println!("{v}");
+            } else if let Some(m) = v.as_object() {
+                for (k, x) in m {
+                    println!("{k}: {}", x.as_str().map_or(x.to_string(), str::to_string));
                 }
             }
         }
