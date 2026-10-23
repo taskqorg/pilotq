@@ -147,7 +147,7 @@ impl Codex {
         dynamic: Option<(&Value, &str)>,
         mut alive: impl FnMut() -> bool,
         mut tool: impl FnMut(&str, &str, Option<&str>),
-        mut call: impl FnMut(&str, &Value) -> (bool, String),
+        mut call: impl FnMut(&str, &Value, &str) -> (bool, String),
     ) -> (Option<String>, Option<String>, Outcome) {
         // the first-event watch starts once this turn may spawn, before Codex runs (§ 12)
         let mut starting = Some(START.lock().unwrap_or_else(|e| e.into_inner()));
@@ -159,6 +159,7 @@ impl Codex {
         let (mut thread, mut turn, mut answer, mut tooled, mut model) = (thread.map(str::to_string), None::<String>, String::new(), false, None::<String>);
         let (mut first, mut last, mut error) = (false, start, None::<String>);
         let lim = &self.limits;
+        let mut version = String::from("unknown");
         // dynamic tools are an experimental app-server field, negotiated only when PilotQ offers some
         let caps = dynamic.map(|_| json!({"experimentalApi": true}));
         p.send(json!({"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "pilotq", "title": "PilotQ", "version": env!("CARGO_PKG_VERSION")}, "capabilities": caps}}));
@@ -193,7 +194,7 @@ impl Codex {
             let method = m["method"].as_str().unwrap_or("");
             if method == "item/tool/call" && m.get("id").is_some() {
                 // a complete call of PilotQ's own tool: the boundary checks grants and the fence and answers (§ 5, § 12)
-                let (ok, out) = call(m["params"]["tool"].as_str().unwrap_or(""), &m["params"]["arguments"]);
+                let (ok, out) = call(m["params"]["tool"].as_str().unwrap_or(""), &m["params"]["arguments"], &version);
                 p.send(json!({"id": m["id"], "result": {"contentItems": [{"type": "inputText", "text": out}], "success": ok}}));
                 continue;
             }
@@ -208,6 +209,7 @@ impl Codex {
             }
             match (m["id"].as_i64(), method) {
                 (Some(1), _) => {
+                    version = m["result"]["userAgent"].as_str().unwrap_or("unknown").to_string();
                     drop(starting.take());
                     p.send(json!({"method": "initialized"}));
                     let mut params = json!({"cwd": self.workspace, "approvalPolicy": "never", "sandbox": "read-only"});
@@ -279,20 +281,26 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
                 eprintln!("run {}: {e}", r.id);
             }
         },
-        |name, args| {
-            // § 7 direct action: a request's sixth tool call, counting earlier runs of it, is refused and writes nothing (U11)
-            match j.lock().unwrap().spend(r, name, direct::BUDGET, now()) {
-                Ok(true) => {}
-                Ok(false) => return (false, format!("This request reached its budget of {} tool calls; nothing was done. Answer with the evidence so far and offer to plan the rest as a task, or ask the person.", direct::BUDGET)),
-                Err(e) => return (false, format!("the tool-call budget could not be read ({e}); nothing was done")),
+        |name, args, version| {
+            let (ok, out) = (|| {
+                // § 7 direct action: a request's sixth tool call, counting earlier runs of it, is refused and writes nothing (U11)
+                match j.lock().unwrap().spend(r, name, direct::BUDGET, now()) {
+                    Ok(true) => {}
+                    Ok(false) => return (false, format!("This request reached its budget of {} tool calls; nothing was done. Answer with the evidence so far and offer to plan the rest as a task, or ask the person.", direct::BUDGET)),
+                    Err(e) => return (false, format!("the tool-call budget could not be read ({e}); nothing was done")),
+                }
+                let (ok, out) = match tq {
+                    _ if direct::NAMES.contains(&name) => direct::call(d, j, r, name, args),
+                    Some(tq) => crate::taskq::call(tq, j, r, name, args),
+                    None => (false, "TaskQ is not configured".into()),
+                };
+                // no key value reaches the model, whichever tool printed it (§ 8)
+                (ok, d.keys.scrub(&out))
+            })();
+            if let Err(e) = j.lock().unwrap().tool_size(r, name, out.len(), version, now()) {
+                eprintln!("run {} tool size: {e}", r.id);
             }
-            let (ok, out) = match tq {
-                _ if direct::NAMES.contains(&name) => direct::call(d, j, r, name, args),
-                Some(tq) => crate::taskq::call(tq, j, r, name, args),
-                None => (false, "TaskQ is not configured".into()),
-            };
-            // no key value reaches the model, whichever tool printed it (§ 8)
-            (ok, d.keys.scrub(&out))
+            (ok, out)
         },
     );
     let j = j.lock().unwrap();

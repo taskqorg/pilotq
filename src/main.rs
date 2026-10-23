@@ -17,6 +17,7 @@ const USAGE: &str = "usage: pilotq service install|run|stop|status | status [--j
   routes list | routes set CHAT[:TOPIC] shared|isolated | projects list | projects add NAME ROOT
   keys list | keys add NAME PURPOSE TOOL.. (value on stdin) | keys grant NAME ID|route:CHAT[:TOPIC]|project:NAME.. | keys revoke NAME [WHO..]
   (users, routes, projects and keys accept --json)
+  pilot report --since UNIX_SECONDS [--until UNIX_SECONDS] [--json]
   audit [--user ID] [--route cli|CHAT[:TOPIC]] [--project P] [--since UNIX_SECONDS] [--request ID] [--json]";
 /// A status.json older than this reads unknown (coreq.md § status.json).
 const FRESH: u64 = 60;
@@ -235,6 +236,22 @@ fn audit(t: &Tool, a: &[&str]) -> Result<Value, String> {
     Ok(j.audit(cfg.owner, &f, now() as i64)?.into())
 }
 
+fn pilot_report(t: &Tool, a: &[&str]) -> Result<Value, String> {
+    let (mut since, mut until) = (None, now() as i64);
+    for pair in a.chunks(2) {
+        match pair {
+            ["--since", v] => since = Some(v.parse::<i64>().map_err(|_| "--since: expected Unix seconds")?),
+            ["--until", v] => until = v.parse::<i64>().map_err(|_| "--until: expected Unix seconds")?,
+            _ => return Err(USAGE.into()),
+        }
+    }
+    let since = since.ok_or("--since is required")?;
+    if since < 0 || until <= since { return Err("expected 0 <= since < until".into()); }
+    let path = t.install.join("journal.sqlite");
+    if !path.exists() { return Err("no journal: pilot measurements unavailable".into()); }
+    journal::Journal::open(&path)?.pilot_report(since, until)
+}
+
 fn fact(f: &journal::Fact) -> Value {
     json!({"key": f.key, "value": f.value, "private": f.private, "source": f.source, "revision": f.revision})
 }
@@ -415,6 +432,16 @@ fn main() {
             let rest: Vec<&str> = a.iter().copied().filter(|x| *x != "--json").collect();
             let v = if *cmd == "keys" { keys(&t, &rest) } else { admin(&t, &rest) }.unwrap_or_else(|e| t.die(&format!("{cmd}: {e}")));
             if json { println!("{v}") } else { show(&v) }
+        }
+        ["pilot", "report", rest @ ..] => {
+            let args: Vec<&str> = rest.iter().copied().filter(|x| *x != "--json").collect();
+            let v = pilot_report(&t, &args).unwrap_or_else(|e| t.die(&format!("pilot report: {e}")));
+            if rest.contains(&"--json") { println!("{v}"); } else {
+                println!("Tool result bytes [{} .. {})", v["since"], v["until"]);
+                for row in v["tools"].as_array().into_iter().flatten() {
+                    println!("{}: calls={} p95={} max={}", row["tool"].as_str().unwrap_or(""), row["calls"], row["p95_result_bytes"], row["max_result_bytes"]);
+                }
+            }
         }
         ["audit", ..] => {
             let json = a.contains(&"--json");

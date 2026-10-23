@@ -21,3 +21,13 @@ Codex runs as `codex app-server` with its own home, `<install>/codex`, so no per
 - [Repository setup status](docs/bootstrap.md): verified publication and unresolved platform controls.
 
 Shared rules: [specq](https://github.com/taskqorg/specq).
+
+Measure dynamic-tool result sizes during the step 5 pilot with
+`pilotq pilot report --since UNIX_SECONDS [--until UNIX_SECONDS] [--json]`.
+The half-open window defaults to ending now. Each tool reports call count,
+nearest-rank p95 and maximum UTF-8 result-text bytes, after key scrubbing and
+before JSON serialization. Refusals count too. The journal's `tool_sizes` table
+stores request/run IDs, time, tool name, bytes, PilotQ version and the Codex
+initialization user-agent (or `unknown` if absent), without arguments or result
+content. An empty window has no tool rows; a missing journal is an error.
+This measures bytes, not tokens or savings (§ 6, R17).
