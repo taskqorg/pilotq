@@ -399,7 +399,7 @@ All 62 scenario families at the end of step 5. "Deterministic" names `cargo test
 | F05 | Pass | Pass (test bot `retry-after`) | — |
 | F06 | Partial | — | Host alert path: step 6 |
 | F07 | Pass | — | — |
-| F08 | Partial: newer schema, corrupt journal, native-session rebuild (#29) | C06: 1 pass, remaining repetitions sandbox-blocked (#29) | Disk full: step 6 |
+| F08 | Partial: newer schema, corrupt journal, native-session rebuild (#29) | C06: Pass 3/3 at `3e5a3dc` (#29, PM run below) | Disk full: step 6 |
 | F09 | Pass | Partial (A7 project redirection) | — |
 | F10 | Pass | — | — |
 | F11 | Partial: stale run fenced, one poller | — | Backup restore: step 6 |
@@ -414,7 +414,7 @@ All 62 scenario families at the end of step 5. "Deterministic" names `cargo test
 | C03 | — | — | Needs agentq compression: agentq#167 |
 | C04 | Pass (`u12_stop_is_scoped_and_fences_the_run`: a message during a turn waits) | Pass 3/3, agentq off | agentq on: agentq#167 |
 | C05 | Pass (`journal::u02_route_session_policy`, `journal::u17_profiles_distinct_and_private`) | Pass 3/3, route isolation, agentq off | Recovery references: agentq#167 |
-| C06 | Pass: resume-failure rebuild, receipt recovery, no repeated effect (#29) | 1 pass; remaining repetitions sandbox-blocked (#29) | Three-run live acceptance remains unproved |
+| C06 | Pass: resume-failure rebuild, receipt recovery, no repeated effect (#29) | Pass 3/3 at `3e5a3dc` (#29, PM run below) | Real Telegram remains unqualified |
 | C07 | Pass (`c07_current_profiles_reach_each_turn`): corrections, forget, sender and route privacy | Pass 3/3 on FRA after #28; original Mac failure retained above | Agentq comparison: agentq#167 |
 | L01 | Pass | Pass (A8) | Fast-answer suppression: not implemented |
 | L02 | Partial | — | Typing bounded by last useful event |
@@ -472,7 +472,17 @@ The journal records recovery and queues one notice per damaged native thread in 
 
 **Before:** `cargo test --locked --test telegram c06_resume_failure -- --nocapture` failed with `timed out: rebuilt answer`: the comment had completed, but the follow-up never answered after the injected resume failure. **After:** the same trace passed. It verifies one completed comment, no additional GitHub calls or effects, recovered historical request/reply and effect receipt, one audit recovery event, one notice, no native error path in replies, and a follow-up on the replacement thread. This retains mutation-once protection while adding conversation recovery; no contract rule changes.
 
-**Live, Linux, 2026-10-23, Codex 0.162.0, agentq off:** `c_live_context_runs_c06`, the C06 slice of `c_live_context_runs`, completed repetition 1 successfully against closed issue [#21](https://github.com/taskqorg/pilotq/issues/21). It damaged the actual native rollout, recovered the [verified comment receipt](https://github.com/taskqorg/pilotq/issues/21#issuecomment-6362676412), answered another follow-up, and checked exactly one comment, one effect, one recovery event and one notice. The runner then exited 137 (sandbox-blocked); repetitions 2–3 have no passing result. This is **not** three-run live acceptance or real Telegram qualification. Original #26 failures above remain historical evidence.
+**Earlier worker live run, Linux, 2026-10-23, Codex 0.162.0, agentq off:** `c_live_context_runs_c06`, the C06 slice of `c_live_context_runs`, completed repetition 1 successfully against closed issue [#21](https://github.com/taskqorg/pilotq/issues/21). It damaged the actual native rollout, recovered the [verified comment receipt](https://github.com/taskqorg/pilotq/issues/21#issuecomment-6362676412), answered another follow-up, and checked exactly one comment, one effect, one recovery event and one notice. The runner then exited 137 (sandbox-blocked); repetitions 2–3 have no passing result. This is **not** three-run live acceptance or real Telegram qualification. Original #26 failures above remain historical evidence.
+
+**PM live acceptance, Linux, 2026-10-23:** the PM reran `cargo test --locked --test telegram c_live_context_runs_c06 -- --ignored --nocapture` outside the worker sandbox at exact SHA `3e5a3dcf1c5d91bc0cb1ece3290150e6ddd21e54`, using a test-only Codex subscription login and `PILOTQ_A7_ISSUE=21`. The result was `test result: ok. 1 passed; 0 failed`, exit 0 in 55.99 seconds. All three repetitions passed; each recorded exactly one new comment, one effect, one rebuild and one notice. Each rebuilt answer named issue #21 and the verified receipt; no effect replayed (§4).
+
+| Repetition | Result | Verified comment receipt |
+|---|---|---|
+| 1 | Pass | [6364473140](https://github.com/taskqorg/pilotq/issues/21#issuecomment-6364473140) |
+| 2 | Pass | [6364478384](https://github.com/taskqorg/pilotq/issues/21#issuecomment-6364478384) |
+| 3 | Pass | [6364484070](https://github.com/taskqorg/pilotq/issues/21#issuecomment-6364484070) |
+
+The [PM evidence and owner answer](https://github.com/taskqorg/pilotq/issues/29) supply the three-run A3 acceptance missing from the earlier worker run. The tested implementation and single-write checks are unchanged by this documentation correction. This qualifies the real PilotQ/Codex/board flow with a local fake Bot API, not real Telegram. The earlier sandbox-blocked runs and original failures remain historical evidence; merge-result (`merge_group`) CI remains a separate publication gate.
 
 Run the explicit live slice with an authenticated subscription home and board token, selecting a closed issue that may receive three test comments:
 
