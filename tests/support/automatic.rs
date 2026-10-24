@@ -14,6 +14,14 @@ const RECORD_TASKQ: &str = r#"#!/usr/bin/env python3
 import json, os, pathlib, subprocess, sys
 base = pathlib.Path(__file__).parent
 args = sys.argv[1:]
+if args and args[0] == 'add':
+    # Bind the create claim itself, not a later label edit: start must never race a service.
+    host = base.joinpath('taskq-host').read_text().strip()
+    if not host.startswith('pilotq-e2e-'): sys.exit('invalid A40 host')
+    if '--host' in args:
+        i = args.index('--host')
+        if args.count('--host') != 1 or args[i+1:i+2] != [host]: sys.exit('foreign A40 host')
+    else: args += ['--host', host]
 write = args and args[0] in ('add', 'start', 'steer', 'requeue', 'later', 'answer', 'service')
 def save(row):
     with open(base / 'taskq-calls.jsonl', 'a') as f:
@@ -44,6 +52,40 @@ struct Run {
 }
 
 impl Run {
+    // TaskQ §2 permits trusted hand-authored entries. These are scripted fixtures, never real worker/reviewer claims.
+    fn event(&mut self, body: &str, state: &str) -> i64 {
+        let path = format!("repos/taskqorg/pilotq/issues/{}/comments", self.task);
+        let rc = self.github("POST", &path, json!({"body":body}));
+        let id = rc["id"].as_i64().unwrap();
+        let inbox = self.taskq(&["inbox".into(), self.task.to_string()]).unwrap();
+        let folded: Value = serde_json::from_str(inbox.lines().find_map(|l| l.strip_prefix("Folded: ")).expect("folded event readback")).unwrap();
+        assert_eq!(folded["state"], state, "scripted event was not accepted");
+        if body.starts_with("taskq: spawn ") {
+            assert_eq!(folded["attempt"], id, "another attempt claimed the fixture");
+        }
+        let events = self.data.as_object_mut().unwrap().entry("scripted_events").or_insert(json!([]));
+        events.as_array_mut().unwrap().push(json!({"comment":id,"body":body,"state":state}));
+        self.save();
+        id
+    }
+
+    fn github(&self, method: &str, path: &str, payload: Value) -> Value {
+        let mut child = Command::new("gh").args(["api", "--method", method, path, "--input", "-"])
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        child.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "scripted board event failed: {}", out.status);
+        serde_json::from_slice(&out.stdout).unwrap()
+    }
+
+    fn spawn_fixture(&mut self) -> i64 {
+        let host = self.data["isolated_host"].as_str().unwrap();
+        let attempt = self.event(&format!("taskq: spawn worker codex:a40-scripted {host}\nA40 synthetic lifecycle; no process is launched."), "doing");
+        self.wait("scripted doing observation",60,|| self.state("doing"));
+        self.data["fixture_attempt"] = json!(attempt);
+        attempt
+    }
+
     fn save(&mut self) {
         self.data["messages"] = json!(sent(&self.st));
         // Atomic replacement leaves the last complete report readable after interruption.
@@ -170,7 +212,15 @@ impl Run {
                     .and_then(|s| serde_json::from_str::<Value>(s).map_err(|e| e.to_string()))
             });
             match folded {
-                Ok(state) if state["state"] == "closed" => { outcomes.push(json!({"task":n,"state":"closed"})); continue; }
+                Ok(state) if state["state"] == "closed" => {
+                    // A crash may separate the synthetic close log from GitHub's issue-state update.
+                    let path = format!("repos/taskqorg/pilotq/issues/{n}");
+                    self.github("PATCH", &path, json!({"state":"closed","state_reason":"completed"}));
+                    let issue = gh_json(&path);
+                    if issue["state"] == "closed" { outcomes.push(json!({"task":n,"state":"closed"})); }
+                    else { errors.push(format!("task #{n} close was not read back")); }
+                    continue;
+                }
                 Err(e) => { errors.push(format!("task #{n} readback: {e}")); continue; }
                 _ => (),
             }
@@ -248,6 +298,9 @@ fn a40_live_management() {
         let focus = fs::read_to_string(h.root.join(".taskq/focus")).expect("existing queue focus required");
         assert!(focus.trim() != "off" && !h.root.join(".taskq/focus.paused").exists(), "admission already paused");
         h.data["original_focus"] = json!(focus);
+        // A fresh reserved host name has no service. Never enroll a service under pilotq-e2e-*.
+        h.data["isolated_host"] = json!(format!("pilotq-e2e-{tag}"));
+        fs::write(h.d.join("taskq-host"), h.data["isolated_host"].as_str().unwrap()).unwrap();
         fs::write(h.d.join("taskq-path"), std::env::var("PILOTQ_A8_TASKQ").expect("PILOTQ_A8_TASKQ")).unwrap();
         fs::write(h.d.join("record-taskq"), RECORD_TASKQ).unwrap();
         fs::set_permissions(h.d.join("record-taskq"), fs::Permissions::from_mode(0o700)).unwrap();
@@ -300,7 +353,7 @@ fn a40_live_management() {
             json!({"request":id,"reply":reply})
         });
         h.case("plan", |h| {
-            let (id, _) = h.model("Use task_plan to save revision 1 for project pilotq, exactly one docs ticket: verify and improve the README navigation to docs/acceptance.md's Automatic management suite (A40). Acceptance: inspect current release-check documentation; before editing ask the owner via taskq ask to choose a short link or a descriptive link (recommend short); apply the selected wording, or verify it if already present; validate the link; hand in for review. Scope README.md only. Do not run the plan yet. Show the saved revision.");
+            let (id, _) = h.model("Use task_plan to save revision 1 for project pilotq, exactly one docs ticket: A40 scripted release-check navigation verification. Goal: exercise the automatic management lifecycle without code changes or ordinary workers. Acceptance: scripted question and answer, then scripted reviewer outcome; this is a fixture, not a request to implement or publish changes. Scope tests only. Do not run the plan yet. Show the saved revision.");
             assert_eq!(query(&h.d,"SELECT count(*) FROM plans WHERE revision=1 AND json_array_length(tickets)=1"),1);
             assert_eq!(query(&h.d,"SELECT count(*) FROM plan_runs"),0);
             json!({"request":id,"revision":1,"board_writes":0})
@@ -311,12 +364,16 @@ fn a40_live_management() {
             assert_eq!(query(&h.d,"SELECT count(*) FROM plan_runs WHERE state='started'"),1);
             assert_eq!(query(&h.d,"SELECT count(*) FROM tickets WHERE started=1 AND task IS NOT NULL"),1);
             h.task = query(&h.d,"SELECT task FROM tickets");
+            let issue_json = gh_json(&format!("repos/taskqorg/pilotq/issues/{}", h.task));
+            let hosts: Vec<&str> = issue_json["labels"].as_array().unwrap().iter().filter_map(|l| l["name"].as_str()).filter(|s|s.starts_with("host-")).collect();
+            assert_eq!(hosts, vec![format!("host-{}",h.data["isolated_host"].as_str().unwrap()).as_str()]);
             let issue = h.taskq(&["inbox".into(),h.task.to_string()]).unwrap();
             assert!(issue.contains("taskq: hold") && issue.contains("taskq: start"));
+            assert!(!issue.contains("taskq: spawn"), "a service claimed the isolated fixture");
             assert!(reply.contains(&format!("https://github.com/taskqorg/pilotq/issues/{}",h.task)));
             assert_eq!(query(&h.d,"SELECT count(*) FROM audit_events WHERE kind='task' AND result='held'"),1);
             h.data["task_url"] = json!(format!("https://github.com/taskqorg/pilotq/issues/{}",h.task));
-            json!({"request":id,"task":h.task,"held_readback":true,"started":true})
+            json!({"request":id,"task":h.task,"held_readback":true,"started":true,"host_labels":hosts})
         });
         h.case("status", |h| {
             let (id, reply) = h.model(&format!("Use task_status on pilotq #{} and give its current state and URL.",h.task));
@@ -325,7 +382,7 @@ fn a40_live_management() {
             json!({"request":id,"reply":reply})
         });
         h.case("steer", |h| {
-            h.wait("doing before steer",1800,|| h.state("doing"));
+            h.spawn_fixture();
             h.control("task_steer", &format!("Use task_steer on pilotq #{}: Keep README scope and ask the wording question before editing.",h.task),"steer")
         });
         h.case("pause", |h| {
@@ -347,7 +404,7 @@ fn a40_live_management() {
             json!({"park":park,"requeue":requeue,"admission_restored":true})
         });
         h.case("restart", |h| {
-            h.wait("doing before restart",1800,|| h.state("doing"));
+            h.spawn_fixture();
             let before = query(&h.d,"SELECT count(*) FROM tickets");
             let observed = query(&h.d,"SELECT at FROM health WHERE source='taskq'");
             h.svc.take();
@@ -359,6 +416,8 @@ fn a40_live_management() {
         });
         let mut question = 0;
         h.case("question_foreign", |h| {
+            let attempt = h.data["fixture_attempt"].as_i64().unwrap();
+            h.event(&format!("taskq: ask attempt {attempt}\nDone: Scripted A40 fixture; no implementation requested.\nProblem: Choose wording for this synthetic navigation check.\n1. Short link ★\n2. Descriptive link\nTo answer: `taskq answer {}.K`",h.task), "ask");
             h.wait("worker question (required)",1800,|| h.state("ask") && sent(&h.st).iter().any(|s| s["text"].as_str().is_some_and(|t| t.starts_with(&format!("Task #{} asks:",h.task)))));
             // Only use the question at the currently observed revision, not one superseded by requeue.
             let revision = query(&h.d,&format!("SELECT revision FROM tasks WHERE number={}",h.task));
@@ -383,13 +442,25 @@ fn a40_live_management() {
             json!({"request":id,"receipt":rc["receipt"],"stale_request":stale,"refusal":refusal})
         });
         h.case("reviewer", |h| {
+            // The accepted answer resumes the same synthetic attempt; no ordinary worker runs.
+            let inbox = h.taskq(&["inbox".into(),h.task.to_string()]).unwrap();
+            let folded: Value = serde_json::from_str(inbox.lines().find_map(|l|l.strip_prefix("Folded: ")).unwrap()).unwrap();
+            let attempt = folded["attempt"].as_i64().unwrap();
+            assert_eq!(folded["attempt"],h.data["fixture_attempt"]);
+            let candidate = h.data["candidate"].as_str().unwrap().to_string();
+            h.event(&format!("taskq: result {candidate} attempt {attempt}\nChanged: Scripted A40 fixture reached result; no code changed or published.\nChecks: Synthetic management lifecycle only.\nOpen: none"), "review");
+            h.wait("review delivery",60,|| sent(&h.st).iter().any(|s|s["text"].as_str().is_some_and(|t|t.starts_with(&format!("Task #{} review:",h.task)))));
+            let host = h.data["isolated_host"].as_str().unwrap();
+            let reviewer = h.event(&format!("taskq: spawn reviewer codex:a40-scripted-review {host}\nA40 synthetic reviewer; no process is launched."), "review");
+            h.event(&format!("taskq: close attempt {reviewer}\nChanged: Scripted A40 reviewer outcome; no code review or publication claimed.\nChecks: Management notification fixture.\nOpen: none"), "closed");
+            h.github("PATCH", &format!("repos/taskqorg/pilotq/issues/{}",h.task), json!({"state":"closed","state_reason":"completed"}));
             h.wait("reviewer outcome",7200,|| sent(&h.st).iter().any(|s| s["text"].as_str().is_some_and(|t|t.starts_with(&format!("Task #{} is closed on the board",h.task)))));
             assert!(sent(&h.st).iter().any(|s|s["text"].as_str().is_some_and(|t|t.starts_with(&format!("Task #{} review:",h.task)))));
             let issue = gh_json(&format!("repos/taskqorg/pilotq/issues/{}",h.task));
             assert_eq!((&issue["state"],&issue["state_reason"]),(&json!("closed"),&json!("completed")));
             let inbox = h.taskq(&["inbox".into(),h.task.to_string()]).unwrap();
             assert!(inbox.contains("taskq: result") && inbox.contains("taskq: close"),"missing result/reviewer close evidence");
-            json!({"task":h.task,"state":"closed completed","worker_result_and_close":true})
+            json!({"task":h.task,"state":"closed completed","scripted_result_and_close":true,"real_code_review":false})
         });
         h.case("audit_delivery", |h| {
             let out = cli(&h.d,&["audit","--json"]); assert!(out.status.success());
@@ -419,6 +490,10 @@ fn a40_live_management() {
     assert_eq!(h.data["pass"],true,"A40 incomplete; inspect the per-case report and cleanup");
 }
 
+#[test]
+fn a40_host_isolation() {
+    assert!(Command::new("python3").arg(concat!(env!("CARGO_MANIFEST_DIR"),"/tests/support/automatic_host.py")).status().unwrap().success());
+}
 
 // R5/R17: a failed case must remain failed while cleanup reconciles an interrupted add, parks it and restores our pause.
 #[test]
