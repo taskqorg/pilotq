@@ -19,8 +19,8 @@ fn executable(p: &Path, text: &[u8]) {
     fs::set_permissions(p, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
-/// Publishes `exe` as release `ver` and runs `pilotq update` against it.
-fn update(d: &Path, ver: &str, exe: &[u8]) -> Output {
+/// Publishes an invented release to the local download fixture.
+fn publish(d: &Path, ver: &str, exe: &[u8]) {
     let (site, bin, install) = (d.join("site"), d.join("bin"), d.join("install"));
     for p in [&site, &bin, &install] {
         fs::create_dir_all(p).unwrap();
@@ -33,9 +33,18 @@ fn update(d: &Path, ver: &str, exe: &[u8]) -> Output {
     fs::write(site.join("latest.json"), format!(r#"{{"version":"{ver}","files":{{"{target}":"{name}"}}}}"#)).unwrap();
     // coreq runs `curl -fsSL --max-time 300 -o <to> <url>`
     executable(&bin.join("curl"), format!("#!/bin/sh\ncp \"{}/$(basename \"$6\")\" \"$5\"\n", site.display()).as_bytes());
-    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
-    // HOME points at the scratch folder, so the host's own launchd unit is never seen or restarted by a test
-    Command::new(env!("CARGO_BIN_EXE_pilotq")).arg("update").env("PILOTQ_INSTALL", &install).env("PATH", path).env("HOME", d).output().unwrap()
+}
+
+fn command(d: &Path) -> Command {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_pilotq"));
+    c.env("PILOTQ_INSTALL", d.join("install")).env("HOME", d)
+        .env("PATH", format!("{}:{}", d.join("bin").display(), std::env::var("PATH").unwrap()));
+    c
+}
+
+fn update(d: &Path, ver: &str, exe: &[u8]) -> Output {
+    publish(d, ver, exe);
+    command(d).arg("update").output().unwrap()
 }
 
 #[test]
@@ -157,5 +166,63 @@ fn pilot_report_prints_gate_counts_and_tool_window() {
     assert_eq!(json["tools"], serde_json::json!([{"tool":"issue_read","calls":1,"p95_result_bytes":42,"max_result_bytes":42}]));
     assert_eq!(json["since"], 20);
     assert_eq!(json["until"], 30);
+    fs::remove_dir_all(d).unwrap();
+}
+
+// R14 / §9: the real installed service must dispatch automatic updates, preserve the old selection on
+// selftest failure and exit only after verified activation; unit checks cover pause and persisted retry time.
+#[test]
+#[cfg(target_os = "linux")]
+fn installed_service_updates_on_schedule() {
+    use std::process::{Child, Stdio};
+    use std::time::{Duration, Instant};
+    struct Service(Child);
+    impl Drop for Service {
+        fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); }
+    }
+    fn wait(mut ready: impl FnMut() -> bool) {
+        let end = Instant::now() + Duration::from_secs(15);
+        while !ready() {
+            assert!(Instant::now() < end, "service did not reach the expected update state");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    let d = scratch("scheduled-update");
+    let install = d.join("install");
+    let current = env!("CARGO_PKG_VERSION");
+    let old = install.join(format!("releases/{current}/pilotq"));
+    fs::create_dir_all(old.parent().unwrap()).unwrap();
+    let binary = fs::read(env!("CARGO_BIN_EXE_pilotq")).unwrap();
+    executable(&old, &binary);
+    fs::write(install.join("current"), current).unwrap();
+    publish(&d, "9.0.0", b"#!/bin/sh\necho refused > \"$PILOTQ_INSTALL/refused\"\nexit 1\n");
+    let start = || {
+        let mut c = Command::new(&old);
+        c.args(["service", "run"]).env("PILOTQ_INSTALL", &install).env("HOME", &d)
+            .env("PATH", format!("{}:{}", d.join("bin").display(), std::env::var("PATH").unwrap()))
+            .stdout(Stdio::null()).stderr(Stdio::null());
+        Service(c.spawn().unwrap())
+    };
+    // Failure records the attempt and removes the drain, while health and service remain available.
+    let mut service = start();
+    wait(|| install.join(".pilotq/status.json").exists() && install.join("refused").exists() && !install.join("drain").exists());
+    assert!(service.0.try_wait().unwrap().is_none());
+    assert_eq!(fs::read_to_string(install.join("current")).unwrap(), current);
+    drop(service);
+    publish(&d, "9.0.0", &binary);
+    assert!(command(&d).args(["update", "--pause"]).status().unwrap().success());
+    assert!(install.join("update-paused").exists());
+    assert!(command(&d).args(["update", "--resume"]).status().unwrap().success());
+    assert!(!install.join("update-paused").exists());
+    fs::write(install.join("update-at"), "0").unwrap();
+    let mut service = start();
+    let mut exit = None;
+    wait(|| { exit = service.0.try_wait().unwrap(); exit.is_some() });
+    assert_eq!(exit.unwrap().code(), Some(75), "native unit restarts through launcher");
+    assert_eq!(fs::read_to_string(install.join("current")).unwrap(), "9.0.0");
+    assert_eq!(fs::read_to_string(install.join("previous")).unwrap(), current);
+    assert_eq!(fs::read(install.join("releases/9.0.0/pilotq")).unwrap(), binary);
+    assert!(install.join("drain").exists(), "admission stays stopped until restart");
+    drop(service);
     fs::remove_dir_all(d).unwrap();
 }

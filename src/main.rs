@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const USAGE: &str = "usage: pilotq service install|run|stop|status | status [--json] | update [--check] | selftest | version | ask TEXT [--json]
+const USAGE: &str = "usage: pilotq service install|run|stop|status | status [--json] | update [--check|--pause|--resume] | selftest | version | ask TEXT [--json]
   users list | users show ID | users grant ID GRANT.. | users revoke ID [GRANT..] | users remember ID KEY VALUE [--private] | users forget ID KEY
   routes list | routes set CHAT[:TOPIC] shared|isolated | projects list | projects add NAME ROOT
   keys list | keys add NAME PURPOSE TOOL.. (value on stdin) | keys grant NAME ID|route:CHAT[:TOPIC]|project:NAME.. | keys revoke NAME [WHO..]
@@ -29,26 +29,70 @@ const DRAIN: &str = "drain";
 /// Planned-restart grace: the 60 s direct-action budget plus the 5 s cancellation grace (§ 7).
 const DRAIN_GRACE: Duration = Duration::from_secs(65);
 
-/// Stops new turns and waits up to DRAIN_GRACE for running requests to end. Work still running is left in the journal; the
-/// restarted service reconciles it.
-fn drain(t: &Tool) -> Result<Option<String>, String> {
+/// Stops new turns and waits within the grace period; unfinished requests refuse activation.
+fn drain(t: &Tool, grace: Duration) -> Result<Option<String>, String> {
     let path = t.install.join("journal.sqlite");
     if !path.exists() {
         return Ok(None);
     }
     std::fs::write(t.install.join(DRAIN), "").map_err(|e| format!("drain: {e}"))?;
     let j = journal::Journal::open(&path)?;
-    let end = std::time::Instant::now() + DRAIN_GRACE;
+    j.draining(true)?;
+    let end = std::time::Instant::now() + grace;
     loop {
         let n = j.running()?;
         if n == 0 {
             return Ok(Some("drain: ok".into()));
         }
         if std::time::Instant::now() >= end {
-            return Ok(Some(format!("drain: {n} running request(s) left for reconciliation after restart")));
+            return Err(format!("drain: {n} running request(s); update deferred"));
         }
         std::thread::sleep(Duration::from_millis(500));
     }
+}
+
+fn resume_after_update(t: &Tool) -> Result<(), String> {
+    let path = t.install.join("journal.sqlite");
+    if path.exists() { journal::Journal::open(&path)?.draining(false)?; }
+    match std::fs::remove_file(t.install.join(DRAIN)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("resume: {e}")),
+        _ => Ok(()),
+    }
+}
+
+/// §9 / R14: one update path, serialized across the CLI and service maintenance thread.
+fn update(t: &Tool, check: bool) -> Result<(Option<String>, Option<String>), String> {
+    std::fs::create_dir_all(&t.install).map_err(|e| e.to_string())?;
+    let _lock = coreq::file_lock::try_lock(&t.install.join("update.lock")).map_err(|e| format!("update lock: {e}"))?;
+    if check { return coreq::update::update(t, true).map(|v| (v, None)); }
+    // Probe before draining: an unavailable or unchanged release must not interrupt conversation admission.
+    if coreq::update::update(t, true)?.is_none() { return Ok((None, None)); }
+    let result = (|| {
+        let drained = drain(t, DRAIN_GRACE)?;
+        coreq::update::update(t, false).map(|v| (v, drained))
+    })();
+    if !matches!(&result, Ok((Some(_), _))) {
+        resume_after_update(t)?;
+    }
+    result
+}
+
+const UPDATE_INTERVAL: u64 = 300;
+
+/// Persist before dispatch; a crash or unavailable release cannot create a startup retry storm.
+fn scheduled_update(t: &Tool, at: u64) -> Result<Option<String>, String> {
+    if t.install.join("update-paused").try_exists().map_err(|e| e.to_string())? { return Ok(None); }
+    let path = t.install.join("update-at");
+    match std::fs::read_to_string(&path) {
+        Ok(s) => {
+            let previous = s.trim().parse::<u64>().map_err(|_| "update-at: invalid timestamp")?;
+            if at.saturating_sub(previous) < UPDATE_INTERVAL { return Ok(None); }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("update-at: {e}")),
+    }
+    coreq::write_atomic(&path, &at.to_string())?;
+    update(t, false).map(|(v, _)| v)
 }
 
 fn tool() -> Tool {
@@ -166,6 +210,7 @@ fn service_run(t: &Tool) -> ! {
         eprintln!("effects: {e}");
     }
     // a drain left by an update applies to the process it restarted, not to this one
+    journal.draining(false).unwrap_or_else(|e| t.die(&e));
     let _ = std::fs::remove_file(t.install.join(DRAIN));
     let j: telegram::Shared = Arc::new(Mutex::new(journal));
     let _lock = cfg.map(|c| {
@@ -195,6 +240,21 @@ fn service_run(t: &Tool) -> ! {
         });
         lock
     });
+    // Only installed Linux releases participate; source builds and other platforms never self-replace.
+    if installed && cfg!(target_os = "linux") {
+        let maintenance = tool();
+        std::thread::spawn(move || loop {
+            match scheduled_update(&maintenance, now()) {
+                Ok(Some(v)) => {
+                    eprintln!("update: {v}; restarting through the launcher");
+                    std::process::exit(75);
+                }
+                Ok(None) => {}
+                Err(e) => eprintln!("scheduled update: {e}"),
+            }
+            std::thread::sleep(PASS);
+        });
+    }
     eprintln!("pilotq {} service running", t.version);
     loop {
         let mut s = status_doc(t, now());
@@ -444,27 +504,35 @@ fn main() {
         ["update", rest @ ..] if rest.iter().all(|x| *x == "--check") => {
             let check = !rest.is_empty();
             let u = unit();
-            match coreq::update::update(&t, check).unwrap_or_else(|e| t.die(&e)) {
+            let (version, drained) = update(&t, check).unwrap_or_else(|e| t.die(&e));
+            match version {
                 Some(v) if check => println!("update: {v} available"),
                 Some(v) => {
                     println!("update: {v}");
-                    match drain(&t) {
-                        Ok(Some(d)) => println!("{d}"),
-                        Ok(None) => {}
-                        Err(e) => eprintln!("{e}"),
+                    if let Some(d) = drained { println!("{d}"); }
+                    if u.path.exists() {
+                        coreq::service::run_all(&u.unload, true).and_then(|_| coreq::service::run_all(&u.load, false))
+                            .unwrap_or_else(|e| t.die(&format!("restart: {e}")));
+                        println!("service restart: ok");
                     }
-                    let restart = if u.path.exists() { Some(coreq::service::run_all(&u.unload, true).and_then(|_| coreq::service::run_all(&u.load, false))) } else { None };
-                    // the restarted service clears the drain itself; without a unit nothing restarts, so the old one resumes
-                    let _ = std::fs::remove_file(t.install.join(DRAIN));
-                    match restart {
-                        Some(Err(e)) => t.die(&format!("restart: {e}")),
-                        Some(Ok(())) => println!("service restart: ok"),
-                        None => {}
-                    }
+                    resume_after_update(&t).unwrap_or_else(|e| t.die(&e));
                 }
                 None => println!("update: up to date"),
             }
         }
+        ["update", action @ ("--pause" | "--resume"), rest @ ..] if rest.iter().all(|x| *x == "--json") => {
+            std::fs::create_dir_all(&t.install).unwrap_or_else(|e| t.die(&e.to_string()));
+            let p = t.install.join("update-paused");
+            if *action == "--pause" {
+                coreq::write_atomic(&p, "paused").unwrap_or_else(|e| t.die(&e));
+            } else if let Err(e) = std::fs::remove_file(&p) {
+                if e.kind() != std::io::ErrorKind::NotFound { t.die(&e.to_string()); }
+            }
+            let paused = p.try_exists().unwrap_or_else(|e| t.die(&e.to_string()));
+            if rest.is_empty() { println!("automatic updates: {}", if paused { "paused" } else { "enabled" }); }
+            else { println!("{}", json!({"automatic_updates": if paused { "paused" } else { "enabled" }})); }
+        }
+
         [cmd @ ("users" | "routes" | "projects" | "keys"), ..] => {
             let json = a.contains(&"--json");
             let rest: Vec<&str> = a.iter().copied().filter(|x| *x != "--json").collect();
@@ -545,5 +613,52 @@ fn main() {
         ["selftest"] => selftest(&t).unwrap_or_else(|e| t.die(&e)),
         ["version"] => println!("pilotq {}", t.version),
         _ => t.die(USAGE),
+    }
+}
+
+#[cfg(test)]
+mod update_tests {
+    use super::*;
+
+    // §12: an expired drain may not authorize activation while a request is still running.
+    #[test]
+    fn update_drain_timeout_preserves_running_work() {
+        let mut t = tool();
+        t.install = std::env::temp_dir().join(format!("pilotq-update-timeout-{}", std::process::id()));
+        std::fs::create_dir_all(&t.install).unwrap();
+        let mut j = journal::Journal::open(&t.install.join("journal.sqlite")).unwrap();
+        j.bootstrap(7, 0).unwrap();
+        let r = j.ask(7, "fixture", 1).unwrap();
+        assert!(drain(&t, Duration::ZERO).unwrap_err().contains("update deferred"));
+        assert_eq!(j.request(r.request).unwrap().0, "running");
+        assert!(matches!(j.ask(7, "blocked", 2), Err(e) if e.contains("drain")));
+        resume_after_update(&t).unwrap();
+        assert!(!t.install.join(DRAIN).exists());
+        assert!(j.ask(7, "allowed", 3).is_ok());
+        drop(j);
+        std::fs::remove_dir_all(&t.install).unwrap();
+    }
+
+    // R14 / §9: pause, the five-minute retry window, clock rollback and corrupt state must not dispatch a download.
+    #[test]
+    fn scheduled_update_admission() {
+        let mut t = tool();
+        t.install = std::env::temp_dir().join(format!("pilotq-update-admission-{}", std::process::id()));
+        std::fs::create_dir_all(&t.install).unwrap();
+        std::fs::write(t.install.join("update-paused"), "paused").unwrap();
+        assert_eq!(scheduled_update(&t, 1000).unwrap(), None);
+        assert!(!t.install.join("update-at").exists());
+        std::fs::remove_file(t.install.join("update-paused")).unwrap();
+        std::fs::write(t.install.join("update-at"), "1000").unwrap();
+        for at in [999, 1000, 1299] {
+            assert_eq!(scheduled_update(&t, at).unwrap(), None);
+            assert_eq!(std::fs::read_to_string(t.install.join("update-at")).unwrap(), "1000");
+        }
+        std::fs::write(t.install.join("update-at"), "invalid").unwrap();
+        assert!(scheduled_update(&t, 1300).unwrap_err().contains("invalid timestamp"));
+        let lock = coreq::file_lock::try_lock(&t.install.join("update.lock")).unwrap();
+        assert!(matches!(update(&t, true), Err(e) if e.contains("update lock")), "a second updater cannot touch shared staging files");
+        drop(lock);
+        std::fs::remove_dir_all(&t.install).unwrap();
     }
 }
