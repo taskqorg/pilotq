@@ -338,7 +338,7 @@ Follow coreq: `releases/<version>`, `current` and `previous` in the install dire
 
 ### Development
 
-PilotQ has its own TaskQ board. Changes follow the TaskQ flow: spec edit first, held task, worker, reviewer, release.
+PilotQ has its own TaskQ board. Changes follow the TaskQ flow: spec edit first, held task, worker, reviewer, release. Before each release, run the [automatic management suite](docs/acceptance.md#automatic-management-suite-a40) against the release candidate. Suite tasks use a unique reserved `pilotq-e2e-*` host that no service claims; the runner scripts their worker/reviewer board events without launching ordinary workers. This qualifies the management path, not real implementation or review. All cases and cleanup must pass; a blocked or incomplete run is not release evidence.
 
 ## 10. Adoption sequence
 
