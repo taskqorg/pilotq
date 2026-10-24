@@ -1054,6 +1054,8 @@ fn u10_restart_new_status_pause_and_park() {
     push(&st, call(7, OWNER, None, OWNER, "queue_pause", json!({})));
     wait("pause", 15, || sent_has(&st, "re: ok: TaskQ admission is paused on this host; no new task starts. Running workers continue. Still running: #19."));
     assert_eq!(board(&d)["tasks"]["19"]["state"], "doing", "a queue pause does not stop the worker");
+    let id = query(&d, "SELECT id FROM requests WHERE update_id=7");
+    assert_eq!(automatic::pause_tool_status(&d, id), "completed");
     // L12: the status message was deleted, so the next update goes out as a new message in the same route
     st.lock().unwrap().edit_gone = true;
     push(&st, call(8, OWNER, None, OWNER, "task_park", json!({"task": "#19", "reason": "owner asked"})));
