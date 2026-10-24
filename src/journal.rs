@@ -1125,6 +1125,7 @@ impl Journal {
         for idx in 1..=n as i64 {
             tx.execute("INSERT INTO tickets(run_id, idx, op_id) VALUES (?1,?2,?3)", params![run, idx, format!("pilotq-{inst}-p{plan}-t{idx}")]).map_err(e)?;
         }
+        tx.execute("UPDATE requests SET project=(SELECT project FROM plans WHERE id=?2) WHERE id=?1", params![r.request, plan]).map_err(e)?;
         tx.commit().map_err(e)?;
         Ok(run)
     }
@@ -2014,6 +2015,37 @@ mod tests {
         assert!(!j.close_task("pilotq", 19, "closed", 11).unwrap(), "the outcome is queued once");
         assert!(!j.observe("pilotq", 19, "doing", 14, None, "late", None, 12).unwrap(), "nothing follows the outcome");
         assert_eq!(count(&j, "SELECT count(*) FROM outbox WHERE task=19 AND kind='final'"), 1);
+        drop(j);
+        let _ = std::fs::remove_dir_all(p);
+    }
+
+    // R17, §5/§8: a topic's run audit names the saved plan's project after a conversation switch;
+    // refusals write nothing, retries stay single-run, and the project survives restart and audit filtering.
+    #[test]
+    fn a40_topic_plan_run_audit_project() {
+        use crate::manager::Outcome;
+        let (mut j, p) = journal("a40-project");
+        let topic = |message| Some(Input { chat: -100, topic: Some(5), sender: Some(7), name: None,
+            message, kind: "text", text: Some("plan or run".into()), reply_to: None });
+        j.admit(&[(1, topic(1))], 0).unwrap();
+        let r = j.claim_next(4, 0).unwrap().remove(0);
+        j.save_plan(&r, &json!([{"title":"A"}]), "pilotq", "taskqorg/pilotq", "", 1).unwrap();
+        j.finish(&r, None, None, &Outcome::Answered("plan".into()), 2).unwrap();
+        j.admit(&[(2, topic(2))], 3).unwrap();
+        let r = j.claim_next(4, 3).unwrap().remove(0);
+        j.use_project(&r, "other", 7, 3).unwrap();
+        assert!(j.authorize(&r, 2, 7, 120, 3).is_err());
+        let filter = || Filter { request: Some(r.request), ..Filter::default() };
+        assert!(j.audit(7, &filter(), 3).unwrap()[0]["where"]["project"].is_null());
+        let run = j.authorize(&r, 1, 7, 120, 3).unwrap();
+        assert_eq!(j.authorize(&r, 1, 7, 120, 3).unwrap(), run);
+        drop(j);
+        let mut j = Journal::open(&p.join("journal.sqlite")).unwrap();
+        let rows = j.audit(7, &Filter { project: Some("pilotq".into()), ..filter() }, 4).unwrap();
+        assert_eq!(rows.len(), 1, "the run is discoverable by project");
+        assert_eq!(rows[0]["where"], json!({"front":"telegram", "chat":-100, "topic":5, "project":"pilotq"}));
+        assert_eq!(j.current_project(&r.session).unwrap().as_deref(), Some("other"));
+        assert_eq!(count(&j, "SELECT count(*) FROM plan_runs"), 1);
         drop(j);
         let _ = std::fs::remove_dir_all(p);
     }
