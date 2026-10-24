@@ -1,13 +1,15 @@
-# pilotq.md § 9 and coreq.md § Release: static linux-x86_64 binary, SHA256SUMS, latest.json. A failing selftest publishes nothing.
-# Pull requests and the merge queue run the same build and selftest; only a v* tag publishes.
+# pilotq.md §9: only the owner's live push releases; PR and merge queue verify the same artifact.
 name: release
 on:
   push:
-    tags: ['v*']
+    branches: [live]
   pull_request:
   merge_group:
 permissions:
   contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -16,31 +18,54 @@ jobs:
       TARGET: x86_64-unknown-linux-musl
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Release source and protected pilot window
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          if [ "$BEFORE" != 0000000000000000000000000000000000000000 ]; then
+            git merge-base --is-ancestor "$BEFORE" "$GITHUB_SHA"
+          fi
+          test "$(date -u +%s)" -ge 1793353620
+          test "$(gh api "repos/$GITHUB_REPOSITORY/issues/36" --jq .state)" = closed
       - run: sudo apt-get update && sudo apt-get install -y musl-tools
       - run: rustup update stable --no-self-update && rustup default stable && rustup target add "$TARGET"
-      - name: Tag equals Cargo.toml version
+      - name: Read release version
         run: |
           ver="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
-          test -n "$ver"
-          if [ "$GITHUB_REF_TYPE" = tag ]; then test "${GITHUB_REF_NAME#v}" = "$ver"; fi
+          [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           echo "VER=$ver" >> "$GITHUB_ENV"
-      - if: github.ref_type == 'tag'
+      - if: github.event_name == 'push'
         run: cargo test --locked
       - run: cargo build --locked --release --target "$TARGET"
-      - name: Selftest and stage
+      - name: Stage integrity metadata
         run: |
           bin="target/$TARGET/release/pilotq"
           file "$bin" | grep -Eq 'static(ally|-pie) linked'
-          "$bin" selftest
           mkdir dist
           cp "$bin" "dist/pilotq-$VER-linux-x86_64"
-      - if: github.ref_type == 'tag'
+          python3 - <<'PY'
+          import json, os
+          v = os.environ['VER']
+          with open('dist/latest.json', 'w') as f:
+              json.dump({'version': v, 'files': {'linux-x86_64': f'pilotq-{v}-linux-x86_64'}, 'source_commit': os.environ['GITHUB_SHA']}, f)
+          PY
+          (cd dist && sha256sum pilotq-* latest.json > SHA256SUMS)
+      - name: Verify artifact before publication
+        run: scripts/verify-release.sh dist "$VER"
+      - if: github.event_name == 'push'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: linux-x86_64
           path: dist/*
+          if-no-files-found: error
   publish:
-    if: github.ref_type == 'tag'
+    if: github.event_name == 'push'
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -50,13 +75,11 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: Describe
-        run: |
-          ver="${GITHUB_REF_NAME#v}"
-          cd dist
-          sha256sum pilotq-* > SHA256SUMS
-          printf '{"version":"%s","files":{"linux-x86_64":"pilotq-%s-linux-x86_64"}}\n' "$ver" "$ver" > latest.json
-      - name: Publish
+      - name: Publish verified release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "PilotQ $GITHUB_REF_NAME" --notes "pilotq $GITHUB_REF_NAME"
+        run: |
+          (cd dist && sha256sum -c SHA256SUMS)
+          ver="$(python3 -c 'import json; print(json.load(open("dist/latest.json"))["version"])')"
+          gh release create "v$ver" dist/* --target "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY" \
+            --title "PilotQ v$ver" --notes "First PilotQ release for TaskQ work. Install and test: https://github.com/$GITHUB_REPOSITORY/blob/v$ver/docs/tester-guide.md. Production cutover remains unqualified."

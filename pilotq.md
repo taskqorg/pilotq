@@ -2,7 +2,7 @@
 
 PilotQ is the conversational front end for work on a shared server. People discuss work in Telegram; PilotQ answers, performs bounded direct actions, or manages execution through TaskQ. A lost model connection must never silently lose an accepted request or authorize a repeated external action.
 
-Date: 2026-10-22. Stage: specification. The name and repository are owner-approved; the owner made the repository public on 2026-10-22 so `main` rules apply (docs/bootstrap.md). The owner chose the base on 2026-10-22 (section 3). Requirements marked **Owner** come from the requested workflow. **Proposed** sections define a design to review and qualify, not shipped guarantees or permission to deploy.
+Date: 2026-10-24. Stage: implemented test service; first release preparation. The name and repository are owner-approved; the owner made the repository public on 2026-10-22 so `main` rules apply (docs/bootstrap.md). The owner chose the base on 2026-10-22 (section 3). Requirements marked **Owner** come from the requested workflow. **Proposed** sections define a design to review and qualify, not shipped guarantees or permission to deploy.
 
 Shared engineering, storage, security and release rules belong to [specq](https://github.com/taskqorg/specq/tree/main/engineering). Evidence: [research](docs/research.md), [mechanism matrix](docs/mechanism-matrix.md). Requirement checks: [acceptance](docs/acceptance.md).
 
@@ -10,7 +10,7 @@ Shared engineering, storage, security and release rules belong to [specq](https:
 
 The owner requires spec-driven work. `specq` is the shared base; this root contract contains only PilotQ-specific decisions and additions. For PilotQ, an explicit owner-approved decision or exception here takes priority over a conflicting shared default. Unmentioned areas inherit `specq`. An exception names the shared rule, scope and reason; an accidental conflict or an unapproved proposal is not an exception.
 
-Supporting documents, README, instructions, tests and code follow this contract. They cannot introduce independent product decisions. Update the owning specification before implementing a changed decision. There are no approved shared-rule exceptions in this draft.
+Supporting documents, README, instructions, tests and code follow this contract. They cannot introduce independent product decisions. Update the owning specification before implementing a changed decision. There are no approved shared-rule exceptions.
 
 ## 1. Outcomes and boundaries
 
@@ -335,6 +335,14 @@ Every command that writes prints the readback, supports `--json` and returns a n
 Follow coreq: `releases/<version>`, `current` and `previous` in the install directory; GitHub releases with `SHA256SUMS`; `pilotq update` verifies the checksum and runs `pilotq selftest` before the switch; the launcher returns to `previous` after three unhealthy starts. An update waits for the planned-restart drain in section 12.
 
 `status.json` publishes the section 7 health fields. Incident reports follow coreq. Telemetry uses the shared CoreQ telemetry store and DashQ connection, so the TaskQ PM sees PilotQ beside the other tools. Release and CI follow the shared [release contract](https://github.com/taskqorg/specq/blob/main/engineering/release-contract.md).
+
+### First release delivery
+
+**Owner, 2026-10-24 (task #38, option B):** prepare version `0.2.0`, the release workflow and tester guide now. The release channel is `live`; the owner fast-forwards it to a `main` commit that passed merge-queue CI. Its push builds and verifies the static `linux-x86_64` artifact in CI, then creates `v0.2.0` and publishes the binary, `SHA256SUMS` and `latest.json` from `taskqorg/pilotq`. Tags alone do not publish. Publishing authority is the repository's release workflow, invoked by the owner's `live` push.
+
+Do not push `live` or roll out before [#36](https://github.com/taskqorg/pilotq/issues/36) closes, after the protected window ending 2026-10-30 09:47 UTC. Workflow preparation and a development PR may proceed during the window. Release execution remains pending until then; no worker changes the FRA service, pilot start or installed artifact in this task. This schedules the shared release flow rather than making an exception to it.
+
+This release retains coreq `v0.14.6` (locked in `Cargo.lock`) and journal schema 7. It opens existing schemas 0–7 through the current migrations and refuses newer schemas; rollback to a binary that cannot read the resulting schema is unsafe. The installation owner runs the user service and owns its protected configuration. See the [tester guide](docs/tester-guide.md) for installation, checks and current limitations. A published release and successful selftest do not qualify production cutover or the open decisions in section 11.
 
 ### Development
 
