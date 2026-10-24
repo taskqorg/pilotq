@@ -330,6 +330,8 @@ Use the existing Langfuse installation for optional, bounded telemetry export af
 
 Every command that writes prints the readback, supports `--json` and returns a nonzero exit code on failure.
 
+`pilotq doctor [--json]` performs read-only setup checks: Telegram `getMe` returns a bot identity, the configured isolated Codex home reports a ChatGPT login, and TaskQ returns a complete snapshot matching its configured board. It never polls updates, starts a model turn or changes grants. Missing configuration, failed checks and unavailable dependencies return nonzero; diagnostics expose only check names and outcomes, never dependency output or credentials. This checks setup, not the full task flow or subscription entitlement (§11).
+
 ### Update and monitoring
 
 Follow coreq: `releases/<version>`, `current` and `previous` in the install directory; GitHub releases with `SHA256SUMS`; `pilotq update` verifies the checksum and runs `pilotq selftest` before the switch; the launcher returns to `previous` after three unhealthy starts. An update waits for the planned-restart drain in section 12.

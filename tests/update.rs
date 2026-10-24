@@ -226,3 +226,18 @@ fn installed_service_updates_on_schedule() {
     drop(service);
     fs::remove_dir_all(d).unwrap();
 }
+
+// §9: absent setup must fail explicitly, without claiming healthy dependencies or writing state.
+#[test]
+fn doctor_missing_configuration_is_not_healthy() {
+    let d = scratch("doctor-missing");
+    let out = Command::new(env!("CARGO_BIN_EXE_pilotq"))
+        .env("PILOTQ_INSTALL", &d).args(["doctor", "--json"]).output().unwrap();
+    assert!(!out.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["ok"], false);
+    assert_eq!(report["checks"]["configuration"], "failed");
+    for key in ["telegram", "codex", "taskq"] { assert_eq!(report["checks"][key], "unknown"); }
+    assert_eq!(fs::read_dir(&d).unwrap().count(), 0);
+    fs::remove_dir_all(d).unwrap();
+}

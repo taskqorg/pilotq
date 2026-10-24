@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const USAGE: &str = "usage: pilotq service install|run|stop|status | status [--json] | update [--check|--pause|--resume] | selftest | version | ask TEXT [--json]
+const USAGE: &str = "usage: pilotq service install|run|stop|status | status [--json] | update [--check|--pause|--resume] | selftest | doctor [--json] | version | ask TEXT [--json]
   users list | users show ID | users grant ID GRANT.. | users revoke ID [GRANT..] | users remember ID KEY VALUE [--private] | users forget ID KEY
   routes list | routes set CHAT[:TOPIC] shared|isolated | projects list | projects add NAME ROOT
   keys list | keys add NAME PURPOSE TOOL.. (value on stdin) | keys grant NAME ID|route:CHAT[:TOPIC]|project:NAME.. | keys revoke NAME [WHO..]
@@ -187,6 +187,36 @@ fn selftest(t: &Tool) -> Result<(), String> {
     // ponytail: no config or board read yet; the online part arrives with the journal and TaskQ in later slices.
     println!("pilotq {} selftest: ok", t.version);
     Ok(())
+}
+
+/// §9 setup checks; dependency diagnostics are deliberately withheld (§8).
+fn doctor(t: &Tool) -> Value {
+    use teloxide::prelude::*;
+    use std::process::{Command, Stdio};
+    let mut checks = json!({"configuration": "failed", "telegram": "unknown", "codex": "unknown", "taskq": "unknown"});
+    let Ok(Some(c)) = config(t) else { return json!({"ok": false, "checks": checks}); };
+    checks["configuration"] = json!("ok");
+    let telegram = tokio::runtime::Builder::new_current_thread().enable_all().build().ok().is_some_and(|rt| rt.block_on(async {
+        let mut bot = Bot::new(&c.token);
+        if let Some(url) = &c.api_url { bot = bot.set_api_url(url.clone()); }
+        matches!(tokio::time::timeout(Duration::from_secs(20), bot.get_me().send()).await, Ok(Ok(me)) if me.is_bot)
+    }));
+    checks["telegram"] = json!(if telegram { "ok" } else { "failed" });
+    let mut cmd = Command::new(&c.codex.bin);
+    cmd.env_clear();
+    for k in ["PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR", "SSL_CERT_FILE"] {
+        if let Some(v) = std::env::var_os(k) { cmd.env(k, v); }
+    }
+    let login = cmd.env("CODEX_HOME", &c.codex.home)
+        .args(["-c", "forced_login_method=\"chatgpt\"", "login", "status"])
+        .stdin(Stdio::null()).output().ok().is_some_and(|o| {
+            o.status.success() && (String::from_utf8_lossy(&o.stdout).contains("Logged in using ChatGPT")
+                || String::from_utf8_lossy(&o.stderr).contains("Logged in using ChatGPT"))
+        });
+    checks["codex"] = json!(if login { "ok" } else { "failed" });
+    let board = c.taskq.as_ref().is_some_and(|tq| tq.board().is_ok());
+    checks["taskq"] = json!(if board { "ok" } else { "failed" });
+    json!({"ok": telegram && login && board, "checks": checks})
 }
 
 fn service_run(t: &Tool) -> ! {
@@ -609,6 +639,12 @@ fn main() {
                     t.die(&format!("ask: {e}"));
                 }
             }
+        }
+        ["doctor", rest @ ..] if rest.iter().all(|a| *a == "--json") => {
+            let report = doctor(&t);
+            if rest.contains(&"--json") { println!("{report}"); }
+            else { for (name, state) in report["checks"].as_object().unwrap() { println!("{name}: {}", state.as_str().unwrap()); } }
+            if report["ok"] != true { std::process::exit(1); }
         }
         ["selftest"] => selftest(&t).unwrap_or_else(|e| t.die(&e)),
         ["version"] => println!("pilotq {}", t.version),
