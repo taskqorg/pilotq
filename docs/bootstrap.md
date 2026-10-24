@@ -1,6 +1,6 @@
 # Repository setup status
 
-Current state: public repository with an implemented Rust test service and a separate-bot pilot; production cutover remains unapproved. See [acceptance evidence](acceptance.md) and [release timing](../pilotq.md#first-release-delivery). This page records repository setup, not a security exception or product qualification.
+Current state: public repository with an implemented Rust test service and separate-bot trials; production cutover remains unapproved. See [acceptance evidence](acceptance.md) and [release timing](../pilotq.md#first-release-delivery). This page records repository setup, not a security exception or product qualification.
 
 ## Historical setup, 2026-10-16
 

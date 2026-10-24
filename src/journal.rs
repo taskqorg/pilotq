@@ -813,6 +813,9 @@ impl Journal {
         if !has(&tx, sender, "chat")? {
             return Err(format!("{sender} has no chat grant"));
         }
+        if tx.query_row("SELECT EXISTS(SELECT 1 FROM meta WHERE key='draining' AND value=1)", [], |r| r.get::<_, bool>(0)).map_err(|e| e.to_string())? {
+            return Err("update drain in progress; retry after restart".into());
+        }
         // ponytail: CLI requests take negative synthetic update IDs, so Telegram's positive IDs never collide
         let update: i64 = tx.query_row("SELECT min(coalesce(min(update_id), 0), 0) - 1 FROM requests", [], |r| r.get(0)).map_err(|e| e.to_string())?;
         let id = insert(&tx, update, "cli", sender, None, sender, None, 0, "text", Some(text), "queued", at, &format!("cli:{sender}"), None)?;
@@ -824,6 +827,9 @@ impl Journal {
     /// Claims the oldest queued Telegram request of each conversation without a running one, up to `limit` running in total.
     pub fn claim_next(&mut self, limit: usize, at: i64) -> Result<Vec<Run>, String> {
         let tx = self.0.transaction().map_err(|e| e.to_string())?;
+        if tx.query_row("SELECT EXISTS(SELECT 1 FROM meta WHERE key='draining' AND value=1)", [], |r| r.get::<_, bool>(0)).map_err(|e| e.to_string())? {
+            return Ok(vec![]);
+        }
         let revoked = revalidate(&tx)?;
         let running: i64 = tx.query_row("SELECT count(*) FROM requests WHERE state='running' AND front='telegram'", [], |r| r.get(0)).map_err(|e| e.to_string())?;
         let free = (limit as i64 - running).max(0);
@@ -845,6 +851,11 @@ impl Journal {
             self.trace(id, at);
         }
         Ok(runs)
+    }
+
+    /// §9 / §12: serialize drain admission with request claims on both front ends.
+    pub fn draining(&self, enabled: bool) -> Result<(), String> {
+        self.0.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('draining', ?1)", [enabled as i64]).map(drop).map_err(|e| e.to_string())
     }
 
     /// Requests running now, from any front; `pilotq update` drains them before the restart (§ 12).
@@ -1664,6 +1675,22 @@ mod tests {
         assert_eq!(j.grant_log(7).unwrap()[0].1, None, "the owner comes from protected config");
         j.bootstrap(7, 9).unwrap();
         assert_eq!(j.grant_log(7).unwrap().len(), 1, "an unchanged bootstrap logs nothing");
+        drop(j);
+        let _ = std::fs::remove_dir_all(p);
+    }
+
+    // R13 / §12: a committed drain blocks both claim paths without losing queued Telegram inputs.
+    #[test]
+    fn update_drain_blocks_both_front_ends() {
+        let (mut j, p) = journal("update-drain");
+        j.draining(true).unwrap();
+        j.admit(&[(1, msg(7, 7, 1))], 1).unwrap();
+        assert!(j.claim_next(4, 2).unwrap().is_empty());
+        assert!(matches!(j.ask(7, "later", 2), Err(e) if e.contains("drain")));
+        assert_eq!(j.running().unwrap(), 0);
+        j.draining(false).unwrap();
+        assert_eq!(j.claim_next(4, 3).unwrap().len(), 1);
+        assert!(j.ask(7, "now", 3).is_ok());
         drop(j);
         let _ = std::fs::remove_dir_all(p);
     }

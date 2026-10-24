@@ -1,6 +1,6 @@
 # Test PilotQ
 
-Use PilotQ to discuss work, approve a saved plan and follow TaskQ in Telegram. This guide describes the first release candidate, `0.2.0`, not production-cutover acceptance ([contract §9](../pilotq.md#first-release-delivery)). Release publication waits for #36 to close after 2026-10-30 09:47 UTC. Until then the download commands below will not find this release.
+Use PilotQ to discuss work, approve a saved plan and follow TaskQ in Telegram. This guide describes the first release candidate, `0.2.0`, not production-cutover acceptance ([contract §9](../pilotq.md#first-release-delivery)). The owner releases by fast-forwarding `live` after merge-queue acceptance; the download commands work after that workflow publishes the assets.
 
 ## Join an existing test bot
 
@@ -41,18 +41,18 @@ If creation is partial or TaskQ is unavailable, keep the request number and obse
 
 ## Steer, park, pause and recover
 
-- **Steer a task:** this release has no PilotQ `task_steer` tool. Give the task URL and requested change to the board PM/operator, who uses TaskQ's supported steering command and reads it back. A chat follow-up to PilotQ does not prove the worker received it.
+- **Steer a task:** ask “Steer https://github.com/taskqorg/pilotq/issues/N: …” with one to four instruction lines. You need `taskq` and project scope, and the task must currently be doing. Expect a receipt and task URL; a stale revision is refused. To restart open work, ask to requeue that URL with a reason; the receipt does not claim the old worker terminated.
 - **Park a task:** ask “Park https://github.com/taskqorg/pilotq/issues/N because …”. Expect the supported TaskQ transition and its readback; this is separate from terminating a running worker.
 - **Pause admission:** a person holding `queue` may ask “Pause new TaskQ queue admission on this host.” This affects the host, not just this chat. Running workers continue. Queue resume is an operator action through TaskQ; PilotQ has no resume tool.
 - **Stop the manager:** `/stop` cancels this conversation's manager work. Check its outcome; it does not park TaskQ work or pause the host queue.
 - **Reset context:** `/new` starts a new conversation generation. It keeps audit records and subscriptions to admitted tasks.
 - **Inspect:** `/status` uses the deterministic control path even if the model is unavailable. Unknown health or an uncertain effect needs investigation, not another execution request.
 
-Missing grants, a foreign board, stale answers, unregistered targets and the sixth tool call are refusals, not successful actions. Only the configured owner can directly comment or label a PilotQ issue, with a suitable key. Other projects are read-only. Keys enter through `pilotq keys add` on the CLI, never Telegram (§5, §8).
+Missing grants, a foreign board, stale answers, unregistered targets and the sixth tool call are refusals, not successful actions. Only the configured owner can directly comment or label a PilotQ issue, with a suitable key. Direct writes to other projects are refused; TaskQ mutations remain available on explicitly registered projects within the caller's grants. Keys enter through `pilotq keys add` on the CLI, never Telegram (§5, §8).
 
 ## Install a separate Linux test instance
 
-This procedure is for an authorized operator on a separate Linux x86_64 account or host, with `curl`, `sha256sum`, Codex and TaskQ already installed. Use a **separate test bot token** and a verified subscription login. Never reuse the production token or change the protected FRA pilot. Do not run two pollers with one token (§4). Shared-server subscription entitlement remains an open production decision (§11).
+This procedure is for an authorized operator on a separate Linux x86_64 account or host, with `curl`, `sha256sum`, Codex and TaskQ already installed. Use a **separate test bot token** and a verified subscription login. Never reuse the production token. Do not run two pollers with one token (§4). Shared-server subscription entitlement remains an open production decision (§11).
 
 After publication, download and verify the release before executing it:
 
@@ -78,7 +78,7 @@ The default install directory is `$HOME/.local/share/pilotq`. Use the dedicated 
 4. Run `./pilotq-0.2.0-linux-x86_64 service install` only after explicitly authorizing this test instance. It installs and starts the coreq user service. Inspect `pilotq service status` and `pilotq status --json` using `$HOME/.local/share/pilotq/pilotq` if it is not on PATH.
 5. Verify bot identity and route delivery with an admitted person's DM, group and topic inputs. Then perform the authorized TaskQ flow above. A CLI-only answer or fresh health file does not prove Telegram acceptance (R13).
 
-No `doctor` command is implemented yet. Automatic scheduled self-update is also not wired into the current service loop; publication alone is not proof of rollout. That existing gap must be resolved before claiming the shared automatic-rollout contract is qualified. This task changes release preparation and docs, not runtime behavior.
+No `doctor` command is implemented yet. The installed Linux service checks releases every five minutes; failures retain the old release. Updates stop new manager turns and wait up to 65 seconds for running requests before activation. A successful scheduled update exits for the native unit to restart through the launcher. `pilotq update --pause` pauses future automatic attempts; `pilotq update --resume` enables them again. Health and conversations continue while paused. Manual updates still work. Publication alone does not prove a host updated; the operator checks its reported version.
 
 ## Report a problem and preserve work
 
@@ -86,4 +86,4 @@ Report to the test administrator or [PilotQ board](https://github.com/taskqorg/p
 
 The operator can use `pilotq status --json`, `pilotq audit --request ID --json` and service logs locally. Distinguish unavailable observations from healthy ones. Do not resend execution because a Telegram reply is missing: delivery may be pending or ambiguous while the task already exists. Preserve uncertain effects and original destinations; never redirect private output to another chat.
 
-For a failed test installation, stop it with `pilotq service stop`, verify the poller stopped and retain accepted requests, the outbox and protected configuration. Preserve a supported SQLite snapshot before any restore; copying a live database file alone is not restore proof. The first fresh install has no previous release. An existing install keeps `previous`, and the coreq launcher can fall back after three unhealthy starts; only use a previous binary compatible with journal schema 7. There is no PilotQ rollback command. Do not delete the journal, resubmit admitted tasks or restart another consumer as a rollback shortcut (§4, §12).
+For a failed test installation, stop it with `pilotq service stop`, verify the poller stopped and retain accepted requests, the outbox and protected configuration. Preserve a supported SQLite snapshot before any restore; copying a live database file alone is not restore proof. The first fresh install has no previous release. An existing install keeps `previous`, and the coreq launcher can fall back after three unhealthy starts; only use a previous binary compatible with journal schema 8. There is no PilotQ rollback command. Do not delete the journal, resubmit admitted tasks or restart another consumer as a rollback shortcut (§4, §12).

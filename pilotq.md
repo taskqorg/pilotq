@@ -326,7 +326,7 @@ Use the existing Langfuse installation for optional, bounded telemetry export af
 | `pilotq pilot start\|note\|report [--since T] [--json]` | Seven-day pilot start, intervention and outage notes, gate 4 counts (section 10 step 5) |
 | `pilotq audit [--user U] [--route R] [--project P] [--since T] [--request ID] [--json]` | Request audit records (section 8, R17), filtered by who, where, what and when |
 | `pilotq service install\|run\|stop\|status` | coreq service unit |
-| `pilotq update [--check]`, `pilotq selftest`, `pilotq doctor` | coreq update, smoke test and setup check (bot identity, Codex login, TaskQ reachability) |
+| `pilotq update [--check|--pause|--resume]`, `pilotq selftest`, `pilotq doctor` | coreq update, smoke test and setup check (bot identity, Codex login, TaskQ reachability) |
 
 Every command that writes prints the readback, supports `--json` and returns a nonzero exit code on failure.
 
@@ -340,9 +340,11 @@ Follow coreq: `releases/<version>`, `current` and `previous` in the install dire
 
 **Owner, 2026-10-24 (task #38, option B):** prepare version `0.2.0`, the release workflow and tester guide now. The release channel is `live`; the owner fast-forwards it to a `main` commit that passed merge-queue CI. Its push builds and verifies the static `linux-x86_64` artifact in CI, then creates `v0.2.0` and publishes the binary, `SHA256SUMS` and `latest.json` from `taskqorg/pilotq`. Tags alone do not publish. Publishing authority is the repository's release workflow, invoked by the owner's `live` push.
 
-Do not push `live` or roll out before [#36](https://github.com/taskqorg/pilotq/issues/36) closes, after the protected window ending 2026-10-30 09:47 UTC. Workflow preparation and a development PR may proceed during the window. Release execution remains pending until then; no worker changes the FRA service, pilot start or installed artifact in this task. This schedules the shared release flow rather than making an exception to it.
+**Owner, 2026-10-24 (task #38 continuation):** #36 was closed as not planned; its protected window no longer gates release. Finish the release and fast-forward `live` after acceptance. The later option A extends #38 to scheduled self-update with the existing checksum, selftest and drain protections. No manual FRA service replacement is part of this task.
 
-This release retains coreq `v0.14.6` (locked in `Cargo.lock`) and journal schema 7. It opens existing schemas 0–7 through the current migrations and refuses newer schemas; rollback to a binary that cannot read the resulting schema is unsafe. The installation owner runs the user service and owns its protected configuration. See the [tester guide](docs/tester-guide.md) for installation, checks and current limitations. A published release and successful selftest do not qualify production cutover or the open decisions in section 11.
+The installed Linux service checks for releases every five minutes, including at startup when no recent check is recorded. It persists the attempt time before the check so restarts do not reset the retry interval. A separate maintenance thread keeps health reporting and conversations available during downloads. Manual and scheduled updates share one OS-held update lock. A journal drain flag gates both CLI and Telegram claims in their claim transactions, so a new run cannot race the drain. Before activation, stop new manager turns and wait up to 65 seconds for running requests; an incomplete or failed drain refuses activation and preserves the current release. Failed downloads, checksum checks or selftests retain the current release and resume admission. Successful scheduled activation exits the service with code 75; the coreq Linux unit restarts it through the launcher. `pilotq update --pause` and `--resume` persist and read back automatic-update admission; pausing does not stop health or conversations. Manual updates remain available.
+
+This release retains coreq `v0.14.6` (locked in `Cargo.lock`) and journal schema 8. It opens existing schemas 0–8 through the current migrations and refuses newer schemas; rollback to a binary that cannot read the resulting schema is unsafe. The installation owner runs the user service and owns its protected configuration. See the [tester guide](docs/tester-guide.md) for installation, checks and current limitations. A published release and successful selftest do not qualify production cutover or the open decisions in section 11.
 
 ### Development
 
