@@ -2127,3 +2127,6 @@ fn u39_registered_boards_steer_requeue_and_stale_answer() {
     assert_eq!(query(&d, "SELECT count(*) FROM task_effects WHERE receipt IS NOT NULL"), 3);
     stop(c, d);
 }
+
+#[path = "support/automatic.rs"]
+mod automatic;

@@ -509,3 +509,46 @@ Completion evidence is a report with exact versions, mechanism-to-case results, 
 The journal's `plans_and_task_projections`, `schema_1_journal_upgrades`, `u39_schema_7_preserves_task_targets` and `taskq::tests::u39_fenced_controls_write_nothing` passed in filtered checks. A combined integration development run (`cargo test --locked --test telegram -- u06 u07 u10 u39 f07 --nocapture`) passed F07 and U10 before exit 137: sandbox-blocked, not a suite pass. Merge acceptance still requires green CI on the merge result (§7, R12).
 
 **Review remediation (task #39):** U06 reproduced the CI failure at `tests/telegram.rs`: actual audit targets were `taskqorg/pilotq add #19` and `taskqorg/pilotq start #19`, while its expectations omitted the board. Under §5 and R17, U06 and the matching live A8 assertion now retain exact board, operation and task checks. Accepted behavior and required protection are unchanged. The filtered U06 rerun exited 137 (sandbox-blocked), so an after-pass remains unproved locally; merge-result CI remains required.
+
+
+## Automatic management suite (A40)
+
+Task #40 adds one release qualification command for R3, R5, R8, R10 and R17, over the §5 management path. The real candidate binary and subscription Codex talk to a local fake Bot API and the real `taskqorg/pilotq` board through the TaskQ CLI. Synthetic owner 7 and person 8 share a forum topic; person 9 has no grants. This does not qualify the real Telegram service or production deployment. The PM corrected A4 on 2026-10-24: test stale question replies as U08 does; inline buttons are outside this task.
+
+Prerequisites: a Linux host with Rust, Python 3, `sha256sum`, `gh`, a working board token, TaskQ, an already authenticated test-only Codex subscription home, and an active TaskQ service admitting PilotQ docs work. No login or paid API fallback occurs. The selected root must name `taskqorg/pilotq` and configure `create_claim_issue`. Run from the candidate checkout:
+
+```sh
+PILOTQ_A8_ROOT=<absolute PilotQ TaskQ root> \
+PILOTQ_A8_TASKQ=<absolute TaskQ binary> \
+PILOTQ_A8_CODEX_HOME=<authenticated test-only Codex home> \
+PILOTQ_A40_REPORT=<absolute new report.json path> \
+  cargo test --locked --test telegram automatic::a40_live_management -- --ignored --exact --nocapture
+```
+
+The command creates one real docs task to verify and improve the README's release-check navigation. It exercises queue pause on the selected host/project and restores it with `service resume` only after the suite's own pause. Existing paused admission is a failed prerequisite, never silently enabled. Use a host where the PM has authorized this bounded admission pause and has reserved admission controls for the run. TaskQ retains control of all worker processes. A pause, park or requeue never proves worker termination.
+
+| Case | Required observation |
+|---|---|
+| A40.01 admission | Person 9 is ignored with no request, outgoing message or typing; person 8 has chat only |
+| A40.02 discussion | Codex answers a discussion without saving a plan or filing a task |
+| A40.03 plan | A separate request saves one revision and files nothing |
+| A40.04 create/start | Next request files exactly one ticket held, reads it back and starts it; board log and journal agree |
+| A40.05 status | Explicit status request records a fresh task read and returns its URL |
+| A40.06 steer | A doing task accepts a revision-fenced steer; journal receipt and board log agree |
+| A40.07 pause | Queue pause reports running workers continuing; admission is restored after controls |
+| A40.08 park/requeue | Park and requeue have accepted persisted receipts and board readback; each intent retains an op ID and revision |
+| A40.09 restart | Kill and restart PilotQ while TaskQ is doing; subscription and task identity survive, with no duplicate creation |
+| A40.10 question/foreign | A required worker question reaches the original topic; person 8's reply is refused and writes no answer |
+| A40.11 answer/stale | Owner replies to the current question; board records the answer; replying again to the old message is refused without a second answer |
+| A40.12 reviewer | Observe reviewer state and the separate closing outcome; board is closed completed with result evidence |
+| A40.13 audit/delivery | Audit joins author, route, request trace, tools and task; CoreQ trace exists; recorded sends remain in the original route |
+| A40.14 cleanup | Stop the test PilotQ, remove copied credentials, leave every created task closed or parked and restore admission if paused by this run |
+
+The JSON report starts with every case `not_run`, changes the active case to `running`, and writes each verified result immediately. It includes candidate SHA, binary hash, versions, board/task links, recorded Bot API messages and per-case evidence. A panic marks the active case failed and still attempts cleanup. A killed test may leave `running` cases: that is incomplete, never pass. Keep the report and install evidence private (request/audit text is synthetic; native sessions and protected files still need care). No credentials enter the report. Only an exit-zero run whose report has every case `pass`, including cleanup, qualifies. No question, refusal, reviewer result or cleanup may be silently skipped. Missing observations remain unknown. The scenario deadline is three hours (cleanup has separate 120-second CLI call limits); this live suite is separate from the deterministic merge gate `cargo test --locked` and runs before each release under §9.
+
+On failure the runner stops PilotQ and parks its task with TaskQ, retaining the install for investigation and recording cleanup failures. It reconciles any ticket whose create response was interrupted by its original operation ID before parking it; it never uses plain `add`. If the runner is killed, the PM must inspect the kept journal and report, reconcile the stored ticket op ID, park any still-open task, and restore only this run's saved pause before rerunning. A sandbox-blocked run (including exit 137) supplies the command above for the PM; it supplies no live pass. Green merge-result CI is a separate publication requirement (TaskQ §7, R12).
+
+
+**Worker evidence, 2026-10-24:** before A40, A8 could complete without any worker question and did not cover steer/requeue/park/pause or write a per-case release report. The new `automatic::a40_failure_report_and_cleanup` deterministic check passed: an injected missing answer stays failed, later cases stay not run, an interrupted add reuses its exact arguments and op ID, its task is parked, the copied login is removed, and the original queue focus is restored. Filtered U07, U10 and U39 checks also passed (4 checks total, 14.68 seconds), preserving reply authorization, revision fencing and existing lifecycle protection. These are fake-adapter checks, not live qualification.
+
+The first diagnostic live A40 run used subscription Codex 0.162.0 and the real board. Admission, discussion, plan and held-create/readback/start passed on [#45](https://github.com/taskqorg/pilotq/issues/45); the worker sandbox then exited 137 during status. The remaining cases and automatic cleanup were not proved. The worker separately verified no test PilotQ remained, removed the copied login and parked #45 with an accepted `later` receipt. Queue pause had not run. This is **sandbox-blocked**, not a complete live pass or release evidence. The command above is the PM handoff for a complete run outside the worker sandbox on the final candidate. Green merge-result CI remains required separately (§7, R12).
