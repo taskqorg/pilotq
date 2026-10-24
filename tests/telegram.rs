@@ -939,7 +939,7 @@ fn u06_plan_revisions_then_held_create_start_and_one_status_message() {
     assert_eq!(all.iter().filter(|s| s.get("edit").is_none() && s["text"].as_str().unwrap().starts_with("Task #19 ")).count(), 2, "one status message and one outcome: {all:?}");
     assert!(!all.iter().any(|s| s["text"].as_str().unwrap().contains("stall") || s["text"].as_str().unwrap().contains("hung")));
     let a: Value = serde_json::from_slice(&cli(&d, &["audit", "--request", "5", "--json"]).stdout).unwrap();
-    assert_eq!(a[0]["tasks"].as_array().unwrap().iter().map(|t| t["target"].as_str().unwrap()).collect::<Vec<_>>(), ["add #19", "start #19"]);
+    assert_eq!(a[0]["tasks"].as_array().unwrap().iter().map(|t| t["target"].as_str().unwrap()).collect::<Vec<_>>(), ["taskqorg/pilotq add #19", "taskqorg/pilotq start #19"]);
     stop(c, d);
 }
 
@@ -1553,7 +1553,7 @@ fn a8_live_board_run() {
 fn a8_after(d: &Path, n: i64) {
     // U23: the audit record joins the request to its task and trace; the task text carries the trace ID
     let a: Value = serde_json::from_slice(&cli(d, &["audit", "--request", "5", "--json"]).stdout).unwrap();
-    assert_eq!(a[0]["tasks"].as_array().unwrap().iter().map(|t| t["target"].as_str().unwrap().to_string()).collect::<Vec<_>>(), [format!("add #{n}"), format!("start #{n}")]);
+    assert_eq!(a[0]["tasks"].as_array().unwrap().iter().map(|t| t["target"].as_str().unwrap().to_string()).collect::<Vec<_>>(), [format!("taskqorg/pilotq add #{n}"), format!("taskqorg/pilotq start #{n}")]);
     assert_eq!((a[0]["trace"].as_str(), a[0]["who"]["id"].as_i64(), a[0]["outcome"].as_str()), (Some("pilotq.request.5"), Some(OWNER), Some("answered")));
     let tel = coreq::telemetry::Reader::open(&d.join("telemetry.sqlite")).unwrap().export(0, 0, 1000).unwrap().to_string();
     assert!(tel.contains("\"pilotq.request.5\""), "the request's CoreQ trace exists");
