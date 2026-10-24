@@ -20,7 +20,7 @@ const OWNER: i64 = 7;
 #[derive(Default)]
 struct Fake {
     updates: Vec<Value>,
-    /// Bodies of sendMessage calls Telegram accepted, including one whose response was lost.
+    /// Accepted messages and edits with their effective destination, including a lost send response.
     sent: Vec<Value>,
     attempts: usize,
     faults: VecDeque<&'static str>,
@@ -97,6 +97,16 @@ fn handle(stream: std::net::TcpStream, st: &State) {
     if method == "editmessagetext" {
         if f.edit_gone {
             return respond(&mut out, 400, r#"{"ok":false,"error_code":400,"description":"Bad Request: message to edit not found"}"#);
+        }
+        // editMessageText identifies an existing message, not a new destination. Telegram
+        // keeps its topic; retain that effective route in delivery evidence (A40, §5).
+        let original = f.sent.iter().find(|m| m["chat_id"] == body["chat_id"] && m["id"] == body["message_id"] && m.get("edit").is_none());
+        let Some(original) = original else {
+            return respond(&mut out, 400, r#"{"ok":false,"error_code":400,"description":"Bad Request: message to edit not found"}"#);
+        };
+        assert!(body.get("message_thread_id").is_none(), "editMessageText has no topic parameter");
+        if let Some(topic) = original.get("message_thread_id") {
+            body["message_thread_id"] = topic.clone();
         }
         body["edit"] = json!(true);
     }
@@ -973,6 +983,42 @@ fn u15_network_loss_after_ticket_two_reconciles_the_same_ids() {
     let first_start = calls.iter().position(|c| c[0] == "start").unwrap();
     assert!(calls[first_start..].iter().all(|c| c[0] == "start") && calls[first_start..].len() == 3, "start only after every create: {calls:?}");
     assert!(sent_has(&st, "#20 https://github.com/taskqorg/pilotq/issues/20, #21"));
+    stop(c, d);
+}
+
+// R1, §5, §12 / A40 audit_delivery: state edits retain their message's topic, outbox destinations
+// survive restart, and closure is a separate message that later scans never edit.
+#[test]
+fn a40_topic_state_notifications() {
+    let (d, st) = tq_setup("a40-topic-states", true);
+    let c = spawn(&d, None);
+    push(&st, call(1, -100, Some(5), OWNER, "task_plan", plan(&["Docs"])));
+    wait("plan", 15, || sent_has(&st, "Plan revision 1 saved"));
+    push(&st, call(2, -100, Some(5), OWNER, "task_run_plan", json!({"revision": 1})));
+    wait("ready", 15, || sent_has(&st, "Task #19 ready"));
+    drop(c);
+    let c = spawn(&d, None);
+    for (state, label) in [("doing", "doing"), ("later", "parked"), ("ready", "ready"), ("ask", "asks:"), ("review", "review")] {
+        let before = sent(&st).len();
+        set_task(&d, 19, |t| {
+            t["state"] = json!(state);
+            if state == "ask" { t["card"] = json!("Done: draft\nProblem: choose\n1. yes\n2. no"); }
+        });
+        wait(label, 15, || sent(&st).iter().skip(before).any(|m| m["text"].as_str().unwrap().starts_with(&format!("Task #19 {label}"))));
+    }
+    let mut b = board(&d);
+    b["tasks"].as_object_mut().unwrap().remove("19");
+    fs::write(d.join("taskq-state.json.t"), b.to_string()).unwrap();
+    fs::rename(d.join("taskq-state.json.t"), d.join("taskq-state.json")).unwrap();
+    wait("closed", 15, || sent_has(&st, "Task #19 is closed on the board"));
+    wait("delivered", 15, || query(&d, "SELECT count(*) FROM outbox WHERE state NOT IN ('delivered','superseded')") == 0);
+    assert_eq!(query(&d, "SELECT count(*) FROM outbox WHERE task=19 AND (chat != -100 OR topic IS NOT 5)"), 0);
+    let messages = sent(&st);
+    assert!(messages.iter().any(|m| m["edit"] == true), "exercise status edits");
+    assert!(messages.iter().all(|m| m["chat_id"] == -100 && m["message_thread_id"] == 5), "{messages:#?}");
+    let terminal = messages.iter().find(|m| m["text"].as_str().unwrap().starts_with("Task #19 is closed on the board")).unwrap();
+    assert!(terminal.get("edit").is_none());
+    assert!(!messages.iter().any(|m| m["edit"] == true && m["message_id"] == terminal["id"]));
     stop(c, d);
 }
 
