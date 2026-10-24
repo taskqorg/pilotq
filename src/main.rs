@@ -99,6 +99,19 @@ fn config(t: &Tool) -> Result<Option<Config>, String> {
     Ok(Some(Config { token, owner, api_url, codex, taskq, direct: direct(t, v["gh"].as_str()) }))
 }
 
+fn initial_project(j: &journal::Journal, c: &Config) -> Result<(), String> {
+    if let Some(tq) = &c.taskq {
+        let v: Value = std::fs::read_to_string(tq.root.join("taskq.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(Value::Null);
+        if v["repo"] == taskq::BOARD {
+            if !j.projects()?.iter().any(|p| p.0 == "pilotq") {
+                j.add_project(c.owner, "pilotq", taskq::BOARD, &tq.root.to_string_lossy(), now() as i64)?;
+            }
+            j.pin_legacy_taskq(&tq.root.to_string_lossy())?;
+        }
+    }
+    Ok(())
+}
+
 fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
@@ -142,6 +155,7 @@ fn service_run(t: &Tool) -> ! {
     let mut journal = journal::Journal::open(&t.install.join("journal.sqlite")).unwrap_or_else(|e| t.die(&e));
     if let Some(c) = &cfg {
         journal.bootstrap(c.owner, now() as i64).unwrap_or_else(|e| t.die(&e));
+        initial_project(&journal, c).unwrap_or_else(|e| t.die(&e));
     }
     // § 12: reconcile runs a dead process left behind before anything new starts
     journal.reconcile(now() as i64).unwrap_or_else(|e| t.die(&e));
@@ -207,6 +221,7 @@ fn ask(t: &Tool, text: &str) -> Result<Value, (Value, String)> {
     std::fs::create_dir_all(&t.install).map_err(|e| plain(e.to_string()))?;
     let mut j = journal::Journal::open(&t.install.join("journal.sqlite")).map_err(plain)?;
     j.bootstrap(cfg.owner, now() as i64).map_err(plain)?;
+    initial_project(&j, &cfg).map_err(plain)?;
     let r = j.ask(cfg.owner, text, now() as i64).map_err(plain)?;
     let j = Mutex::new(j);
     manager::run(&cfg.codex, &j, &r, || now() as i64, cfg.taskq.as_ref(), &cfg.direct).map_err(plain)?;
@@ -233,6 +248,7 @@ fn audit(t: &Tool, a: &[&str]) -> Result<Value, String> {
     std::fs::create_dir_all(&t.install).map_err(|e| e.to_string())?;
     let mut j = journal::Journal::open(&t.install.join("journal.sqlite"))?;
     j.bootstrap(cfg.owner, now() as i64)?;
+    initial_project(&j, &cfg)?;
     Ok(j.audit(cfg.owner, &f, now() as i64)?.into())
 }
 
@@ -267,6 +283,7 @@ fn admin(t: &Tool, a: &[&str]) -> Result<Value, String> {
     let mut j = journal::Journal::open(&t.install.join("journal.sqlite"))?;
     let (me, at) = (cfg.owner, now() as i64);
     j.bootstrap(me, at)?;
+    initial_project(&j, &cfg)?;
     let id = |s: &str| s.parse::<i64>().map_err(|_| format!("{s}: expected an exact Telegram user ID"));
     let user = |j: &journal::Journal, u: i64| -> Result<Value, String> {
         let log: Vec<Value> = j.grant_log(u)?.into_iter().map(|(at, by, before, after)| json!({"at": at, "by": by, "before": before, "after": after})).collect();

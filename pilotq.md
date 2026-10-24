@@ -181,20 +181,25 @@ Formatting errors fall back to plain text. Split oversized replies safely; do no
 
 ### First TaskQ tool contract
 
-**Owner-scoped (task #18, section 10 step 3):** one board, `taskqorg/pilotq`, through the TaskQ CLI on the PilotQ host.
+**Owner-scoped (tasks #18 and #39):** every explicitly registered project, through the TaskQ CLI on the PilotQ host. TaskQ mutations on these boards are separate from the owner-only direct issue writes below.
 
-- Configuration: `config.json` `taskq` names the CLI binary and the project root. PilotQ runs it with an argument array, `TASKQ_ROOT` set to that root and no `TASKQ_ATTEMPT`. The root's `taskq.json` must name `taskqorg/pilotq`; another board disables every TaskQ tool.
-- Project scope is `project:pilotq`, or `projects` for an administrator. The owner holds `projects` from protected configuration.
+- Configuration: `config.json` `taskq` names the CLI binary and the project root. PilotQ runs it with an argument array, `TASKQ_ROOT` set to that root and no `TASKQ_ATTEMPT`. The configured root seeds the initial `pilotq` registry entry only when its `taskq.json` names `taskqorg/pilotq`; it never replaces a registered entry. Each call uses the resolved registered root, checks its `taskq.json` against the registered board and requires a fresh complete snapshot naming that board before board writes or task reads. An unavailable snapshot leaves an authorized plan unsent for retry. A mismatch disables that target.
+- Project scope is `project:<registered-name>`, or `projects` for an administrator. The owner holds `projects` from protected configuration.
 - The manager gets these tools as Codex dynamic tools. Each one is checked at dispatch against the caller's current grants and the run's fence. A refusal writes nothing and says why.
 
 | Tool | Grants | Effect |
 |---|---|---|
 | `task_plan` | project scope | Saves the conversation's next plan revision: one to three tickets, each a title, goal, acceptance and scope. No board write |
 | `task_run_plan` | `taskq` and project scope | Files every ticket of the named revision held, reads each back, then starts them |
-| `task_status` | project scope | Fresh board read of one task by number or `taskqorg/pilotq` issue URL. Never creates |
+| `task_status` | project scope | Fresh board read of one task by number or a registered board issue URL. Never creates |
 | `task_park` | `taskq` and project scope | `later` with the person's reason; the worker's own lifecycle stays TaskQ's |
+| `task_steer` | `taskq` and project scope | Sends 1–4 instruction lines to a task currently doing, fenced to its fresh TaskQ revision; returns the receipt and task URL |
+| `task_requeue` | `taskq` and project scope | Requeues one open task with the person's reason, fenced to its fresh TaskQ revision; returns the receipt and task URL without claiming worker termination |
 | `queue_pause` | `queue` | `taskq service pause`: stops new admission on the host. Running workers continue and are listed as running |
 
+- Plan, run, status, park, steer and requeue use the Target rules below and accept an optional `project`. A plan binds its project, board and root when saved; running it cannot retarget it, even after a conversation switch. A changed registration refuses further submission. A plan without a task reference resolves the current or sole accessible project; ambiguity lists accessible names.
+- Subscriptions, status edits, question replies and audit events preserve project and board identity as well as task number. Two boards' `#19` tasks never share state. Answers use the originating subscription, not the conversation's current project, and recheck the fresh question revision and current project grant before writing.
+- Park, steer and requeue persist their exact intent and stable operation ID before dispatch. Recovery reconciles that same ID and revision, never a new mutation. Uncertain readback remains visible. Refusals name the reason and write no board state. Text is validated against TaskQ limits, never silently shortened.
 - `task_run_plan` runs only the latest revision, saved by an earlier request of the same conversation. A revision saved in the same request is refused, so a plan-only request starts nothing. One revision runs at most once.
 - Creation uses `add --op-id` only, never plain `add`. It needs `create_claim_issue` in the root's `taskq.json`; without it creation is disabled with that reason. Op IDs are `pilotq-<installation>-p<plan>-t<ticket>`, and `.start` for the start. Each ticket body carries one scope line with the request trace ID, the Telegram author, the route and the plan revision.
 - Start follows only after every ticket of the revision reads back held. An unavailable board leaves the remaining tickets unsent with the reason. The periodic scan retries the same op IDs until every ticket is held and started; changed grants are rechecked before each retry.
