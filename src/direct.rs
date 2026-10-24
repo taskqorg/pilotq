@@ -63,7 +63,7 @@ fn allowed(j: &Journal, user: i64, project: &str) -> Result<(), String> {
 
 /// Resolves a call's project and issue (§ 5 Target): an explicit project or URL must be named in the person's own message or be
 /// the current project; without one, the current project, else the only project the caller may use. Never a guess.
-fn target(j: &Journal, r: &Run, user: i64, args: &Value) -> Result<(String, String, i64), String> {
+pub(crate) fn target(j: &Journal, r: &Run, user: i64, args: &Value) -> Result<(String, String, i64), String> {
     let issue = args["issue"].as_str().map(str::to_string).or_else(|| args["issue"].as_i64().map(|n| n.to_string())).ok_or("issue is required")?;
     let projects = j.projects()?;
     let current = j.current_project(&r.session)?;
@@ -75,6 +75,10 @@ fn target(j: &Journal, r: &Run, user: i64, args: &Value) -> Result<(String, Stri
         None => (None, issue.trim().trim_start_matches('#')),
     };
     let n = n.parse::<i64>().ok().filter(|n| *n > 0).ok_or(format!("{issue} is not an issue number or URL"))?;
+    if let (Some(explicit), Some(url)) = (args["project"].as_str(), by_url.as_deref())
+        && explicit != url {
+        return Err("project and issue URL name different registered projects; nothing was done".into());
+    }
     let name = match args["project"].as_str().map(str::to_string).or(by_url) {
         Some(p) => {
             let (name, repo, ..) = projects.iter().find(|x| x.0 == p).ok_or(format!("{p} is not a registered project; nothing was done"))?;

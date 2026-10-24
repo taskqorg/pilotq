@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 /// Schema this binary writes; a newer journal is refused rather than guessed (F08).
-const SCHEMA: i64 = 7;
+const SCHEMA: i64 = 8;
 /// Model attempts per request across restarts (§ 7 dependency retry).
 const RUNS: i64 = 3;
 /// Delivery attempts per episode, persisted across restart (§ 7).
@@ -104,10 +104,10 @@ fn outbox(tx: &Connection, request: i64, chat: i64, topic: Option<i64>, reply_to
 /// Queues one task message (§ 5): a `status` row, edited in place on delivery when the task already has a delivered status
 /// message; a `question`; or the `final` outcome. Nothing edits a question or a final message.
 #[allow(clippy::too_many_arguments)]
-fn notice(tx: &Connection, request: i64, chat: i64, topic: Option<i64>, kind: &str, task: i64, revision: i64, text: &str, at: i64) -> Result<(), String> {
+fn notice(tx: &Connection, request: i64, chat: i64, topic: Option<i64>, kind: &str, project: &str, task: i64, revision: i64, text: &str, at: i64) -> Result<(), String> {
     tx.execute(
-        "INSERT INTO outbox(request_id, chat, topic, text, next_at, kind, task, revision) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-        params![request, chat, topic, text, at, kind, task, revision],
+        "INSERT INTO outbox(request_id, chat, topic, text, next_at, kind, task, revision, project) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+        params![request, chat, topic, text, at, kind, task, revision, project],
     )
     .map(drop)
     .map_err(|e| e.to_string())
@@ -131,6 +131,7 @@ pub fn describe(state: &str) -> &'static str {
 /// A person's reply to a relayed TaskQ question, waiting to be checked and written (§ 5).
 #[derive(Debug)]
 pub struct Answer {
+    pub project: String,
     pub request: i64,
     pub sender: i64,
     pub text: String,
@@ -151,6 +152,9 @@ pub struct Ticket {
 /// An authorized plan run: who authorized it, from which request and route, and its tickets in order.
 #[derive(Debug)]
 pub struct PlanRun {
+    pub project: String,
+    pub board: String,
+    pub root: String,
     pub id: i64,
     pub revision: i64,
     pub request: i64,
@@ -472,6 +476,22 @@ impl Journal {
             // section 10 step 5: manual interventions and provider outages recorded during the pilot (gate 4)
             up("CREATE TABLE pilot_notes(id INTEGER PRIMARY KEY, at INTEGER NOT NULL, by INTEGER NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL);")?;
         }
+        if version < 8 {
+            up("BEGIN IMMEDIATE;
+                ALTER TABLE plans ADD COLUMN project TEXT NOT NULL DEFAULT 'pilotq';
+                ALTER TABLE plans ADD COLUMN board TEXT NOT NULL DEFAULT 'taskqorg/pilotq';
+                ALTER TABLE plans ADD COLUMN root TEXT NOT NULL DEFAULT '';
+                ALTER TABLE outbox ADD COLUMN project TEXT NOT NULL DEFAULT 'pilotq';
+                ALTER TABLE tasks RENAME TO old_tasks;
+                CREATE TABLE tasks(number INTEGER NOT NULL, request_id INTEGER NOT NULL, chat INTEGER NOT NULL, topic INTEGER, state TEXT NOT NULL,
+                    revision INTEGER NOT NULL, card TEXT, observed INTEGER NOT NULL, closed INTEGER NOT NULL DEFAULT 0,
+                    project TEXT NOT NULL DEFAULT 'pilotq', board TEXT NOT NULL DEFAULT 'taskqorg/pilotq', root TEXT NOT NULL DEFAULT '', PRIMARY KEY(project, number));
+                INSERT INTO tasks SELECT *, 'pilotq', 'taskqorg/pilotq', '' FROM old_tasks;
+                DROP TABLE old_tasks;
+                CREATE TABLE task_effects(op TEXT PRIMARY KEY, request_id INTEGER NOT NULL, project TEXT NOT NULL, board TEXT NOT NULL,
+                    root TEXT NOT NULL, args TEXT NOT NULL, receipt TEXT, at INTEGER NOT NULL);
+                PRAGMA user_version=8; COMMIT;")?;
+        }
         // TaskQ op IDs are permanent board claims; a random installation ID keeps a fresh journal from reusing another's
         let salt = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as i64) ^ ((std::process::id() as i64) << 40);
         c.execute("INSERT INTO meta(key, value) VALUES ('instance', ?1) ON CONFLICT(key) DO NOTHING", [salt & i64::MAX]).map_err(|e| e.to_string())?;
@@ -542,7 +562,7 @@ impl Journal {
                     // a reply to a relayed TaskQ question is an answer: checked and written by PilotQ, never by the model (§ 5)
                     let question: Option<i64> = match (cmd, i.reply_to) {
                         (None, Some(m)) if i.kind == "text" => tx
-                            .query_row("SELECT task FROM outbox WHERE kind='question' AND chat=?1 AND sent_message=?2", params![i.chat, m], |r| r.get(0))
+                            .query_row("SELECT task FROM outbox WHERE kind='question' AND chat=?1 AND sent_message=?2 AND topic IS ?3", params![i.chat, m, i.topic], |r| r.get(0))
                             .optional()
                             .map_err(|e| e.to_string())?,
                         _ => None,
@@ -614,7 +634,7 @@ impl Journal {
             .query_row(
                 // a status row edits the task's latest delivered status message, resolved now, after every earlier row of its route
                 &format!(
-                    "SELECT id, chat, topic, reply_to, html, text, attempts, CASE WHEN kind='status' THEN (SELECT s.sent_message FROM outbox s WHERE s.task=o.task
+                    "SELECT id, chat, topic, reply_to, html, text, attempts, CASE WHEN kind='status' THEN (SELECT s.sent_message FROM outbox s WHERE s.task=o.task AND s.project=o.project AND s.chat=o.chat AND s.topic IS o.topic
                         AND s.kind='status' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1) END {heads} AND next_at<=?1 ORDER BY id LIMIT 1"
                 ),
                 [now],
@@ -1014,15 +1034,60 @@ impl Journal {
         self.0.query_row("SELECT sender FROM requests WHERE id=?1", [request], |r| r.get(0)).map_err(|e| e.to_string())
     }
 
+    /// Pins pre-schema-8 records once to the configured initial board, before any replay.
+    pub fn pin_legacy_taskq(&self, root: &str) -> Result<(), String> {
+        let tx = self.0.unchecked_transaction().map_err(|e| e.to_string())?;
+        for table in ["plans", "tasks"] {
+            tx.execute(&format!("UPDATE {table} SET root=?1 WHERE project='pilotq' AND board='taskqorg/pilotq' AND root=''"), [root]).map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())
+    }
+
+    /// Immutable plan target; a conversation switch cannot retarget approved work (§5).
+    pub fn plan_target(&self, session: &str, revision: i64) -> Result<(String, String, String), String> {
+        self.0.query_row("SELECT project, board, root FROM plans WHERE session=?1 AND revision=?2", params![session, revision], |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?))).map_err(|_| "this conversation has no saved plan at that revision; nothing was filed".into())
+    }
+
+    pub fn task_target_matches(&self, project: &str, task: i64, board: &str, root: &str) -> Result<bool, String> {
+        self.0.query_row("SELECT board=?3 AND (root='' OR root=?4) FROM tasks WHERE project=?1 AND number=?2", params![project, task, board, root], |x| x.get(0)).map_err(|e| e.to_string())
+    }
+
+    /// Durable exact TaskQ mutation intent, before any board write (§4, §5).
+    pub fn task_intent(&self, r: &Run, project: &str, board: &str, root: &str, args: &[String], at: i64) -> Result<String, String> {
+        if self.fenced(r)? { return Err("this run was stopped; nothing was written".into()); }
+        let count: i64 = self.0.query_row("SELECT count(*) FROM task_effects WHERE request_id=?1", [r.request], |x| x.get(0)).map_err(|e| e.to_string())?;
+        let op = format!("pilotq-{}-r{}-tq{}", self.instance()?, r.request, count + 1);
+        self.0.execute("INSERT INTO task_effects(op,request_id,project,board,root,args,at) VALUES (?1,?2,?3,?4,?5,?6,?7)", params![op,r.request,project,board,root,serde_json::to_string(args).map_err(|e| e.to_string())?,at]).map_err(|e| e.to_string())?;
+        Ok(op)
+    }
+
+    pub fn task_receipt(&self, op: &str, receipt: &Value, notification: Option<&str>, at: i64) -> Result<(), String> {
+        let tx = self.0.unchecked_transaction().map_err(|e| e.to_string())?;
+        tx.execute("UPDATE task_effects SET receipt=?2 WHERE op=?1", params![op,receipt.to_string()]).map_err(|e| e.to_string())?;
+        tx.execute("INSERT INTO audit_events(request_id,at,kind,target,item,result) SELECT request_id,?2,'task',board || ' ' || args,op,?3 FROM task_effects WHERE op=?1", params![op,at,receipt.to_string()]).map_err(|e| e.to_string())?;
+        tx.execute("UPDATE requests SET project=(SELECT project FROM task_effects WHERE op=?1) WHERE id=(SELECT request_id FROM task_effects WHERE op=?1)", [op]).map_err(|e| e.to_string())?;
+        if let Some(text) = notification {
+            let (request, chat, topic, front): (i64, i64, Option<i64>, String) = tx.query_row("SELECT q.id,q.chat,q.topic,q.front FROM requests q JOIN task_effects e ON e.request_id=q.id WHERE e.op=?1", [op], |x| Ok((x.get(0)?,x.get(1)?,x.get(2)?,x.get(3)?))).map_err(|e| e.to_string())?;
+            if front == "telegram" { outbox(&tx, request, chat, topic, None, None, text, at)?; }
+        }
+        tx.commit().map_err(|e| e.to_string())
+    }
+
+    pub fn pending_task_effects(&self) -> Result<Vec<(String, i64, String, String, String, Vec<String>)>, String> {
+        let mut q = self.0.prepare("SELECT op,request_id,project,board,root,args FROM task_effects e WHERE receipt IS NULL AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.request_id=e.request_id AND r.state='running')").map_err(|e| e.to_string())?;
+        let rows = q.query_map([], |x| Ok((x.get(0)?,x.get(1)?,x.get(2)?,x.get(3)?,x.get(4)?,x.get::<_,String>(5)?))).map_err(|e| e.to_string())?;
+        rows.map(|row| { let (op,r,p,b,root,args) = row.map_err(|e| e.to_string())?; Ok((op,r,p,b,root,serde_json::from_str(&args).map_err(|e| e.to_string())?)) }).collect()
+    }
+
     /// Saves the next plan revision of the run's conversation while its fence holds (§ 5 `task_plan`). No board write.
-    pub fn save_plan(&self, r: &Run, tickets: &Value, at: i64) -> Result<i64, String> {
+    pub fn save_plan(&self, r: &Run, tickets: &Value, project: &str, board: &str, root: &str, at: i64) -> Result<i64, String> {
         if self.fenced(r)? {
             return Err("this run was stopped; nothing was saved".into());
         }
         self.0
             .query_row(
-                "INSERT INTO plans(session, revision, request_id, tickets, at) SELECT ?1, coalesce(max(revision), 0) + 1, ?2, ?3, ?4 FROM plans WHERE session=?1 RETURNING revision",
-                params![r.session, r.request, tickets.to_string(), at],
+                "INSERT INTO plans(session, revision, request_id, tickets, project, board, root, at) SELECT ?1, coalesce(max(revision), 0) + 1, ?2, ?3, ?5, ?6, ?7, ?4 FROM plans WHERE session=?1 RETURNING revision",
+                params![r.session, r.request, tickets.to_string(), at, project, board, root],
                 |x| x.get(0),
             )
             .map_err(|e| e.to_string())
@@ -1089,7 +1154,8 @@ impl Journal {
             .into_iter()
             .map(|t| Ticket { plan: plan[(t.idx - 1) as usize].clone(), ..t })
             .collect();
-        Ok(PlanRun { id, revision, request, actor, chat, topic, tickets })
+        let (project, board, root) = self.0.query_row("SELECT p.project, p.board, p.root FROM plans p JOIN plan_runs r ON r.plan_id=p.id WHERE r.id=?1", [id], |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?))).map_err(e)?;
+        Ok(PlanRun { id, revision, request, actor, chat, topic, tickets, project, board, root })
     }
 
     /// Records a ticket's held readback: the task joins its route's subscriptions and the request's audit record.
@@ -1098,12 +1164,12 @@ impl Journal {
         let tx = self.0.unchecked_transaction().map_err(e)?;
         tx.execute("UPDATE tickets SET task=?3 WHERE run_id=?1 AND idx=?2", params![run.id, idx, task]).map_err(e)?;
         tx.execute(
-            "INSERT INTO tasks(number, request_id, chat, topic, state, revision, observed) VALUES (?1,?2,?3,?4,'held',?5,?6) ON CONFLICT(number) DO NOTHING",
-            params![task, run.request, run.chat, run.topic, revision, at],
+            "INSERT INTO tasks(number, request_id, chat, topic, state, revision, observed, project, board, root) VALUES (?1,?2,?3,?4,'held',?5,?6,?7,?8,?9) ON CONFLICT(project,number) DO NOTHING",
+            params![task, run.request, run.chat, run.topic, revision, at, run.project, run.board, run.root],
         )
         .map_err(e)?;
         let op = &run.tickets.iter().find(|t| t.idx == idx).ok_or("no such ticket")?.op_id;
-        tx.execute("INSERT INTO audit_events(request_id, at, kind, target, item, result) VALUES (?1,?2,'task',?3,?4,'held')", params![run.request, at, format!("add #{task}"), op])
+        tx.execute("INSERT INTO audit_events(request_id, at, kind, target, item, result) VALUES (?1,?2,'task',?3,?4,'held')", params![run.request, at, format!("{} add #{task}", run.board), op])
             .map_err(e)?;
         tx.commit().map_err(e)
     }
@@ -1113,7 +1179,7 @@ impl Journal {
         let e = |e: rusqlite::Error| e.to_string();
         let tx = self.0.unchecked_transaction().map_err(e)?;
         tx.execute("UPDATE tickets SET started=1 WHERE run_id=?1 AND idx=?2", params![run.id, idx]).map_err(e)?;
-        tx.execute("INSERT INTO audit_events(request_id, at, kind, target, item, result) VALUES (?1,?2,'task',?3,NULL,?4)", params![run.request, at, format!("start #{task}"), state])
+        tx.execute("INSERT INTO audit_events(request_id, at, kind, target, item, result) VALUES (?1,?2,'task',?3,NULL,?4)", params![run.request, at, format!("{} start #{task}", run.board), state])
             .map_err(e)?;
         tx.commit().map_err(e)
     }
@@ -1131,54 +1197,54 @@ impl Journal {
     }
 
     /// Open task subscriptions and their stored revisions.
-    pub fn subscriptions(&self) -> Result<Vec<(i64, i64)>, String> {
-        let mut q = self.0.prepare("SELECT number, revision FROM tasks WHERE closed=0 ORDER BY number").map_err(|e| e.to_string())?;
-        q.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).and_then(Iterator::collect).map_err(|e| e.to_string())
+    pub fn subscriptions(&self) -> Result<Vec<(String, i64, i64)>, String> {
+        let mut q = self.0.prepare("SELECT project, number, revision FROM tasks WHERE closed=0 ORDER BY number").map_err(|e| e.to_string())?;
+        q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).and_then(Iterator::collect).map_err(|e| e.to_string())
     }
 
     /// The stored projection of a subscribed task: state, revision and card.
-    pub fn task(&self, task: i64) -> Result<Option<(String, i64, Option<String>)>, String> {
-        self.0.query_row("SELECT state, revision, card FROM tasks WHERE number=?1", [task], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional().map_err(|e| e.to_string())
+    pub fn task(&self, project: &str, task: i64) -> Result<Option<(String, i64, Option<String>)>, String> {
+        self.0.query_row("SELECT state, revision, card FROM tasks WHERE number=?1 AND project=?2", params![task, project], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional().map_err(|e| e.to_string())
     }
 
     /// Applies one fresh board observation of a subscribed task (§ 5). An observation older than the stored revision is stale and
     /// ignored (F14); an unchanged one changes nothing. A change supersedes the task's pending status update with `status`, and
     /// an `ask` also queues `question` as its own message. Returns true when something was queued.
     #[allow(clippy::too_many_arguments)]
-    pub fn observe(&self, task: i64, state: &str, revision: i64, card: Option<&str>, status: &str, question: Option<&str>, at: i64) -> Result<bool, String> {
+    pub fn observe(&self, project: &str, task: i64, state: &str, revision: i64, card: Option<&str>, status: &str, question: Option<&str>, at: i64) -> Result<bool, String> {
         let e = |e: rusqlite::Error| e.to_string();
         let tx = self.0.unchecked_transaction().map_err(e)?;
         let row: Option<(i64, i64, Option<i64>, String, i64)> = tx
-            .query_row("SELECT request_id, chat, topic, state, revision FROM tasks WHERE number=?1 AND closed=0", [task], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .query_row("SELECT request_id, chat, topic, state, revision FROM tasks WHERE number=?1 AND project=?2 AND closed=0", params![task, project], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
             .optional()
             .map_err(e)?;
         let Some((request, chat, topic, old, rev)) = row else { return Ok(false) };
         if revision < rev || (revision == rev && state == old) {
             return Ok(false);
         }
-        tx.execute("UPDATE tasks SET state=?2, revision=?3, card=?4, observed=?5 WHERE number=?1", params![task, state, revision, card, at]).map_err(e)?;
-        tx.execute("UPDATE outbox SET state='superseded' WHERE task=?1 AND kind='status' AND state='pending'", [task]).map_err(e)?;
-        notice(&tx, request, chat, topic, "status", task, revision, status, at)?;
+        tx.execute("UPDATE tasks SET state=?2, revision=?3, card=?4, observed=?5 WHERE number=?1 AND project=?6", params![task, state, revision, card, at, project]).map_err(e)?;
+        tx.execute("UPDATE outbox SET state='superseded' WHERE task=?1 AND project=?2 AND kind='status' AND state='pending'", params![task, project]).map_err(e)?;
+        notice(&tx, request, chat, topic, "status", project, task, revision, status, at)?;
         if let (Some(q), "ask") = (question, state) {
-            notice(&tx, request, chat, topic, "question", task, revision, q, at)?;
+            notice(&tx, request, chat, topic, "question", project, task, revision, q, at)?;
         }
         tx.commit().map_err(e)?;
         Ok(true)
     }
 
     /// A subscribed task left a complete open snapshot: its closing outcome goes out once, as its own message (§ 5, L12).
-    pub fn close_task(&self, task: i64, text: &str, at: i64) -> Result<bool, String> {
+    pub fn close_task(&self, project: &str, task: i64, text: &str, at: i64) -> Result<bool, String> {
         let e = |e: rusqlite::Error| e.to_string();
         let tx = self.0.unchecked_transaction().map_err(e)?;
         let row: Option<(i64, i64, Option<i64>, i64)> = tx
-            .query_row("UPDATE tasks SET closed=1, observed=?2 WHERE number=?1 AND closed=0 RETURNING request_id, chat, topic, revision", params![task, at], |r| {
+            .query_row("UPDATE tasks SET closed=1, observed=?2 WHERE number=?1 AND project=?3 AND closed=0 RETURNING request_id, chat, topic, revision", params![task, at, project], |r| {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
             })
             .optional()
             .map_err(e)?;
         let Some((request, chat, topic, revision)) = row else { return Ok(false) };
-        tx.execute("UPDATE outbox SET state='superseded' WHERE task=?1 AND kind='status' AND state='pending'", [task]).map_err(e)?;
-        notice(&tx, request, chat, topic, "final", task, revision, text, at)?;
+        tx.execute("UPDATE outbox SET state='superseded' WHERE task=?1 AND project=?2 AND kind='status' AND state='pending'", params![task, project]).map_err(e)?;
+        notice(&tx, request, chat, topic, "final", project, task, revision, text, at)?;
         tx.commit().map_err(e)?;
         Ok(true)
     }
@@ -1189,11 +1255,11 @@ impl Journal {
         let mut q = self
             .0
             .prepare(
-                "SELECT q.id, q.sender, coalesce(q.text, ''), o.task, o.revision, q.state='running' FROM requests q JOIN outbox o ON o.kind='question' AND o.chat=q.chat
-                AND o.sent_message=q.reply_to WHERE q.kind='answer' AND q.state IN ('queued', 'running') ORDER BY q.id",
+                "SELECT q.id, q.sender, coalesce(q.text, ''), o.task, o.revision, q.state='running', o.project FROM requests q JOIN outbox o ON o.kind='question' AND o.chat=q.chat
+                AND o.sent_message=q.reply_to AND o.topic IS q.topic WHERE q.kind='answer' AND q.state IN ('queued', 'running') ORDER BY q.id",
             )
             .map_err(|e| e.to_string())?;
-        q.query_map([], |r| Ok((Answer { request: r.get(0)?, sender: r.get(1)?, text: r.get(2)?, task: r.get(3)?, revision: r.get(4)? }, r.get(5)?)))
+        q.query_map([], |r| Ok((Answer { request: r.get(0)?, sender: r.get(1)?, text: r.get(2)?, task: r.get(3)?, revision: r.get(4)?, project: r.get(6)? }, r.get(5)?)))
             .and_then(Iterator::collect)
             .map_err(|e| e.to_string())
     }
@@ -1210,7 +1276,7 @@ impl Journal {
         tx.execute("UPDATE requests SET state=?2, reply=?3, error=?4 WHERE id=?1", params![a.request, state, reply, error]).map_err(e)?;
         tx.execute(
             "INSERT INTO audit_events(request_id, at, kind, target, item, result) VALUES (?1,?2,'task',?3,?4,?5)",
-            params![a.request, at, format!("answer #{}", a.task), format!("revision {}", a.revision), state],
+            params![a.request, at, format!("{} answer #{}", a.project, a.task), format!("revision {}", a.revision), state],
         )
         .map_err(e)?;
         let (chat, topic, message): (i64, Option<i64>, i64) = tx.query_row("SELECT chat, topic, message FROM requests WHERE id=?1", [a.request], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(e)?;
@@ -1299,10 +1365,8 @@ impl Journal {
                 AND id NOT IN (SELECT request_id FROM tasks) AND id NOT IN (SELECT request_id FROM plans) AND id NOT IN (SELECT request_id FROM plan_runs)")?,
             "users": n("SELECT count(DISTINCT sender) FROM requests WHERE received_at >= ?1")?,
             "routes": n("SELECT count(*) FROM (SELECT DISTINCT chat, topic FROM requests WHERE received_at >= ?1 AND front='telegram')")?,
-            // ponytail: TaskQ tools serve only the `pilotq` board (section 5) and leave requests.project empty; a per-board project
-            // column on tasks and plans when TaskQ tools serve a second board
             "projects": n(&format!("SELECT count(*) FROM (SELECT project FROM requests WHERE received_at >= ?1 AND project IS NOT NULL
-                UNION SELECT 'pilotq' FROM tasks WHERE request_id IN ({mine}) UNION SELECT 'pilotq' FROM plans WHERE request_id IN ({mine}))"))?,
+                UNION SELECT project FROM tasks WHERE request_id IN ({mine}) UNION SELECT project FROM plans WHERE request_id IN ({mine}))"))?,
             "tasks": n(&format!("SELECT count(*) FROM tasks WHERE request_id IN ({mine})"))?,
             "interventions": notes("intervention")?,
             "outages": notes("outage")?,
@@ -1642,7 +1706,7 @@ mod tests {
             ALTER TABLE requests DROP COLUMN error; ALTER TABLE requests DROP COLUMN name; ALTER TABLE requests DROP COLUMN grants;
             ALTER TABLE requests DROP COLUMN project; DROP TABLE conversations; DROP TABLE runs; DROP TABLE audit_events; DROP TABLE audit_reads;
             ALTER TABLE requests DROP COLUMN reply_to; ALTER TABLE outbox DROP COLUMN kind; ALTER TABLE outbox DROP COLUMN task; ALTER TABLE outbox DROP COLUMN revision;
-            DROP TABLE plans; DROP TABLE plan_runs; DROP TABLE tickets; DROP TABLE tasks; DROP TABLE projects; DROP TABLE effects; DROP TABLE pilot_notes; PRAGMA user_version=1",
+            DROP TABLE task_effects; ALTER TABLE outbox DROP COLUMN project; DROP TABLE plans; DROP TABLE plan_runs; DROP TABLE tickets; DROP TABLE tasks; DROP TABLE projects; DROP TABLE effects; DROP TABLE pilot_notes; PRAGMA user_version=1",
         )
         .unwrap();
         drop(j);
@@ -1871,6 +1935,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(p);
     }
 
+    // §4/§5: schema upgrade preserves accepted plans, subscriptions and pending question destinations.
+    #[test]
+    fn u39_schema_7_preserves_task_targets() {
+        let (j, p) = journal("schema7-targets");
+        j.0.execute_batch("INSERT INTO plans(id,session,revision,request_id,tickets,at) VALUES (1,'dm:7',1,1,'[]',1);
+            INSERT INTO tasks(number,request_id,chat,topic,state,revision,card,observed) VALUES (19,1,7,NULL,'ask',12,'Q?',2);
+            INSERT INTO outbox(request_id,chat,text,next_at,kind,task,revision) VALUES (1,7,'Q?',2,'question',19,12);
+            ALTER TABLE plans DROP COLUMN project; ALTER TABLE plans DROP COLUMN board; ALTER TABLE plans DROP COLUMN root;
+            ALTER TABLE outbox DROP COLUMN project;
+            ALTER TABLE tasks RENAME TO current_tasks;
+            CREATE TABLE tasks(number INTEGER PRIMARY KEY, request_id INTEGER NOT NULL, chat INTEGER NOT NULL, topic INTEGER, state TEXT NOT NULL,
+                revision INTEGER NOT NULL, card TEXT, observed INTEGER NOT NULL, closed INTEGER NOT NULL DEFAULT 0);
+            INSERT INTO tasks SELECT number,request_id,chat,topic,state,revision,card,observed,closed FROM current_tasks;
+            DROP TABLE current_tasks; DROP TABLE task_effects; PRAGMA user_version=7;").unwrap();
+        drop(j);
+        let j = Journal::open(&p.join("journal.sqlite")).unwrap();
+        j.pin_legacy_taskq("/invented/pilotq-root").unwrap();
+        assert_eq!(j.plan_target("dm:7",1).unwrap(), ("pilotq".into(),"taskqorg/pilotq".into(),"/invented/pilotq-root".into()));
+        assert_eq!(j.task("pilotq",19).unwrap(), Some(("ask".into(),12,Some("Q?".into()))));
+        assert!(j.task_target_matches("pilotq",19,"taskqorg/pilotq","/invented/pilotq-root").unwrap());
+        assert_eq!(count(&j, "SELECT count(*) FROM outbox WHERE project='pilotq' AND task=19 AND kind='question'"),1);
+        drop(j);
+        std::fs::remove_dir_all(p).unwrap();
+    }
+
     // U05, L03, L12, F14 (journal part): a revision saved by a request cannot be run by that request; a later request runs only
     // the latest revision, at most once; a burst of transitions leaves one pending status update; an older or unchanged
     // observation queues nothing; the next update edits the delivered status message; a reply to a relayed question is an
@@ -1881,7 +1970,7 @@ mod tests {
         let (mut j, p) = journal("plans");
         j.admit(&[(1, msg(7, 7, 1))], 0).unwrap();
         let r = j.claim_next(4, 0).unwrap().remove(0);
-        assert_eq!(j.save_plan(&r, &json!([{"title": "A", "goal": "g", "acceptance": ["a"]}]), 1).unwrap(), 1);
+        assert_eq!(j.save_plan(&r, &json!([{"title": "A", "goal": "g", "acceptance": ["a"]}]), "pilotq", "taskqorg/pilotq", "", 1).unwrap(), 1);
         assert!(j.authorize(&r, 1, 7, 120, 1).unwrap_err().contains("same request"), "a plan-only request starts nothing");
         j.finish(&r, None, None, &Outcome::Answered("plan".into()), 2).unwrap();
         j.admit(&[(2, msg(7, 7, 2))], 3).unwrap();
@@ -1896,17 +1985,17 @@ mod tests {
         j.filed(&pr, 1, 19, 10, 4).unwrap();
 
         let rows = |j: &Journal, s: &str| count(j, &format!("SELECT count(*) FROM outbox WHERE task=19 AND kind='status' AND state='{s}'"));
-        assert!(j.observe(19, "ready", 11, None, "ready", None, 5).unwrap());
-        assert!(j.observe(19, "doing", 12, None, "doing", None, 5).unwrap());
+        assert!(j.observe("pilotq", 19, "ready", 11, None, "ready", None, 5).unwrap());
+        assert!(j.observe("pilotq", 19, "doing", 12, None, "doing", None, 5).unwrap());
         assert_eq!((rows(&j, "pending"), rows(&j, "superseded")), (1, 1), "a burst leaves one pending status update");
-        assert!(!j.observe(19, "ready", 11, None, "stale", None, 6).unwrap(), "an older observation is ignored");
-        assert!(!j.observe(19, "doing", 12, None, "same", None, 6).unwrap(), "an unchanged one too");
+        assert!(!j.observe("pilotq", 19, "ready", 11, None, "stale", None, 6).unwrap(), "an older observation is ignored");
+        assert!(!j.observe("pilotq", 19, "doing", 12, None, "same", None, 6).unwrap(), "an unchanged one too");
         while let (Some(d), _) = j.due(7).unwrap() {
             assert!(d.edit.is_none() && d.text != "ready", "the superseded update is never sent");
             j.record(d.id, &Sent::Ok(100 + d.id), 7).unwrap();
         }
         let status: i64 = count(&j, "SELECT sent_message FROM outbox WHERE task=19 AND kind='status' AND state='delivered'");
-        assert!(j.observe(19, "ask", 13, Some("Q?"), "ask", Some("Task #19 asks:\nQ?"), 8).unwrap());
+        assert!(j.observe("pilotq", 19, "ask", 13, Some("Q?"), "ask", Some("Task #19 asks:\nQ?"), 8).unwrap());
         let (d, _) = j.due(8).unwrap();
         assert_eq!((d.as_ref().unwrap().edit, d.as_ref().unwrap().text.as_str()), (Some(status), "ask"), "the status message is edited in place");
         j.record(d.unwrap().id, &Sent::Ok(status), 8).unwrap();
@@ -1921,9 +2010,9 @@ mod tests {
         assert_eq!(j.request(4).unwrap().0, "queued", "another reply is ordinary text for the model");
         assert!(j.claim_next(4, 9).unwrap().iter().all(|r| r.request != 3), "the model never takes an answer");
 
-        assert!(j.close_task(19, "closed", 10).unwrap());
-        assert!(!j.close_task(19, "closed", 11).unwrap(), "the outcome is queued once");
-        assert!(!j.observe(19, "doing", 14, None, "late", None, 12).unwrap(), "nothing follows the outcome");
+        assert!(j.close_task("pilotq", 19, "closed", 10).unwrap());
+        assert!(!j.close_task("pilotq", 19, "closed", 11).unwrap(), "the outcome is queued once");
+        assert!(!j.observe("pilotq", 19, "doing", 14, None, "late", None, 12).unwrap(), "nothing follows the outcome");
         assert_eq!(count(&j, "SELECT count(*) FROM outbox WHERE task=19 AND kind='final'"), 1);
         drop(j);
         let _ = std::fs::remove_dir_all(p);

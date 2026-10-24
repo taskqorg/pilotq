@@ -714,7 +714,11 @@ def receipt(n, outcome, reason=None):
     return {"task": n, "op_id": opt("--op-id"), "outcome": outcome, "state": t.get("state"), "revision": t.get("revision"), "reason": reason, "next": None}
 def out(r, code=0):
     if r["outcome"] == "accepted" and opt("--op-id"): st["ops"][opt("--op-id")] = r
-    save(); print(json.dumps(r)); sys.exit(code)
+    save()
+    if a[0] in ("steer", "requeue") and os.path.exists(os.path.join(d, "lose-control")):
+        os.remove(os.path.join(d, "lose-control")); open(os.path.join(d, "board-down"), "w").close()
+        print("Error: connection reset by peer", file=sys.stderr); sys.exit(1)
+    print(json.dumps(r)); sys.exit(code)
 if os.path.exists(os.path.join(d, "board-down")):
     print("Error: board unreachable: connection refused", file=sys.stderr); sys.exit(1)
 cmd, op = a[0], opt("--op-id")
@@ -742,8 +746,10 @@ if cmd == "answer":
     if t["state"] != "ask": out(receipt(int(n), "rejected", "not in ask"), 1)
     if int(opt("--revision")) != t["revision"]: out(receipt(int(n), "stale", "current revision %d" % t["revision"]), 1)
     t.update(state="doing", card=None, answer=opt("--text") or a[1], revision=bump()); out(receipt(int(n), "accepted"))
-if cmd == "later":
-    t["state"] = "later"; t["revision"] = bump(); out(receipt(int(n), "accepted"))
+if cmd in ("later", "steer", "requeue"):
+    if opt("--revision") and int(opt("--revision")) != t["revision"]: out(receipt(int(n), "stale", "revision changed"), 1)
+    if cmd == "steer" and t["state"] != "doing": out(receipt(int(n), "rejected", "not doing"), 1)
+    t["state"] = {"later": "later", "steer": "doing", "requeue": "ready"}[cmd]; t["revision"] = bump(); out(receipt(int(n), "accepted"))
 print("Error: unknown command", file=sys.stderr); sys.exit(1)
 "#;
 
@@ -1042,16 +1048,16 @@ fn u10_restart_new_status_pause_and_park() {
     push(&st, call(4, OWNER, None, OWNER, "task_status", json!({"task": "https://github.com/taskqorg/pilotq/issues/19"})));
     wait("status by URL", 15, || sent_has(&st, "re: ok: Task #19 doing: a worker is on it"));
     push(&st, call(5, OWNER, None, OWNER, "task_status", json!({"task": "https://github.com/taskqorg/other/issues/19"})));
-    wait("other board refused", 15, || sent_has(&st, "re: refused: https://github.com/taskqorg/other/issues/19 is not a task on taskqorg/pilotq"));
+    wait("other board refused", 15, || sent_has(&st, "re: refused: taskqorg/other is not a registered project; nothing was done"));
     push(&st, call(6, 8, None, 8, "task_park", json!({"task": "19", "reason": "x"})));
-    wait("ungranted park refused", 15, || sent_has(&st, "re: refused: 8 has no project:pilotq grant; nothing was done"));
+    wait("ungranted park refused", 15, || sent_has(&st, "re: refused: 8 has no registered project to read; nothing was done"));
     push(&st, call(7, OWNER, None, OWNER, "queue_pause", json!({})));
     wait("pause", 15, || sent_has(&st, "re: ok: TaskQ admission is paused on this host; no new task starts. Running workers continue. Still running: #19."));
     assert_eq!(board(&d)["tasks"]["19"]["state"], "doing", "a queue pause does not stop the worker");
     // L12: the status message was deleted, so the next update goes out as a new message in the same route
     st.lock().unwrap().edit_gone = true;
     push(&st, call(8, OWNER, None, OWNER, "task_park", json!({"task": "#19", "reason": "owner asked"})));
-    wait("park", 15, || sent_has(&st, "re: ok: Task #19 is parked: TaskQ state later."));
+    wait("park", 15, || sent_has(&st, "re: ok: Task #19: later accepted; TaskQ readback later"));
     wait("status parked", 15, || sent(&st).iter().any(|s| s.get("edit").is_none() && s["chat_id"] == OWNER && s["text"].as_str().unwrap().starts_with("Task #19 parked")));
     let b = board(&d);
     assert_eq!((b["creates"].as_i64(), b["paused"].as_bool()), (Some(1), Some(true)), "status reads never create");
@@ -1077,7 +1083,7 @@ fn f07_board_unavailable_or_no_create_claim() {
     root(&d, true);
     fs::write(d.join("board-down"), "").unwrap();
     push(&st, call(4, OWNER, None, OWNER, "task_run_plan", json!({"revision": 1})));
-    wait("unsent", 15, || sent_has(&st, "ticket 1 is unsent (taskq add failed: Error: board unreachable: connection refused)"));
+    wait("unsent", 15, || sent_has(&st, "ticket 1 is unsent (taskq status failed: Error: board unreachable: connection refused)"));
     wait("taskq health", 15, || try_query(&d, "SELECT count(*) FROM plan_runs WHERE state='creating' AND reason LIKE '%board unreachable%'") == Some(1));
     fs::remove_file(d.join("board-down")).unwrap();
     wait("scan files it", 15, || sent_has(&st, "Plan revision 1: filed held, read back and started: #19"));
@@ -2046,4 +2052,78 @@ fn c_live_context_runs_c06() {
         drop(_login);
         fs::remove_dir_all(d).unwrap();
     }
+}
+
+// U39, §5, R4/R13/R17: real manager dispatch and journal on two fake boards, including colliding task numbers.
+// Protects target isolation, current grants, durable mutation receipts and revision-bound human answers.
+#[test]
+fn u39_registered_boards_steer_requeue_and_stale_answer() {
+    let (d, st) = tq_setup("u39", true);
+    let second = d.join("second");
+    fs::create_dir_all(second.join("root")).unwrap();
+    fs::write(second.join("root/taskq.json"), json!({"repo":"taskqorg/other", "create_claim_issue":1}).to_string()).unwrap();
+    // One CLI binary, independent board state selected by the registered root.
+    let fake = FAKE_TASKQ.replace("d = os.path.dirname(os.path.abspath(__file__))", "d = os.path.dirname(os.environ['TASKQ_ROOT'])");
+    fs::write(d.join("fake-taskq"), fake).unwrap();
+    ok(cli(&d, &["projects", "add", "other", second.join("root").to_str().unwrap()]));
+    ok(cli(&d, &["users", "grant", "8", "chat", "taskq", "project:pilotq"]));
+    let c = spawn(&d, None);
+    push(&st, call(1, OWNER, None, OWNER, "task_status", json!({"task":"19"})));
+    wait("ambiguous task", 15, || sent_has(&st, "#19 is ambiguous: name its project (other, pilotq)"));
+    assert!(tq_calls(&d).is_empty() && tq_calls(&second).is_empty());
+    let mut p = plan(&["Other docs"]); p["project"] = json!("other");
+    push(&st, call(2, OWNER, None, OWNER, "task_plan", p));
+    wait("other plan", 15, || sent_has(&st, "Plan revision 1 saved"));
+    push(&st, call(3, OWNER, None, OWNER, "task_run_plan", json!({"revision":1})));
+    wait("other start", 15, || sent_has(&st, "https://github.com/taskqorg/other/issues/19"));
+    wait("other held start", 15, || board(&second)["tasks"]["19"]["state"] == "ready");
+    set_task(&second, 19, |t| t["state"] = json!("doing"));
+    push(&st, call(4, OWNER, None, OWNER, "task_steer", json!({"project":"other", "task":"19", "text":"Keep the scope; $(false) is literal."})));
+    wait("steer readback", 15, || sent_has(&st, "steer accepted; TaskQ readback doing"));
+    push(&st, call(5, OWNER, None, OWNER, "task_requeue", json!({"project":"other", "task":"19", "reason":"Owner changed direction."})));
+    wait("requeue readback", 15, || sent_has(&st, "requeue accepted; TaskQ readback ready"));
+    push(&st, call(6, 8, None, 8, "task_requeue", json!({"project":"other", "task":"19", "reason":"Not granted"})));
+    wait("cross project refusal", 15, || sent_has(&st, "8 has no project:other grant"));
+    push(&st, call(7, OWNER, None, OWNER, "task_status", json!({"project":"pilotq", "task":"https://github.com/taskqorg/other/issues/19"})));
+    wait("conflicting target refused", 15, || sent_has(&st, "project and issue URL name different registered projects"));
+    let mut p = plan(&["Pilot docs"]); p["project"] = json!("pilotq");
+    push(&st, call(8, OWNER, None, OWNER, "task_plan", p));
+    wait("pilot plan", 15, || sent_has(&st, "Plan revision 2 saved"));
+    push(&st, call(9, OWNER, None, OWNER, "task_run_plan", json!({"revision":2})));
+    wait("pilot start", 15, || board(&d)["tasks"]["19"]["state"] == "ready");
+    set_task(&second, 19, |t| { t["state"]=json!("ask"); t["card"]=json!("Second board question?"); });
+    wait("other question", 15, || sent_has(&st, "Second board question?"));
+    let q = sent(&st).into_iter().find(|s| s["text"].as_str().is_some_and(|s| s.starts_with("Task #19 asks:") && s.contains("Second board question?"))).unwrap()["id"].as_i64().unwrap();
+    drop(c);
+    // Advance only the other board while PilotQ is down; the fresh check must reject the old reply.
+    set_task(&second, 19, |t| t["card"]=json!("New second-board question?"));
+    let c = spawn(&d, None);
+    push(&st, call(10, OWNER, None, OWNER, "project_use", json!({"project":"pilotq"})));
+    wait("switched", 15, || sent_has(&st, "This conversation now uses project pilotq"));
+    push(&st, reply(11, OWNER, None, OWNER, q, "1"));
+    wait("stale other answer", 15, || sent_has(&st, "That question is no longer current; nothing was written"));
+    assert_eq!(query(&d, "SELECT count(*) FROM tasks WHERE number=19"), 2);
+    assert_eq!(query(&d, "SELECT count(DISTINCT sent_message) FROM outbox WHERE task=19 AND kind='status' AND state='delivered'"), 2, "each board edits its own status message");
+    assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE kind='task' AND target LIKE 'taskqorg/other %' AND result LIKE '%accepted%'"), 2);
+    assert_eq!(query(&d, "SELECT count(*) FROM task_effects WHERE receipt IS NOT NULL"), 2);
+    assert_eq!(board(&d)["tasks"]["19"]["state"], "ready");
+    let writes = tq_calls(&second);
+    assert_eq!(writes.iter().map(|a| a[0].as_str()).collect::<Vec<_>>(), ["add","start","steer","requeue"]);
+    for a in &writes[2..] { assert!(a.contains(&"--op-id".into()) && a.contains(&"--revision".into())); }
+    assert!(writes[2].contains(&"Keep the scope; $(false) is literal.".into()));
+    assert!(tq_calls(&d).iter().all(|a| a[0] != "answer"));
+    fs::write(second.join("lose-control"), "").unwrap();
+    push(&st, call(12, OWNER, None, OWNER, "task_requeue", json!({"project":"other", "task":"19", "reason":"Reconcile this once."})));
+    wait("uncertain control", 15, || sent_has(&st, "is uncertain (taskq requeue failed"));
+    let revision = board(&second)["tasks"]["19"]["revision"].clone();
+    drop(c);
+    fs::remove_file(second.join("board-down")).unwrap();
+    let c = spawn(&d, None);
+    wait("control reconciled", 15, || sent_has(&st, "reconciled: \"accepted\" \"ready\""));
+    assert_eq!(board(&second)["tasks"]["19"]["revision"], revision, "reconciliation returns the first receipt without another effect");
+    let writes = tq_calls(&second);
+    assert_eq!(writes.len(), 6);
+    assert_eq!(writes[4], writes[5], "recovery uses the exact operation ID, text and revision");
+    assert_eq!(query(&d, "SELECT count(*) FROM task_effects WHERE receipt IS NOT NULL"), 3);
+    stop(c, d);
 }

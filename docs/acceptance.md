@@ -493,3 +493,17 @@ PILOTQ_A8_ROOT=<pilotq-checkout> PILOTQ_A8_TASKQ=<taskq-binary> \
 ```
 
 Completion evidence is a report with exact versions, mechanism-to-case results, unresolved failures, recovery receipts, task links and aggregate metrics. Maintain 62 scenario-family entries: U01–U18, F01–F17, C01–C07 and L01–L20. Record deterministic and live/platform results separately, including not run. Runtime research, a healthy service or green repository CI cannot replace it.
+
+### Registered-board controls (task #39, §5, R4, R13, R17)
+
+| Case | Action | Expected result |
+|---|---|---|
+| U39a | Steer a doing task, then requeue with a reason | Argument arrays carry the fresh revision and stable op ID; intent and receipt are audited; reply gives readback and board URL |
+| U39b | Plan and run on a second registered board; restart and relay a question | Plan keeps its board and root; status, question and outcome stay in the originating route; the same task number on another board stays independent |
+| U39c | Use a bare number with several accessible projects, a foreign URL, mismatched project/URL, missing grant or stopped run | Refusal explains the target or grant problem; no board write |
+| U39d | Reply to an old question on the second board after a conversation switch | Fresh question revision rejects the answer; no answer reaches either board |
+| U39e | Lose a mutation response, restart, or change a registration before retry | Reconcile only the saved operation ID, revision and target; changed registration blocks retry; no duplicate effect |
+
+**Development evidence (Linux, task #39):** `cargo test --locked --test telegram u39_registered_boards_steer_requeue_and_stale_answer -- --nocapture` failed against the original adapter at `timed out: ambiguous task`, then passed against the change. The retained fake-Codex trace exercises both controls, grant and conflicting-target refusals, two boards' #19 subscriptions with distinct status messages, a stale second-board answer after restart and a lost control response reconciled with exactly the same arguments, op ID and revision. The target revision remains unchanged during reconciliation. This proves the adapter/journal flow on fakes, not real Codex, Telegram or a live board.
+
+The journal's `plans_and_task_projections`, `schema_1_journal_upgrades`, `u39_schema_7_preserves_task_targets` and `taskq::tests::u39_fenced_controls_write_nothing` passed in filtered checks. A combined integration development run (`cargo test --locked --test telegram -- u06 u07 u10 u39 f07 --nocapture`) passed F07 and U10 before exit 137: sandbox-blocked, not a suite pass. Merge acceptance still requires green CI on the merge result (§7, R12).
