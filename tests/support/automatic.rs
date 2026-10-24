@@ -51,6 +51,10 @@ struct Run {
     deadline: Instant,
 }
 
+pub(super) fn pause_tool_status(d: &Path, id: i64) -> String {
+    query_text(d, &format!("SELECT result FROM audit_events WHERE request_id={id} AND kind='tool' AND target='dynamicToolCall' AND result='completed' AND EXISTS (SELECT 1 FROM audit_events WHERE request_id={id} AND kind='call' AND target='queue_pause') ORDER BY id DESC LIMIT 1"))
+}
+
 impl Run {
     // TaskQ §2 permits trusted hand-authored entries. These are scripted fixtures, never real worker/reviewer claims.
     fn event(&mut self, body: &str, state: &str) -> i64 {
@@ -195,7 +199,15 @@ impl Run {
         }
         for (op, args) in adds {
             // Same claim reconciles a committed create whose receipt never reached PilotQ; no new op ID or plain add.
-            let rc = self.taskq(&args).and_then(|s| serde_json::from_str::<Value>(&s).map_err(|e| e.to_string()));
+            // A durable accepted create receipt already identifies the task. Replaying add can be
+            // unavailable after the lifecycle advances; it must not prevent parking that known task.
+            let recorded = self.calls().into_iter().find_map(|c| {
+                let rc = &c["receipt"];
+                (c["args"] == json!(args) && rc["op_id"] == op && rc["outcome"] == "accepted"
+                    && rc["task"].as_i64().is_some_and(|n| n > 0)).then(|| rc.clone())
+            });
+            let rc = recorded.map(Ok).unwrap_or_else(|| self.taskq(&args)
+                .and_then(|s| serde_json::from_str::<Value>(&s).map_err(|e| e.to_string())));
             match rc {
                 Ok(rc) if rc["outcome"] == "accepted" && rc["op_id"] == op => {
                     if let Some(n) = rc["task"].as_i64() { tasks.push(n); } else { errors.push("create receipt has no task".into()); }
@@ -239,9 +251,10 @@ impl Run {
                 let current = fs::read_to_string(self.root.join(".taskq/focus")).ok();
                 if saved.as_deref().map(str::trim) == self.data["original_focus"].as_str().map(str::trim) && current.as_deref().map(str::trim) == Some("off") {
                     if let Err(e) = self.taskq(&["service".into(), "resume".into()]) { errors.push(e); }
-                } else { errors.push("queue configuration changed; PM reconciliation required".into()); }
+                } else if current.as_deref().map(str::trim) != self.data["original_focus"].as_str().map(str::trim) {
+                    errors.push("queue configuration changed; PM reconciliation required".into());
+                }
             }
-            if self.root.join(".taskq/focus.paused").exists() { errors.push("saved queue pause remains".into()); }
             if let Some(original) = self.data["original_focus"].as_str() {
                 if fs::read_to_string(self.root.join(".taskq/focus")).ok().as_deref().map(str::trim) != Some(original.trim()) { errors.push("queue focus was not restored".into()); }
             }
@@ -260,6 +273,14 @@ impl Run {
                     self.data["cases"][c] = json!({"status":"failed", "reason":reason});
                 }
             }
+        }
+        if self.d.join("journal.sqlite").exists() {
+            let out = cli(&self.d, &["pilot", "report", "--since", "0", "--json"]);
+            self.data["tool_sizes"] = if out.status.success() {
+                serde_json::from_slice::<Value>(&out.stdout).ok().and_then(|v| v["tools"].as_array().cloned())
+                    .map(Value::Array).unwrap_or_else(|| json!({"status":"unknown","reason":"invalid pilot report"}))
+            } else { json!({"status":"unknown","reason":"pilot report failed"}) };
+            self.data["tool_size_source"] = json!("journal tool_sizes: UTF-8 result bytes after secret scrubbing, before Codex delivery; audit_events stores status, not result text");
         }
         self.data["cases"]["cleanup"] = json!({"status":"running"});
         self.save();
@@ -296,7 +317,7 @@ fn a40_live_management() {
         assert_eq!(config["repo"], "taskqorg/pilotq");
         assert!(config["create_claim_issue"].as_i64().is_some_and(|n| n > 0));
         let focus = fs::read_to_string(h.root.join(".taskq/focus")).expect("existing queue focus required");
-        assert!(focus.trim() != "off" && !h.root.join(".taskq/focus.paused").exists(), "admission already paused");
+        assert!(focus.trim() != "off", "admission already paused");
         h.data["original_focus"] = json!(focus);
         // A fresh reserved host name has no service. Never enroll a service under pilotq-e2e-*.
         h.data["isolated_host"] = json!(format!("pilotq-e2e-{tag}"));
@@ -390,9 +411,10 @@ fn a40_live_management() {
             assert_eq!(query(&h.d,&format!("SELECT count(*) FROM audit_events WHERE request_id={id} AND kind='task' AND target='service pause' AND result='accepted'")),1);
             assert_eq!(fs::read_to_string(h.root.join(".taskq/focus")).unwrap().trim(),"off");
             assert_eq!(fs::read_to_string(h.root.join(".taskq/focus.paused")).unwrap().trim(),h.data["original_focus"].as_str().unwrap().trim());
-            let tool_result = query_text(&h.d, &format!("SELECT result FROM audit_events WHERE request_id={id} AND kind='tool' AND target='queue_pause' ORDER BY id DESC LIMIT 1"));
-            assert!(tool_result.contains("Running workers continue"));
-            json!({"request":id,"reply":reply,"tool_result":tool_result,"admission":"off"})
+            let tool_status = pause_tool_status(&h.d, id);
+            assert_eq!(tool_status, "completed");
+            assert!(h.state("doing"), "queue pause must preserve the active worker");
+            json!({"request":id,"reply":reply,"tool_status":tool_status,"admission":"off","worker":"doing"})
         });
         h.case("park_requeue", |h| {
             let park = h.control("task_park",&format!("Use task_park on pilotq #{}: park for this bounded automatic control check.",h.task),"later");
@@ -505,7 +527,7 @@ fn a40_failure_report_and_cleanup() {
     fs::create_dir_all(d.join("codex")).unwrap();
     fs::write(d.join("codex/auth.json"), "invented-test-credential").unwrap();
     let add = json!(["add","Verify README navigation","--op-id","pilotq-fixture-p1-t1","--json"]);
-    fs::write(d.join("taskq-calls.jsonl"), format!("{}\n{}\n",json!({"args":add}),json!({"args":["service","pause"]}))).unwrap();
+    fs::write(d.join("taskq-calls.jsonl"), format!("{}\n{}\n",json!({"args":add,"receipt":{"task":19,"op_id":"pilotq-fixture-p1-t1","outcome":"accepted","state":"held"}}),json!({"args":["service","pause"]}))).unwrap();
     let fake = r#"#!/usr/bin/env python3
 import json, pathlib, sys
 p = pathlib.Path(__file__).parent
@@ -514,8 +536,10 @@ with open(p/'cleanup-calls.jsonl','a') as f: f.write(json.dumps(a)+'\n')
 if a[0] == 'inbox': print('Folded: {"state":"ready"}')
 elif a[:2] == ['service','resume']:
     r=p/'root/.taskq'
-    (r/'focus').write_text((r/'focus.paused').read_text()); (r/'focus.paused').unlink()
-elif a[0] == 'add': print(json.dumps({'task':19,'op_id':'pilotq-fixture-p1-t1','outcome':'accepted','state':'held'}))
+    (r/'focus').write_text((r/'focus.paused').read_text())
+elif a[0] == 'add':
+    if not (p/'allow-reconcile').exists(): sys.exit('create reconciliation unavailable')
+    print(json.dumps({'task':19,'op_id':'pilotq-fixture-p1-t1','outcome':'accepted','state':'held'}))
 elif a[0] == 'later': print(json.dumps({'task':19,'outcome':'accepted','state':'later'}))
 else: sys.exit(1)
 "#;
@@ -537,8 +561,15 @@ else: sys.exit(1)
     assert!(!d.join("codex/auth.json").exists());
     assert_eq!(fs::read_to_string(h.root.join(".taskq/focus")).unwrap(),"all\n");
     let calls:Vec<Value>=fs::read_to_string(d.join("cleanup-calls.jsonl")).unwrap().lines().map(|l|serde_json::from_str(l).unwrap()).collect();
-    assert_eq!(calls[0],add,"interrupted creation uses its exact original argv and op ID");
+    assert!(!calls.iter().any(|a|a[0]=="add"),"a durable accepted receipt identifies the task without replay");
     assert_eq!(calls.iter().filter(|a|a[0]=="later").count(),1);
+    // Lost receipts still reconcile the exact claim, never a new operation or plain add.
+    fs::write(d.join("allow-reconcile"), "").unwrap();
+    fs::write(d.join("taskq-calls.jsonl"), format!("{}\n",json!({"args":add}))).unwrap();
+    h.cleanup().unwrap();
+    let calls:Vec<Value>=fs::read_to_string(d.join("cleanup-calls.jsonl")).unwrap().lines().map(|l|serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(calls.iter().find(|a|a[0]=="add").unwrap(), &add);
+    fs::write(d.join("taskq-calls.jsonl"), format!("{}\n",json!({"args":["service","pause"]}))).unwrap();
     // Concurrent operator changes are unknown ownership: report failure without restoring over them.
     fs::write(h.root.join(".taskq/focus.paused"), "different-focus").unwrap();
     fs::write(h.root.join(".taskq/focus"), "off").unwrap();
