@@ -564,6 +564,50 @@ pub fn watch(tq: std::sync::Arc<Taskq>, j: crate::telegram::Shared, wake: std::s
 mod tests {
     use super::*;
 
+    // §5 / A40: TaskQ start removes q-held before adding taskq. A complete list can
+    // omit the just-filed task in that interval; it must not end its subscription.
+    #[cfg(unix)]
+    #[test]
+    fn a40_start_label_gap_keeps_subscription() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("pilotq-start-gap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("taskq.json"), r#"{"repo":"taskqorg/pilotq","create_claim_issue":1}"#).unwrap();
+        let bin = dir.join("taskq");
+        std::fs::write(&bin, "#!/bin/sh\ncat snapshot.json\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut journal = Journal::open(&dir.join("journal.sqlite")).unwrap();
+        journal.bootstrap(7, 0).unwrap();
+        journal.add_project(7, "pilotq", BOARD, &dir.to_string_lossy(), 0).unwrap();
+        let plan = journal.ask(7, "plan", 1).unwrap();
+        journal.save_plan(&plan, &json!([{"title":"fixture"}]), "pilotq", BOARD, &dir.to_string_lossy(), 1).unwrap();
+        let request = journal.ask(7, "run plan", 2).unwrap();
+        let id = journal.authorize(&request, 1, 7, LEASE, 2).unwrap();
+        let run = journal.plan_run(id).unwrap();
+        journal.filed(&run, 1, 19, 10, 3).unwrap();
+        let j = Mutex::new(journal);
+        let tq = Taskq { bin, root: dir.clone(), poll: Duration::from_secs(15) };
+        let snapshot = |tasks: Value| {
+            std::fs::write(dir.join("snapshot.json"), json!({"complete":true,"board":{"repo":BOARD},"tasks":tasks}).to_string()).unwrap();
+        };
+        snapshot(json!([])); // The manager is still submitting; eligibility labels are between writes.
+        assert!(!scan(&tq, &j), "an in-flight start must not emit a closing outcome");
+        j.lock().unwrap().started(&run, 1, 19, "ready", 4).unwrap();
+        j.lock().unwrap().run_outcome(&run, "started", None, None, 0, 4).unwrap();
+        snapshot(json!([{"n":19,"state":"doing","revision":12}]));
+        assert!(scan(&tq, &j));
+        assert_eq!(j.lock().unwrap().task("pilotq", 19).unwrap().unwrap().0, "doing");
+        // Retain F14 stale protection and normal closure after submission is settled.
+        snapshot(json!([{"n":19,"state":"ready","revision":11}]));
+        assert!(!scan(&tq, &j));
+        assert_eq!(j.lock().unwrap().task("pilotq", 19).unwrap().unwrap().0, "doing");
+        snapshot(json!([]));
+        assert!(scan(&tq, &j));
+        assert!(j.lock().unwrap().subscriptions().unwrap().is_empty());
+        drop(j);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     // §4/§5: a replaced run cannot create an intent or invoke a CLI, even with owner grants.
     #[test]
     fn u39_fenced_controls_write_nothing() {

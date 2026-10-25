@@ -1208,9 +1208,14 @@ impl Journal {
         tx.commit().map_err(e)
     }
 
-    /// Open task subscriptions and their stored revisions.
+    /// Open task subscriptions and their stored revisions, after submission settles.
+    /// TaskQ start changes eligibility labels in separate writes; a scan during that
+    /// gap can omit a filed task without closing it (§5). The creating run owns recovery.
     pub fn subscriptions(&self) -> Result<Vec<(String, i64, i64)>, String> {
-        let mut q = self.0.prepare("SELECT project, number, revision FROM tasks WHERE closed=0 ORDER BY number").map_err(|e| e.to_string())?;
+        let mut q = self.0.prepare("SELECT project, number, revision FROM tasks t WHERE closed=0 AND NOT EXISTS (
+            SELECT 1 FROM tickets k JOIN plan_runs r ON r.id=k.run_id
+            WHERE k.task=t.number AND r.request_id=t.request_id AND r.state='creating'
+        ) ORDER BY number").map_err(|e| e.to_string())?;
         q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).and_then(Iterator::collect).map_err(|e| e.to_string())
     }
 
