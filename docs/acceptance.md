@@ -579,3 +579,29 @@ Worker verification: Cargo is absent (exit 127), so the filtered check and candi
 Owner readback recorded in #41 on 2026-10-24: the protected CLI key is entered and granted for `project:pilotq`; FRA owner request 2 successfully used `issue_read` on #41, and key metadata recorded last use (§5/§8). This is owner-supplied evidence, not a worker inspection of the secret or host. It supersedes the key-entry gap above.
 
 The approved post-0.2.0 release candidate is `0.2.1`, including doctor from `602841ea2b66927195c25bdb981c076961adcee7` (§9). Before: published 0.2.0 lacks doctor; after: version metadata and tester commands select 0.2.1. Executable candidate A40, release publication, FRA activation, running SHA and installed suite/continuity remain unknown until host execution. No regression checks or acceptance protections were removed.
+
+
+### FRA activation readback, 2026-10-25
+
+The [PM host report](https://github.com/taskqorg/pilotq/issues/41#issuecomment-6391544828) supersedes the deployment gaps above. These are attributed host observations, not commands rerun by this worker. No test, acceptance rule or retained regression protection changed.
+
+- **A1 (§9, §12):** before activation, FRA ran 0.1.0. `pilotq update` selected 0.2.1 and reported `drain: ok`. Restart initially failed with `systemctl --user daemon-reload` under a session without a user bus; the PM then restarted the unit with the user runtime directory set. Afterward PID 582086 executed `releases/0.2.1/pilotq`, whose checksum matched the published artifact. The reported running source is `ded8266cde9dc91611d3db35091635925718c17c`. `status --json` reported version 0.2.1 and healthy poll, storage and model observations; `selftest` passed; `doctor` returned exit 0 with configuration, Telegram, Codex and TaskQ checks passing. This proves recovered activation, not a successful automatic restart in the failed session.
+- **Publication (§9):** PR #58 merged at that SHA; `live` fast-forwarded from `4831a0c` to it. Both [tests](https://github.com/taskqorg/pilotq/actions/runs/40146817010) and [release verification](https://github.com/taskqorg/pilotq/actions/runs/40146817014) passed on the exact `merge_group` SHA. The [release workflow](https://github.com/taskqorg/pilotq/actions/runs/40147385891) succeeded; the PM reports v0.2.1 published at 00:40:50 UTC.
+- **A2 (§5, §8, R16):** the earlier owner CLI grant and successful request 2 `issue_read` remain the key-use evidence. No credential value was inspected or copied into this record.
+- **A3 suite (§9):** the [PM A40 report on PR #58](https://github.com/taskqorg/pilotq/pull/58#issuecomment-6391412988) records 14/14 passing cases on FRA at `f5aa0eb7bf26577fb8a8cee43c3d3d222ab74e08`, completed at 00:27 UTC, including cleanup. Its tree equals the release tree (`0e6c69a`); this is candidate management-path evidence before activation. A separate run against the installed release is not recorded.
+- **A3 continuity (§4, R5, R17):** the PM reports post-update `pilot report` counts of failed 0, interventions 0 and outages 0; `status` reports pending 0, undelivered 0 and uncertain 0. These establish no reported backlog or unresolved effects at that observation. No before/after request-ID, effect or delivery reconciliation was supplied, so absence of lost or duplicated requests across activation remains unproved. The service restart intervention above is recorded here even though the pilot counter reports zero.
+
+Remaining acceptance evidence: an installed-release suite run and request-level journal reconciliation across activation. Production cutover remains unauthorized (§10–§11).
+
+### Follow-up verification, attempt 6391625559
+
+PR #60's [tests job](https://github.com/taskqorg/pilotq/actions/runs/40148004772/job/121033387904) failed at `1e009113f98f1be40b4d1ed7e9c2bc6a0c3743a8`: `u09_f09_f10_switch_ambiguity_redirect_and_revoke` reported `pilotq: audit: database is locked` (32 passed, 1 failed, 7 ignored). This is a failed gate, not passing publication evidence. The retained check protects project selection, rejection of quoted target redirects, revocation and project-filtered audit readback (§5, §8, R17).
+
+Read-only inspection found that `Journal::audit` opens a deferred transaction, reads the request records and then records the audit access. A concurrent writer between those operations is a possible lock-upgrade conflict; the CI log does not establish that cause. No implementation or test change was made within this task's operation-and-evidence scope, and no after-fix pass is claimed. The filtered reproduction command `cargo test --locked --test telegram u09_f09_f10_switch_ambiguity_redirect_and_revoke -- --exact --nocapture` is sandbox-blocked because Cargo is absent (exit 127). `pilotq status --json` is also sandbox-blocked because the installed CLI is unavailable here (exit 127). Installed A40 and request/effect/delivery reconciliation remain unproved; A1/A2 retain the attributed host evidence above. No acceptance protection was weakened.
+
+
+### 0.2.2 preparation, task #41 continuation
+
+The owner requested `0.2.2` in PR #60 because published `0.2.1` lacks the #62 fix at `49043392fb12b80d2e6d4c8db3fee28942d916ce` (§9). Package metadata and tester commands now select `0.2.2`; no test or acceptance protection changed. The PM reports A40 passed 14/14 on FRA at `4904339` on 2026-10-25 at 01:14 UTC. This is attributed development-candidate evidence, not an installed `0.2.2` result.
+
+After merge and the PM's `live` push, the PM updates FRA through `pilotq update` and supplies the installed source commit, A40 case results and cleanup, pilot report and journal request IDs before and after activation. Reconcile those IDs with effects and delivery receipts before claiming A3 (§4, §9, R17). The earlier installed-suite failure and continuity gap remain open until that evidence arrives.
