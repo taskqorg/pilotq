@@ -255,6 +255,37 @@ It checks, in order: U18 (an ungranted message is ignored and not replayed after
 
 Run 1 failed before any board write and exposed a defect. Three requests started Codex together on a fresh Codex home, and one app-server exited with `failed to initialize sqlite state runtime`. PilotQ reported it only as `Codex exited without a terminal event`. Fix: Codex startup is serialized until `initialize` answers, and the stderr reason goes to the operator log, never to a reply (`concurrent_codex_starts_do_not_race`, which failed without the lock). The live test bot was not used. It ran the pre-step3 build and journal throughout, restored after the earlier attempt. A later owner check there is optional.
 
+## Invited human trial (task #42)
+
+The owner approved option 1 in [#42](https://github.com/taskqorg/pilotq/issues/42): seven days, the owner and two invitees, real TaskQ work, request-linked outcomes and feedback, with defects filed held. [Contract §5](../pilotq.md#invited-human-trial) owns the plan. This human trial supplements the preceding scripted evidence; it is separate from the existing gate 4 pilot and production-cutover acceptance.
+
+### Admission and start
+
+1. Retain PM evidence of the exact running FRA release, its installed A40 pass including cleanup, and update continuity under §9. A closed prerequisite task alone is not installed-suite evidence.
+2. Obtain the owner's approval of the specific two-person tester list through #42's ask. The administrator verifies exact IDs privately; public evidence uses tester aliases and approval references rather than private identifiers.
+3. Use the [tester guide](tester-guide.md#join-an-existing-test-bot) to grant and read back only approved project and TaskQ rights, check route policies, and give each tester the guide and audit notice. Do not grant host queue or administration privileges as a trial default.
+4. Verify a new admitted input from each invitee on the real test bot, with its request audit and delivery receipt. Ignored pre-grant inputs are never replayed. Record the seven-day trial's UTC start/end and a starting request boundary separately; `pilot start` retains its existing first-start meaning.
+
+### Work and observations
+
+Testers use small real authorized tasks: discuss a plan, correct it if needed, authorize its saved revision in a later message, follow fresh status, and answer any actual worker question by replying to it. Use approved DM/group/topic routes and project scopes; do not create placeholder tasks or manufacture worker questions. Missing natural coverage remains unobserved. Recovery controls and refusals can be reported when encountered; deliberate fault tests stay separate from normal requests.
+
+During the trial, retain request IDs and task links, observed outcomes and delivery state, and tester feedback about clarity, usefulness and required nudges. Record manual interventions and provider outages with `pilot note`. Reconcile every accepted request in the trial window to its audit record and explicit state, including waiting, failed and uncertain requests; an audited refusal is not a successful user outcome. Investigate missing replies by receipts rather than repeating effects (§4, R17).
+
+### Trial report and acceptance
+
+At the end of the seven-day window, report:
+
+- Exact release/source revisions used, UTC window, approved tester aliases, grant readbacks and observed routes/projects. Record updates during the window rather than implying a single candidate.
+- Accepted requests and their outcome counts; refusals and failures linked to request IDs, task URLs and effect/delivery receipts as applicable. Keep pending or unknown observations visible.
+- Each tester's feedback, recovery nudges, interventions and outages, with request references where available. Do not publish message text or private route/person identifiers without approval (§8).
+- Every discovered defect's held issue URL, observed failure and expected behavior; file no duplicate of an existing open defect. A later fix records the failure before and pass after on its own candidate.
+- Remaining coverage and gate 4 gaps. `pilot report --since T --json` can supply since-start counts, but `--until` bounds only tool sizes; use audit receive times and request IDs to bound this trial's final cohort.
+
+A1 passes when the contract and these cases record the approved plan. A2 needs the specific tester-list approval. A3 needs administrator grant readbacks, the guide and real audited tester requests. A4 needs the completed report and held defect links, or an explicit observation of no defects. Duration, selftest and scripted A40 alone prove neither A3/A4 nor gate 4.
+
+**Current evidence:** plan approved; specific tester list, admission, installed-suite readiness and the seven-day human report are not established by this documentation change. No trial start or successful tester request is claimed.
+
 ## Step 4 qualification
 
 Results for the [section 10](../pilotq.md#10-adoption-sequence) step 4 slice, task [#23](https://github.com/taskqorg/pilotq/issues/23), against [direct actions, keys and project switching](../pilotq.md#direct-actions-keys-and-project-switching). Deterministic traces run in `cargo test --locked` with a fake `gh` (`FAKE_GH` in `tests/telegram.rs`: argument log, a token check that never records the token, issues, comments and labels in a state file, an option that makes an issue body echo the token), the fake TaskQ CLI as the registration readback, a fake Codex that makes several dynamic tool calls per turn (`multi`, or `hex` so that the person's text names nothing the calls use), the fake Bot API and the `PILOTQ_FAULT` crash points `before-effect` and `after-effect`. Fakes do not qualify GitHub, real Codex tool choice or Telegram; the live run is listed separately.

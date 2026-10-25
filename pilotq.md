@@ -203,6 +203,14 @@ Contract detail: [first TaskQ tool contract](docs/taskq-tool-contract.md) holds 
 - Concrete discussion questions offer two to four numbered choices, preserved in the message, buttons and recorded answer. Choosing one submits that answer to the conversation; it never authorizes launch. Launch remains a separate button or explicit later text request. Old or already answered choice cards are refused.
 - Example: “Plan reply improvements”, “also keep line breaks”, “and add buttons” produces one draft with three internal revisions, no board tickets. The latest display has “Run plan”; pressing it launches only that display. Pressing either an earlier display or the same button again starts nothing new. Under #110 a separate idea waits for launch or Cancel, then starts a new draft. After launch, “also support audio” starts a separate discussion, preserving the launched scope.
 
+### Invited human trial
+
+**Owner, task #42, option 1:** after the automatic management suite passes on the FRA test installation, run a seven-day human trial with the owner and two invited testers doing real TaskQ work on the separate test bot. This adds human feedback to the 2026-10-23 scripted-run evidence above; it does not replace or reinterpret that evidence.
+
+The owner approves the specific tester list through the task's ask before any invitee receives access. Exchange exact Telegram IDs privately and use administrator grants with readback and the [tester guide](docs/tester-guide.md); existing membership or historical pilot grants do not establish this list's approval (R10). Keep requests audited (R17). Record the trial's own UTC start and end separately from the existing pilot start; do not reset the gate 4 clock.
+
+The report links request IDs to outcomes, refusals, failures and tester feedback, and files each discovered defect as a held task. Keep effects and delivery observations distinct, with missing evidence unknown. The seven-day duration and small tester group alone do not qualify [gate 4](docs/acceptance.md#selection-gates). Hermes production cutover remains outside this trial (§10 step 6). The [trial acceptance cases](docs/acceptance.md#invited-human-trial-task-42) define the operational evidence.
+
 ### Direct actions, keys and project switching
 
 **Owner decision 2026-10-23 (option B, task #23, section 10 step 4):** direct actions are reads. Only the owner (`owner_id` from protected configuration) may write directly, and only a comment or a label on an issue of the `taskqorg/pilotq` board; there are no other direct writes. Keys enter only through the CLI.
