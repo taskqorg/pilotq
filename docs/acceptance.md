@@ -255,36 +255,23 @@ It checks, in order: U18 (an ungranted message is ignored and not replayed after
 
 Run 1 failed before any board write and exposed a defect. Three requests started Codex together on a fresh Codex home, and one app-server exited with `failed to initialize sqlite state runtime`. PilotQ reported it only as `Codex exited without a terminal event`. Fix: Codex startup is serialized until `initialize` answers, and the stderr reason goes to the operator log, never to a reply (`concurrent_codex_starts_do_not_race`, which failed without the lock). The live test bot was not used. It ran the pre-step3 build and journal throughout, restored after the earlier attempt. A later owner check there is optional.
 
-## Invited human trial (task #42)
+## Human trial (task #42)
 
-The owner approved option 1 in [#42](https://github.com/taskqorg/pilotq/issues/42): seven days, the owner and two invitees, real TaskQ work, request-linked outcomes and feedback, with defects filed held. [Contract §5](../pilotq.md#invited-human-trial) owns the plan. This human trial supplements the preceding scripted evidence; it is separate from the existing gate 4 pilot and production-cutover acceptance.
+[Contract §5](../pilotq.md#human-trial) records the owner's 2026-10-26 simplification: the two existing FRA users, the owner and Simon, test on the fly with test tasks. No invitation, private-ID exchange or additional readiness gate is required. This supersedes the earlier three-person plan. The seven-day observation period and request-linked report remain; gate 4 stays separate.
 
-### Admission and start
+### Testing and feedback
 
-1. Retain PM evidence of the exact running FRA release, its installed A40 pass including cleanup, and update continuity under §9. A closed prerequisite task alone is not installed-suite evidence.
-2. Obtain the owner's approval of the specific two-person tester list through #42's ask. The administrator verifies exact IDs privately; public evidence uses tester aliases and approval references rather than private identifiers.
-3. Use the [tester guide](tester-guide.md#join-an-existing-test-bot) to grant and read back only approved project and TaskQ rights, check route policies, and give each tester the guide and audit notice. Do not grant host queue or administration privileges as a trial default.
-4. Verify a new admitted input from each invitee on the real test bot, with its request audit and delivery receipt. Ignored pre-grant inputs are never replayed. Record the seven-day trial's UTC start/end and a starting request boundary separately; `pilot start` retains its existing first-start meaning.
+Use existing authorized identities and grants with the [tester guide](tester-guide.md#plan-authorize-and-follow-work). Discuss and revise a plan, authorize its saved revision in a later message, follow status and answer actual worker questions by replying to them. Keep existing R10 authorization checks; do not infer administrator privileges from participation. The owner names admin one and admin two after the readiness ask. No grant change is claimed here.
 
-### Work and observations
+Keep request IDs and task links for outcomes, refusals, failures and feedback about usefulness, clarity and required nudges. Each accepted request retains its R17 audit record. Record interventions and outages with `pilot note`; investigate missing replies through effect and delivery receipts rather than repeating execution (§4). File each discovered defect held, linking an existing open issue where it already covers the defect. No completed human trial or absence of defects is claimed before observation.
 
-Testers use small real authorized tasks: discuss a plan, correct it if needed, authorize its saved revision in a later message, follow fresh status, and answer any actual worker question by replying to it. Use approved DM/group/topic routes and project scopes; do not create placeholder tasks or manufacture worker questions. Missing natural coverage remains unobserved. Recovery controls and refusals can be reported when encountered; deliberate fault tests stay separate from normal requests.
+### Report
 
-During the trial, retain request IDs and task links, observed outcomes and delivery state, and tester feedback about clarity, usefulness and required nudges. Record manual interventions and provider outages with `pilot note`. Reconcile every accepted request in the trial window to its audit record and explicit state, including waiting, failed and uncertain requests; an audited refusal is not a successful user outcome. Investigate missing replies by receipts rather than repeating effects (§4, R17).
+Record the seven-day UTC observation window, release revisions used, participating users by approved labels, request IDs with outcomes/refusals/failures and tester feedback, and held defect links. Keep waiting, uncertain and missing observations visible. Preserve the existing gate 4 pilot start; `pilot report --since T --json` supplies since-boundary counts, while `--until` bounds tool sizes only. Use audit receive times and request IDs to identify the final trial cohort. Keep private message content and credentials out of public reports (§8).
 
-### Trial report and acceptance
+**Readiness evidence:** owner 2026-10-26 reports PM A40 14/14 at `49043392fb12b80d2e6d4c8db3fee28942d916ce`, referencing [#62](https://github.com/taskqorg/pilotq/issues/62). The worker read #62's merged fix and green merge-result CI record; the 14/14 result is supplied by the owner, not independently rerun here. It does not prove an installed 0.2.2 run. No further A40 or continuity submission is added as a gate for this human trial.
 
-At the end of the seven-day window, report:
-
-- Exact release/source revisions used, UTC window, approved tester aliases, grant readbacks and observed routes/projects. Record updates during the window rather than implying a single candidate.
-- Accepted requests and their outcome counts; refusals and failures linked to request IDs, task URLs and effect/delivery receipts as applicable. Keep pending or unknown observations visible.
-- Each tester's feedback, recovery nudges, interventions and outages, with request references where available. Do not publish message text or private route/person identifiers without approval (§8).
-- Every discovered defect's held issue URL, observed failure and expected behavior; file no duplicate of an existing open defect. A later fix records the failure before and pass after on its own candidate.
-- Remaining coverage and gate 4 gaps. `pilot report --since T --json` can supply since-start counts, but `--until` bounds only tool sizes; use audit receive times and request IDs to bound this trial's final cohort.
-
-A1 passes when the contract and these cases record the approved plan. A2 needs the specific tester-list approval. A3 needs administrator grant readbacks, the guide and real audited tester requests. A4 needs the completed report and held defect links, or an explicit observation of no defects. Duration, selftest and scripted A40 alone prove neither A3/A4 nor gate 4.
-
-**Current evidence:** plan approved; specific tester list, admission, installed-suite readiness and the seven-day human report are not established by this documentation change. No trial start or successful tester request is claimed.
+A1 records the current plan in the contract and these cases. The owner's continuation supplies the tester choice for A2 and replaces the invitation procedure. A3 uses existing grants and the guide; actual human request/audit observations remain to be collected. A4 remains the trial report with held defect references. The next handoff is the requested readiness ask, after which the owner names the two administrators. Readiness is not trial completion or production acceptance.
 
 ## Step 4 qualification
 
