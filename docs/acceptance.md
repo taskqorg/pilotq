@@ -636,3 +636,21 @@ Rollback notification is tracked by [#77](https://github.com/taskqorg/pilotq/iss
 `cargo test --locked rollback_notice` exercises the coreq launcher through two failed candidate starts and the rollback selection, then the restored service’s healthy-start notification boundary. The marker survives reopening the journal; the owner DM names only the failed and restored versions. Reopening after a transport failure preserves the same delivery and attempt count; reopening after a receipt produces no second incident. Healthy candidates produce no notice. Existing outbox checks retain the five-attempt ceiling, cooldown and held-destination protection.
 
 This deterministic boundary check does not qualify a systemd restart or live Telegram delivery. A rollback to a release predating the integration cannot consume the marker; install a compatible baseline before relying on this notification.
+
+### Compact reply formatting, task #82
+
+Presentation follows [§12](../pilotq.md#telegram-feedback). Inspection of the delivery path found three causes of lost layout:
+
+- Rich Markdown and rich drafts passed a single model line break through unchanged. Markdown treats it as a soft break and renders a space, so status and error lines merged. `telegram::replies_keep_lines_and_compact_fallback` failed before the fix with `Task #12 is doing.\nA worker is on it.` instead of the hard-break form, and passes after it.
+- The HTML fallback rendered headings, bold, code and links only. Bullets, `*italic*`, `__bold__`, Markdown escapes and horizontal rules reached the chat as raw marks. The same test now checks them.
+- The plain draft fallback sent raw Markdown. It now uses the same escaped HTML subset.
+
+The owner's review of the relayed #81 ask found three more defects, fixed in the same task:
+
+- The question showed the CLI line `To answer: taskq answer N.K` and offered no buttons. It now drops that line and sends one inline button per option, the recommended one keeping its ★. A press is admitted like a reply with the option number, so grants, the fresh question revision and the stale-answer refusal apply unchanged.
+- Task messages and model replies showed bare long URLs and link previews. Task messages now use labeled HTML links; a bare URL in a reply or a service message (for example the deferred plan-run report) becomes a labeled link; every send disables link previews.
+- Repository paths such as `docs/status-notifications.md` were auto-linked by Telegram as `.md` domains. They now render as code.
+
+`telegram::links_are_labeled_and_paths_are_code` and `telegram::button_press_is_input` cover the conversions. `u82_ask_buttons_and_labeled_links` renders a plan, a status, an ask with options and a stale-press error through the fake Bot API: it checks the buttons, the press answer `19.2`, no `To answer` line, no bare URL, disabled previews and each link's target. It timed out on the bare-URL status before the fix and passes after it.
+
+The model instruction now asks for short paragraphs, flat lists, labeled links, file paths as code and no tables, nested lists, rules or HTML. The fake Bot API renders a hard break as a line break, so existing reply assertions keep their text. These are deterministic adapter checks with plan, status and error samples, not Telegram rendering or real-model qualification; the owner's chat check remains open.

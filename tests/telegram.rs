@@ -134,7 +134,8 @@ fn handle(stream: std::net::TcpStream, st: &State) {
     if method == "sendrichmessage" && f.rich_reject { return respond(&mut out,400,r#"{"ok":false,"error_code":400,"description":"Bad Request: rich messages not supported"}"#); }
     let mut body = body;
     if method == "sendrichmessage" {
-        body["text"] = json!(body["rich_message"]["markdown"].as_str().unwrap());
+        // Telegram shows a Markdown hard break as a plain line break (#82)
+        body["text"] = json!(body["rich_message"]["markdown"].as_str().unwrap().replace("  \n", "\n"));
     }
     if method == "editmessagetext" {
         if f.edit_gone {
@@ -1038,7 +1039,7 @@ fn u06_plan_revisions_then_held_create_start_and_one_status_message() {
     assert!(tq_calls(&d).is_empty(), "an older revision files nothing");
 
     push(&st, call(5, OWNER, None, OWNER, "task_run_plan", json!({"revision": 3})));
-    wait("filed and started", 15, || sent_has(&st, "re: ok: Plan revision 3: filed held, read back and started: #19 https://github.com/taskqorg/pilotq/issues/19"));
+    wait("filed and started", 15, || sent_has(&st, "re: ok: Plan revision 3: filed held, read back and started: #19 [pilotq#19](https://github.com/taskqorg/pilotq/issues/19)"));
     let calls = tq_calls(&d);
     assert_eq!((calls.len(), calls[0][0].as_str(), calls[0][1].as_str(), calls[1][0].as_str(), calls[1][1].as_str()), (2, "add", "Draft three", "start", "19"), "{calls:?}");
     let op = calls[0].iter().skip_while(|a| *a != "--op-id").nth(1).unwrap().clone();
@@ -1105,7 +1106,7 @@ fn u15_network_loss_after_ticket_two_reconciles_the_same_ids() {
     assert!(adds.iter().filter(|o| o.ends_with("-t2")).count() >= 2 && adds.iter().filter(|o| o.ends_with("-t1")).count() == 1, "{adds:?}");
     let first_start = calls.iter().position(|c| c[0] == "start").unwrap();
     assert!(calls[first_start..].iter().all(|c| c[0] == "start") && calls[first_start..].len() == 3, "start only after every create: {calls:?}");
-    assert!(sent_has(&st, "#20 https://github.com/taskqorg/pilotq/issues/20, #21"));
+    assert!(sent_has(&st, "#20 <a href=\"https://github.com/taskqorg/pilotq/issues/20\">pilotq#20</a>, #21"), "{:?}", texts(&st));
     stop(c, d);
 }
 
@@ -1193,6 +1194,61 @@ fn u07_question_relay_and_bound_answers() {
     assert!(answers[0].iter().any(|a| a.starts_with("pilotq-") && a.contains("-a")), "{answers:?}");
     assert!(sent(&st).iter().filter(|s| s["text"].as_str().unwrap().contains("written")).all(|s| s["message_thread_id"] == 5));
     assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE kind='answer'"), 3, "each reply is one recorded request");
+    stop(c, d);
+}
+
+/// Every `https://` in a sent text is a link target (`](url)` or `href="url"`), never a bare URL shown to the reader.
+fn bare_url(t: &str) -> bool {
+    t.match_indices("https://").any(|(i, _)| !t[..i].ends_with("](") && !t[..i].ends_with("href=\""))
+}
+
+fn press(id: i64, chat: i64, topic: Option<i64>, sender: i64, message: i64, data: &str) -> Value {
+    let mut m = json!({"message_id": message, "date": 1, "chat": text(0, chat, topic, sender, "")["message"]["chat"].clone(), "text": "question"});
+    if let Some(t) = topic { m["message_thread_id"] = json!(t); }
+    json!({"update_id": id, "callback_query": {"id": format!("invented-{id}"), "chat_instance": "x", "data": data, "message": m,
+        "from": {"id": sender, "is_bot": false, "first_name": "A"}}})
+}
+
+// #82 owner review (fake Bot API renders): a plan, a status, an ask with options and an error. The ask shows its options as
+// inline buttons without the CLI `To answer` line; a press answers with that option; a second press is refused with the
+// current state. Every message disables link previews, shows no bare URL, and each link targets the task's issue.
+#[test]
+fn u82_ask_buttons_and_labeled_links() {
+    let (d, st) = tq_setup("u82", true);
+    let c = spawn(&d, None);
+    let topic = Some(5);
+    let issue = "https://github.com/taskqorg/pilotq/issues/19";
+    push(&st, call(1, -100, topic, OWNER, "task_plan", plan(&["Docs"])));
+    wait("plan", 15, || sent_has(&st, "Plan revision 1 saved"));
+    push(&st, call(2, -100, topic, OWNER, "task_run_plan", json!({"revision": 1})));
+    wait("status", 15, || sent_has(&st, &format!("Task #19 ready: waiting for a free worker.\n<a href=\"{issue}\">Open the task</a>")));
+    assert!(sent_has(&st, &format!("started: #19 [pilotq#19]({issue})")), "{:?}", texts(&st));
+    set_task(&d, 19, |t| {
+        t["state"] = json!("ask");
+        t["card"] = json!("Done: drafted\nProblem: pick a wording, see [the spec](https://github.com/taskqorg/pilotq/blob/main/pilotq.md)\n1. short ★\n2. long\nTo answer: `taskq answer 19.K` or comment `K` or the option text");
+    });
+    wait("question", 15, || sent_has(&st, "Task #19 asks:"));
+    let q = sent(&st).into_iter().find(|s| s["text"].as_str().unwrap().starts_with("Task #19 asks:")).unwrap();
+    assert_eq!(q["text"], format!("Task #19 asks:\nDone: drafted\nProblem: pick a wording, see <a href=\"https://github.com/taskqorg/pilotq/blob/main/pilotq.md\">the spec</a>\n1. short ★\n2. long\nPress an option or reply to this message to answer.\n<a href=\"{issue}\">Open the task</a>"));
+    assert_eq!(q["reply_markup"]["inline_keyboard"], json!([[{"text": "1. short ★", "callback_data": "answer:1"}], [{"text": "2. long", "callback_data": "answer:2"}]]));
+    push(&st, press(3, -100, topic, OWNER, q["id"].as_i64().unwrap(), "answer:2"));
+    wait("press answers", 15, || sent_has(&st, "Answer written to task #19; it is now doing: a worker is on it."));
+    let answers: Vec<_> = tq_calls(&d).into_iter().filter(|c| c[0] == "answer").collect();
+    assert_eq!((answers.len(), answers[0][1].as_str()), (1, "19.2"), "{answers:?}");
+    push(&st, press(4, -100, topic, OWNER, q["id"].as_i64().unwrap(), "answer:1"));
+    wait("stale press refused", 15, || sent_has(&st, "That question is no longer current; nothing was written. Task #19 is doing"));
+    assert_eq!(tq_calls(&d).into_iter().filter(|c| c[0] == "answer").count(), 1, "a stale press writes nothing");
+    wait("delivered", 15, || query(&d, "SELECT count(*) FROM outbox WHERE state NOT IN ('delivered','superseded')") == 0);
+    for m in sent(&st) {
+        let t = m["text"].as_str().unwrap_or("");
+        assert_eq!(m["link_preview_options"]["is_disabled"], true, "no link preview: {m}");
+        assert!(!bare_url(t) && !t.contains("To answer"), "{t}");
+        for (i, _) in t.match_indices("https://github.com/") {
+            let target = &t[i..i + t[i..].find(['"', ')']).unwrap()];
+            assert!(target == issue || target.ends_with("/blob/main/pilotq.md"), "{target}");
+        }
+    }
+    assert!(st.lock().unwrap().reactions.iter().any(|r| r["message_id"] == q["id"]), "a press is acknowledged with 👀 on the question");
     stop(c, d);
 }
 
@@ -1451,7 +1507,7 @@ fn u04_f04_owner_comment_and_label_once_and_crash_readback() {
     let comments = |d: &Path| gh_state(d)["taskqorg/pilotq"]["5"]["comments"].as_array().map_or(0, Vec::len);
     let c = spawn(&d, None);
     push(&st, call(1, OWNER, None, OWNER, "issue_comment", json!({"project": "pilotq", "issue": "5", "body": "Owner note."})));
-    wait("comment", 15, || sent_has(&st, "re: ok: Comment written once on taskqorg/pilotq#5 and read back: https://github.com/taskqorg/pilotq/issues/5#issuecomment-500. Operation pilotq-"));
+    wait("comment", 15, || sent_has(&st, "re: ok: Comment written once on taskqorg/pilotq#5 and read back: [pilotq#5](https://github.com/taskqorg/pilotq/issues/5#issuecomment-500). Operation pilotq-"));
     push(&st, call(2, OWNER, None, OWNER, "issue_label", json!({"project": "pilotq", "issue": "#5", "label": "pilotq-live"})));
     wait("label", 15, || sent_has(&st, "re: ok: Label written once on taskqorg/pilotq#5 and read back: label pilotq-live on taskqorg/pilotq#5."));
     push(&st, call(3, 8, None, 8, "issue_comment", json!({"project": "pilotq", "issue": "5", "body": "Not the owner."})));
@@ -1471,7 +1527,7 @@ fn u04_f04_owner_comment_and_label_once_and_crash_readback() {
     killed(c);
     assert_eq!((comments(&d), query(&d, "SELECT count(*) FROM effects WHERE state='intent'")), (2, 1));
     let c = spawn(&d, None);
-    wait("found on readback", 15, || sent_has(&st, "After a restart, the comment on taskqorg/pilotq#5 was found written once (https://github.com/taskqorg/pilotq/issues/5#issuecomment-501); it is not repeated."));
+    wait("found on readback", 15, || sent_has(&st, "After a restart, the comment on taskqorg/pilotq#5 was found written once (<a href=\"https://github.com/taskqorg/pilotq/issues/5#issuecomment-501\">pilotq#5</a>); it is not repeated."));
     assert_eq!((comments(&d), posts(&d)), (2, 3), "not repeated");
     drop(c);
 
@@ -1691,7 +1747,7 @@ fn a8_live_board_run() {
     assert!(issue.contains("taskq: hold") && issue.contains("taskq: start"), "held, then started: {issue}");
     say(&format!("filed and started #{n}"));
 
-    let status = |s: &str| format!("Task #{n} {s}.\n{url}");
+    let status = |s: &str| format!("Task #{n} {s}.\n<a href=\"{url}\">Open the task</a>");
     let doing = status("doing: a worker is on it");
     let exact = |t: &str| sent(&st).iter().any(|s| s["text"] == t);
     wait("doing", 1800, || exact(&doing));
@@ -1700,7 +1756,7 @@ fn a8_live_board_run() {
     c.wait().unwrap();
     say("PilotQ killed while doing; restarting");
     c = spawn(&d, None);
-    let closed = format!("Task #{n} is closed on the board; its verdict and evidence are on the issue: {url}");
+    let closed = format!("Task #{n} is closed on the board; its verdict and evidence are on the <a href=\"{url}\">issue</a>.");
     let end = Instant::now() + Duration::from_secs(7200);
     while !exact(&closed) {
         assert!(Instant::now() < end, "timed out waiting for the reviewer outcome: {:?}", texts(&st));
@@ -2268,7 +2324,7 @@ fn u39_registered_boards_steer_requeue_and_stale_answer() {
     push(&st, call(2, OWNER, None, OWNER, "task_plan", p));
     wait("other plan", 15, || sent_has(&st, "Plan revision 1 saved"));
     push(&st, call(3, OWNER, None, OWNER, "task_run_plan", json!({"revision":1})));
-    wait("other start", 15, || sent_has(&st, "https://github.com/taskqorg/other/issues/19"));
+    wait("other start", 15, || sent_has(&st, "(https://github.com/taskqorg/other/issues/19)"));
     wait("other held start", 15, || board(&second)["tasks"]["19"]["state"] == "ready");
     set_task(&second, 19, |t| t["state"] = json!("doing"));
     push(&st, call(4, OWNER, None, OWNER, "task_steer", json!({"project":"other", "task":"19", "text":"Keep the scope; $(false) is literal."})));
@@ -2312,7 +2368,7 @@ fn u39_registered_boards_steer_requeue_and_stale_answer() {
     drop(c);
     fs::remove_file(second.join("board-down")).unwrap();
     let c = spawn(&d, None);
-    wait("control reconciled", 15, || sent_has(&st, "reconciled: \"accepted\" \"ready\""));
+    wait("control reconciled", 15, || sent_has(&st, "reconciled: &quot;accepted&quot; &quot;ready&quot;"));
     assert_eq!(board(&second)["tasks"]["19"]["revision"], revision, "reconciliation returns the first receipt without another effect");
     let writes = tq_calls(&second);
     assert_eq!(writes.len(), 6);

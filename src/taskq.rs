@@ -135,12 +135,18 @@ fn find(s: &Value, task: i64) -> Option<&Value> {
     s["tasks"].as_array()?.iter().find(|t| t["n"] == task)
 }
 
+// Task messages render as Telegram HTML with a labeled link, never a bare URL (#82).
 fn status_text(board: &str, task: i64, state: &str) -> String {
-    format!("Task #{task} {}.\n{}", describe(state), url(board, task))
+    format!("Task #{task} {}.\n[Open the task]({})", describe(state), url(board, task))
 }
 
-fn question_text(board: &str, task: i64, card: &str) -> String {
-    format!("Task #{task} asks:\n{card}\nReply to this message to answer.\n{}", url(board, task))
+/// The card without its CLI `To answer:` line: in Telegram an option button or a reply answers (#82).
+fn card(c: &str) -> String {
+    c.lines().filter(|l| !l.starts_with("To answer")).collect::<Vec<_>>().join("\n")
+}
+
+fn question_text(board: &str, task: i64, c: &str) -> String {
+    format!("Task #{task} asks:\n{}\nPress an option or reply to this message to answer.\n[Open the task]({})", card(c), url(board, task))
 }
 
 fn now() -> i64 {
@@ -250,7 +256,7 @@ fn dispatch(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Value) -
                         text += &format!("\nAttempt {} ({}, {}): {}", e["attempt"], e["role"].as_str().unwrap_or(""), e["state"].as_str().unwrap_or(""), e["reason"].as_str().unwrap_or(""));
                     }
                     if let Some(c) = t["card"].as_str() {
-                        text += &format!("\nOpen question:\n{c}");
+                        text += &format!("\nOpen question:\n{}", card(c));
                     }
                     text
                 }
@@ -446,7 +452,7 @@ fn answer(tq: &Taskq, j: &Mutex<Journal>, a: &Answer, resumed: bool) {
     let current = |j: &Mutex<Journal>| -> String {
         let fresh = tq.snapshot_for(&board).ok().and_then(|s| find(&s, n).cloned());
         match fresh.or_else(|| j.lock().unwrap().task(&a.project, n).ok().flatten().map(|(s, r, c)| json!({"state": s, "revision": r, "card": c}))) {
-            Some(t) if t["state"] == "ask" => format!("Task #{n} now asks:\n{}", t["card"].as_str().unwrap_or("")),
+            Some(t) if t["state"] == "ask" => format!("Task #{n} now asks:\n{}", card(t["card"].as_str().unwrap_or(""))),
             Some(t) => format!("Task #{n} is {}.", describe(t["state"].as_str().unwrap_or(""))),
             None => format!("Task #{n} is not open."),
         }
@@ -516,7 +522,7 @@ fn scan(tq: &Taskq, j: &Mutex<Journal>) -> bool {
                 let (state, card) = (t["state"].as_str().unwrap_or(""), t["card"].as_str());
                 j.observe(&project, n, state, t["revision"].as_i64().unwrap_or(0), card, &status_text(&board, n, state), card.map(|c| question_text(&board, n, c)).as_deref(), now())
             }
-            None => j.close_task(&project, n, &format!("Task #{n} is closed on the board; its verdict and evidence are on the issue: {}", url(&board, n)), now()),
+            None => j.close_task(&project, n, &format!("Task #{n} is closed on the board; its verdict and evidence are on the [issue]({}).", url(&board, n)), now()),
         };
         match r {
             Ok(q) => queued |= q,
