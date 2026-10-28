@@ -34,6 +34,13 @@ struct Fake {
     actions: Vec<Value>,
     /// editMessageText answers "message to edit not found" (a deleted status message, L12).
     edit_gone: bool,
+    reactions: Vec<Value>,
+    api: Vec<(String, Value, Instant)>,
+    reaction_fail: bool,
+    draft_fail: bool,
+    rich_reject: bool,
+    rate_method: Option<&'static str>,
+
 }
 
 type State = Arc<Mutex<Fake>>;
@@ -93,7 +100,25 @@ fn handle(stream: std::net::TcpStream, st: &State) {
         f.actions.push(body);
         return respond(&mut out, 200, r#"{"ok":true,"result":true}"#);
     }
+    f.api.push((method.clone(),body.clone(),Instant::now()));
+    if f.rate_method == Some(method.as_str()) {
+        f.rate_method = None;
+        return respond(&mut out,429,r#"{"ok":false,"error_code":429,"description":"Too Many Requests","parameters":{"retry_after":3}}"#);
+    }
+    if method == "setmessagereaction" {
+        if f.reaction_fail { return respond(&mut out,400,r#"{"ok":false,"error_code":400,"description":"Bad Request: reaction not allowed"}"#); }
+        f.reactions.push(body);
+        return respond(&mut out,200,r#"{"ok":true,"result":true}"#);
+    }
+    if method == "sendrichmessagedraft" || method == "sendmessagedraft" {
+        return if f.draft_fail { respond(&mut out,404,r#"{"ok":false,"error_code":404,"description":"Not Found"}"#) }
+        else { respond(&mut out,200,r#"{"ok":true,"result":true}"#) };
+    }
+    if method == "sendrichmessage" && f.rich_reject { return respond(&mut out,400,r#"{"ok":false,"error_code":400,"description":"Bad Request: rich messages not supported"}"#); }
     let mut body = body;
+    if method == "sendrichmessage" {
+        body["text"] = json!(body["rich_message"]["html"].as_str().unwrap().replace("&quot;", "\"").replace("&lt;","<").replace("&gt;",">").replace("&amp;","&"));
+    }
     if method == "editmessagetext" {
         if f.edit_gone {
             return respond(&mut out, 400, r#"{"ok":false,"error_code":400,"description":"Bad Request: message to edit not found"}"#);
@@ -176,6 +201,12 @@ while IFS= read -r l; do
     echo '{"id":3,"result":{"turn":{"id":"u1","status":"inProgress","items":[]}}}'
     done='{"method":"turn/completed","params":{"threadId":"'$th'","turn":{"id":"u1","status":"completed","items":[]}}}'
     case "$text" in
+    stream*)
+      echo '{"method":"item/agentMessage/delta","params":{"itemId":"m1","delta":"**Hello** <raw> & "}}'
+      sleep 1
+      echo '{"method":"item/agentMessage/delta","params":{"itemId":"m1","delta":"world"}}'
+      sleep 3
+      text='**Hello** <raw> & world' ;;
     slow*) sleep 20 ;;
     stall*) sleep 20; exit 0 ;;
     exit*) exit 0 ;;
@@ -298,7 +329,8 @@ fn f01_crash_points_keep_each_input_once() {
 
     st.lock().unwrap().updates.push(update(2, 11, OWNER));
     let c = spawn(&d, None);
-    wait("both acknowledgements", 15, || st.lock().unwrap().sent.len() == 2);
+    wait("both reactions", 15, || st.lock().unwrap().reactions.len() == 2);
+    wait("retention notice",15,|| st.lock().unwrap().sent.len()==1);
     wait("cursor past update 2", 15, || try_query(&d, "SELECT value FROM meta WHERE key='cursor'") == Some(3));
     let mut c = c;
     c.kill().unwrap(); // after cursor advancement
@@ -307,13 +339,15 @@ fn f01_crash_points_keep_each_input_once() {
     let c = spawn(&d, None);
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(query(&d, "SELECT count(*) FROM requests"), 2);
-    let sent = st.lock().unwrap().sent.clone();
-    assert_eq!(sent.len(), 2, "no acknowledgement repeated after restart: {sent:?}");
-    for (i, s) in sent.iter().enumerate() {
-        assert_eq!(s["chat_id"], 11);
-        assert_eq!(s["reply_parameters"]["message_id"], 101 + i as i64);
-        assert!(s["text"].as_str().unwrap().contains(&format!("#{}", i + 1)));
+    let f = st.lock().unwrap();
+    assert_eq!(f.sent.len(),1,"retention notice only");
+    assert_eq!(f.reactions.len(),2,"reactions not repeated after restart");
+    for (i,s) in f.reactions.iter().enumerate() {
+        assert_eq!(s["chat_id"],11);
+        assert_eq!(s["message_id"],101+i as i64);
+        assert_eq!(s["reaction"][0]["emoji"],"👀");
     }
+    drop(f);
     let mut c = c;
     c.kill().unwrap();
     c.wait().unwrap();
@@ -365,10 +399,10 @@ fn idle_long_poll_is_healthy() {
 // falls back to plain text and records the possible visible duplicate; the request is not admitted or run again.
 #[test]
 fn f05_delivery_faults_are_bounded() {
-    let (d, st) = setup("f05", vec![update(9, 31, OWNER), update(10, 32, OWNER)]);
+    let (d, st) = setup("f05", vec![update(9, 31, OWNER), {let mut u=update(10,32,OWNER); u["message"].as_object_mut().unwrap().remove("text"); u["message"]["photo"]=json!([]); u}]);
     st.lock().unwrap().faults = VecDeque::from(["drop", "forbidden", "parse", "429", "down"]);
     let mut c = spawn(&d, None);
-    wait("delivery", 30, || try_query(&d, "SELECT count(*) FROM outbox WHERE state IN ('delivered','held')") == Some(2));
+    wait("delivery", 30, || try_query(&d, "SELECT count(*) FROM outbox WHERE kind<>'reaction' AND state IN ('delivered','held')") == Some(2));
     c.kill().unwrap();
     c.wait().unwrap();
     assert_eq!(query(&d, "SELECT count(*) FROM outbox WHERE chat=31 AND state='delivered' AND attempts=5 AND possible_duplicate=1 AND html IS NULL"), 1);
@@ -437,14 +471,72 @@ fn u01_follow_up_resumes_the_conversation() {
     wait("first answer", 15, || sent_has(&st, "re: first @ th-1"));
     st.lock().unwrap().updates.push(text(2, OWNER, None, OWNER, "follow"));
     wait("follow-up answer", 15, || sent_has(&st, "re: follow @ th-1"));
-    wait("deliveries recorded", 5, || try_query(&d, "SELECT count(*) FROM outbox WHERE state='delivered'") == Some(4));
+    wait("deliveries recorded", 5, || try_query(&d, "SELECT count(*) FROM outbox WHERE state='delivered'") == Some(5));
     assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE state='answered' AND reply LIKE 're: %'"), 2);
     let log = fs::read_to_string(d.join("codex.log")).unwrap();
     assert_eq!(log.matches("thread/start").count(), 1, "{log}");
-    assert!(log.contains(r#""method":"thread/resume","params":{"threadId":"th-1""#), "{log}");
+    assert!(log.contains(r#""method":"thread/resume""#) && log.contains(r#""threadId":"th-1""#), "{log}");
     let t = texts(&st);
-    assert!(t[0].contains("<b>#1</b> is queued") && t[1].starts_with("re: first"), "acknowledgement precedes the answer: {t:?}");
+    assert!(t[0].contains("Your requests are recorded") && t[1].starts_with("re: first"), "one notice precedes the answer: {t:?}");
+    assert_eq!(st.lock().unwrap().reactions.len(),2);
+    assert!(st.lock().unwrap().sent.iter().all(|s|s.get("reply_parameters").is_none()),"DM answers do not quote input");
     stop(c, d);
+}
+
+// §4/§12, #68: reaction and draft failures never lose the final answer; explicit rich rejection and entity errors
+// fall back through durable HTML/plain chunks. A successful rich message keeps its markup escaped and DM correlation absent.
+#[test]
+fn telegram_reply_delivery_fallbacks() {
+    for (tag,fail) in [("reply-rich",false),("reply-fallbacks",true)] {
+        let (d,st)=setup(tag,vec![text(1,OWNER,None,OWNER,"stream")]);
+        limits(&d,&script(&d,"fake-codex",FAKE),json!({"first_event":3,"silent":6,"deadline":12}));
+        {
+            let mut f=st.lock().unwrap(); f.reaction_fail=fail; f.draft_fail=fail; f.rich_reject=fail;
+        }
+        let started=Instant::now();
+        let c=spawn(&d,None);
+        wait("reaction attempt",5,||st.lock().unwrap().api.iter().any(|a|a.0=="setmessagereaction"));
+        assert!(started.elapsed()<Duration::from_secs(5));
+        if fail {
+            wait("draft fallback",10,||st.lock().unwrap().api.iter().any(|a|a.0=="sendmessagedraft"));
+            st.lock().unwrap().faults.push_back("parse");
+        }
+        wait("final delivered",15,||try_query(&d,"SELECT count(*) FROM outbox WHERE kind='rich_part' AND state='delivered' OR kind='rich' AND state='delivered'")==Some(1));
+        assert_eq!(query(&d,"SELECT count(*) FROM requests WHERE state='answered'"),1);
+        let f=st.lock().unwrap();
+        assert!(f.sent.iter().all(|m|m.get("reply_parameters").is_none()));
+        let drafts:Vec<_>=f.api.iter().filter(|a|a.0.ends_with("draft")).collect();
+        assert!(!drafts.is_empty());
+        for pair in drafts.windows(2) { assert!(pair[1].2.duration_since(pair[0].2)>=Duration::from_secs(1)); }
+        let rich=f.api.iter().find(|a|a.0=="sendrichmessage").unwrap();
+        let markup=rich.1["rich_message"]["html"].as_str().unwrap();
+        assert!(markup.contains("<b>Hello</b>") && markup.contains("&lt;raw&gt; &amp; world"),"{markup}");
+        assert!(!f.sent.iter().any(|m|m["text"].as_str().unwrap_or("").contains("Request #")));
+        if fail {
+            assert!(f.sent.iter().any(|m|m["text"]=="Received."));
+            assert_eq!(query(&d,"SELECT count(*) FROM outbox WHERE kind='rich_part' AND html IS NULL AND state='delivered'"),1);
+        } else { assert_eq!(f.reactions.len(),1); }
+        drop(f);
+        stop(c,d);
+    }
+}
+
+// §4/§12: reaction and draft 429s delay every later send in that chat; drafts never fail the answer.
+#[test]
+fn telegram_reply_rate_limits() {
+    for method in ["setmessagereaction", "sendrichmessagedraft"] {
+        let (d,st)=setup(method,vec![text(1,OWNER,None,OWNER,"stream")]);
+        limits(&d,&script(&d,"fake-codex",FAKE),json!({"first_event":3,"silent":6,"deadline":12}));
+        st.lock().unwrap().rate_method=Some(method);
+        let c=spawn(&d,None);
+        wait("final delivered",20,||try_query(&d,"SELECT count(*) FROM outbox WHERE kind='rich' AND state='delivered'")==Some(1));
+        let f=st.lock().unwrap();
+        let index=f.api.iter().position(|a|a.0==method).unwrap();
+        let next=f.api[index+1..].iter().find(|a|a.1["chat_id"]==OWNER).unwrap();
+        assert!(next.2.duration_since(f.api[index].2)>=Duration::from_secs(3),"{method}: cooldown ignored");
+        assert_eq!(query(&d,"SELECT count(*) FROM requests WHERE state='answered'"),1);
+        drop(f); stop(c,d);
+    }
 }
 
 // U12: a slow turn, a follow-up and /stop in one topic, a question in another topic. /stop cancels only the running turn,
@@ -617,7 +709,7 @@ fn f06_poll_failure_is_visible_while_delivery_works() {
     wait("admitted", 15, || try_query(&d, "SELECT count(*) FROM requests") == Some(1));
     st.lock().unwrap().poll_fail = true;
     wait("poll failed", 15, || try_query(&d, "SELECT count(*) FROM health WHERE source='poll' AND state='failed' AND reason IS NOT NULL") == Some(1));
-    wait("delivered", 15, || try_query(&d, "SELECT count(*) FROM outbox WHERE state='delivered'") == Some(1));
+    wait("delivered", 15, || try_query(&d, "SELECT count(*) FROM outbox WHERE state='delivered'") == Some(2));
     assert_eq!(query(&d, "SELECT count(*) FROM health WHERE source='delivery' AND state='ok'"), 1);
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(query(&d, "SELECT count(*) FROM health WHERE source='poll' AND state='failed'"), 1, "no later success hides the failure");
@@ -639,7 +731,7 @@ fn crash_during_turn_requeues_once() {
     wait("answer after restart", 20, || sent_has(&st, "re: once @ th-2"));
     assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE state='answered'"), 1);
     assert_eq!(query(&d, "SELECT count(*) FROM runs WHERE request_id=1 AND state='interrupted'"), 1);
-    assert_eq!(texts(&st).iter().filter(|t| t.contains("is queued")).count(), 1, "the acknowledgement is not repeated: {:?}", texts(&st));
+    assert_eq!(st.lock().unwrap().reactions.len(), 1, "the acknowledgement is not repeated: {:?}", texts(&st));
     stop(c, d);
 }
 
@@ -1249,6 +1341,26 @@ fn stderr_of(mut c: Svc) -> String {
     s
 }
 
+// §5/R4/R13: available projects come from the registry and current grants, with no key or inferred directory access.
+#[test]
+fn project_list_is_scoped_and_marks_current() {
+    let (d,st)=direct_setup("project-list");
+    ok(cli(&d,&["users","grant","8","chat","project:other"]));
+    let c=spawn(&d,None);
+    push(&st,call(1,8,None,8,"project_use",json!({"project":"other"})));
+    wait("switch",15,||query(&d,"SELECT count(*) FROM requests WHERE state='answered'")==1);
+    push(&st,call(2,8,None,8,"project_list",json!({})));
+    wait("list",15,||query(&d,"SELECT count(*) FROM requests WHERE state='answered'")==2);
+    let answer=query_text(&d,"SELECT reply FROM requests WHERE id=2");
+    assert!(answer.contains("other") && answer.contains("true") && !answer.contains("pilotq"),"{answer}");
+    assert!(gh_calls(&d).is_empty(),"no key or GitHub call");
+    ok(cli(&d,&["users","revoke","8","project:other"]));
+    push(&st,call(3,8,None,8,"project_list",json!({})));
+    wait("empty list after revoke",15,||query(&d,"SELECT count(*) FROM requests WHERE state='answered'")==3);
+    assert!(query_text(&d,"SELECT reply FROM requests WHERE id=3").contains("[]"));
+    stop(c,d);
+}
+
 // U03, U21, U23 (key values), A2: the owner's key-backed read returns the issue with its source time; the key value the tool
 // echoed is scrubbed before the model and Telegram see it; a granted person without the key is refused at dispatch and nothing
 // runs. The CLI reads the value from stdin, keeps it in an owner-only file and never prints it; the value appears in no journal,
@@ -1587,9 +1699,8 @@ fn a8_live_board_run() {
         let r = query_text(&d, &format!("SELECT reply FROM requests WHERE id={id}"));
         assert!(all.iter().any(|s| s["text"] == r.as_str() && s["chat_id"] == chat && s.get("message_thread_id").and_then(Value::as_i64) == topic), "reply {id} in its route");
     }
-    // acknowledgements go out as HTML: `Received. Request <b>#N</b> is queued.`
-    let acks = all.iter().filter(|s| s["text"].as_str().unwrap().starts_with("Received. Request <b>#")).count() as i64;
-    assert_eq!(acks, query(&d, "SELECT count(*) FROM requests"), "one acknowledgement per request");
+    assert_eq!(st.lock().unwrap().reactions.len() as i64,query(&d,"SELECT count(*) FROM requests WHERE kind IN ('text','answer') AND state<>'failed'"),"one reaction per accepted text");
+    assert!(!all.iter().any(|s|s["text"].as_str().unwrap_or("").contains("is queued")));
     c.kill().unwrap();
     c.wait().unwrap();
     a8_after(&d, n);

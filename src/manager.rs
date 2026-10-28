@@ -150,6 +150,7 @@ impl Codex {
         mut tool: impl FnMut(&str, &str, Option<&str>),
         mut call: impl FnMut(&str, &Value, &str) -> (bool, String),
         mut rebuild: impl FnMut() -> Result<Value, String>,
+        mut preview: impl FnMut(&str),
     ) -> (Option<String>, Option<String>, Outcome) {
         // the first-event watch starts once this turn may spawn, before Codex runs (§ 12)
         let mut starting = Some(START.lock().unwrap_or_else(|e| e.into_inner()));
@@ -162,6 +163,7 @@ impl Codex {
         let (mut first, mut last, mut error) = (false, start, None::<String>);
         let mut input = input.clone();
         let mut resuming = thread.is_some();
+        let (mut draft_item, mut draft) = (String::new(), String::new());
         let lim = &self.limits;
         let mut version = String::from("unknown");
         // dynamic tools are an experimental app-server field, negotiated only when PilotQ offers some
@@ -241,12 +243,12 @@ impl Codex {
                     p.send(json!({"method": "initialized"}));
                     let mut params = json!({"cwd": self.workspace, "approvalPolicy": "never", "sandbox": "read-only"});
                     if let Some((tools, instructions)) = dynamic {
-                        // ponytail: tools ride on thread/start and persist with the thread; a resumed thread keeps the set it started with
+                        // Tools are fixed at thread creation; schema upgrades explicitly rebuild older catalogues from the journal.
                         params["dynamicTools"] = tools.clone();
                         params["developerInstructions"] = json!(instructions);
                     }
                     match &thread {
-                        Some(t) => p.send(json!({"id": 2, "method": "thread/resume", "params": {"threadId": t, "cwd": params["cwd"], "approvalPolicy": "never", "sandbox": "read-only"}})),
+                        Some(t) => { params["threadId"] = json!(t); params.as_object_mut().unwrap().remove("dynamicTools"); p.send(json!({"id": 2, "method": "thread/resume", "params": params})); },
                         None => p.send(json!({"id": 2, "method": "thread/start", "params": params})),
                     }
                 }
@@ -264,6 +266,12 @@ impl Codex {
                     let item = &m["params"]["item"];
                     let status = (phase == "item/completed").then(|| item["status"].as_str().unwrap_or("completed"));
                     tool(item["type"].as_str().unwrap_or(""), item["id"].as_str().unwrap_or(""), status);
+                }
+                (_, "item/agentMessage/delta") => {
+                    let item = m["params"]["itemId"].as_str().unwrap_or("");
+                    if item != draft_item { draft.clear(); draft_item=item.to_string(); }
+                    draft.push_str(m["params"]["delta"].as_str().unwrap_or(""));
+                    preview(&draft);
                 }
                 (_, "item/completed") if m["params"]["item"]["type"] == "agentMessage" => {
                     answer = m["params"]["item"]["text"].as_str().unwrap_or("").to_string();
@@ -297,13 +305,19 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
         }
         None => format!("You are PilotQ. {}", direct::INSTRUCTIONS),
     };
+    let instructions = format!("{instructions} Write user-facing answers in Markdown. Do not include internal request numbers in ordinary answers; those belong in status, audit, failure and stop messages.");
     let tools = Value::Array(tools);
     // Read on every turn, including resumed threads and empty profiles after forget (§ 6, R10, R13).
     // Keep the person's text separate: neither profile values nor old summaries are authorization.
     let profile = j.lock().unwrap().profile(r.request)?;
-    let input = json!([{"type": "text", "text": profile.to_string()}, {"type": "text", "text": r.text}]);
+    let refresh = j.lock().unwrap().refresh_tools(r)?;
+    let mut input = json!([{"type": "text", "text": profile.to_string()}, {"type": "text", "text": r.text}]);
+    if refresh {
+        let context=j.lock().unwrap().rebuild(r,now())?;
+        input.as_array_mut().unwrap().insert(0,json!({"type":"text","text":context.to_string()}));
+    }
     let (thread, model, outcome) = codex.turn(
-        r.thread.as_deref(),
+        if refresh {None} else {r.thread.as_deref()},
         &input,
         Some((&tools, &instructions)),
         || j.lock().unwrap().fenced(r).map(|f| !f).unwrap_or(true),
@@ -334,6 +348,7 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
             (ok, out)
         },
         || j.lock().unwrap().rebuild(r, now()),
+        |text| { let _ = j.lock().unwrap().preview(r, &d.keys.scrub(text)); },
     );
     let j = j.lock().unwrap();
     let health = match &outcome {

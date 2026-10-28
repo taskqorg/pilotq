@@ -368,10 +368,13 @@ fn a40_live_management() {
             json!({"ignored_update":1,"second_user_request":id})
         });
         h.case("discussion", |h| {
-            let (id, reply) = h.model("Discuss briefly why release checks matter. Do not plan or execute anything.");
+            let (id, reply) = h.model("Use project_list to show which registered projects I may access, then discuss briefly why release checks matter. Do not plan or execute anything.");
             assert_eq!(query(&h.d,"SELECT count(*) FROM plans"),0);
             assert!(!h.calls().iter().any(|c| c["args"][0] == "add"));
-            json!({"request":id,"reply":reply})
+            assert_eq!(query(&h.d,&format!("SELECT count(*) FROM audit_events WHERE request_id={id} AND target='project_list' AND kind='call'")),1);
+            assert!(h.st.lock().unwrap().reactions.iter().any(|r|r["chat_id"]==CHAT));
+            assert!(!sent(&h.st).iter().any(|m|m["text"].as_str().unwrap_or("").contains("is queued")));
+            json!({"request":id,"reply":reply,"project_list_called":true,"reaction_ack":true})
         });
         h.case("plan", |h| {
             let (id, _) = h.model("Use task_plan to save revision 1 for project pilotq, exactly one docs ticket: A40 scripted release-check navigation verification. Goal: exercise the automatic management lifecycle without code changes or ordinary workers. Acceptance: scripted question and answer, then scripted reviewer outcome; this is a fixture, not a request to implement or publish changes. Scope tests only. Do not run the plan yet. Show the saved revision.");

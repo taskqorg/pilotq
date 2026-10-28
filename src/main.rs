@@ -265,7 +265,7 @@ fn service_run(t: &Tool) -> ! {
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("tokio runtime");
             rt.block_on(async {
-                tokio::join!(telegram::poll(bot.clone(), j.clone(), wake.clone()), telegram::typing(bot.clone(), j.clone(), deadline), telegram::deliver(bot, j, wake))
+                tokio::join!(telegram::poll(bot.clone(), j.clone(), wake.clone()), telegram::typing(bot.clone(), j.clone(), deadline), telegram::drafts(bot.clone(), j.clone()), telegram::deliver(bot, j, wake))
             });
         });
         lock
