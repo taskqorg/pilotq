@@ -4,7 +4,7 @@ use crate::journal::{Delivery, Input, Journal, Sent};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use teloxide::prelude::*;
-use teloxide::types::{ChatAction, MediaKind, MessageId, MessageKind, ParseMode, ReplyParameters, ThreadId, UpdateKind};
+use teloxide::types::{ChatAction, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, MediaKind, MessageId, MessageKind, ParseMode, ReplyParameters, ThreadId, UpdateKind};
 use teloxide::{ApiError, RequestError};
 use tokio::sync::Notify;
 use serde_json::{Value, json};
@@ -30,6 +30,24 @@ pub(crate) fn fault(point: &str) {
 /// A person's message, else None. Service messages (topic created, chat migrated, member joined, pin) are not input: they get an
 /// ID-only disposition and no reply. Found on the live test bot, where each one drew an "unsupported" reply.
 fn input(kind: &UpdateKind) -> Option<Input> {
+    // A press on a relayed question's option button is the presser's answer to that question (#82); admission and the
+    // answer checks treat it like a reply with the option number.
+    if let UpdateKind::CallbackQuery(q) = kind {
+        let m = q.message.as_ref()?.regular_message()?;
+        let k = q.data.as_deref()?.strip_prefix("answer:")?;
+        return Some(Input {
+            image: None,
+            language: q.from.language_code.clone(),
+            chat: m.chat.id.0,
+            topic: m.thread_id.map(|t| t.0.0 as i64),
+            sender: Some(q.from.id.0 as i64),
+            name: Some(q.from.full_name()),
+            message: m.id.0 as i64,
+            kind: "button",
+            text: Some(k.into()),
+            reply_to: Some(m.id.0 as i64),
+        });
+    }
     let UpdateKind::Message(m) = kind else { return None };
     let MessageKind::Common(c) = &m.kind else { return None };
     if matches!(c.media_kind, MediaKind::Migration(_)) {
@@ -173,18 +191,96 @@ fn failed(e: RequestError, backoff: i64) -> Sent {
     }
 }
 
+/// A bare URL becomes a short labeled link and a repository file path becomes code, so a reply shows no long URL and
+/// Telegram does not auto-link `docs/x.md` as a `.md` domain (#82). Code, fences and written `[label](url)` links stay as they are.
+// ponytail: word-level scan with a fixed extension list; a Markdown tokenizer only if labels or paths need more cases.
+fn tidy(text: &str) -> String {
+    const FILES: [&str; 15] = ["md", "rs", "sh", "py", "json", "toml", "yml", "yaml", "txt", "lock", "js", "ts", "html", "css", "sql"];
+    fn label(u: &url::Url) -> String {
+        let seg: Vec<&str> = u.path_segments().map(|s| s.filter(|p| !p.is_empty()).collect()).unwrap_or_default();
+        match (u.host_str().unwrap_or(""), seg.as_slice()) {
+            ("github.com", [_, repo, "issues" | "pull", n, ..]) => format!("{repo}#{n}"),
+            ("github.com", [_, _, "blob" | "tree", _, .., file]) => file.to_string(),
+            ("github.com", [owner, repo, ..]) => format!("{owner}/{repo}"),
+            (host, _) => host.trim_start_matches("www.").to_string(),
+        }
+    }
+    fn word(w: &str) -> String {
+        let core = w.trim_start_matches(['(', '"', '*']);
+        let start = w.len() - core.len();
+        let core = core.trim_end_matches(['.', ',', ';', ':', '!', '?', ')', '"', '*']);
+        let (head, tail) = (&w[..start], &w[start + core.len()..]);
+        if let Some(u) = url::Url::parse(core).ok().filter(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some()) {
+            return format!("{head}[{}]({core}){tail}", label(&u));
+        }
+        let path = core.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && FILES.contains(&ext))
+            && core.chars().all(|c| c.is_ascii_alphanumeric() || "_-./".contains(c));
+        if path { format!("{head}`{core}`{tail}") } else { w.to_string() }
+    }
+    let mut out = String::new();
+    let mut fence = false;
+    for line in text.split_inclusive('\n') {
+        let t = line.trim_start();
+        if t.starts_with("```") || t.starts_with("~~~") { fence = !fence; }
+        if fence || t.starts_with("```") || t.starts_with("~~~") || line.matches('`').count() % 2 == 1 { out += line; continue; }
+        let (body, end) = line.strip_suffix('\n').map_or((line, ""), |b| (b, "\n"));
+        let mut label_open = false;
+        for (k, part) in body.split('`').enumerate() {
+            if k > 0 { out.push('`'); }
+            if k % 2 == 1 { out += part; continue; }
+            for (i, w) in part.split(' ').enumerate() {
+                if i > 0 { out.push(' '); }
+                // a word inside or next to a written link keeps its source
+                if label_open || w.contains(['[', ']']) { out += w; } else { out += &word(w); }
+                label_open = (label_open || w.contains('[')) && !w.contains(']');
+            }
+        }
+        out += end;
+    }
+    out
+}
+
+/// Option buttons for a relayed TaskQ question: one per `K. option` line, label without link syntax (#82).
+fn options(text: &str) -> Vec<(String, String)> {
+    text.lines().filter_map(|l| {
+        let (k, rest) = l.split_once(". ")?;
+        let k: u8 = k.parse().ok().filter(|k| (1..=4).contains(k))?;
+        let mut label = String::new();
+        let mut s = rest;
+        while let Some(open) = s.find('[') {
+            let Some((name, after)) = s[open + 1..].split_once("](") else { break };
+            let Some(close) = after.find(')') else { break };
+            label += &s[..open];
+            label += name;
+            s = &after[close + 1..];
+        }
+        label += s;
+        Some((format!("answer:{k}"), format!("{k}. {label}")))
+    }).collect()
+}
+
 /// A small safe Markdown subset for Telegram HTML. Raw HTML always stays literal; unsupported Markdown stays readable.
-/// ponytail: headings, bold, code and HTTP(S) links; a full Markdown parser only when the supported subset needs to grow.
+/// ponytail: headings, bullets, bold, italic, escapes, code and HTTP(S) links; a full Markdown parser only when the subset needs to grow.
 pub(crate) fn html(text: &str) -> String {
+    let text = &tidy(text);
     fn escape(s: &str) -> String { s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;") }
     fn inline(mut s: &str) -> String {
         let mut out = String::new();
         while !s.is_empty() {
-            let pair = if s.starts_with("**") { Some(("**", "b")) } else if s.starts_with('`') { Some(("`", "code")) } else { None };
+            // a Markdown escape shows its punctuation, not the backslash
+            if let Some(c) = s.strip_prefix('\\').and_then(|r| r.chars().next()).filter(char::is_ascii_punctuation) {
+                out += &escape(&c.to_string());
+                s = &s[2..];
+                continue;
+            }
+            let pair = if s.starts_with("**") { Some(("**", "b")) } else if s.starts_with("__") { Some(("__", "b")) }
+                else if s.starts_with('`') { Some(("`", "code")) } else if s.starts_with('*') { Some(("*", "i")) } else { None };
             if let Some((mark, tag)) = pair {
-                if let Some(end) = s[mark.len()..].find(mark) {
+                // emphasis needs text touching both marks, so "2 * 3 * 4" stays literal
+                if let Some(end) = s[mark.len()..].find(mark).filter(|&e| tag == "code" || e > 0 && !s[mark.len()..].starts_with(' ') && !s[..mark.len()+e].ends_with(' ')) {
                     let end = end + mark.len();
-                    out += &format!("<{tag}>{}</{tag}>", escape(&s[mark.len()..end]));
+                    let inner = &s[mark.len()..end];
+                    out += &format!("<{tag}>{}</{tag}>", if tag == "code" { escape(inner) } else { inline(inner) });
                     s = &s[end+mark.len()..];
                     continue;
                 }
@@ -217,9 +313,17 @@ pub(crate) fn html(text: &str) -> String {
             continue;
         }
         if code { out += &escape(line); continue; }
-        let heading = line.trim_start_matches('#');
-        if heading.len() < line.len() && heading.starts_with(' ') {
-            out += &format!("<b>{}</b>", inline(heading.trim_start_matches(' ')));
+        let (body, end) = line.strip_suffix('\n').map_or((line, ""), |b| (b, "\n"));
+        let heading = body.trim_start_matches('#');
+        let item = body.trim_start();
+        let rule = body.trim();
+        if heading.len() < body.len() && heading.starts_with(' ') {
+            out += &format!("<b>{}</b>{end}", inline(heading.trim()));
+        } else if rule.len() >= 3 && ['-', '*', '_'].iter().any(|&m| rule.chars().all(|c| c == m)) {
+            // a horizontal rule is decoration; keep only its line break
+            out += end;
+        } else if let Some(rest) = ["- ", "* ", "+ "].iter().find_map(|m| item.strip_prefix(m)) {
+            out += &format!("{}• {}{end}", &body[..body.len()-item.len()], inline(rest));
         } else { out += &inline(line); }
     }
     if code { out += "</pre>"; }
@@ -227,11 +331,21 @@ pub(crate) fn html(text: &str) -> String {
 }
 
 /// Native rich Markdown also accepts HTML. Escape raw tags/entities outside code, once at the output boundary (§4).
+/// A single line break inside a paragraph is a Markdown soft break that renders as a space; it becomes a hard break (#82).
 fn markdown(text: &str) -> String {
+    // a line that starts its own block never needs a hard break before it
+    fn block(l: &str) -> bool {
+        let l=l.trim_start();
+        let digits=l.chars().take_while(char::is_ascii_digit).count();
+        l.trim().is_empty() || ["- ","* ","+ ","#",">","|","```","~~~"].iter().any(|m|l.starts_with(m))
+            || (digits>0 && matches!(l[digits..].chars().next(),Some('.'|')')))
+    }
+    let text=&tidy(text);
     let mut out=String::new();
     let mut fence: Option<(char,usize)>=None;
     let mut inline=0;
-    for line in text.split_inclusive('\n') {
+    let lines: Vec<&str>=text.split_inclusive('\n').collect();
+    for (i,line) in lines.iter().copied().enumerate() {
         let trimmed=line.trim_start();
         let mark=trimmed.chars().next().unwrap_or(' ');
         let count=trimmed.chars().take_while(|c|*c==mark).count();
@@ -265,8 +379,19 @@ fn markdown(text: &str) -> String {
             } else if inline>0 { out.push(c); }
             else { match c { '<'=>out.push_str("&lt;"),'&'=>out.push_str("&amp;"),_=>out.push(c) } }
         }
+        let body=line.trim_end_matches('\n');
+        if inline==0 && line.ends_with('\n') && !trimmed.starts_with('#') && !body.trim().is_empty() && !body.ends_with([' ','\\'])
+            && lines.get(i+1).is_some_and(|next|!block(next)) {
+            out.pop();
+            out.push_str("  \n");
+        }
     }
     out
+}
+
+/// Replies carry no link preview: a preview card buries the text it follows (#82).
+fn no_preview() -> LinkPreviewOptions {
+    LinkPreviewOptions { is_disabled: true, url: None, prefer_small_media: false, prefer_large_media: false, show_above_text: false }
 }
 
 /// Raw JSON for Bot API methods newer than teloxide (§3). Never expose a token-bearing request URL in diagnostics.
@@ -307,7 +432,7 @@ async fn send(bot: &Bot, j: &Shared, d: &Delivery) -> Sent {
         };
     }
     if d.kind == "rich" {
-        let mut body = json!({"chat_id":d.chat,"rich_message":{"markdown":markdown(&d.text)}});
+        let mut body = json!({"chat_id":d.chat,"rich_message":{"markdown":markdown(&d.text)},"link_preview_options":{"is_disabled":true}});
         if let Some(t) = d.topic { body["message_thread_id"] = json!(t); }
         if let Some(m) = d.reply_to { body["reply_parameters"] = json!({"message_id":m,"allow_sending_without_reply":true}); }
         return match raw(bot, j, "sendRichMessage", body).await {
@@ -317,14 +442,22 @@ async fn send(bot: &Bot, j: &Shared, d: &Delivery) -> Sent {
     }
     // a task status update edits its status message in place; a deleted one is replaced by a new message in the same route (L12)
     if let Some(m) = d.edit {
-        match bot.edit_message_text(ChatId(d.chat), MessageId(m as i32), &d.text).await {
+        let mut r = bot.edit_message_text(ChatId(d.chat), MessageId(m as i32), d.html.as_deref().unwrap_or(&d.text)).link_preview_options(no_preview());
+        if d.html.is_some() {
+            r = r.parse_mode(ParseMode::Html);
+        }
+        match r.await {
             Ok(m) => return Sent::Ok(m.id.0 as i64),
             Err(RequestError::Api(ApiError::MessageNotModified)) => return Sent::Ok(m),
             Err(RequestError::Api(ApiError::MessageToEditNotFound)) => {}
             Err(e) => return failed(e, backoff),
         }
     }
-    let mut r = bot.send_message(ChatId(d.chat), d.html.as_deref().unwrap_or(&d.text));
+    let mut r = bot.send_message(ChatId(d.chat), d.html.as_deref().unwrap_or(&d.text)).link_preview_options(no_preview());
+    if d.kind == "question" {
+        let rows: Vec<_> = options(&d.text).into_iter().map(|(data, label)| vec![InlineKeyboardButton::callback(label, data)]).collect();
+        if !rows.is_empty() { r = r.reply_markup(InlineKeyboardMarkup::new(rows)); }
+    }
     if d.html.is_some() {
         r = r.parse_mode(ParseMode::Html);
     }
@@ -378,7 +511,8 @@ pub async fn drafts(bot: Bot, j: Shared) {
                 body["rich_message"] = json!({"markdown":markdown(&text)});
                 raw(&bot,&j,"sendRichMessageDraft",body.clone()).await
             } else {
-                body["text"] = json!(crate::journal::chunks(&text)[0]);
+                body["text"] = json!(html(&crate::journal::chunks(&text)[0]));
+                body["parse_mode"] = json!("HTML");
                 raw(&bot,&j,"sendMessageDraft",body).await
             };
             // Fallback starts on the next tick, so even rejected rich drafts never exceed one update per second.
@@ -467,6 +601,49 @@ mod tests {
         assert_eq!(html("[<label>](https://example.invalid/?q=\"&x=1)"),
             "<a href=\"https://example.invalid/?q=&quot;&amp;x=1\">&lt;label&gt;</a>");
         assert_eq!(html("```rust\n<raw> & text\n```"), "<pre>&lt;raw&gt; &amp; text\n</pre>");
-        assert_eq!(html("# Heading\n`<raw>`"), "<b>Heading\n</b><code>&lt;raw&gt;</code>");
+        assert_eq!(html("# Heading\n`<raw>`"), "<b>Heading</b>\n<code>&lt;raw&gt;</code>");
+    }
+
+    // #82 / §12: plan, status and error replies keep each written line in rich Markdown, and the HTML fallback shows
+    // lists and emphasis without raw Markdown marks.
+    #[test]
+    fn replies_keep_lines_and_compact_fallback() {
+        let status="Task #12 is doing.\nA worker is on it.\n[Open the task](https://github.com/taskqorg/pilotq/issues/12)";
+        assert_eq!(super::markdown(status),"Task #12 is doing.  \nA worker is on it.  \n[Open the task](https://github.com/taskqorg/pilotq/issues/12)");
+        let error="Nothing was done.\nTaskQ is unavailable; try again later.\n";
+        assert_eq!(super::markdown(error),"Nothing was done.  \nTaskQ is unavailable; try again later.\n");
+        // blocks, existing breaks, headings and code keep their source
+        let plan="Saved locally only.\n- one\n- two\n## Next\nAsk me.\\\nNow.  \nDone\n```\na\nb\n```\n";
+        assert_eq!(super::markdown(plan),plan);
+        assert_eq!(html("## Plan\n- **Inspect** the *screenshot*\n  * check __logs__\n---\n1. Escape \\*literal\\* 2 * 3 * 4\n"),
+            "<b>Plan</b>\n• <b>Inspect</b> the <i>screenshot</i>\n  • check <b>logs</b>\n\n1. Escape *literal* 2 * 3 * 4\n");
+        assert_eq!(html("**[link](https://example.invalid) <x>**"),"<b><a href=\"https://example.invalid\">link</a> &lt;x&gt;</b>");
+    }
+
+    // #82 owner review: no bare long URL and no repo path that Telegram auto-links as a .md domain; written links and code
+    // keep their source; ask options become buttons without the link syntax.
+    #[test]
+    fn links_are_labeled_and_paths_are_code() {
+        let issue="https://github.com/taskqorg/pilotq/issues/81#issuecomment-5";
+        assert_eq!(super::markdown(&format!("Filed {issue}, see docs/status-notifications.md.")),
+            format!("Filed [pilotq#81]({issue}), see `docs/status-notifications.md`."));
+        assert_eq!(html("Read (https://example.invalid/a/b?x=1) and **pilotq.md**"),
+            "Read (<a href=\"https://example.invalid/a/b?x=1\">example.invalid</a>) and <b><code>pilotq.md</code></b>");
+        let kept="[Open the spec](https://github.com/taskqorg/pilotq/blob/main/pilotq.md) `docs/x.md https://x.invalid`\n```\nsrc/main.rs\n```\n";
+        assert_eq!(super::tidy(kept),kept);
+        assert_eq!(super::tidy("[see docs/a.md here](https://x.invalid) e.g. v0.2.5."),"[see docs/a.md here](https://x.invalid) e.g. v0.2.5.");
+        assert_eq!(super::tidy("https://github.com/taskqorg/pilotq/blob/abc/docs/acceptance.md"),"[acceptance.md](https://github.com/taskqorg/pilotq/blob/abc/docs/acceptance.md)");
+        let card="Task #19 asks:\nDone: drafted\nProblem: pick\n1. short, see [spec](https://x.invalid) ★\n2. long\n5. not an option";
+        assert_eq!(super::options(card),[("answer:1".into(),"1. short, see spec ★".into()),("answer:2".into(),"2. long".into())]);
+    }
+
+    // #82: a press on a question button is the presser's answer to that question message, in its chat and topic.
+    #[test]
+    fn button_press_is_input() {
+        let q=serde_json::json!({"id":"invented-query","from":{"id":8,"is_bot":false,"first_name":"B"},"chat_instance":"x","data":"answer:2",
+            "message":{"message_id":905,"date":1,"message_thread_id":5,"chat":{"id":-100,"type":"supergroup","title":"G","is_forum":true},"text":"Task #19 asks:"}});
+        let u=teloxide::types::UpdateKind::CallbackQuery(serde_json::from_value(q).unwrap());
+        let i=super::input(&u).expect("button input");
+        assert_eq!((i.kind,i.text.as_deref(),i.chat,i.topic,i.sender,i.reply_to,i.message),("button",Some("2"),-100,Some(5),Some(8),Some(905),905));
     }
 }

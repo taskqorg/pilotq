@@ -128,8 +128,10 @@ pub(crate) fn chunks(text: &str) -> Vec<String> {
 #[allow(clippy::too_many_arguments)]
 fn outbox(tx: &Connection, request: i64, chat: i64, topic: Option<i64>, reply_to: Option<i64>, html: Option<&str>, text: &str, at: i64) -> Result<(), String> {
     let parts = chunks(text);
-    // ponytail: HTML is only used for short acknowledgements; a split reply goes as plain text
-    let html = html.filter(|_| parts.len() == 1);
+    // Every one-part message renders as HTML, so links are labeled and paths are code (#82).
+    // ponytail: a split reply goes as plain text
+    let html = html.map(str::to_string).unwrap_or_else(|| crate::telegram::html(text));
+    let html = Some(html).filter(|_| parts.len() == 1);
     for part in &parts {
         tx.execute("INSERT INTO outbox(request_id, chat, topic, reply_to, html, text, next_at) VALUES (?1,?2,?3,?4,?5,?6,?7)", params![request, chat, topic, reply_to, html, part, at])
             .map_err(|e| e.to_string())?;
@@ -156,8 +158,8 @@ fn final_outbox(tx: &Connection, request: i64, chat: i64, topic: Option<i64>, re
 #[allow(clippy::too_many_arguments)]
 fn notice(tx: &Connection, request: i64, chat: i64, topic: Option<i64>, kind: &str, project: &str, task: i64, revision: i64, text: &str, at: i64) -> Result<(), String> {
     tx.execute(
-        "INSERT INTO outbox(request_id, chat, topic, text, next_at, kind, task, revision, project) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-        params![request, chat, topic, text, at, kind, task, revision, project],
+        "INSERT INTO outbox(request_id, chat, topic, text, next_at, kind, task, revision, project, html) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+        params![request, chat, topic, text, at, kind, task, revision, project, crate::telegram::html(text)],
     )
     .map(drop)
     .map_err(|e| e.to_string())
@@ -678,7 +680,7 @@ impl Journal {
                     };
                     // a reply to a relayed TaskQ question is an answer: checked and written by PilotQ, never by the model (§ 5)
                     let question: Option<i64> = match (cmd, i.reply_to) {
-                        (None, Some(m)) if i.kind == "text" => tx
+                        (None, Some(m)) if matches!(i.kind, "text" | "button") => tx
                             .query_row("SELECT task FROM outbox WHERE kind='question' AND chat=?1 AND sent_message=?2 AND topic IS ?3", params![i.chat, m, i.topic], |r| r.get(0))
                             .optional()
                             .map_err(|e| e.to_string())?,
@@ -687,7 +689,7 @@ impl Journal {
                     let (kind, state) = match (cmd, i.kind) {
                         (Some(_), _) => ("control", "answered"),
                         (None, "text" | "image") if busy => (i.kind, "failed"),
-                        (None, "text") if question.is_some() => ("answer", "queued"),
+                        (None, "text" | "button") if question.is_some() => ("answer", "queued"),
                         (None, "text" | "image") => (i.kind, "queued"),
                         _ => (i.kind, "failed"),
                     };
