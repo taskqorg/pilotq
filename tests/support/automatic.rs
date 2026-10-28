@@ -55,6 +55,39 @@ pub(super) fn pause_tool_status(d: &Path, id: i64) -> String {
     query_text(d, &format!("SELECT result FROM audit_events WHERE request_id={id} AND kind='tool' AND target='dynamicToolCall' AND result='completed' AND EXISTS (SELECT 1 FROM audit_events WHERE request_id={id} AND kind='call' AND target='queue_pause') ORDER BY id DESC LIMIT 1"))
 }
 
+fn request_delivered(d: &Path, update: i64) -> bool {
+    try_query(d, &format!("SELECT count(*) FROM requests q WHERE update_id={update} AND state IN ('answered','failed','uncertain') AND EXISTS (SELECT 1 FROM outbox o WHERE o.request_id=q.id AND (o.kind IN ('rich','rich_part') OR (o.kind='reply' AND o.text=q.reply)) AND o.state='delivered') AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.request_id=q.id AND o.kind IN ('rich','rich_part') AND o.state NOT IN ('delivered','superseded'))")) == Some(1)
+}
+
+// §4 / A40: final delivery must not be confused with a privacy notice or a partial fallback.
+#[test]
+fn a40_final_reply_delivery() {
+    let d = std::env::temp_dir().join(format!("pilotq-a40-final-{}", std::process::id()));
+    fs::create_dir_all(&d).unwrap();
+    let c = rusqlite::Connection::open(d.join("journal.sqlite")).unwrap();
+    c.execute_batch("DROP TABLE IF EXISTS requests; DROP TABLE IF EXISTS outbox;
+        CREATE TABLE requests(id INTEGER, update_id INTEGER, state TEXT, reply TEXT);
+        CREATE TABLE outbox(request_id INTEGER, kind TEXT, state TEXT, text TEXT);
+        INSERT INTO requests VALUES(1,1,'answered','Final answer');
+        INSERT INTO outbox VALUES(1,'rich','delivered','Final answer');").unwrap();
+    assert!(request_delivered(&d, 1), "rich final without a privacy notice");
+    c.execute_batch("UPDATE outbox SET state='pending';
+        INSERT INTO outbox VALUES(1,'reply','delivered','Your requests are recorded');").unwrap();
+    assert!(!request_delivered(&d, 1), "privacy notice alone is not final delivery");
+    c.execute_batch("UPDATE outbox SET state='superseded' WHERE kind='rich';
+        INSERT INTO outbox VALUES(1,'rich_part','delivered','Final ');
+        INSERT INTO outbox VALUES(1,'rich_part','pending','answer');").unwrap();
+    assert!(!request_delivered(&d, 1), "every fallback chunk needs a receipt");
+    c.execute("UPDATE outbox SET state='delivered' WHERE kind='rich_part'", []).unwrap();
+    assert!(request_delivered(&d, 1), "complete HTML/plain fallback");
+    c.execute_batch("DELETE FROM outbox; INSERT INTO outbox VALUES(1,'reply','delivered','Final answer');").unwrap();
+    assert!(request_delivered(&d, 1), "plain final reply");
+    c.execute("UPDATE requests SET state='running'", []).unwrap();
+    assert!(!request_delivered(&d, 1), "delivery cannot replace terminal state");
+    drop(c);
+    fs::remove_dir_all(d).unwrap();
+}
+
 impl Run {
     // TaskQ §2 permits trusted hand-authored entries. These are scripted fixtures, never real worker/reviewer claims.
     fn event(&mut self, body: &str, state: &str) -> i64 {
@@ -135,7 +168,7 @@ impl Run {
             None => text(u, CHAT, TOPIC, who, body),
         });
         self.wait("request terminal and delivered", 300, || {
-            try_query(&self.d, &format!("SELECT count(*) FROM requests q WHERE update_id={u} AND state IN ('answered','failed','uncertain') AND EXISTS (SELECT 1 FROM outbox o WHERE o.request_id=q.id AND o.kind='reply' AND o.state='delivered')")) == Some(1)
+            request_delivered(&self.d, u)
         });
         let id = query(&self.d, &format!("SELECT id FROM requests WHERE update_id={u}"));
         let reply = query_text(&self.d, &format!("SELECT reply FROM requests WHERE id={id}"));
@@ -501,6 +534,8 @@ fn a40_live_management() {
             let telemetry = coreq::telemetry::Reader::open(&h.d.join("telemetry.sqlite")).unwrap().export(0,0,1000).unwrap().to_string();
             assert!(telemetry.contains(&format!("pilotq.request.{}",h.run_request)));
             h.wait("all required deliveries", 60, || try_query(&h.d, "SELECT count(*) FROM outbox WHERE state NOT IN ('delivered','superseded')") == Some(0));
+            let update = query(&h.d, &format!("SELECT update_id FROM requests WHERE id={}", h.run_request));
+            assert!(request_delivered(&h.d, update), "audit requires final delivery, not a privacy notice");
             let messages = sent(&h.st);
             assert!(messages.iter().all(|m|m["chat_id"] == CHAT && m["message_thread_id"] == 5));
             let terminal = messages.iter().find(|m|m["text"].as_str().is_some_and(|t|t.starts_with(&format!("Task #{} is closed on the board",h.task)))).unwrap();
