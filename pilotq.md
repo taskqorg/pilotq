@@ -367,6 +367,8 @@ The installed Linux service checks for releases every five minutes, including at
 
 **Owner, task #84 continuation (option 1):** release `0.2.6` with the #81 service state and owner incidents in this task. After merge-queue acceptance, publish through `live`, update FRA through `pilotq update`, confirm `current` and a healthy start again 2 minutes later, then run A40 and three drills. Drills simulate failures in PilotQ's own environment only: an empty `CODEX_HOME` drop-in instead of touching the real Codex login, stopping only what PilotQ calls or waiting for zero FRA workers before stopping TaskQ, and killing only the PilotQ process. Record each DM text and timing on #84, then restore and read back the service configuration. Production cutover remains unauthorized.
 
+**PM, task #84 continuation:** the 0.2.6 TaskQ drill sent no incident because an idle scan never read the board. Release `0.2.7` with that fix (PR #88) in this task through the same merge-queue and `live` path, update FRA through `pilotq update`, rerun the TaskQ drill and record its DM on #84. Production cutover remains unauthorized.
+
 This release retains coreq `v0.14.6` (locked in `Cargo.lock`) and journal schema 10. It opens existing schemas 0–10 through the current migrations and refuses newer schemas; rollback to a binary that cannot read the resulting schema is unsafe. The installation owner runs the user service and owns its protected configuration. See the [tester guide](docs/tester-guide.md) for installation, checks and current limitations. A published release and successful selftest do not qualify production cutover or the open decisions in section 11.
 
 ### Development
