@@ -645,4 +645,12 @@ Presentation follows [§12](../pilotq.md#telegram-feedback). Inspection of the d
 - The HTML fallback rendered headings, bold, code and links only. Bullets, `*italic*`, `__bold__`, Markdown escapes and horizontal rules reached the chat as raw marks. The same test now checks them.
 - The plain draft fallback sent raw Markdown. It now uses the same escaped HTML subset.
 
-The model instruction now asks for short paragraphs, flat lists and no tables, nested lists, rules or HTML. The fake Bot API renders a hard break as a line break, so existing reply assertions keep their text. These are deterministic adapter checks with plan, status and error samples, not Telegram rendering or real-model qualification; the owner's chat check remains open.
+The owner's review of the relayed #81 ask found three more defects, fixed in the same task:
+
+- The question showed the CLI line `To answer: taskq answer N.K` and offered no buttons. It now drops that line and sends one inline button per option, the recommended one keeping its ★. A press is admitted like a reply with the option number, so grants, the fresh question revision and the stale-answer refusal apply unchanged.
+- Task messages and model replies showed bare long URLs and link previews. Task messages now use labeled HTML links; a bare URL in a reply or a service message (for example the deferred plan-run report) becomes a labeled link; every send disables link previews.
+- Repository paths such as `docs/status-notifications.md` were auto-linked by Telegram as `.md` domains. They now render as code.
+
+`telegram::links_are_labeled_and_paths_are_code` and `telegram::button_press_is_input` cover the conversions. `u82_ask_buttons_and_labeled_links` renders a plan, a status, an ask with options and a stale-press error through the fake Bot API: it checks the buttons, the press answer `19.2`, no `To answer` line, no bare URL, disabled previews and each link's target. It timed out on the bare-URL status before the fix and passes after it.
+
+The model instruction now asks for short paragraphs, flat lists, labeled links, file paths as code and no tables, nested lists, rules or HTML. The fake Bot API renders a hard break as a line break, so existing reply assertions keep their text. These are deterministic adapter checks with plan, status and error samples, not Telegram rendering or real-model qualification; the owner's chat check remains open.
