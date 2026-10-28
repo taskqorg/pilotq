@@ -620,3 +620,13 @@ The owner’s image decision is in [§1 and §11](../pilotq.md#11-decisions-stil
 - Existing journal migration, route isolation, queue/fence, receipt, retry and management checks remain required. Upgrade from schemas 8 and 9 explicitly refreshes native instructions without replaying completed effects. Schema 10 refuses unsafe downgrade to 0.2.3.
 
 These are deterministic model/adapter observations, not Telegram rendering or real-model qualification. After merge, the PM publishes 0.2.4, updates FRA and runs A40; the owner checks the chat, including the one-line action effect and next step. No production-cutover claim follows from this task.
+
+### Task #76: schema-9 journal repair (0.2.5)
+
+R5 and §9 require existing journals to open without losing accepted work. A read-only FRA inspection on 2026-10-28 found `user_version=9` with both `requests.image` and `requests.language`. The original migration failed in `cargo test --locked schema_9_existing_image_columns_preserve_rows` with `duplicate column name: image`.
+
+The version marker is not reliable evidence that these columns are absent: `v0.2.3` `Journal::open` checks the version only at entry and unconditionally writes `PRAGMA user_version=9` at exit. An old opener overlapping a v10 migration can therefore leave both columns stamped as version 9. The regression test reproduces that interleaving with two SQLite connections, as well as all four column-presence combinations, preservation of request text and existing column values, and repeated opens. This establishes a code path to FRA's observed state; the exact historical process interleaving is unconfirmed. Service-log access in the worker environment did not establish it.
+
+The repair checks each column under the migration's writer transaction, adds only missing columns and commits version 10 with the migration. It removes the redundant unconditional version write. The existing schema tests retain older-journal upgrades, native-session refresh and refusal of newer or corrupt journals. No supported schema range or protection changes.
+
+Rollback notification is tracked by [#77](https://github.com/taskqorg/pilotq/issues/77) (A5). After merge, the PM owns `live` publication, FRA activation and A40; the owner's screenshot answer supplies A4. These live checks remain unproved by the worker's SQLite tests.

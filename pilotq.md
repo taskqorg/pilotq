@@ -359,6 +359,8 @@ The installed Linux service checks for releases every five minutes, including at
 
 **Owner, task #72:** prepare `0.2.4` with clean rich layout, image input and concise action status. After merge-queue acceptance, the PM publishes through `live`, updates the FRA test pilot and runs A40; the owner checks the chat. Production cutover is not authorized.
 
+**Owner, task #76 continuation (option 1):** prepare `0.2.5` to repair the schema-9 journal upgrade when `requests.image` or `requests.language` already exists. Preserve existing rows and values, add only missing columns and retain the newer-schema refusal. The PM publishes through `live` after merge-queue acceptance, updates FRA, runs A40 and records the owner's screenshot check. Rollback visibility is tracked in [task #77](https://github.com/taskqorg/pilotq/issues/77). Production cutover remains unauthorized.
+
 This release retains coreq `v0.14.6` (locked in `Cargo.lock`) and journal schema 10. It opens existing schemas 0–10 through the current migrations and refuses newer schemas; rollback to a binary that cannot read the resulting schema is unsafe. The installation owner runs the user service and owns its protected configuration. See the [tester guide](docs/tester-guide.md) for installation, checks and current limitations. A published release and successful selftest do not qualify production cutover or the open decisions in section 11.
 
 ### Development
