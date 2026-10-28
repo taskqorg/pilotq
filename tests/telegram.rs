@@ -134,7 +134,8 @@ fn handle(stream: std::net::TcpStream, st: &State) {
     if method == "sendrichmessage" && f.rich_reject { return respond(&mut out,400,r#"{"ok":false,"error_code":400,"description":"Bad Request: rich messages not supported"}"#); }
     let mut body = body;
     if method == "sendrichmessage" {
-        body["text"] = json!(body["rich_message"]["markdown"].as_str().unwrap());
+        // Telegram shows a Markdown hard break as a plain line break (#82)
+        body["text"] = json!(body["rich_message"]["markdown"].as_str().unwrap().replace("  \n", "\n"));
     }
     if method == "editmessagetext" {
         if f.edit_gone {

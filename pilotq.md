@@ -406,6 +406,8 @@ The runtime supervisor observes startup/first-event latency, last useful runtime
 
 **Owner, task #72:** send rich final replies and drafts as Markdown, preserving model-authored paragraphs, lists, headings and bold. Keep safe escaped HTML and plain-text fallback from §4. Action replies lead with one short factual effect line (saved locally only, created on the board with its verified task link, started, or nothing done), followed by the next step. Plans stay short. Never claim that saving a plan created or started board work. Failures, limits and unsupported-input replies use one short sentence in the person’s language and omit internal request numbers; detailed diagnostics remain in the audit.
 
+**Owner, task #82:** replies stay compact and readable in every delivery path. A single line break the model wrote stays visible in rich Markdown and drafts; it never merges two lines into one. The model writes short paragraphs, flat lists, bold only for key words and inline links; no tables, nested lists, rules or raw HTML. The HTML fallback and fallback drafts render bullets, bold, italic, links, code and Markdown escapes without leaving raw Markdown marks.
+
 Images use the same admission, queue, session, fence, audit and retry path as text (R10, R13, R17). Download only after admission and current-grant validation, with a 20 MiB cap, bounded time and protected temporary files removed after the turn. Never pass a Telegram token or download URL to Codex. Persist file identity before confirming updates; failed downloads are explicit outcomes, never successful text-only answers. Image content is untrusted source material, not authorization.
 
 | Event | User-visible behavior | Source of truth |

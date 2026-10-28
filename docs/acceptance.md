@@ -636,3 +636,13 @@ Rollback notification is tracked by [#77](https://github.com/taskqorg/pilotq/iss
 `cargo test --locked rollback_notice` exercises the coreq launcher through two failed candidate starts and the rollback selection, then the restored service’s healthy-start notification boundary. The marker survives reopening the journal; the owner DM names only the failed and restored versions. Reopening after a transport failure preserves the same delivery and attempt count; reopening after a receipt produces no second incident. Healthy candidates produce no notice. Existing outbox checks retain the five-attempt ceiling, cooldown and held-destination protection.
 
 This deterministic boundary check does not qualify a systemd restart or live Telegram delivery. A rollback to a release predating the integration cannot consume the marker; install a compatible baseline before relying on this notification.
+
+### Compact reply formatting, task #82
+
+Presentation follows [§12](../pilotq.md#telegram-feedback). Inspection of the delivery path found three causes of lost layout:
+
+- Rich Markdown and rich drafts passed a single model line break through unchanged. Markdown treats it as a soft break and renders a space, so status and error lines merged. `telegram::replies_keep_lines_and_compact_fallback` failed before the fix with `Task #12 is doing.\nA worker is on it.` instead of the hard-break form, and passes after it.
+- The HTML fallback rendered headings, bold, code and links only. Bullets, `*italic*`, `__bold__`, Markdown escapes and horizontal rules reached the chat as raw marks. The same test now checks them.
+- The plain draft fallback sent raw Markdown. It now uses the same escaped HTML subset.
+
+The model instruction now asks for short paragraphs, flat lists and no tables, nested lists, rules or HTML. The fake Bot API renders a hard break as a line break, so existing reply assertions keep their text. These are deterministic adapter checks with plan, status and error samples, not Telegram rendering or real-model qualification; the owner's chat check remains open.
