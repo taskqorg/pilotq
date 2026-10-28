@@ -15,6 +15,21 @@ pub const ATTEMPTS: i64 = 5;
 /// Named grants (§ 2, § 5, § 8). `chat` admits conversation only; every other grant is separate. `project:NAME` scopes a project;
 /// `projects` covers every project; `queue` pauses host admission.
 pub const GRANTS: [&str; 6] = ["chat", "users", "projects", "taskq", "audit", "queue"];
+/// Section 7 health sources, each reported separately.
+pub const SOURCES: [&str; 5] = ["poll", "storage", "model", "taskq", "delivery"];
+/// §9 / #81 owner incidents: source, opening and recovery text. Plain lines, no internal IDs or raw errors (§4).
+const INCIDENTS: [(&str, &str, &str); 3] = [
+    ("model", "⚠️ PilotQ: Codex runs are failing · new requests may fail · run pilotq doctor on the host", "✅ PilotQ: Codex answers again · waiting requests resume"),
+    ("taskq", "⚠️ PilotQ: TaskQ board unavailable · plans stay unsent · retrying", "✅ PilotQ: TaskQ board reachable again · held plans resume"),
+    ("poll", "⚠️ PilotQ: Telegram polling is failing · new messages wait", "✅ PilotQ: Telegram polling works again"),
+];
+/// Hold-down before an incident opens; `model` instead needs two consecutive failed runs.
+const HOLD: i64 = 120;
+/// At most one service message per incident key per 6 hours and 10 per day.
+const KEY_CAP: i64 = 6 * 3600;
+const DAY_CAP: i64 = 10;
+/// An undrained gap above this is reported as downtime, a shorter one as an unplanned restart.
+const DOWNTIME: i64 = 300;
 
 fn valid_grant(g: &str) -> bool {
     GRANTS.contains(&g) || g.strip_prefix("project:").is_some_and(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)))
@@ -251,11 +266,12 @@ fn answer_control(tx: &Connection, session: &str, cmd: &str, request: i64, chat:
             }
             "/status" => {
                 let (running, queued) = (ids(tx, session, "running")?, ids(tx, session, "queued")?);
-                if running.is_empty() && queued.is_empty() {
+                let own = if running.is_empty() && queued.is_empty() {
                     "Nothing is running or queued in this conversation.".into()
                 } else {
                     format!("Running: {}. Queued: {}.", running.len(), queued.len())
-                }
+                };
+                format!("{}\n{own}", service_line(tx, at)?)
             }
             _ => {
                 tx.execute("INSERT INTO conversations(session, generation) VALUES (?1, 1) ON CONFLICT(session) DO UPDATE SET generation=generation+1, thread=NULL", [session])
@@ -265,6 +281,52 @@ fn answer_control(tx: &Connection, session: &str, cmd: &str, request: i64, chat:
         },
         None,
     ))
+}
+
+/// §9 / #81 S1: the version and each non-ok health source with the age of its last observation; never observed reads unknown.
+fn service_line(tx: &Connection, at: i64) -> Result<String, String> {
+    let age = |s: i64| match s.max(0) {
+        s if s < 60 => format!("{s} s"),
+        s if s < 3600 => format!("{} min", s / 60),
+        s => format!("{} h", s / 3600),
+    };
+    let mut parts = vec![format!("PilotQ {}", env!("CARGO_PKG_VERSION"))];
+    for source in SOURCES {
+        let row: Option<(String, i64)> =
+            tx.query_row("SELECT state, at FROM health WHERE source=?1", [source], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(|e| e.to_string())?;
+        match row {
+            Some((state, _)) if state == "ok" => {}
+            Some((state, seen)) => parts.push(format!("{source} {state} {} ago", age(at - seen))),
+            None => parts.push(format!("{source} unknown")),
+        }
+    }
+    if parts.len() == 1 {
+        parts.push("all sources ok".into());
+    }
+    Ok(parts.join(" · "))
+}
+
+fn meta(tx: &Connection, key: &str) -> Result<Option<i64>, String> {
+    tx.query_row("SELECT value FROM meta WHERE key=?1", [key], |r| r.get(0)).optional().map_err(|e| e.to_string())
+}
+
+/// §9 / #81: one owner DM through the outbox. Every service message counts toward 10 per day; `key` also caps it at one per
+/// 6 hours. Returns false when a cap held it back; the incident then stays in status and the audit only.
+fn service_message(tx: &Connection, owner: i64, key: Option<&str>, text: &str, at: i64) -> Result<bool, String> {
+    let e = |e: rusqlite::Error| e.to_string();
+    let day: i64 = tx.query_row("SELECT count(*) FROM requests WHERE front='service' AND received_at>?1", [at - 86400], |r| r.get(0)).map_err(e)?;
+    let last = match key { Some(k) => meta(tx, &format!("sent:{k}"))?, None => None };
+    if day >= DAY_CAP || last.is_some_and(|l| at - l < KEY_CAP) {
+        return Ok(false);
+    }
+    let update: i64 = tx.query_row("SELECT min(coalesce(min(update_id), 0), 0) - 1 FROM requests", [], |r| r.get(0)).map_err(e)?;
+    let id = insert(tx, update, "service", owner, None, owner, None, 0, "incident", None, "answered", at, &format!("service:{owner}"), None)?;
+    tx.execute("UPDATE requests SET reply=?2 WHERE id=?1", params![id, text]).map_err(e)?;
+    outbox(tx, id, owner, None, None, None, text, at)?;
+    if let Some(k) = key {
+        tx.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?1,?2)", params![format!("sent:{k}"), at]).map_err(e)?;
+    }
+    Ok(true)
 }
 
 /// One claimed model run. `fence` must still match the conversation's fence for the run to record anything.
@@ -907,20 +969,99 @@ impl Journal {
     }
 
     /// §9 / #77: one durable owner incident per version pair, with the ordinary send receipt.
-    pub fn rollback_notice(&mut self, owner: i64, failed: &str, restored: &str, at: i64) -> Result<(), String> {
+    /// Returns true when this call opened the incident.
+    pub fn rollback_notice(&mut self, owner: i64, failed: &str, restored: &str, at: i64) -> Result<bool, String> {
         let valid = |v: &str| !v.is_empty() && v.len() <= 64 && !v.contains("..") && v.bytes().all(|b| b.is_ascii_alphanumeric() || b".-".contains(&b));
         if !valid(failed) || !valid(restored) || failed == restored { return Err("invalid rollback versions".into()); }
         let tx = self.0.transaction().map_err(|e| e.to_string())?;
         let key = format!("rollback:{failed}:{restored}");
-        let added = tx.execute("INSERT OR IGNORE INTO meta(key,value) VALUES (?1,?2)", params![key, at]).map_err(|e| e.to_string())?;
-        if added != 0 {
-            let update: i64 = tx.query_row("SELECT min(coalesce(min(update_id), 0), 0) - 1 FROM requests", [], |r| r.get(0)).map_err(|e| e.to_string())?;
-            let text = format!("PilotQ update failed: {failed}; restored {restored}.");
-            let id = insert(&tx, update, "service", owner, None, owner, None, 0, "incident", None, "answered", at, &format!("service:{owner}"), None)?;
-            tx.execute("UPDATE requests SET reply=?2 WHERE id=?1", params![id, text]).map_err(|e| e.to_string())?;
-            outbox(&tx, id, owner, None, None, None, &text, at)?;
+        let added = tx.execute("INSERT OR IGNORE INTO meta(key,value) VALUES (?1,?2)", params![key, at]).map_err(|e| e.to_string())? != 0;
+        if added {
+            service_message(&tx, owner, None, &format!("PilotQ update failed: {failed}; restored {restored}."), at)?;
         }
-        tx.commit().map_err(|e| e.to_string())
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(added)
+    }
+
+    /// §9 / #81 N1: opens an owner incident for `model`, `taskq` or `poll` after the hold-down and closes it on the next
+    /// successful observation. The open key lives in the journal, so a restart neither reopens nor forgets an episode.
+    pub fn incidents(&mut self, owner: i64, at: i64) -> Result<(), String> {
+        let e = |e: rusqlite::Error| e.to_string();
+        let tx = self.0.transaction().map_err(e)?;
+        for (source, open, close) in INCIDENTS {
+            let state: Option<String> = tx.query_row("SELECT state FROM health WHERE source=?1", [source], |r| r.get(0)).optional().map_err(e)?;
+            let key = format!("incident:{source}");
+            let opened = meta(&tx, &key)?.is_some();
+            match state.as_deref() {
+                // set_health writes ok only on a fresh success, and an open incident saw this source failed, so ok here is newer
+                Some("ok") if opened => {
+                    if meta(&tx, &format!("notified:{source}"))?.is_some() {
+                        service_message(&tx, owner, None, close, at)?;
+                    }
+                    tx.execute("DELETE FROM meta WHERE key IN (?1, ?2)", [key, format!("notified:{source}")]).map_err(e)?;
+                }
+                Some(s) if s != "ok" && !opened => {
+                    let held = if source == "model" {
+                        meta(&tx, "failures:model")?.unwrap_or(0) >= 2
+                    } else {
+                        meta(&tx, &format!("failing:{source}"))?.is_some_and(|since| at - since >= HOLD)
+                    };
+                    if held {
+                        tx.execute("INSERT INTO meta(key,value) VALUES (?1,?2)", params![key, at]).map_err(e)?;
+                        if service_message(&tx, owner, Some(&key), open, at)? {
+                            tx.execute("INSERT INTO meta(key,value) VALUES (?1,?2)", params![format!("notified:{source}"), at]).map_err(e)?;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        tx.commit().map_err(e)
+    }
+
+    /// Records that the next stop is planned (`pilotq update` drain or `pilotq service stop`); `false` withdraws it.
+    pub fn planned_stop(&self, planned: bool, at: i64) -> Result<(), String> {
+        let r = if planned { self.0.execute("INSERT OR REPLACE INTO meta(key,value) VALUES ('planned',?1)", [at]) } else { self.0.execute("DELETE FROM meta WHERE key='planned'", []) };
+        r.map(drop).map_err(|e| e.to_string())
+    }
+
+    /// Each service pass records that this process is alive (#81 U1).
+    pub fn alive(&self, at: i64) -> Result<(), String> {
+        self.0.execute("INSERT OR REPLACE INTO meta(key,value) VALUES ('alive',?1)", [at]).map(drop).map_err(|e| e.to_string())
+    }
+
+    /// Service start, before the first pass: a stop without a planned marker or update drain leaves a pending gap from the
+    /// last pass to now. A crash loop keeps the earliest start of the gap.
+    pub fn service_started(&mut self, at: i64) -> Result<(), String> {
+        let e = |e: rusqlite::Error| e.to_string();
+        let tx = self.0.transaction().map_err(e)?;
+        let planned = meta(&tx, "planned")?.is_some() || meta(&tx, "draining")? == Some(1);
+        tx.execute("DELETE FROM meta WHERE key='planned'", []).map_err(e)?;
+        if let (false, Some(alive)) = (planned, meta(&tx, "alive")?) {
+            tx.execute("INSERT OR IGNORE INTO meta(key,value) VALUES ('down_from',?1)", [alive]).map_err(e)?;
+            tx.execute("INSERT OR REPLACE INTO meta(key,value) VALUES ('down_until',?1)", [at]).map_err(e)?;
+        }
+        tx.commit().map_err(e)
+    }
+
+    /// Healthy start: one owner notice for a pending unplanned gap, downtime when it exceeds 5 minutes. `silent` consumes the
+    /// gap without a message (a rollback incident already explains it).
+    pub fn restart_notice(&mut self, owner: i64, silent: bool, at: i64) -> Result<(), String> {
+        let e = |e: rusqlite::Error| e.to_string();
+        let tx = self.0.transaction().map_err(e)?;
+        if let (Some(from), Some(until)) = (meta(&tx, "down_from")?, meta(&tx, "down_until")?) {
+            let gap = until - from;
+            let text = if gap > DOWNTIME {
+                format!("⚠️ PilotQ was unavailable for {} min, until {:02}:{:02} UTC · messages from that time are processed now", gap / 60, until % 86400 / 3600, until % 3600 / 60)
+            } else {
+                "⚠️ PilotQ restarted without a planned stop".into()
+            };
+            if !silent {
+                service_message(&tx, owner, Some("restart"), &text, at)?;
+            }
+            tx.execute("DELETE FROM meta WHERE key IN ('down_from','down_until')", []).map_err(e)?;
+        }
+        tx.commit().map_err(e)
     }
 
     /// Admits and claims one `pilotq ask` request through the same grant check and request record as Telegram (R13, U19).
@@ -1655,11 +1796,19 @@ impl Journal {
         }
     }
 
+    /// Also tracks when a source began failing and how many failures in a row it had, for the incident hold-down (#81).
     pub fn set_health(&self, source: &str, at: i64, state: &str, reason: Option<&str>) -> Result<(), String> {
-        self.0
-            .execute("INSERT OR REPLACE INTO health(source, at, state, reason) VALUES (?1,?2,?3,?4)", params![source, at, state, reason])
-            .map(drop)
-            .map_err(|e| e.to_string())
+        let e = |e: rusqlite::Error| e.to_string();
+        let tx = self.0.unchecked_transaction().map_err(e)?;
+        tx.execute("INSERT OR REPLACE INTO health(source, at, state, reason) VALUES (?1,?2,?3,?4)", params![source, at, state, reason]).map_err(e)?;
+        let (since, failures) = (format!("failing:{source}"), format!("failures:{source}"));
+        if state == "ok" {
+            tx.execute("DELETE FROM meta WHERE key IN (?1, ?2)", [since, failures]).map_err(e)?;
+        } else {
+            tx.execute("INSERT OR IGNORE INTO meta(key,value) VALUES (?1,?2)", params![since, at]).map_err(e)?;
+            tx.execute("INSERT INTO meta(key,value) VALUES (?1,1) ON CONFLICT(key) DO UPDATE SET value=value+1", [failures]).map_err(e)?;
+        }
+        tx.commit().map_err(e)
     }
 
     /// Fills status.json health and counts from the journal; sources it has never observed stay unknown.
@@ -2108,7 +2257,7 @@ mod tests {
         j.grant(7, 8, &["chat".into()], 1).unwrap();
         j.admit(&[(100, msg(8, 8, 100)), (101, Some(Input { image: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: 101, kind: "text", text: Some("/status".into()), reply_to: None }))], 2).unwrap();
         assert_eq!(j.request(busy + 1).unwrap().0, "queued", "another route is admitted");
-        assert!(j.request(busy + 2).unwrap().1.unwrap().starts_with("Running: 0. Queued: 50."), "the control answers on the full route");
+        assert!(j.request(busy + 2).unwrap().1.unwrap().contains("\nRunning: 0. Queued: 50."), "the control answers on the full route");
         let runs = j.claim_next(4, 3).unwrap();
         assert_eq!(runs.iter().map(|r| r.request).collect::<Vec<_>>(), [1, busy + 1], "one run per conversation, oldest first");
         assert_eq!(count(&j, "SELECT count(*) FROM requests WHERE state='queued'"), ROUTE_BACKLOG - 1, "nothing accepted is pruned");
@@ -2406,6 +2555,120 @@ mod tests {
         assert!(j.finish(&r, None, None, &Outcome::Answered("ok".into()), 1).unwrap());
         assert_eq!(j.request(1).unwrap().0, "answered");
         assert_eq!(count(&j, "SELECT count(*) FROM outbox WHERE kind='rich' AND state='pending'"), 1, "telemetry failure cannot lose the final delivery");
+        drop(j);
+        let _ = std::fs::remove_dir_all(p);
+    }
+
+    fn service_texts(j: &Journal) -> Vec<String> {
+        let mut q = j.0.prepare("SELECT o.text FROM outbox o JOIN requests r ON r.id=o.request_id WHERE r.front='service' AND o.chat=7 ORDER BY o.id").unwrap();
+        q.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+    }
+
+    // #81 S1: /status names the version and every non-ok source with its age; unobserved reads unknown, never ok.
+    #[test]
+    fn status_shows_version_and_non_ok_sources() {
+        let (mut j, p) = journal("status-service");
+        let status = |j: &mut Journal, u: i64, at: i64| {
+            j.admit(&[(u, Some(Input { image: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: u, kind: "text", text: Some("/status".into()), reply_to: None }))], at).unwrap();
+            j.request(count(j, "SELECT max(id) FROM requests")).unwrap().1.unwrap()
+        };
+        let v = env!("CARGO_PKG_VERSION");
+        assert_eq!(status(&mut j, 1, 0), format!("PilotQ {v} · poll unknown · storage unknown · model unknown · taskq unknown · delivery unknown\nNothing is running or queued in this conversation."));
+        for s in SOURCES { j.set_health(s, 10, "ok", None).unwrap(); }
+        assert!(status(&mut j, 2, 20).starts_with(&format!("PilotQ {v} · all sources ok\n")));
+        j.set_health("model", 100, "failed", Some("login")).unwrap();
+        j.set_health("poll", 200, "conflict", None).unwrap();
+        assert!(status(&mut j, 3, 820).starts_with(&format!("PilotQ {v} · poll conflict 10 min ago · model failed 12 min ago\n")), "raw reasons stay out of Telegram");
+        drop(j);
+        let _ = std::fs::remove_dir_all(p);
+    }
+
+    // #81 N1: hold-down, one incident per episode across restart, recovery only on fresh success, 6 h and daily caps.
+    #[test]
+    fn service_incidents_hold_dedup_recover_and_cap() {
+        let (mut j, p) = journal("incidents");
+        let path = p.join("journal.sqlite");
+        j.set_health("taskq", 0, "failed", Some("board read")).unwrap();
+        j.set_health("taskq", 100, "failed", Some("board read")).unwrap();
+        j.incidents(7, 100).unwrap();
+        assert!(service_texts(&j).is_empty(), "under 2 minutes stays silent");
+        j.set_health("model", 100, "failed", None).unwrap();
+        j.incidents(7, 110).unwrap();
+        assert!(service_texts(&j).is_empty(), "one failed run stays silent");
+        j.set_health("model", 130, "ok", None).unwrap();
+        j.set_health("model", 140, "failed", None).unwrap();
+        j.incidents(7, 140).unwrap();
+        assert!(!service_texts(&j).iter().any(|t| t.contains("Codex")), "a success resets the run count");
+        j.set_health("model", 150, "failed", None).unwrap();
+        j.incidents(7, 150).unwrap();
+        assert_eq!(service_texts(&j).len(), 2, "two consecutive failed runs and 2 min of TaskQ failure open one incident each");
+        drop(j);
+        let mut j = Journal::open(&path).unwrap();
+        j.set_health("taskq", 400, "failed", None).unwrap();
+        j.incidents(7, 400).unwrap();
+        assert_eq!(service_texts(&j).len(), 2, "a restart does not reopen an open episode");
+        j.set_health("taskq", 500, "ok", None).unwrap();
+        j.incidents(7, 500).unwrap();
+        assert_eq!(service_texts(&j).last().unwrap(), "✅ PilotQ: TaskQ board reachable again · held plans resume");
+        j.incidents(7, 510).unwrap();
+        assert_eq!(service_texts(&j).len(), 3, "recovery is sent once");
+        // a new episode within 6 hours opens silently, and its recovery stays silent too
+        j.set_health("taskq", 600, "failed", None).unwrap();
+        j.incidents(7, 800).unwrap();
+        assert_eq!(service_texts(&j).len(), 3);
+        assert_eq!(count(&j, "SELECT count(*) FROM meta WHERE key='incident:taskq'"), 1, "the capped episode stays open in the journal");
+        j.set_health("taskq", 900, "ok", None).unwrap();
+        j.incidents(7, 900).unwrap();
+        assert_eq!(service_texts(&j).len(), 3);
+        // after 6 hours a new episode notifies again; the daily total stays at 10
+        j.set_health("taskq", 30000, "failed", None).unwrap();
+        j.incidents(7, 30200).unwrap();
+        assert_eq!(service_texts(&j).len(), 4);
+        for i in 0..20 { j.rollback_notice(7, &format!("9.0.{i}"), "8.0.0", 30300).unwrap(); }
+        assert_eq!(service_texts(&j).len(), 10, "at most 10 service messages per day");
+        assert!(service_texts(&j).iter().all(|t| !t.contains('#') && !t.contains("board read")), "no internal IDs or raw errors");
+        drop(j);
+        let _ = std::fs::remove_dir_all(p);
+    }
+
+    // #81 U1: an undrained gap over 5 minutes sends one downtime notice on a healthy start; planned stops stay silent.
+    #[test]
+    fn downtime_and_unplanned_restart_notices() {
+        let (mut j, p) = journal("downtime");
+        j.service_started(0).unwrap();
+        j.restart_notice(7, false, 0).unwrap();
+        assert!(service_texts(&j).is_empty(), "a first start has no previous pass");
+        j.alive(1000).unwrap();
+        j.planned_stop(true, 1010).unwrap();
+        j.service_started(5000).unwrap();
+        j.restart_notice(7, false, 5060).unwrap();
+        assert!(service_texts(&j).is_empty(), "service stop is planned");
+        j.alive(5100).unwrap();
+        j.draining(true).unwrap();
+        j.service_started(9000).unwrap();
+        j.draining(false).unwrap();
+        j.restart_notice(7, false, 9060).unwrap();
+        assert!(service_texts(&j).is_empty(), "an update drain is planned");
+        j.alive(9100).unwrap();
+        // a crash loop keeps the earliest start of the gap
+        j.service_started(9120).unwrap();
+        j.alive(9150).unwrap();
+        j.service_started(10900).unwrap();
+        j.restart_notice(7, false, 10960).unwrap();
+        j.restart_notice(7, false, 10990).unwrap();
+        assert_eq!(service_texts(&j), ["⚠️ PilotQ was unavailable for 30 min, until 03:01 UTC · messages from that time are processed now"]);
+        j.alive(11000).unwrap();
+        j.service_started(11030).unwrap();
+        j.restart_notice(7, false, 11090).unwrap();
+        assert_eq!(service_texts(&j).len(), 1, "the restart key caps a second notice within 6 hours");
+        j.alive(40000).unwrap();
+        j.service_started(40030).unwrap();
+        j.restart_notice(7, true, 40090).unwrap();
+        assert_eq!(service_texts(&j).len(), 1, "a rollback incident consumes the gap silently");
+        j.alive(80000).unwrap();
+        j.service_started(80030).unwrap();
+        j.restart_notice(7, false, 80090).unwrap();
+        assert_eq!(service_texts(&j).last().unwrap(), "⚠️ PilotQ restarted without a planned stop");
         drop(j);
         let _ = std::fs::remove_dir_all(p);
     }

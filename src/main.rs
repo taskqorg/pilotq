@@ -22,8 +22,7 @@ const USAGE: &str = "usage: pilotq service install|run|stop|status | status [--j
 /// A status.json older than this reads unknown (coreq.md § status.json).
 const FRESH: u64 = 60;
 const PASS: Duration = Duration::from_secs(30);
-/// Section 7 health sources, each reported separately.
-const SOURCES: [&str; 5] = ["poll", "storage", "model", "taskq", "delivery"];
+use journal::SOURCES;
 /// While this file exists in the install directory the service starts no new turn (§ 12 planned restart).
 const DRAIN: &str = "drain";
 /// Planned-restart grace: the 60 s direct-action budget plus the 5 s cancellation grace (§ 7).
@@ -38,6 +37,7 @@ fn drain(t: &Tool, grace: Duration) -> Result<Option<String>, String> {
     std::fs::write(t.install.join(DRAIN), "").map_err(|e| format!("drain: {e}"))?;
     let j = journal::Journal::open(&path)?;
     j.draining(true)?;
+    j.planned_stop(true, now() as i64)?;
     let end = std::time::Instant::now() + grace;
     loop {
         let n = j.running()?;
@@ -51,9 +51,14 @@ fn drain(t: &Tool, grace: Duration) -> Result<Option<String>, String> {
     }
 }
 
-fn resume_after_update(t: &Tool) -> Result<(), String> {
+/// `withdraw` drops the planned-stop marker of an update that did not restart the service.
+fn resume_after_update(t: &Tool, withdraw: bool) -> Result<(), String> {
     let path = t.install.join("journal.sqlite");
-    if path.exists() { journal::Journal::open(&path)?.draining(false)?; }
+    if path.exists() {
+        let j = journal::Journal::open(&path)?;
+        j.draining(false)?;
+        if withdraw { j.planned_stop(false, 0)?; }
+    }
     match std::fs::remove_file(t.install.join(DRAIN)) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("resume: {e}")),
         _ => Ok(()),
@@ -72,7 +77,7 @@ fn update(t: &Tool, check: bool) -> Result<(Option<String>, Option<String>), Str
         coreq::update::update(t, false).map(|v| (v, drained))
     })();
     if !matches!(&result, Ok((Some(_), _))) {
-        resume_after_update(t)?;
+        resume_after_update(t, true)?;
     }
     result
 }
@@ -109,23 +114,27 @@ fn launcher_fault(t: &Tool, f: &coreq::incident::Fault) {
 fn healthy_start(t: &Tool, j: &mut journal::Journal, owner: Option<i64>, elapsed: Duration, at: i64) -> Result<(), String> {
     if elapsed < Duration::from_secs(60) { return Ok(()); }
     std::fs::write(t.release_exe(t.version).with_file_name("healthy"), "").map_err(|_| "healthy marker write failed")?;
-    if let Some(owner) = owner { rollback_notice(t, j, owner, at)?; }
+    if let Some(owner) = owner {
+        let rolled_back = rollback_notice(t, j, owner, at)?;
+        j.restart_notice(owner, rolled_back, at)?;
+    }
     Ok(())
 }
 
-fn rollback_notice(t: &Tool, j: &mut journal::Journal, owner: i64, at: i64) -> Result<(), String> {
+/// True when this call opened the rollback incident.
+fn rollback_notice(t: &Tool, j: &mut journal::Journal, owner: i64, at: i64) -> Result<bool, String> {
     let text = match std::fs::read_to_string(t.install.join("rollback.json")) {
         Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(_) => return Err("rollback marker unreadable".into()),
     };
     let v: Value = serde_json::from_str(&text).map_err(|_| "invalid rollback marker")?;
     let failed = v["failed"].as_str().ok_or("rollback marker missing failed version")?;
     let restored = v["restored"].as_str().ok_or("rollback marker missing restored version")?;
     if restored == t.version && t.current().as_deref() == Some(restored) {
-        j.rollback_notice(owner, failed, restored, at)?;
+        return j.rollback_notice(owner, failed, restored, at);
     }
-    Ok(())
+    Ok(false)
 }
 
 fn tool() -> Tool {
@@ -266,6 +275,8 @@ fn service_run(t: &Tool) -> ! {
     }
     // § 12: reconcile runs a dead process left behind before anything new starts
     journal.reconcile(now() as i64).unwrap_or_else(|e| t.die(&e));
+    // #81 U1: read the previous stop before this process clears the drain or records itself alive
+    journal.service_started(now() as i64).unwrap_or_else(|e| t.die(&e));
     // F04: an effect written without a receipt is read back, never repeated
     if let Some(c) = &cfg
         && let Err(e) = direct::reconcile(&c.direct, &journal)
@@ -323,8 +334,13 @@ fn service_run(t: &Tool) -> ! {
     eprintln!("pilotq {} service running", t.version);
     loop {
         let mut s = status_doc(t, now());
-        if let Err(e) = j.lock().unwrap().status(&mut s, now() as i64) {
-            s["health"]["storage"] = json!({"at": null, "age": null, "state": "unknown", "reason": e});
+        {
+            let mut j = j.lock().unwrap();
+            if let Err(e) = j.status(&mut s, now() as i64) {
+                s["health"]["storage"] = json!({"at": null, "age": null, "state": "unknown", "reason": e});
+            }
+            if let Err(e) = j.alive(now() as i64) { eprintln!("alive: {e}"); }
+            if let Some(owner) = owner && let Err(e) = j.incidents(owner, now() as i64) { eprintln!("incidents: {e}"); }
         }
         let r = coreq::status::write(t, &t.install, &s);
         if let Err(e) = &r {
@@ -546,7 +562,14 @@ fn main() {
             println!("service install: ok ({})", u.path.display());
         }
         ["service", "stop"] => {
-            coreq::service::run_all(&unit().stop, false).unwrap_or_else(|e| t.die(&e));
+            // #81: a requested stop is planned and stays silent on the next start
+            let path = t.install.join("journal.sqlite");
+            let j = path.exists().then(|| journal::Journal::open(&path)).transpose().unwrap_or_else(|e| t.die(&e));
+            if let Some(j) = &j { j.planned_stop(true, now() as i64).unwrap_or_else(|e| t.die(&e)); }
+            if let Err(e) = coreq::service::run_all(&unit().stop, false) {
+                if let Some(j) = &j { let _ = j.planned_stop(false, 0); }
+                t.die(&e);
+            }
             println!("service stop: ok");
         }
         ["service", "status"] => {
@@ -580,7 +603,7 @@ fn main() {
                             .unwrap_or_else(|e| t.die(&format!("restart: {e}")));
                         println!("service restart: ok");
                     }
-                    resume_after_update(&t).unwrap_or_else(|e| t.die(&e));
+                    resume_after_update(&t, false).unwrap_or_else(|e| t.die(&e));
                 }
                 None => println!("update: up to date"),
             }
@@ -747,7 +770,7 @@ mod update_tests {
         assert!(drain(&t, Duration::ZERO).unwrap_err().contains("update deferred"));
         assert_eq!(j.request(r.request).unwrap().0, "running");
         assert!(matches!(j.ask(7, "blocked", 2), Err(e) if e.contains("drain")));
-        resume_after_update(&t).unwrap();
+        resume_after_update(&t, true).unwrap();
         assert!(!t.install.join(DRAIN).exists());
         assert!(j.ask(7, "allowed", 3).is_ok());
         drop(j);
