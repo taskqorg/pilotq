@@ -537,14 +537,19 @@ impl Journal {
         // Resume cannot change developer instructions: rebuild older sessions once with the image/status policy.
         if version < 10 {
             up("BEGIN IMMEDIATE;
-                INSERT OR IGNORE INTO meta(key,value) SELECT 'refresh:' || session,1 FROM conversations WHERE thread IS NOT NULL;
-                ALTER TABLE requests ADD COLUMN image TEXT; ALTER TABLE requests ADD COLUMN language TEXT;
-                PRAGMA user_version=10; COMMIT;")?;
+                INSERT OR IGNORE INTO meta(key,value) SELECT 'refresh:' || session,1 FROM conversations WHERE thread IS NOT NULL;")?;
+            // §9: an overlapping schema-9 opener could stamp 9 after v10 added these columns.
+            // Inspect each column under the writer lock; preserve existing media and language values.
+            for column in ["image", "language"] {
+                let exists: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('requests') WHERE name=?1)",
+                    [column], |r| r.get(0)).map_err(|e| e.to_string())?;
+                if !exists { up(&format!("ALTER TABLE requests ADD COLUMN {column} TEXT;"))?; }
+            }
+            up("PRAGMA user_version=10; COMMIT;")?;
         }
         // TaskQ op IDs are permanent board claims; a random installation ID keeps a fresh journal from reusing another's
         let salt = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as i64) ^ ((std::process::id() as i64) << 40);
         c.execute("INSERT INTO meta(key, value) VALUES ('instance', ?1) ON CONFLICT(key) DO NOTHING", [salt & i64::MAX]).map_err(|e| e.to_string())?;
-        up(&format!("PRAGMA user_version={SCHEMA};"))?;
         up("CREATE TEMP TABLE previews(run INTEGER PRIMARY KEY, text TEXT NOT NULL);")?;
         Ok(Journal(c, path.with_file_name("telemetry.sqlite"), std::sync::OnceLock::new()))
     }
@@ -2222,6 +2227,40 @@ mod tests {
         assert!(!j.refresh_tools(&next).unwrap());
         assert_eq!(next.thread.as_deref(),Some("native-new"));
         drop(j); let _=std::fs::remove_dir_all(p);
+        }
+    }
+
+    // R5, §9: recover schema 9 with either v10 column already present without losing accepted work.
+    #[test]
+    fn schema_9_existing_image_columns_preserve_rows() {
+        for (image, language) in [(false,false),(true,false),(false,true),(true,true)] {
+            let (mut j,p)=journal("schema9-columns");
+            let r=j.ask(7,"keep this request",0).unwrap();
+            j.0.execute("UPDATE requests SET image='retained-image', language='ru' WHERE id=?1",[r.request]).unwrap();
+            if !image { j.0.execute_batch("ALTER TABLE requests DROP COLUMN image").unwrap(); }
+            if !language { j.0.execute_batch("ALTER TABLE requests DROP COLUMN language").unwrap(); }
+            // The old schema-9 opener's unconditional epilogue can leave v10 columns stamped as v9.
+            j.0.execute_batch("PRAGMA user_version=9").unwrap();
+            drop(j);
+            // Model a schema-9 process that passed its guard before the upgrade, then finished late.
+            let legacy=Connection::open(p.join("journal.sqlite")).unwrap();
+            let observed: i64=legacy.query_row("PRAGMA user_version",[],|r| r.get(0)).unwrap();
+            assert_eq!(observed,9);
+            for pass in 0..3 {
+                let j=Journal::open(&p.join("journal.sqlite")).unwrap();
+                let row: (String,Option<String>,Option<String>)=j.0.query_row(
+                    "SELECT text,image,language FROM requests WHERE id=?1",[r.request],
+                    |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+                assert_eq!(row,("keep this request".into(),image.then(|| "retained-image".into()),language.then(|| "ru".into())));
+                assert_eq!(count(&j,"PRAGMA user_version"),10);
+                drop(j);
+                if pass==0 {
+                    // v0.2.3 Journal::open ends with this unconditional write, without a fresh version check.
+                    legacy.execute_batch("PRAGMA user_version=9").unwrap();
+                }
+            }
+            drop(legacy);
+            let _=std::fs::remove_dir_all(p);
         }
     }
 
