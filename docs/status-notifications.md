@@ -1,6 +1,6 @@
 # Service state and notifications
 
-Research for [task #81](https://github.com/taskqorg/pilotq/issues/81). It proposes how PilotQ shows its own state and notifies about restarts, updates, failures and recovery across several boards and chats. It is a proposal: nothing here changes [pilotq.md](../pilotq.md) until the owner chooses an option. Notification grammar follows [specq notifications](https://github.com/taskqorg/specq/blob/main/caveman/rules/notifications.md).
+Research for [task #81](https://github.com/taskqorg/pilotq/issues/81). It proposes how PilotQ shows its own state and notifies about restarts, updates, failures and recovery across several boards and chats. **Owner decision (task #81, option A):** the minimal variant below, built on the #77 rollback DM; [pilotq.md §9](../pilotq.md#update-and-monitoring) records it. Options outside it stay later stages. Notification grammar follows [specq notifications](https://github.com/taskqorg/specq/blob/main/caveman/rules/notifications.md).
 
 ## Current state (origin/main 93d15dc)
 
@@ -78,9 +78,9 @@ This conversation: 1 running, 0 queued.
 
 A route affected under N2 gets one line about its own request, for example "Your request waits: Codex login lost; it resumes automatically."
 
-## Recommendation: minimal variant
+## Decision: minimal variant (option A)
 
-**S1 + N1 + U1**, with the A2 rules. It reuses the health table, the outbox and the #77 incident path; it adds no new component, chat configuration or monitor. N3 and U2/U3 wait for evidence that the owner DM is not enough (for example a second operator).
+**S1 + N1 + U1**, with the A2 rules. The owner prefers standard simple setups. It reuses the health table, the outbox and the #77 incident path; it adds no new component, chat configuration or monitor. N3 and U2/U3 wait for evidence that the owner DM is not enough (for example a second operator).
 
 Stages:
 
@@ -88,4 +88,5 @@ Stages:
 2. Service incidents to the owner DM (N1): open/close with hold-down, episode key and rate cap for `model`, `taskq`, `poll`, unplanned restart. Check: journal tests for dedup across restart, hold-down and recovery only on fresh evidence.
 3. Downtime note (U1). Check: test with a stale `alive_at` and with a drain marker (silent).
 4. A40 on FRA and a fault drill: revoke the Codex login, stop TaskQ, kill the service.
-5. Later, on evidence: N3 ops route, U2 or U3 real-time dead-service detection.
+5. Later stage B, on evidence that the owner DM is not enough (for example a second operator): N3 ops chat or topic for service incidents, owner DM as fallback.
+6. Later stage C, on evidence that after-the-fact detection is not enough: U3 DashQ enrollment for real-time dead-service detection, or U2 if ServerQ adds user-unit checks.
