@@ -76,7 +76,7 @@ Each trace records initial request/run/effect/delivery state, authorized actor a
 
 | ID and requirement | Initial state and action | Fault or variation | Observable acceptance evidence |
 |---|---|---|---|
-| L01 R5 R11 | Send a request while a run slot is busy; then free capacity | Fast answer, queued request, failed inbox commit, waiting for a person or TaskQ | Acknowledgement follows durable commit; queued is not running; fast answer suppresses redundant acknowledgement; waiting has a reason and does not trigger a hung-run warning |
+| L01 R5 R11 | Send a request while a run slot is busy; then free capacity | Fast answer, queued request, failed inbox commit, waiting for a person or TaskQ | Acknowledgement follows durable commit; queued is not running; reaction receipt avoids a redundant text acknowledgement; reaction failure falls back to text; a queue wait over 30 seconds gets one observed queue-depth notice; waiting has a reason and does not trigger a hung-run warning |
 | L02 R1 R5 R11 | Start a Codex turn in a forum topic | No first event; active events; stale activity; wait; cancel; finish; typing API failure | Typing stays in the correct topic, follows section 12's freshness/rate bounds and stops on wait/stale/terminal state; its timer/failure never extends a deadline, creates work or blocks a final reply |
 | L03 R5 R11 | Emit factual tool/task progress, a stall and subsequent recovery | Event burst, repeated error, service restart, recovery without a successful probe, sensitive text in errors | Coalesced status reflects evidence; incident notices deduplicate across restart; no raw secrets/reasoning; a reset timer alone cannot claim recovery; final/question/failure is not starved by edits |
 | L04 R5 R11 | Spawn a Codex process that never emits an event | Startup hangs, or stops before activity state is initialized | First-event watch still fires within the configured bound; request becomes recoverable/failed with notice; slot and process resources are released or fenced |
@@ -162,7 +162,7 @@ Results for the [section 10](../pilotq.md#10-adoption-sequence) step 2 slice, ta
 | F15 | Yes | `journal::strangers_and_claims_change_nothing`, `u18_cli_grant_admits_only_new_requests`, `f02_duplicate_lock_and_conflict`. The first slice offers no inline buttons; callback queries arrive with step 3 |
 | F16 | Yes | `journal::strangers_and_claims_change_nothing` (a stranger reusing the owner's display name), `journal::u18_grant_lifecycle` (grants are per user ID; no group grant exists) |
 | F17 | Yes | `journal::u17_profiles_distinct_and_private`, `journal::revoked_work_is_not_dispatched_or_delivered` |
-| L01 | Partial | Acknowledgement only after commit (`f01_crash_points_keep_each_input_once`), queued is not running (`journal::backlog_is_bounded_and_fair`), acknowledgement before the answer (`u01_follow_up_resumes_the_conversation`). The optional fast-answer suppression is not implemented. Waiting for a person or TaskQ: step 3 |
+| L01 | Partial | Acknowledgement only after commit (`f01_crash_points_keep_each_input_once`), queued is not running (`journal::backlog_is_bounded_and_fair`), reaction receipts without numbered text and one retention notice (`journal::telegram_receipt_is_reaction_not_numbered_text`, `u01_follow_up_resumes_the_conversation`); slow-queue visibility (`journal::queue_notice_and_draft_fence`). Waiting for a person or TaskQ: step 3 |
 | L02 | No | Step 3, with progress status messages (no typing indicator in the first slice) |
 | L03 | No | Step 3 |
 | L04 | Yes | `f03_provider_faults_are_bounded` (no first event) |
@@ -172,7 +172,7 @@ Results for the [section 10](../pilotq.md#10-adoption-sequence) step 2 slice, ta
 | L08 | Partial | Quota failure stays failed and no API key reaches Codex (`f03_provider_faults_are_bounded`). Distinct auth, quota and 429 handling with retry-after: step 5 |
 | L09 | No | Step 5; the login state is part of the live run |
 | L10 | Partial | Unsafe or malformed `config.json` stops startup. Bot identity and permission checks against a manifest: step 6 |
-| L11 | Yes | `journal::long_reply_is_chunked_in_order`, `f05_delivery_faults_are_bounded` |
+| L11 | Yes | `journal::long_reply_is_chunked_in_order`, `f05_delivery_faults_are_bounded`, `telegram_reply_delivery_fallbacks` (rich → HTML → plain, draft errors and escaping) |
 | L12 | No | Step 3 (status message edits) |
 | L13 | Partial | A blocked chat is held, never rerouted (`f05_delivery_faults_are_bounded`). Administrative remap: step 5 |
 | L14 | Partial | Unsupported media gets an explicit outcome and service messages are not input (`journal::strangers_and_claims_change_nothing`, `service_messages_are_not_input`); no cross-person merge (`journal::u02_route_session_policy`). Edits and albums: step 5 with the media decision (section 11) |
@@ -605,3 +605,7 @@ Read-only inspection found that `Journal::audit` opens a deferred transaction, r
 The owner requested `0.2.2` in PR #60 because published `0.2.1` lacks the #62 fix at `49043392fb12b80d2e6d4c8db3fee28942d916ce` (§9). Package metadata and tester commands now select `0.2.2`; no test or acceptance protection changed. The PM reports A40 passed 14/14 on FRA at `4904339` on 2026-10-25 at 01:14 UTC. This is attributed development-candidate evidence, not an installed `0.2.2` result.
 
 After merge and the PM's `live` push, the PM updates FRA through `pilotq update` and supplies the installed source commit, A40 case results and cleanup, pilot report and journal request IDs before and after activation. Reconcile those IDs with effects and delivery receipts before claiming A3 (§4, §9, R17). The earlier installed-suite failure and continuity gap remain open until that evidence arrives.
+
+### Task #68 reply-flow checks
+
+The changed presentation follows [§4](../pilotq.md#delivery), [§5](../pilotq.md#direct-actions-keys-and-project-switching) and [§12](../pilotq.md#telegram-feedback). `telegram_reply_delivery_fallbacks` checks private drafts, one-second coalescing, reaction failure, draft failure, rich rejection, HTML entity rejection, final delivery and absence of DM reply quotes. `project_list_is_scoped_and_marks_current` protects registry/grant filtering and revocation. The journal cases protect duplicate receipts, queue notices across restart and ordered fallback receipts. A40’s discussion case now requires a real `project_list` call and reaction receipts without queued-text spam. Per the approved §9 handoff, the PM runs the updated suite after merge on FRA; the owner checks the DM flow. These remain unverified until their run and observation are recorded.

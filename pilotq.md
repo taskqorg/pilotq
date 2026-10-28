@@ -162,7 +162,11 @@ Commit final replies, worker questions and results to an outbox with immutable d
 
 Record Telegram message IDs after successful sends; update a known status message when useful. Telegram `sendMessage` has no general client idempotency key: after a lost send response, a duplicate visible reply is possible. Report an ambiguous send as such and use bounded at-least-once delivery for results. Never repeat task execution to solve a delivery problem.
 
-Formatting errors fall back to plain text. Split oversized replies safely; do not rerun generation. Respect server retry delays, bound retry counts and retain exhausted deliveries for operator recovery. Forbidden or missing-chat errors must not reroute private results to a broader group or silently mark them delivered.
+**Owner, task #68:** normal accepted text uses an 👀 reaction within five seconds, without a text acknowledgement. If the reaction fails, send a short text receipt. If an unstarted request waits over 30 seconds, send one “Queued behind N” notice with the observed number of earlier requests in its conversation. Busy, unsupported-input and recovery-control replies remain text. Keep the first-use retention notice as a separate message once per person. Normal answers omit internal request numbers; /status, /audit, failures and stop notices retain them.
+
+Private-chat answers do not quote the latest user message. Groups and topics retain reply correlation, typing and edited task status messages. While generating in a private chat, stream user-visible answer text through sendRichMessageDraft, falling back to sendMessageDraft. Coalesce updates to at most one per second; drafts are ephemeral, fenced to the active run, and failures never change the request outcome or replace final delivery.
+
+Final answers first use sendRichMessage for content within 32768 UTF-16 units. On an explicit unsupported-method or content rejection, fall back to HTML sendMessage in stable ordered chunks of at most 4096 UTF-16 units, then plain text on entity errors. Preserve literal source content, escape generated HTML at the output boundary and never allow raw model HTML to become markup. Persist fallback chunks and individual receipts before sending; retries after an ambiguous rich send stay on that same delivery method. A draft is never a final receipt. On upgrade, native sessions with the older fixed tool catalogue rebuild explicitly from the recorded conversation and receipts before receiving the new tools; completed effects are never replayed. Split oversized replies safely; do not rerun generation. Respect server retry delays, bound retry counts and retain exhausted deliveries for operator recovery. Forbidden or missing-chat errors must not reroute private results to a broader group or silently mark them delivered.
 
 ## 5. TaskQ integration
 
@@ -216,6 +220,7 @@ The manager gets these tools beside the TaskQ tools, checked at dispatch like th
 
 | Tool | Grants | Effect |
 |---|---|---|
+| `project_list` | current caller’s project grants | Reads registered project names and boards accessible to the caller, marking the conversation’s current project; no key or board call |
 | `project_use` | project scope | Sets the conversation's current project. The project must be registered and named in the person's own message |
 | `issue_read` | project scope and a key granted for the tool | Reads one issue of a registered project: title, state, labels, a bounded body excerpt, the issue's update time (source time) and the read time |
 | `issue_comment` | owner, a key | Adds one comment to a `taskqorg/pilotq` issue |
@@ -259,7 +264,7 @@ These are initial acceptance targets, not observed performance or a production S
 | Concern | Initial target |
 |---|---|
 | Durable receipt | p95 <= 2 seconds from update receipt at PilotQ, under the defined pilot load |
-| Telegram acknowledgement | p95 <= 5 seconds when Telegram is reachable; can be omitted if a complete answer arrives sooner |
+| Telegram acknowledgement | 👀 reaction within 5 seconds when Telegram is reachable; text fallback on reaction failure, one queue notice after 30 seconds |
 | Direct action | <= 60 seconds and <= 5 tool calls; longer work is delegated or returned with a bounded result |
 | Silent runtime | No useful event for 30 seconds triggers diagnosis; runtime deadline still applies even if it emits tokens indefinitely |
 | Cancellation | Acknowledge within 5 seconds when transport is healthy; abort then terminate the isolated process after a 5-second grace period if necessary |
@@ -348,9 +353,11 @@ Follow coreq: `releases/<version>`, `current` and `previous` in the install dire
 
 **Owner, 2026-10-25 (task #41 continuation):** prepare `0.2.2` in PR #60 to include the #62 fix merged at `49043392fb12b80d2e6d4c8db3fee28942d916ce`, which is absent from `0.2.1`. After merge-queue acceptance, the PM fast-forwards `live`, updates FRA through `pilotq update` and reruns A40 at the `0.2.2` commit. Record A3 from the PM's A40 report, pilot report and journal request IDs before and after activation, including effect and delivery receipts. The test-pilot scope and production-cutover boundary above remain in force.
 
+**Owner, task #68 continuation (option A):** prepare `0.2.3` with the Telegram reply flow and project-list tool in this PR. Publish through merge-queue acceptance and the existing `live` release path. After merge, the PM updates the FRA test pilot through `pilotq update` and runs A40; the owner checks the DM flow. This does not authorize production cutover.
+
 The installed Linux service checks for releases every five minutes, including at startup when no recent check is recorded. It persists the attempt time before the check so restarts do not reset the retry interval. A separate maintenance thread keeps health reporting and conversations available during downloads. Manual and scheduled updates share one OS-held update lock. A journal drain flag gates both CLI and Telegram claims in their claim transactions, so a new run cannot race the drain. Before activation, stop new manager turns and wait up to 65 seconds for running requests; an incomplete or failed drain refuses activation and preserves the current release. Failed downloads, checksum checks or selftests retain the current release and resume admission. Successful scheduled activation exits the service with code 75; the coreq Linux unit restarts it through the launcher. `pilotq update --pause` and `--resume` persist and read back automatic-update admission; pausing does not stop health or conversations. Manual updates remain available.
 
-This release retains coreq `v0.14.6` (locked in `Cargo.lock`) and journal schema 8. It opens existing schemas 0–8 through the current migrations and refuses newer schemas; rollback to a binary that cannot read the resulting schema is unsafe. The installation owner runs the user service and owns its protected configuration. See the [tester guide](docs/tester-guide.md) for installation, checks and current limitations. A published release and successful selftest do not qualify production cutover or the open decisions in section 11.
+This release retains coreq `v0.14.6` (locked in `Cargo.lock`) and journal schema 9. It opens existing schemas 0–9 through the current migrations and refuses newer schemas; rollback to a binary that cannot read the resulting schema is unsafe. The installation owner runs the user service and owns its protected configuration. See the [tester guide](docs/tester-guide.md) for installation, checks and current limitations. A published release and successful selftest do not qualify production cutover or the open decisions in section 11.
 
 ### Development
 
@@ -393,8 +400,8 @@ The runtime supervisor observes startup/first-event latency, last useful runtime
 
 | Event | User-visible behavior | Source of truth |
 |---|---|---|
-| Request committed | Acknowledge within section 7's budget, unless the final reply arrives sooner; identify queueing if work has not started | Journal commit and queue state |
-| Codex active | Best-effort typing in the exact originating topic; optional short status such as checking or reading | Current run and factual events |
+| Request committed | React 👀 within section 7’s budget; text only on reaction failure or queue wait over 30 seconds; first-use retention notice once | Journal commit and queue state |
+| Codex active | Private-chat answer drafts at most once per second; best-effort typing in the exact originating chat/topic | Current run and factual events |
 | Meaningful progress | Update one correlated status message; describe an observed milestone without raw tool arguments, hidden reasoning or invented percentages | Completed tool result or fresh TaskQ transition |
 | Waiting | State what is needed: user answer, capacity, provider reset or sign-in; retain the request | Persisted reason and dependency evidence |
 | Stall or failure | State the affected request, what is known and the next available action; notify once per incident episode | Supervisor and receipts |

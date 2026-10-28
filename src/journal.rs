@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 /// Schema this binary writes; a newer journal is refused rather than guessed (F08).
-const SCHEMA: i64 = 8;
+const SCHEMA: i64 = 9;
 /// Model attempts per request across restarts (§ 7 dependency retry).
 const RUNS: i64 = 3;
 /// Delivery attempts per episode, persisted across restart (§ 7).
@@ -62,7 +62,7 @@ const TOTAL_BACKLOG: i64 = 1000;
 
 /// Splits `text` into ordered parts within CHUNK, at a newline when one falls in the second half of a part, never inside a
 /// character (§ 4 Delivery, L11).
-fn chunks(text: &str) -> Vec<String> {
+pub(crate) fn chunks(text: &str) -> Vec<String> {
     let mut out = vec![];
     let mut rest = text;
     while !rest.is_empty() {
@@ -97,6 +97,20 @@ fn outbox(tx: &Connection, request: i64, chat: i64, topic: Option<i64>, reply_to
     for part in &parts {
         tx.execute("INSERT INTO outbox(request_id, chat, topic, reply_to, html, text, next_at) VALUES (?1,?2,?3,?4,?5,?6,?7)", params![request, chat, topic, reply_to, html, part, at])
             .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Final content and its fallback parts commit together (§4). Standby parts reserve their ordering before any later reply.
+fn final_outbox(tx: &Connection, request: i64, chat: i64, topic: Option<i64>, reply_to: Option<i64>, text: &str, at: i64) -> Result<(), String> {
+    let rich = text.encode_utf16().count() <= 32768;
+    if rich {
+        outbox(tx, request, chat, topic, reply_to, None, "", at)?;
+        tx.execute("UPDATE outbox SET text=?2,kind='rich' WHERE id=?1", params![tx.last_insert_rowid(), text]).map_err(|e| e.to_string())?;
+    }
+    for part in chunks(text) {
+        outbox(tx, request, chat, topic, reply_to, Some(&crate::telegram::html(&part)), &part, at)?;
+        tx.execute("UPDATE outbox SET kind='rich_part',state=?2 WHERE id=?1", params![tx.last_insert_rowid(), if rich {"standby"} else {"pending"}]).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -172,7 +186,7 @@ fn revalidate(c: &Connection) -> Result<Vec<i64>, String> {
     let mut q = c.prepare(&format!("UPDATE requests SET state='cancelled', error='access revoked before dispatch' WHERE state='queued' AND front='telegram' AND NOT {granted} RETURNING id")).map_err(e)?;
     let ids: Vec<i64> = q.query_map([], |r| r.get(0)).and_then(Iterator::collect).map_err(e)?;
     c.execute(
-        &format!("UPDATE outbox SET state='blocked', error='access revoked before delivery' WHERE state='pending' AND request_id IN (SELECT id FROM requests WHERE NOT {granted})"),
+        &format!("UPDATE outbox SET state='blocked', error='access revoked before delivery' WHERE state IN ('pending','standby') AND request_id IN (SELECT id FROM requests WHERE NOT {granted})"),
         [],
     )
     .map_err(e)?;
@@ -377,6 +391,7 @@ pub struct Delivery {
     pub attempts: i64,
     /// A task status update edits this delivered status message instead of sending a new one (§ 12, L12).
     pub edit: Option<i64>,
+    pub kind: String,
 }
 
 /// What one send attempt established.
@@ -385,6 +400,10 @@ pub enum Sent {
     Ok(i64),
     /// Telegram rejected the formatting: resend the same content as plain text.
     Plain,
+    /// Explicit rejection only: activate the already stored fallback chunks.
+    RichFallback,
+    /// A failed reaction becomes a text receipt without failing the request.
+    Receipt,
     /// Retry after this many seconds; `ambiguous` when Telegram may already show the message.
     Retry { after: i64, ambiguous: bool, error: String },
     /// Destination unusable (forbidden, chat or topic gone): hold for an administrator, never reroute.
@@ -492,10 +511,15 @@ impl Journal {
                     root TEXT NOT NULL, args TEXT NOT NULL, receipt TEXT, at INTEGER NOT NULL);
                 PRAGMA user_version=8; COMMIT;")?;
         }
+        // Older native threads cannot add dynamic tools on resume. Rebuild explicitly from journal context on their next turn.
+        if version < 9 {
+            up("INSERT OR IGNORE INTO meta(key,value) SELECT 'refresh:' || session,1 FROM conversations WHERE thread IS NOT NULL;")?;
+        }
         // TaskQ op IDs are permanent board claims; a random installation ID keeps a fresh journal from reusing another's
         let salt = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as i64) ^ ((std::process::id() as i64) << 40);
         c.execute("INSERT INTO meta(key, value) VALUES ('instance', ?1) ON CONFLICT(key) DO NOTHING", [salt & i64::MAX]).map_err(|e| e.to_string())?;
         up(&format!("PRAGMA user_version={SCHEMA};"))?;
+        up("CREATE TEMP TABLE previews(run INTEGER PRIMARY KEY, text TEXT NOT NULL);")?;
         Ok(Journal(c, path.with_file_name("telemetry.sqlite"), std::sync::OnceLock::new()))
     }
 
@@ -576,22 +600,20 @@ impl Journal {
                     };
                     let id = insert(&tx, *update, "telegram", i.chat, i.topic, sender, i.name.as_deref(), i.message, kind, i.text.as_deref(), state, at, &s, i.reply_to)?;
                     let first: bool = tx.query_row("SELECT NOT EXISTS (SELECT 1 FROM requests WHERE sender=?1 AND id<>?2)", [sender, id], |r| r.get(0)).map_err(|e| e.to_string())?;
-                    let (html, mut text) = match cmd {
+                    let mut text = match cmd {
                         Some(c) => {
                             let (text, stopped) = answer_control(&tx, &s, c, id, i.chat, sender, at)?;
                             ended.extend(stopped);
-                            (None, text)
+                            text
                         }
                         // § 1: unsupported input is detected and gets an explicit outcome, never silence
-                        None if busy => (None, format!("Request #{id} was not accepted: PilotQ is busy; send it again later.")),
-                        None if state == "failed" => (None, format!("Request #{id}: this input type is not supported yet; send text.")),
-                        None if kind == "answer" => (None, format!("Received. Request #{id}, your answer to task #{}, is queued.", question.unwrap_or_default())),
-                        // § 12: acknowledge the committed request and say it is queued
-                        None => (Some(format!("Received. Request <b>#{id}</b> is queued.")), format!("Received. Request #{id} is queued.")),
+                        None if busy => format!("Request #{id} was not accepted: PilotQ is busy; send it again later."),
+                        None if state == "failed" => format!("Request #{id}: this input type is not supported yet; send text."),
+                        // §12: accepted text gets a reaction obligation below, without a text acknowledgement.
+                        None => String::new(),
                     };
                     // § 8: a person learns at admission that their requests are recorded, and for how long
                     let notice = format!(" Your requests are recorded ({RETENTION}); /audit in a direct message shows yours.");
-                    let html = html.map(|h| if first { h + &notice } else { h });
                     if first {
                         text += &notice;
                     }
@@ -600,7 +622,13 @@ impl Journal {
                         tx.execute("UPDATE requests SET reply=?2, error=coalesce(?3, error) WHERE id=?1", params![id, text, error]).map_err(|e| e.to_string())?;
                         ended.push(id);
                     }
-                    outbox(&tx, id, i.chat, i.topic, Some(i.message), html.as_deref(), &text, at)?;
+                    if state == "queued" {
+                        outbox(&tx, id, i.chat, i.topic, Some(i.message), None, "Received.", at)?;
+                        tx.execute("UPDATE outbox SET kind='reaction' WHERE id=?1", [tx.last_insert_rowid()]).map_err(|e| e.to_string())?;
+                    }
+                    if !text.is_empty() {
+                        outbox(&tx, id, i.chat, i.topic, (i.chat != sender).then_some(i.message), Some(&crate::telegram::html(&text)), &text, at)?;
+                    }
                     admitted += 1;
                     Some(id)
                 }
@@ -627,18 +655,24 @@ impl Journal {
         for id in revalidate(&self.0)? {
             self.trace(id, now);
         }
-        let heads = "FROM outbox o WHERE state='pending' AND NOT EXISTS
-            (SELECT 1 FROM outbox p WHERE p.state='pending' AND p.chat=o.chat AND p.topic IS o.topic AND p.id<o.id)";
+        // Timers only wake this scan; the request and one-notice disposition are durable across restart.
+        self.0.execute("INSERT INTO outbox(request_id,chat,topic,reply_to,text,next_at,kind)
+            SELECT r.id,r.chat,r.topic,CASE WHEN r.chat<>r.sender THEN r.message END,'Queued behind ' || (SELECT count(*) FROM requests p WHERE p.session=r.session AND p.id<r.id AND p.state IN ('queued','running')) || '.',?1,'queued'
+            FROM requests r WHERE r.front='telegram' AND r.state='queued' AND r.received_at<?1-30
+            AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.request_id=r.id AND o.kind='queued')", [now]).map_err(|e|e.to_string())?;
+        self.0.execute("UPDATE outbox SET state='superseded' WHERE kind='queued' AND state='pending' AND request_id IN (SELECT id FROM requests WHERE state<>'queued')", []).map_err(|e|e.to_string())?;
+        let heads = "FROM outbox o WHERE state='pending' AND (o.kind='reaction' OR NOT EXISTS
+            (SELECT 1 FROM outbox p WHERE p.state='pending' AND p.chat=o.chat AND p.topic IS o.topic AND p.id<o.id))";
         let row = self
             .0
             .query_row(
                 // a status row edits the task's latest delivered status message, resolved now, after every earlier row of its route
                 &format!(
                     "SELECT id, chat, topic, reply_to, html, text, attempts, CASE WHEN kind='status' THEN (SELECT s.sent_message FROM outbox s WHERE s.task=o.task AND s.project=o.project AND s.chat=o.chat AND s.topic IS o.topic
-                        AND s.kind='status' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1) END {heads} AND next_at<=?1 ORDER BY id LIMIT 1"
+                        AND s.kind='status' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1) END, kind {heads} AND next_at<=?1 ORDER BY (kind='reaction') DESC,id LIMIT 1"
                 ),
                 [now],
-                |r| Ok(Delivery { id: r.get(0)?, chat: r.get(1)?, topic: r.get(2)?, reply_to: r.get(3)?, html: r.get(4)?, text: r.get(5)?, attempts: r.get(6)?, edit: r.get(7)? }),
+                |r| Ok(Delivery { id: r.get(0)?, chat: r.get(1)?, topic: r.get(2)?, reply_to: r.get(3)?, html: r.get(4)?, text: r.get(5)?, attempts: r.get(6)?, edit: r.get(7)?, kind: r.get(8)? }),
             )
             .optional()
             .map_err(|e| e.to_string())?;
@@ -649,8 +683,21 @@ impl Journal {
     /// Records one send attempt. Retries stop at `ATTEMPTS`; the row stays for operator recovery, never deleted.
     pub fn record(&mut self, id: i64, sent: &Sent, now: i64) -> Result<(), String> {
         let tx = self.0.transaction().map_err(|e| e.to_string())?;
+        if matches!(sent, Sent::RichFallback | Sent::Receipt) {
+            if matches!(sent, Sent::RichFallback) {
+                tx.execute("UPDATE outbox SET state='pending' WHERE kind='rich_part' AND state='standby' AND request_id=(SELECT request_id FROM outbox WHERE id=?1)", [id]).map_err(|e|e.to_string())?;
+                tx.execute("UPDATE outbox SET state='superseded',error='rich message rejected; HTML fallback' WHERE id=?1", [id]).map_err(|e|e.to_string())?;
+            } else {
+                tx.execute("UPDATE outbox SET kind='receipt',next_at=?2,reply_to=CASE WHEN chat=(SELECT sender FROM requests WHERE id=request_id) THEN NULL ELSE reply_to END,error='reaction failed; text receipt' WHERE id=?1", params![id, now]).map_err(|e|e.to_string())?;
+            }
+            return tx.commit().map_err(|e|e.to_string());
+        }
+        if matches!(sent, Sent::Ok(_)) {
+            tx.execute("UPDATE outbox SET state='superseded' WHERE kind='rich_part' AND state='standby' AND request_id=(SELECT request_id FROM outbox WHERE id=?1 AND kind='rich')", [id]).map_err(|e|e.to_string())?;
+        }
         let attempts: i64 = tx.query_row("UPDATE outbox SET attempts=attempts+1 WHERE id=?1 RETURNING attempts", [id], |r| r.get(0)).map_err(|e| e.to_string())?;
         let (state, after, error, ambiguous, message) = match sent {
+            Sent::RichFallback | Sent::Receipt => unreachable!(),
             Sent::Ok(m) => ("delivered", 0, None, false, Some(*m)),
             Sent::Plain => ("pending", 0, Some("formatting rejected; plain text".to_string()), false, None),
             Sent::Retry { after, ambiguous, error } => ("pending", *after, Some(error.clone()), *ambiguous, None),
@@ -900,11 +947,30 @@ impl Journal {
         tx.execute("INSERT INTO audit_events(request_id,run_id,at,kind,target,result) VALUES (?1,?2,?3,'rebuild',?4,'native session unavailable; journal context prepared')", params![r.request,r.id,at,r.thread]).map_err(e)?;
         let (front, chat, topic, message): (String,i64,Option<i64>,i64) = tx.query_row("SELECT front,chat,topic,message FROM requests WHERE id=?1", [r.request], |x| Ok((x.get(0)?,x.get(1)?,x.get(2)?,x.get(3)?))).map_err(e)?;
         if front == "telegram" && !notified {
-            outbox(&tx,r.request,chat,topic,Some(message),None,"The native conversation could not be resumed. I am rebuilding from recorded requests, replies and receipts; earlier actions will not be repeated.",at)?;
+            outbox(&tx,r.request,chat,topic,Some(message),None,"I am rebuilding from recorded requests, replies and receipts to refresh or recover the native conversation; earlier actions will not be repeated.",at)?;
         }
         drop(q);
         tx.commit().map_err(e)?;
         Ok(context)
+    }
+
+    pub fn refresh_tools(&self, r: &Run) -> Result<bool, String> {
+        self.0.query_row("SELECT EXISTS(SELECT 1 FROM meta WHERE key=?1)", [format!("refresh:{}",r.session)], |x| x.get(0)).map_err(|e|e.to_string())
+    }
+
+    /// Ephemeral answer preview only, never a final receipt (§4/§12). This TEMP table disappears on restart.
+    pub fn preview(&self, r: &Run, text: &str) -> Result<(), String> {
+        if !self.fenced(r)? {
+            self.0.execute("INSERT INTO previews(run,text) VALUES (?1,?2) ON CONFLICT(run) DO UPDATE SET text=excluded.text", params![r.id,text]).map_err(|e|e.to_string())?;
+        }
+        Ok(())
+    }
+
+    pub fn previews(&self) -> Result<Vec<(i64,i64,Option<i64>,String)>, String> {
+        let mut q = self.0.prepare("SELECT p.run,r.chat,r.topic,p.text FROM previews p JOIN runs u ON u.id=p.run JOIN requests r ON r.id=u.request_id JOIN conversations c ON c.session=u.session
+            WHERE u.state='running' AND r.state='running' AND r.front='telegram' AND r.chat=r.sender AND c.fence=u.fence AND c.generation=u.generation
+            AND EXISTS (SELECT 1 FROM grants g WHERE g.user=r.sender AND g.name='chat')").map_err(|e|e.to_string())?;
+        q.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).and_then(Iterator::collect).map_err(|e|e.to_string())
     }
 
     /// Records a tool item of the run in its audit record: `result` None when it starts, its status when it completes.
@@ -967,10 +1033,14 @@ impl Journal {
         tx.execute("UPDATE requests SET state=?2, reply=?3, error=?4 WHERE id=?1", params![r.request, state, text, error]).map_err(e)?;
         // a thread from before /new never attaches to the new conversation generation
         tx.execute("UPDATE conversations SET thread=coalesce(?3, thread) WHERE session=?1 AND generation=?2", params![r.session, r.generation, thread]).map_err(e)?;
+        if thread.is_some() {
+            tx.execute("DELETE FROM meta WHERE key=?1", [format!("refresh:{}",r.session)]).map_err(e)?;
+        }
         let dest: (String, i64, Option<i64>, i64) =
             tx.query_row("SELECT front, chat, topic, message FROM requests WHERE id=?1", [r.request], |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?, x.get(3)?))).map_err(e)?;
         if dest.0 == "telegram" {
-            outbox(&tx, r.request, dest.1, dest.2, Some(dest.3), None, &text, at)?;
+            let sender = self.sender(r.request)?;
+            final_outbox(&tx, r.request, dest.1, dest.2, (dest.1 != sender).then_some(dest.3), &text, at)?;
         }
         tx.commit().map_err(e)?;
         self.trace(r.request, at);
@@ -1297,7 +1367,7 @@ impl Journal {
         )
         .map_err(e)?;
         let (chat, topic, message): (i64, Option<i64>, i64) = tx.query_row("SELECT chat, topic, message FROM requests WHERE id=?1", [a.request], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(e)?;
-        outbox(&tx, a.request, chat, topic, Some(message), None, reply, at)?;
+        final_outbox(&tx, a.request, chat, topic, (chat != a.sender).then_some(message), reply, at)?;
         tx.commit().map_err(e)?;
         self.trace(a.request, at);
         Ok(())
@@ -1572,7 +1642,7 @@ mod tests {
         assert_eq!(j.admit(&[(10, msg(1, 7, 100))], 0).unwrap(), 0);
         assert_eq!(j.cursor().unwrap(), 13);
         assert_eq!(count(&j, "SELECT count(*) FROM requests"), 1);
-        assert_eq!(count(&j, "SELECT count(*) FROM outbox"), 1);
+        assert_eq!(count(&j, "SELECT count(*) FROM outbox"), 2);
         assert_eq!(count(&j, "SELECT count(*) FROM updates WHERE update_id=11 AND disposition='ignored' AND request_id IS NULL"), 1);
         drop(j);
         let _ = std::fs::remove_dir_all(p);
@@ -1583,6 +1653,8 @@ mod tests {
     fn outbox_keeps_route_order_and_bounds_retries() {
         let (mut j, p) = journal("outbox");
         j.admit(&[(1, msg(1, 7, 100)), (2, msg(1, 7, 101)), (3, msg(2, 7, 102))], 0).unwrap();
+        j.0.execute("DELETE FROM outbox", []).unwrap();
+        for (request,chat) in [(1,1),(2,1),(3,2)] { outbox(&j.0, request, chat, None, None, Some("<b>reply</b>"), "reply", 0).unwrap(); }
         let retry = Sent::Retry { after: 10, ambiguous: true, error: "lost".into() };
         let (head, _) = j.due(0).unwrap();
         assert_eq!(head.as_ref().map(|d| d.id), Some(1));
@@ -1799,7 +1871,7 @@ mod tests {
         };
         let secret = "sk-aaaaaaaaaaaaaaaaaaaa"; // invented value standing in for anything a person types
         j.admit(&[(1, named(8, None, 8, 1, &format!("dm question {secret}"))), (2, named(-100, Some(5), 9, 2, "topic question"))], 10).unwrap();
-        let first = j.0.query_row("SELECT text FROM outbox WHERE request_id=1", [], |r| r.get::<_, String>(0)).unwrap();
+        let first = j.0.query_row("SELECT text FROM outbox WHERE request_id=1 AND text LIKE '%recorded%'", [], |r| r.get::<_, String>(0)).unwrap();
         assert!(first.contains("recorded (metadata 365 days"), "admission tells the person: {first}");
         let runs = j.claim_next(4, 11).unwrap();
         j.tool(&runs[0], "commandExecution", "c1", None, 12).unwrap();
@@ -1916,7 +1988,7 @@ mod tests {
             assert_eq!(d.chat, 7, "nothing is delivered to the revoked person");
             j.record(d.id, &Sent::Ok(1), 7).unwrap();
         }
-        assert_eq!(count(&j, "SELECT count(*) FROM outbox WHERE chat=8 AND state='blocked'"), 3, "two acknowledgements and the answer");
+        assert_eq!(count(&j, "SELECT count(*) FROM outbox WHERE chat=8 AND state='blocked'"), 5, "two reactions, retention notice, rich answer and standby chunk");
         drop(j);
         let _ = std::fs::remove_dir_all(p);
     }
@@ -1941,6 +2013,44 @@ mod tests {
         let _ = std::fs::remove_dir_all(p);
     }
 
+    // §4/§12, #68: receipt noise must not return; deduplication, first-use disclosure and slow-queue visibility stay protected.
+    #[test]
+    fn telegram_receipt_is_reaction_not_numbered_text() {
+        let (mut j, p) = journal("reaction-receipt");
+        j.admit(&[(1, msg(7, 7, 1)), (2, msg(7, 7, 2))], 0).unwrap();
+        assert_eq!(count(&j, "SELECT count(*) FROM outbox WHERE kind='reaction'"), 2);
+        assert_eq!(count(&j, "SELECT count(*) FROM outbox WHERE text LIKE '%is queued%'"), 0);
+        assert_eq!(count(&j, "SELECT count(*) FROM outbox WHERE text LIKE '%metadata 365 days%'"), 1);
+        j.admit(&[(2, msg(7, 7, 2))], 1).unwrap();
+        assert_eq!(count(&j, "SELECT count(*) FROM outbox WHERE kind='reaction'"), 2, "duplicate updates do not react again");
+        drop(j);
+        let _ = std::fs::remove_dir_all(p);
+    }
+
+    // §12: one slow-queue notice survives restart; fenced or revoked previews never reach Telegram.
+    #[test]
+    fn queue_notice_and_draft_fence() {
+        let (mut j,p)=journal("queue-preview");
+        j.admit(&[(1,msg(7,7,1)),(2,msg(7,7,2))],0).unwrap();
+        let r=j.claim_next(4,1).unwrap().remove(0);
+        j.preview(&r,"answer preview").unwrap();
+        assert_eq!(j.previews().unwrap().len(),1);
+        j.due(30).unwrap();
+        assert_eq!(count(&j,"SELECT count(*) FROM outbox WHERE kind='queued'"),0);
+        j.due(31).unwrap();
+        let queued: String=j.0.query_row("SELECT text FROM outbox WHERE kind='queued'",[],|r|r.get(0)).unwrap();
+        assert_eq!(queued,"Queued behind 1.");
+        drop(j);
+        let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
+        assert!(j.previews().unwrap().is_empty(),"drafts are ephemeral");
+        j.due(35).unwrap();
+        assert_eq!(count(&j,"SELECT count(*) FROM outbox WHERE kind='queued'"),1);
+        j.preview(&r,"stale").unwrap();
+        j.revoke(7,7,&["chat".into()],36).unwrap();
+        assert!(j.previews().unwrap().is_empty());
+        drop(j); let _=std::fs::remove_dir_all(p);
+    }
+
     // L11: a long answer with multibyte text is stored as ordered chunks within Telegram's limit, each with its own receipt; a
     // failed chunk delays only what follows it.
     #[test]
@@ -1951,21 +2061,48 @@ mod tests {
         let r = j.claim_next(4, 0).unwrap().remove(0);
         let answer = format!("{}\n{}", "é".repeat(3000), "😀".repeat(3000));
         j.finish(&r, None, None, &Outcome::Answered(answer.clone()), 1).unwrap();
-        let mut q = j.0.prepare("SELECT text FROM outbox WHERE request_id=1 ORDER BY id").unwrap();
+        let mut q = j.0.prepare("SELECT text FROM outbox WHERE request_id=1 AND kind='rich_part' ORDER BY id").unwrap();
         let parts: Vec<String> = q.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
         drop(q);
-        assert_eq!(parts.len(), 4, "acknowledgement and three chunks");
-        assert!(parts[1..].iter().all(|c| c.encode_utf16().count() <= CHUNK));
-        assert!(parts[1].ends_with('\n'), "split at the newline");
-        assert_eq!(parts[1..].concat(), answer, "chunks rebuild the answer exactly");
-        let (d, _) = j.due(2).unwrap();
-        j.record(d.unwrap().id, &Sent::Ok(1), 2).unwrap();
-        j.record(2, &Sent::Ok(2), 2).unwrap();
-        j.record(3, &Sent::Retry { after: 5, ambiguous: true, error: "lost".into() }, 2).unwrap();
-        assert_eq!(j.due(3).unwrap().0.map(|d| d.id), None, "chunk 3 waits behind its retrying predecessor");
-        assert_eq!(j.due(7).unwrap().0.map(|d| d.id), Some(3), "only the ambiguous chunk is resent");
+        assert_eq!(parts.len(), 3);
+        assert!(parts.iter().all(|c| c.encode_utf16().count() <= CHUNK));
+        assert!(parts[0].ends_with('\n'));
+        assert_eq!(parts.concat(), answer);
+        // A rich rejection activates already ordered parts; restart and a lost chunk never resend earlier receipts.
+        for _ in 0..2 { let d=j.due(2).unwrap().0.unwrap(); j.record(d.id,&Sent::Ok(1),2).unwrap(); }
+        let rich=j.due(2).unwrap().0.unwrap(); assert_eq!(rich.kind,"rich");
+        j.record(rich.id,&Sent::RichFallback,2).unwrap();
+        drop(j);
+        let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
+        let first=j.due(2).unwrap().0.unwrap(); assert_eq!(first.text,parts[0]);
+        j.record(first.id,&Sent::Ok(2),2).unwrap();
+        let second=j.due(2).unwrap().0.unwrap(); assert_eq!(second.text,parts[1]);
+        j.record(second.id,&Sent::Retry{after:5,ambiguous:true,error:"lost".into()},2).unwrap();
+        assert!(j.due(3).unwrap().0.is_none());
+        assert_eq!(j.due(7).unwrap().0.unwrap().id,second.id);
         drop(j);
         let _ = std::fs::remove_dir_all(p);
+    }
+
+    // §4/§9: an older fixed native tool catalogue rebuilds once, preserving recorded context and receipts.
+    #[test]
+    fn schema_8_refreshes_native_tools_once() {
+        use crate::manager::Outcome;
+        let (mut j,p)=journal("schema8-tools");
+        let r=j.ask(7,"earlier request",0).unwrap();
+        j.finish(&r,Some("native-old"),None,&Outcome::Answered("earlier answer".into()),1).unwrap();
+        j.0.execute_batch("PRAGMA user_version=8").unwrap();
+        drop(j);
+        let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
+        let r=j.ask(7,"which projects do you see",2).unwrap();
+        assert!(j.refresh_tools(&r).unwrap());
+        let context=j.rebuild(&r,3).unwrap().to_string();
+        assert!(context.contains("earlier request") && context.contains("earlier answer"));
+        j.finish(&r,Some("native-new"),None,&Outcome::Answered("projects".into()),4).unwrap();
+        let next=j.ask(7,"follow up",5).unwrap();
+        assert!(!j.refresh_tools(&next).unwrap());
+        assert_eq!(next.thread.as_deref(),Some("native-new"));
+        drop(j); let _=std::fs::remove_dir_all(p);
     }
 
     // §4/§5: schema upgrade preserves accepted plans, subscriptions and pending question destinations.
@@ -2092,7 +2229,7 @@ mod tests {
         let r = j.claim_next(4, 0).unwrap().remove(0);
         assert!(j.finish(&r, None, None, &Outcome::Answered("ok".into()), 1).unwrap());
         assert_eq!(j.request(1).unwrap().0, "answered");
-        assert_eq!(count(&j, "SELECT count(*) FROM outbox WHERE state='pending'"), 2);
+        assert_eq!(count(&j, "SELECT count(*) FROM outbox WHERE kind='rich' AND state='pending'"), 1, "telemetry failure cannot lose the final delivery");
         drop(j);
         let _ = std::fs::remove_dir_all(p);
     }
