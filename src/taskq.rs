@@ -496,8 +496,14 @@ fn answer(tq: &Taskq, j: &Mutex<Journal>, a: &Answer, resumed: bool) {
 /// One board scan: each subscribed task's fresh state becomes its status, question or closing message. Returns whether
 /// anything was queued. An unreachable board or incomplete snapshot reads unknown and closes nothing.
 fn scan(tq: &Taskq, j: &Mutex<Journal>) -> bool {
-    let subs = match j.lock().unwrap().subscriptions() {
-        Ok(s) if s.is_empty() => return false,
+    let subs = j.lock().unwrap().subscriptions();
+    let subs = match subs {
+        Ok(s) if s.is_empty() => {
+            // #84: with nothing subscribed, a configured-root snapshot still keeps `taskq` health fresh for its incident
+            let failure = tq.snapshot().err();
+            let _ = j.lock().unwrap().set_health("taskq", now(), if failure.is_some() { "failed" } else { "ok" }, failure.as_deref());
+            return false;
+        }
         Ok(s) => s,
         Err(e) => {
             eprintln!("taskq scan: {e}");
@@ -610,6 +616,28 @@ mod tests {
         snapshot(json!([]));
         assert!(scan(&tq, &j));
         assert!(j.lock().unwrap().subscriptions().unwrap().is_empty());
+        drop(j);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // #84 A4 drill: with no subscribed task the scan still observes the board, so a TaskQ outage opens its incident.
+    #[cfg(unix)]
+    #[test]
+    fn scan_without_subscriptions_observes_taskq() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("pilotq-idle-scan-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("taskq.json"), r#"{"repo":"taskqorg/pilotq","create_claim_issue":1}"#).unwrap();
+        let bin = dir.join("taskq");
+        std::fs::set_permissions(&{ std::fs::write(&bin, "#!/bin/sh\nexit 1\n").unwrap(); bin.clone() }, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let j = Mutex::new(Journal::open(&dir.join("journal.sqlite")).unwrap());
+        let tq = Taskq { bin: bin.clone(), root: dir.clone(), poll: Duration::from_secs(15) };
+        let state = |j: &Mutex<Journal>| { let mut s = json!({}); j.lock().unwrap().status(&mut s, 0).unwrap(); s["health"]["taskq"]["state"].clone() };
+        assert!(!scan(&tq, &j));
+        assert_eq!(state(&j), "failed", "an unreachable board is observed without subscriptions");
+        std::fs::write(&bin, "#!/bin/sh\necho '{\"complete\":true,\"board\":{\"repo\":\"taskqorg/pilotq\"},\"tasks\":[]}'\n").unwrap();
+        assert!(!scan(&tq, &j));
+        assert_eq!(state(&j), "ok", "a fresh complete snapshot closes it");
         drop(j);
         std::fs::remove_dir_all(dir).unwrap();
     }
