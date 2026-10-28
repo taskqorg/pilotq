@@ -1077,7 +1077,12 @@ impl Journal {
             let mut q = tx.prepare("SELECT target || ': ' || coalesce(result, '') FROM audit_events WHERE request_id=?1 AND kind='direct' ORDER BY id").map_err(e)?;
             let kept: Vec<String> = q.query_map([r.request], |x| x.get(0)).and_then(Iterator::collect).map_err(e)?;
             if !kept.is_empty() {
-                text += &format!("\nEvidence kept: {}. The rest can become a task: ask me to plan it.", kept.join("; "));
+                let (saved, next) = if language.as_deref().unwrap_or("en").split('-').next() == Some("ru") {
+                    ("сохранено", "попросите запланировать остальное")
+                } else {
+                    ("evidence kept", "ask me to plan the rest")
+                };
+                text = format!("{}; {saved}: {}; {next}.", text.trim_end_matches('.'), kept.join("; "));
             }
         }
         if state == "fenced" {

@@ -416,15 +416,28 @@ fn idle_long_poll_is_healthy() {
 // falls back to plain text and records the possible visible duplicate; the request is not admitted or run again.
 #[test]
 fn f05_delivery_faults_are_bounded() {
-    let (d, st) = setup("f05", vec![update(9, 31, OWNER), {let mut u=update(10,32,OWNER); u["message"].as_object_mut().unwrap().remove("text"); u["message"]["photo"]=json!([]); u}]);
-    st.lock().unwrap().faults = VecDeque::from(["drop", "forbidden", "parse", "429", "down"]);
+    let (d, st) = setup("f05", vec![text(8, 31, None, OWNER, "/status")]);
     let mut c = spawn(&d, None);
-    wait("delivery", 30, || try_query(&d, "SELECT count(*) FROM outbox WHERE kind<>'reaction' AND state IN ('delivered','held')") == Some(2));
+    // §4 keeps the first-use notice separate; finish it before injecting faults into the replies under test.
+    wait("first-use notice and control delivered", 15, || try_query(&d, "SELECT count(*) FROM outbox WHERE state='delivered'") == Some(2));
+    {
+        let mut f = st.lock().unwrap();
+        f.sent.clear();
+        f.faults = VecDeque::from(["drop", "forbidden", "parse", "429", "down"]);
+        for (id, chat) in [(9, 31), (10, 32)] {
+            let mut u = update(id, chat, OWNER);
+            u["message"].as_object_mut().unwrap().remove("text");
+            u["message"]["photo"] = json!([]);
+            f.updates.push(u);
+        }
+    }
+    wait("delivery", 30, || try_query(&d, "SELECT count(*) FROM outbox WHERE request_id<>1 AND kind<>'reaction' AND state IN ('delivered','held')") == Some(2));
     c.kill().unwrap();
     c.wait().unwrap();
     assert_eq!(query(&d, "SELECT count(*) FROM outbox WHERE chat=31 AND state='delivered' AND attempts=5 AND possible_duplicate=1 AND html IS NULL"), 1);
     assert_eq!(query(&d, "SELECT count(*) FROM outbox WHERE chat=32 AND state='held'"), 1, "a blocked chat is held, never rerouted or marked delivered");
-    assert_eq!(query(&d, "SELECT count(*) FROM requests"), 2);
+    assert_eq!(query(&d, "SELECT count(*) FROM requests"), 3, "one control and two inputs, with no duplicate admission");
+    assert_eq!(query(&d, "SELECT count(*) FROM runs"), 0, "delivery faults never start or rerun generation");
     let f = st.lock().unwrap();
     let to31: Vec<_> = f.sent.iter().filter(|s| s["chat_id"] == 31).collect();
     assert_eq!(to31.len(), 2, "the lost response and the final plain send: {to31:?}");
@@ -1532,8 +1545,10 @@ fn u11_l05_budget_and_deadline_keep_evidence() {
 
     limits(&d, &d.join("fake-codex"), json!({"first_event": 10, "silent": 10, "deadline": 4}));
     let c = spawn(&d, None);
-    push(&st, text(2, OWNER, None, OWNER, &format!("multi {}", json!({"calls": [["issue_read", {"project": "pilotq", "issue": "7"}]], "sleep": 8}))));
-    wait("deadline", 20, || sent_has(&st, "The action’s outcome is uncertain; it will not be repeated automatically.\nEvidence kept: issue_read taskqorg/pilotq#7: updated 2026-10-20T10:00:00Z. The rest can become a task: ask me to plan it."));
+    let mut u = text(2, OWNER, None, OWNER, &format!("multi {}", json!({"calls": [["issue_read", {"project": "pilotq", "issue": "7"}]], "sleep": 8})));
+    u["message"]["from"]["language_code"] = json!("ru");
+    push(&st, u);
+    wait("deadline", 20, || sent_has(&st, "Результат действия неизвестен; автоматического повтора не будет; сохранено: issue_read taskqorg/pilotq#7: updated 2026-10-20T10:00:00Z; попросите запланировать остальное."));
     assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE id=2 AND state='uncertain'"), 1);
     assert!(query_text(&d,"SELECT error FROM requests WHERE id=2").contains("Codex did not finish within 4 s"),"the short reply retains diagnostics in the audit");
     stop(c, d);
