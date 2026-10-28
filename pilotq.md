@@ -341,6 +341,8 @@ Every command that writes prints the readback, supports `--json` and returns a n
 
 Follow coreq: `releases/<version>`, `current` and `previous` in the install directory; GitHub releases with `SHA256SUMS`; `pilotq update` verifies the checksum and runs `pilotq selftest` before the switch; the launcher returns to `previous` after three unhealthy starts. An update waits for the planned-restart drain in section 12.
 
+**Owner, task #77 (option A):** on the restored version’s first healthy start after a launcher rollback, send one incident to the protected `owner_id` Telegram DM, naming the failed and restored versions only. Persist the rollback marker before launcher handoff and enqueue the incident atomically with a failed/restored-version deduplication key in the existing journal. The existing outbox records the send receipt and applies bounded retries across restarts (§4, §7); never reroute a failed DM. Successful updates produce no failure notice. Both the launcher and restored release must include this integration; older releases cannot deliver a new rollback marker. No schema change or new notification infrastructure is required.
+
 `status.json` publishes the section 7 health fields. Incident reports follow coreq. Telemetry uses the shared CoreQ telemetry store and DashQ connection, so the TaskQ PM sees PilotQ beside the other tools. Release and CI follow the shared [release contract](https://github.com/taskqorg/specq/blob/main/engineering/release-contract.md).
 
 ### First release delivery

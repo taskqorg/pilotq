@@ -630,3 +630,9 @@ The version marker is not reliable evidence that these columns are absent: `v0.2
 The repair checks each column under the migration's writer transaction, adds only missing columns and commits version 10 with the migration. It removes the redundant unconditional version write. The existing schema tests retain older-journal upgrades, native-session refresh and refusal of newer or corrupt journals. No supported schema range or protection changes.
 
 Rollback notification is tracked by [#77](https://github.com/taskqorg/pilotq/issues/77) (A5). After merge, the PM owns `live` publication, FRA activation and A40; the owner's screenshot answer supplies A4. These live checks remain unproved by the worker's SQLite tests.
+
+### Rollback owner incident (#77, R11, §9)
+
+`cargo test --locked rollback_notice` exercises the coreq launcher through two failed candidate starts and the rollback selection, then the restored service’s healthy-start notification boundary. The marker survives reopening the journal; the owner DM names only the failed and restored versions. Reopening after a transport failure preserves the same delivery and attempt count; reopening after a receipt produces no second incident. Healthy candidates produce no notice. Existing outbox checks retain the five-attempt ceiling, cooldown and held-destination protection.
+
+This deterministic boundary check does not qualify a systemd restart or live Telegram delivery. A rollback to a release predating the integration cannot consume the marker; install a compatible baseline before relying on this notification.

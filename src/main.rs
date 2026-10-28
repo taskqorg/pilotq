@@ -95,8 +95,41 @@ fn scheduled_update(t: &Tool, at: u64) -> Result<Option<String>, String> {
     update(t, false).map(|(v, _)| v)
 }
 
+// Coreq calls this before switching current. No Telegram or journal dependency can block rollback.
+fn launcher_fault(t: &Tool, f: &coreq::incident::Fault) {
+    if f.code != "update.rollback" { return; }
+    let valid = |v: &str| !v.is_empty() && v.len() <= 64 && !v.contains("..") && v.bytes().all(|b| b.is_ascii_alphanumeric() || b".-".contains(&b));
+    if let (Some(failed), Some(restored)) = (f.fields.iter().find_map(|v| v.strip_prefix("failed:")), std::fs::read_to_string(t.install.join("previous")).ok().map(|s| s.trim().to_string()))
+        && valid(failed) && valid(&restored)
+        && let Err(e) = coreq::write_atomic(&t.install.join("rollback.json"), &json!({"failed": failed, "restored": restored}).to_string())
+    { eprintln!("rollback marker: {e}"); }
+}
+
+// Called after a successful status write by an installed release (§9).
+fn healthy_start(t: &Tool, j: &mut journal::Journal, owner: Option<i64>, elapsed: Duration, at: i64) -> Result<(), String> {
+    if elapsed < Duration::from_secs(60) { return Ok(()); }
+    std::fs::write(t.release_exe(t.version).with_file_name("healthy"), "").map_err(|_| "healthy marker write failed")?;
+    if let Some(owner) = owner { rollback_notice(t, j, owner, at)?; }
+    Ok(())
+}
+
+fn rollback_notice(t: &Tool, j: &mut journal::Journal, owner: i64, at: i64) -> Result<(), String> {
+    let text = match std::fs::read_to_string(t.install.join("rollback.json")) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err("rollback marker unreadable".into()),
+    };
+    let v: Value = serde_json::from_str(&text).map_err(|_| "invalid rollback marker")?;
+    let failed = v["failed"].as_str().ok_or("rollback marker missing failed version")?;
+    let restored = v["restored"].as_str().ok_or("rollback marker missing restored version")?;
+    if restored == t.version && t.current().as_deref() == Some(restored) {
+        j.rollback_notice(owner, failed, restored, at)?;
+    }
+    Ok(())
+}
+
 fn tool() -> Tool {
-    Tool::new("pilotq", "PilotQ", "taskqorg/pilotq", env!("CARGO_PKG_VERSION"))
+    Tool { fault: Some(launcher_fault), ..Tool::new("pilotq", "PilotQ", "taskqorg/pilotq", env!("CARGO_PKG_VERSION")) }
 }
 
 /// Protected bot settings in `<install>/config.json`, owner-only (§ 2: the owner ID is never taken from a message).
@@ -243,6 +276,7 @@ fn service_run(t: &Tool) -> ! {
     journal.draining(false).unwrap_or_else(|e| t.die(&e));
     let _ = std::fs::remove_file(t.install.join(DRAIN));
     let j: telegram::Shared = Arc::new(Mutex::new(journal));
+    let owner = cfg.as_ref().map(|c| c.owner);
     let _lock = cfg.map(|c| {
         // one OS-held lock per installation; it is released only when this process ends
         let lock = coreq::file_lock::try_lock(&t.install.join("poll.lock")).unwrap_or_else(|e| match e {
@@ -297,9 +331,9 @@ fn service_run(t: &Tool) -> ! {
             eprintln!("status: {e}");
         }
         // the launcher rolls back a release that never gets here (coreq.md § Launcher)
-        if installed && r.is_ok() && started.elapsed() >= Duration::from_secs(60) {
-            let _ = std::fs::write(release.with_file_name("healthy"), "");
-        }
+        if installed && r.is_ok()
+            && let Err(e) = healthy_start(t, &mut j.lock().unwrap(), owner, started.elapsed(), now() as i64)
+        { eprintln!("healthy start: {e}"); }
         std::thread::sleep(PASS);
     }
 }
@@ -656,6 +690,50 @@ fn main() {
 #[cfg(test)]
 mod update_tests {
     use super::*;
+
+    // #77 / R11, §9: real launcher selection -> durable marker -> healthy restored service -> outbox.
+    #[test]
+    fn rollback_notice_survives_restart() {
+        let mut t = tool();
+        t.install = std::env::temp_dir().join(format!("pilotq-rollback-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&t.install);
+        std::fs::create_dir_all(t.install.join("releases/9.0.0")).unwrap();
+        std::fs::write(t.install.join("current"), "9.0.0").unwrap();
+        std::fs::write(t.install.join("previous"), t.version).unwrap();
+        let path = t.install.join("journal.sqlite");
+        let mut j = journal::Journal::open(&path).unwrap();
+        j.bootstrap(7, 0).unwrap();
+        // Successful/healthy candidates never notify.
+        std::fs::write(t.install.join("releases/9.0.0/healthy"), "").unwrap();
+        assert_eq!(coreq::launcher::pick(&t, true).unwrap(), "9.0.0");
+        rollback_notice(&t, &mut j, 7, 1).unwrap();
+        assert!(j.due(1).unwrap().0.is_none());
+        std::fs::remove_file(t.install.join("releases/9.0.0/healthy")).unwrap();
+        for _ in 0..2 { assert_eq!(coreq::launcher::pick(&t, true).unwrap(), "9.0.0"); }
+        assert_eq!(coreq::launcher::pick(&t, true).unwrap(), t.version);
+        drop(j); // restart before the first healthy restored start
+        let mut j = journal::Journal::open(&path).unwrap();
+        std::fs::create_dir_all(t.install.join("releases").join(t.version)).unwrap();
+        healthy_start(&t, &mut j, Some(7), Duration::from_secs(59), 59).unwrap();
+        assert!(j.due(59).unwrap().0.is_none(), "not healthy yet");
+        healthy_start(&t, &mut j, Some(7), Duration::from_secs(60), 60).unwrap();
+        let d = j.due(60).unwrap().0.expect("rollback must reach owner outbox");
+        assert_eq!((d.chat, d.topic, d.reply_to), (7, None, None));
+        assert_eq!(d.text, format!("PilotQ update failed: 9.0.0; restored {}.", t.version));
+        j.record(d.id, &journal::Sent::Retry { after: 1, ambiguous: false, error: "offline".into() }, 60).unwrap();
+        drop(j);
+        let mut j = journal::Journal::open(&path).unwrap();
+        rollback_notice(&t, &mut j, 7, 61).unwrap();
+        let retry = j.due(61).unwrap().0.unwrap();
+        assert_eq!((retry.id, retry.attempts), (d.id, 1));
+        j.record(d.id, &journal::Sent::Ok(42), 61).unwrap();
+        drop(j);
+        let mut j = journal::Journal::open(&path).unwrap();
+        rollback_notice(&t, &mut j, 7, 90).unwrap();
+        assert!(j.due(90).unwrap().0.is_none(), "sent incident must not repeat");
+        drop(j);
+        std::fs::remove_dir_all(t.install).unwrap();
+    }
 
     // §12: an expired drain may not authorize activation while a request is still running.
     #[test]

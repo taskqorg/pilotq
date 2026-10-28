@@ -906,6 +906,23 @@ impl Journal {
             .map_err(|e| e.to_string())
     }
 
+    /// §9 / #77: one durable owner incident per version pair, with the ordinary send receipt.
+    pub fn rollback_notice(&mut self, owner: i64, failed: &str, restored: &str, at: i64) -> Result<(), String> {
+        let valid = |v: &str| !v.is_empty() && v.len() <= 64 && !v.contains("..") && v.bytes().all(|b| b.is_ascii_alphanumeric() || b".-".contains(&b));
+        if !valid(failed) || !valid(restored) || failed == restored { return Err("invalid rollback versions".into()); }
+        let tx = self.0.transaction().map_err(|e| e.to_string())?;
+        let key = format!("rollback:{failed}:{restored}");
+        let added = tx.execute("INSERT OR IGNORE INTO meta(key,value) VALUES (?1,?2)", params![key, at]).map_err(|e| e.to_string())?;
+        if added != 0 {
+            let update: i64 = tx.query_row("SELECT min(coalesce(min(update_id), 0), 0) - 1 FROM requests", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+            let text = format!("PilotQ update failed: {failed}; restored {restored}.");
+            let id = insert(&tx, update, "service", owner, None, owner, None, 0, "incident", None, "answered", at, &format!("service:{owner}"), None)?;
+            tx.execute("UPDATE requests SET reply=?2 WHERE id=?1", params![id, text]).map_err(|e| e.to_string())?;
+            outbox(&tx, id, owner, None, None, None, &text, at)?;
+        }
+        tx.commit().map_err(|e| e.to_string())
+    }
+
     /// Admits and claims one `pilotq ask` request through the same grant check and request record as Telegram (R13, U19).
     pub fn ask(&mut self, sender: i64, text: &str, at: i64) -> Result<Run, String> {
         let tx = self.0.transaction().map_err(|e| e.to_string())?;
