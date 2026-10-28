@@ -39,6 +39,8 @@ struct Fake {
     reaction_fail: bool,
     draft_fail: bool,
     rich_reject: bool,
+    image_bad: bool,
+    image_large: bool,
     rate_method: Option<&'static str>,
 
 }
@@ -73,6 +75,21 @@ fn handle(stream: std::net::TcpStream, st: &State) {
     r.read_exact(&mut body).unwrap();
     let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
     let mut out = stream;
+    if method == "getfile" {
+        let mut f=st.lock().unwrap();
+        f.api.push((method.clone(),body.clone(),Instant::now()));
+        let size=if f.image_large { 20*1024*1024+1 } else { 68 };
+        return respond(&mut out,200,&json!({"ok":true,"result":{"file_id":body["file_id"],"file_unique_id":"invented-id","file_size":size,"file_path":"photos/invented.png"}}).to_string());
+    }
+    if method == "invented.png" {
+        let f=st.lock().unwrap();
+        if f.image_bad { return respond(&mut out,200,"not an image"); }
+        // Invented 1x1 PNG, used only by the local Bot API fixture.
+        let bytes=b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\x0bIDATx\x9cc`\x00\x02\x00\x00\x05\x00\x01\xa5\xf6E@\x00\x00\x00\x00IEND\xaeB`\x82";
+        write!(out,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",bytes.len()).unwrap();
+        out.write_all(bytes).unwrap();
+        return;
+    }
     if method == "getupdates" {
         let offset = body["offset"].as_i64().unwrap_or(0);
         let ready = {
@@ -117,7 +134,7 @@ fn handle(stream: std::net::TcpStream, st: &State) {
     if method == "sendrichmessage" && f.rich_reject { return respond(&mut out,400,r#"{"ok":false,"error_code":400,"description":"Bad Request: rich messages not supported"}"#); }
     let mut body = body;
     if method == "sendrichmessage" {
-        body["text"] = json!(body["rich_message"]["html"].as_str().unwrap().replace("&quot;", "\"").replace("&lt;","<").replace("&gt;",">").replace("&amp;","&"));
+        body["text"] = json!(body["rich_message"]["markdown"].as_str().unwrap());
     }
     if method == "editmessagetext" {
         if f.edit_gone {
@@ -206,7 +223,7 @@ while IFS= read -r l; do
       sleep 1
       echo '{"method":"item/agentMessage/delta","params":{"itemId":"m1","delta":"world"}}'
       sleep 3
-      text='**Hello** <raw> & world' ;;
+      text='**Hello** <raw> & world\n\n## Plan\n1. **Inspect** the screenshot.\n2. Preserve <raw> & source text.\n\nNext: ask me to run this plan.' ;;
     slow*) sleep 20 ;;
     stall*) sleep 20; exit 0 ;;
     exit*) exit 0 ;;
@@ -219,7 +236,7 @@ while IFS= read -r l; do
     env*) text="key=${OPENAI_API_KEY:-none}${CODEX_API_KEY:-}${GH_TOKEN:-}${GITHUB_TOKEN:-}" ;;
     ask*) echo '{"id":77,"method":"item/commandExecution/requestApproval","params":{}}'; IFS= read -r r; printf '%s\n' "$r" >> "$d/codex.log" ;;
     esac
-    echo '{"method":"item/completed","params":{"threadId":"'$th'","turnId":"u1","completedAtMs":0,"item":{"type":"agentMessage","id":"m1","text":"re: '"$text"' @ '"$th"'"}}}'
+    printf '%s\n' '{"method":"item/completed","params":{"threadId":"'$th'","turnId":"u1","completedAtMs":0,"item":{"type":"agentMessage","id":"m1","text":"re: '"$text"' @ '"$th"'"}}}'
     echo "$done" ;;
   esac
 done"#;
@@ -399,15 +416,28 @@ fn idle_long_poll_is_healthy() {
 // falls back to plain text and records the possible visible duplicate; the request is not admitted or run again.
 #[test]
 fn f05_delivery_faults_are_bounded() {
-    let (d, st) = setup("f05", vec![update(9, 31, OWNER), {let mut u=update(10,32,OWNER); u["message"].as_object_mut().unwrap().remove("text"); u["message"]["photo"]=json!([]); u}]);
-    st.lock().unwrap().faults = VecDeque::from(["drop", "forbidden", "parse", "429", "down"]);
+    let (d, st) = setup("f05", vec![text(8, 31, None, OWNER, "/status")]);
     let mut c = spawn(&d, None);
-    wait("delivery", 30, || try_query(&d, "SELECT count(*) FROM outbox WHERE kind<>'reaction' AND state IN ('delivered','held')") == Some(2));
+    // §4 keeps the first-use notice separate; finish it before injecting faults into the replies under test.
+    wait("first-use notice and control delivered", 15, || try_query(&d, "SELECT count(*) FROM outbox WHERE state='delivered'") == Some(2));
+    {
+        let mut f = st.lock().unwrap();
+        f.sent.clear();
+        f.faults = VecDeque::from(["drop", "forbidden", "parse", "429", "down"]);
+        for (id, chat) in [(9, 31), (10, 32)] {
+            let mut u = update(id, chat, OWNER);
+            u["message"].as_object_mut().unwrap().remove("text");
+            u["message"]["photo"] = json!([]);
+            f.updates.push(u);
+        }
+    }
+    wait("delivery", 30, || try_query(&d, "SELECT count(*) FROM outbox WHERE request_id<>1 AND kind<>'reaction' AND state IN ('delivered','held')") == Some(2));
     c.kill().unwrap();
     c.wait().unwrap();
     assert_eq!(query(&d, "SELECT count(*) FROM outbox WHERE chat=31 AND state='delivered' AND attempts=5 AND possible_duplicate=1 AND html IS NULL"), 1);
     assert_eq!(query(&d, "SELECT count(*) FROM outbox WHERE chat=32 AND state='held'"), 1, "a blocked chat is held, never rerouted or marked delivered");
-    assert_eq!(query(&d, "SELECT count(*) FROM requests"), 2);
+    assert_eq!(query(&d, "SELECT count(*) FROM requests"), 3, "one control and two inputs, with no duplicate admission");
+    assert_eq!(query(&d, "SELECT count(*) FROM runs"), 0, "delivery faults never start or rerun generation");
     let f = st.lock().unwrap();
     let to31: Vec<_> = f.sent.iter().filter(|s| s["chat_id"] == 31).collect();
     assert_eq!(to31.len(), 2, "the lost response and the final plain send: {to31:?}");
@@ -509,8 +539,9 @@ fn telegram_reply_delivery_fallbacks() {
         assert!(!drafts.is_empty());
         for pair in drafts.windows(2) { assert!(pair[1].2.duration_since(pair[0].2)>=Duration::from_secs(1)); }
         let rich=f.api.iter().find(|a|a.0=="sendrichmessage").unwrap();
-        let markup=rich.1["rich_message"]["html"].as_str().unwrap();
-        assert!(markup.contains("<b>Hello</b>") && markup.contains("&lt;raw&gt; &amp; world"),"{markup}");
+        let markup=rich.1["rich_message"]["markdown"].as_str().expect("#72: rich layout uses Markdown so newlines remain blocks");
+        assert!(markup.contains("**Hello**") && markup.contains("&lt;raw> &amp; world"),"{markup}");
+        assert!(markup.contains("\n\n## Plan\n1. **Inspect** the screenshot.\n2. Preserve &lt;raw> &amp; source text.\n\n"));
         assert!(!f.sent.iter().any(|m|m["text"].as_str().unwrap_or("").contains("Request #")));
         if fail {
             assert!(f.sent.iter().any(|m|m["text"]=="Received."));
@@ -549,7 +580,7 @@ fn u12_stop_is_scoped_and_fences_the_run() {
     wait("slow turn running", 15, || try_query(&d, "SELECT count(*) FROM runs WHERE state='running'") == Some(1));
     st.lock().unwrap().updates.extend([text(2, -100, Some(5), OWNER, "follow"), text(3, -100, Some(5), OWNER, "/stop"), text(4, -100, Some(6), OWNER, "other")]);
     wait("other topic answered", 15, || sent_has(&st, "re: other @"));
-    wait("stop acknowledged", 15, || sent_has(&st, "Stopped request #1"));
+    wait("stop acknowledged", 15, || sent_has(&st, "Stopped; queued follow-ups stay queued."));
     wait("follow-up answered", 20, || sent_has(&st, "re: follow @"));
     assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE id=1 AND state='cancelled'"), 1);
     wait("stopped run fenced", 15, || try_query(&d, "SELECT count(*) FROM runs WHERE request_id=1 AND state='fenced'") == Some(1));
@@ -569,7 +600,7 @@ fn u16_controls_work_without_the_model() {
     let (d, st) = setup("u16", vec![text(1, OWNER, None, OWNER, "hello")]);
     use_codex(&d, &d.join("missing-codex"));
     let c = spawn(&d, None);
-    wait("visible failure", 15, || sent_has(&st, "Request #1 failed: codex app-server did not start"));
+    wait("visible failure", 15, || sent_has(&st, "The request failed; try again or check /status."));
     st.lock().unwrap().updates.extend([text(2, OWNER, None, OWNER, "/status"), text(3, OWNER, None, OWNER, "/new@pilotq_bot"), text(4, OWNER, None, OWNER, "/stop")]);
     wait("control replies", 15, || sent_has(&st, "Nothing is running in this conversation."));
     assert!(sent_has(&st, "Nothing is running or queued in this conversation."));
@@ -661,7 +692,7 @@ fn u23_audit_through_service_and_cli() {
     assert!(cli(&d, &["ask", "owner question"]).status.success());
     st.lock().unwrap().updates.extend([text(1, 8, None, 8, "dm question"), text(2, -100, Some(5), 9, "tool topic question")]);
     let c = spawn(&d, None);
-    wait("both outcomes", 20, || sent_has(&st, "re: dm question") && sent_has(&st, "uncertain outcome"));
+    wait("both outcomes", 20, || sent_has(&st, "re: dm question") && sent_has(&st, "outcome is uncertain"));
     assert!(sent_has(&st, "Your requests are recorded (metadata 365 days"), "admission tells the person");
 
     let a = cli(&d, &["audit", "--json"]);
@@ -762,7 +793,7 @@ sleep 0.5; rmdir "$d/init.lock"; exec "$d/fake-codex""#);
 }
 
 // Live test-bot run found Telegram service messages (forum topic created, group migrated, group created) answered as unsupported
-// input. They leave an ID-only disposition and no reply; a person's photo still gets the explicit unsupported outcome (U14).
+// input. They leave an ID-only disposition and no reply; a person's voice message still gets the explicit unsupported outcome (U14).
 #[test]
 fn service_messages_are_not_input() {
     let mut topic = text(1, -100, Some(3), OWNER, "x");
@@ -776,17 +807,17 @@ fn service_messages_are_not_input() {
     created["update_id"] = json!(3);
     created["message"].as_object_mut().unwrap().remove("migrate_to_chat_id");
     created["message"]["group_chat_created"] = json!(true);
-    let mut photo = text(4, -100, Some(3), OWNER, "x");
-    photo["message"].as_object_mut().unwrap().remove("text");
-    photo["message"]["photo"] = json!([{"file_id": "f", "file_unique_id": "u", "width": 1, "height": 1}]);
-    let (d, st) = setup("service", vec![topic, migrated, created, photo]);
+    let mut voice = text(4, -100, Some(3), OWNER, "x");
+    voice["message"].as_object_mut().unwrap().remove("text");
+    voice["message"]["voice"] = json!({"file_id": "f", "file_unique_id": "u", "duration": 1, "mime_type":"audio/ogg"});
+    let (d, st) = setup("service", vec![topic, migrated, created, voice]);
     let c = spawn(&d, None);
     wait("dispositions", 15, || try_query(&d, "SELECT count(*) FROM updates") == Some(4));
-    wait("photo outcome", 15, || sent_has(&st, "not supported yet"));
-    assert_eq!(query(&d, "SELECT count(*) FROM requests"), 1, "only the photo is a request");
+    wait("voice outcome", 15, || sent_has(&st, "not supported yet"));
+    assert_eq!(query(&d, "SELECT count(*) FROM requests"), 1, "only the voice message is a request");
     assert_eq!(query(&d, "SELECT count(*) FROM updates WHERE disposition='unsupported' AND request_id IS NULL"), 3);
     std::thread::sleep(Duration::from_millis(500));
-    assert_eq!(st.lock().unwrap().sent.len(), 1, "no reply to service messages: {:?}", texts(&st));
+    assert_eq!(st.lock().unwrap().sent.len(), 2, "one retention notice and one unsupported reply; no reply to service messages: {:?}", texts(&st));
     stop(c, d);
 }
 
@@ -1508,15 +1539,18 @@ fn u11_l05_budget_and_deadline_keep_evidence() {
     let c = spawn(&d, None);
     let six: Vec<Value> = (1..=6).map(|n| json!(["issue_read", {"project": "pilotq", "issue": n.to_string()}])).collect();
     push(&st, text(1, OWNER, None, OWNER, &format!("multi {}", json!({"calls": six}))));
-    wait("budget", 15, || sent_has(&st, "| refused: This request reached its budget of 5 tool calls; nothing was done."));
+    wait("budget", 15, || sent_has(&st, "| refused: This request reached its budget of 5 tool calls; this call was refused."));
     assert_eq!(gh_calls(&d).len(), 5);
     drop(c);
 
     limits(&d, &d.join("fake-codex"), json!({"first_event": 10, "silent": 10, "deadline": 4}));
     let c = spawn(&d, None);
-    push(&st, text(2, OWNER, None, OWNER, &format!("multi {}", json!({"calls": [["issue_read", {"project": "pilotq", "issue": "7"}]], "sleep": 8}))));
-    wait("deadline", 20, || sent_has(&st, "Codex did not finish within 4 s\nEvidence kept: issue_read taskqorg/pilotq#7: updated 2026-10-20T10:00:00Z. The rest can become a task: ask me to plan it."));
+    let mut u = text(2, OWNER, None, OWNER, &format!("multi {}", json!({"calls": [["issue_read", {"project": "pilotq", "issue": "7"}]], "sleep": 8})));
+    u["message"]["from"]["language_code"] = json!("ru");
+    push(&st, u);
+    wait("deadline", 20, || sent_has(&st, "Результат действия неизвестен; автоматического повтора не будет; сохранено: issue_read taskqorg/pilotq#7: updated 2026-10-20T10:00:00Z; попросите запланировать остальное."));
     assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE id=2 AND state='uncertain'"), 1);
+    assert!(query_text(&d,"SELECT error FROM requests WHERE id=2").contains("Codex did not finish within 4 s"),"the short reply retains diagnostics in the audit");
     stop(c, d);
 }
 
@@ -1536,7 +1570,7 @@ fn a2_budget_holds_across_a_retry() {
     let c = spawn(&d, None);
     wait("retry answered", 15, || sent_has(&st, "re: ok: taskqorg/pilotq#1 (open)"));
     let r = texts(&st).into_iter().find(|t| t.starts_with("re: ok: taskqorg/pilotq#1")).unwrap();
-    assert_eq!(r.matches("refused: This request reached its budget of 5 tool calls; nothing was done.").count(), 3, "{r}");
+    assert_eq!(r.matches("refused: This request reached its budget of 5 tool calls; this call was refused.").count(), 3, "{r}");
     assert_eq!(gh_calls(&d).len(), 5, "five reads in total across both runs");
     assert_eq!(query(&d, "SELECT count(*) FROM runs WHERE request_id=1"), 2, "the request was retried");
     assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE request_id=1 AND kind='call'"), 5, "a refused call records nothing");
@@ -2289,3 +2323,77 @@ fn u39_registered_boards_steer_requeue_and_stale_answer() {
 
 #[path = "support/automatic.rs"]
 mod automatic;
+
+// #72 / R10, R13, R17: photo/document + optional caption survive durable intake/restart and reach a resumed model as bytes.
+#[test]
+fn telegram_images_reach_same_session() {
+    let (d,st)=setup("images",vec![]);
+    let fake=FAKE.replace("    echo '{\"id\":3,", r#"    image=$(printf '%s' "$l" | sed -n 's/.*"type":"localImage","path":"\([^"]*\)".*/\1/p')
+    if [ -n "$image" ]; then test -s "$image" || exit 17; printf '%s\n' "$image" >> "$d/images.log"; fi
+    echo '{"id":3,"#);
+    use_codex(&d,&script(&d,"image-codex",&fake));
+    let mut c=spawn(&d,None);
+    for (n,document,caption) in [(1,false,Some("inspect photo")),(2,false,None),(3,true,Some("inspect document")),(4,true,None)] {
+        let mut u=text(n,OWNER,None,OWNER,"");
+        u["message"].as_object_mut().unwrap().remove("text");
+        u["message"]["from"]["language_code"]=json!("ru");
+        if document { u["message"]["document"]=json!({"file_id":"invented-document","file_unique_id":"invented-id","file_size":68,"mime_type":"image/png"}); }
+        else { u["message"]["photo"]=json!([{"file_id":"invented-photo","file_unique_id":"invented-id","file_size":68,"width":1,"height":1}]); }
+        if let Some(c)=caption { u["message"]["caption"]=json!(c); }
+        if document && caption.is_none() {
+            u["message"]["document"].as_object_mut().unwrap().remove("mime_type");
+            u["message"]["document"]["file_name"]=json!("screenshot.PNG");
+        }
+        st.lock().unwrap().updates.push(u.clone());
+        wait("image answered",15,||try_query(&d,"SELECT count(*) FROM requests WHERE state='answered'")==Some(n));
+        wait("image delivered",5,||try_query(&d,"SELECT count(*) FROM outbox WHERE kind='rich' AND state='delivered'")==Some(n));
+        st.lock().unwrap().updates.push(u); // duplicate never creates another request/download
+        if n==2 { c.kill().unwrap(); c.wait().unwrap(); c=spawn(&d,None); }
+    }
+    let log=fs::read_to_string(d.join("codex.log")).unwrap();
+    let turns:Vec<Value>=log.lines().filter_map(|l|serde_json::from_str::<Value>(l).ok()).filter(|v|v["method"]=="turn/start").collect();
+    assert_eq!(turns.len(),4);
+    assert!(turns.iter().all(|t|t["params"]["threadId"]=="th-1"));
+    for (t,caption) in turns.iter().zip(["inspect photo","","inspect document",""]) {
+        assert_eq!(t["params"]["input"][1]["text"],caption);
+        assert_eq!(t["params"]["input"][2]["type"],"localImage");
+    }
+    let images=fs::read_to_string(d.join("images.log")).expect("fake model read image bytes");
+    assert_eq!(images.lines().count(),4);
+    assert!(images.lines().all(|p|!Path::new(p).exists()),"temporary images removed after turns");
+    assert!(!log.contains("123:fake"),"Telegram credential never reaches Codex");
+    assert_eq!(query(&d,"SELECT count(*) FROM requests WHERE image IS NOT NULL"),4);
+    assert_eq!(st.lock().unwrap().api.iter().filter(|a|a.0=="getfile").count(),4);
+    stop(c,d);
+}
+
+// #72 / R10, R16: ignored images never download; corrupt/oversized downloads fail without a text-only model turn.
+#[test]
+fn telegram_image_failures_are_bounded_and_private() {
+    for (tag,sender,bad,large,expected) in [
+        ("image-stranger",9,false,false,""),
+        ("image-bad",OWNER,true,false,"Не удалось прочитать изображение"),
+        ("image-large",OWNER,false,true,"Изображение слишком большое"),
+    ] {
+        let mut u=text(1,sender,None,sender,"");
+        u["message"].as_object_mut().unwrap().remove("text");
+        u["message"]["from"]["language_code"]=json!("ru");
+        u["message"]["photo"]=json!([{"file_id":"invented-photo","file_unique_id":"invented-id","file_size":68,"width":1,"height":1}]);
+        let (d,st)=setup(tag,vec![u]);
+        { let mut f=st.lock().unwrap(); f.image_bad=bad; f.image_large=large; }
+        use_codex(&d,&script(&d,"fake-codex",FAKE));
+        let c=spawn(&d,None);
+        wait("image disposition",10,||try_query(&d,"SELECT count(*) FROM updates")==Some(1));
+        if expected.is_empty() {
+            assert_eq!(query(&d,"SELECT count(*) FROM requests"),0);
+            assert!(st.lock().unwrap().api.iter().all(|a|a.0!="getfile"));
+            assert!(st.lock().unwrap().sent.is_empty());
+        } else {
+            wait("short localized image failure",10,||sent_has(&st,expected));
+            assert_eq!(query(&d,"SELECT count(*) FROM requests WHERE state='failed' AND error IS NOT NULL"),1);
+            assert!(texts(&st).iter().all(|s|!s.contains("Request #") && !s.contains("123:fake")));
+            assert!(!d.join("codex.log").exists(),"a missing image cannot become a successful text-only answer");
+        }
+        stop(c,d);
+    }
+}

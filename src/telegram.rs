@@ -35,16 +35,74 @@ fn input(kind: &UpdateKind) -> Option<Input> {
     if matches!(c.media_kind, MediaKind::Migration(_)) {
         return None;
     }
+    let document = m.document().filter(|d| {
+        d.mime_type.as_ref().is_some_and(|m| matches!(m.essence_str(), "image/png" | "image/jpeg" | "image/webp" | "image/gif"))
+            || d.file_name.as_deref().and_then(|n| n.rsplit('.').next()).is_some_and(|ext| matches!(ext.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif"))
+    });
+    let image = m.photo().and_then(|photos| photos.iter().max_by_key(|p| p.width as u64 * p.height as u64).map(|p| &p.file))
+        .or_else(|| document.map(|d| &d.file));
     Some(Input {
+        image: image.map(|f| f.id.0.clone()),
+        language: m.from.as_ref().and_then(|u| u.language_code.clone()),
         chat: m.chat.id.0,
         topic: m.thread_id.map(|t| t.0.0 as i64),
         sender: m.from.as_ref().map(|u| u.id.0 as i64),
         name: m.from.as_ref().map(|u| u.full_name()),
         message: m.id.0 as i64,
-        kind: if m.text().is_some() { "text" } else { "other" },
-        text: m.text().map(str::to_string),
+        kind: if m.text().is_some() { "text" } else if let Some(f) = image { if f.size > IMAGE_LIMIT as u32 { "image_limit" } else { "image" } } else { "other" },
+        text: m.text().or_else(|| m.caption()).map(str::to_string),
         reply_to: m.reply_to_message().map(|r| r.id.0 as i64),
     })
+}
+
+/// Telegram's hosted download limit and the §7 attachment cap.
+const IMAGE_LIMIT: usize = 20 * 1024 * 1024;
+
+/// The image exists only during its model turn. A private directory prevents other local users reading it.
+pub struct ImageFile { pub path: std::path::PathBuf }
+impl Drop for ImageFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+        if let Some(dir) = self.path.parent() { let _ = std::fs::remove_dir(dir); }
+    }
+}
+
+/// Fetch by Telegram identity, never by an untrusted caption/filename/URL. No token-bearing error escapes this boundary.
+pub async fn download_image(bot: &Bot, file: &str, budget: Duration) -> Result<ImageFile, String> {
+    use std::io::Write;
+    let fetch = async {
+        let file = bot.get_file(teloxide::types::FileId(file.into())).await.map_err(|_| "image download unavailable")?;
+        if file.meta.size as usize > IMAGE_LIMIT { return Err("image exceeds 20 MiB"); }
+        if file.path.is_empty() || file.path.split('/').any(|p| p.is_empty() || p == "." || p == ".." || !p.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))) {
+            return Err("invalid image download path");
+        }
+        let url = bot.api_url().join(&format!("./file/bot{}/{}",bot.token(),file.path)).map_err(|_| "invalid image download URL")?;
+        let mut response = bot.client().get(url).send().await.map_err(|_| "image download unavailable")?;
+        if !response.status().is_success() { return Err("image download unavailable"); }
+        if response.content_length().is_some_and(|n|n > IMAGE_LIMIT as u64) { return Err("image exceeds 20 MiB"); }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(|_| "image download interrupted")? {
+            if bytes.len().saturating_add(chunk.len()) > IMAGE_LIMIT { return Err("image exceeds 20 MiB"); }
+            bytes.extend_from_slice(&chunk);
+        }
+        let extension = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") { "png" }
+            else if bytes.starts_with(b"\xff\xd8\xff") { "jpg" }
+            else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") { "gif" }
+            else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") { "webp" }
+            else { return Err("invalid or unsupported image"); };
+        let nonce=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|_| "image storage unavailable")?.as_nanos();
+        let dir=std::env::temp_dir().join(format!("pilotq-image-{}-{nonce}",std::process::id()));
+        let mut builder=std::fs::DirBuilder::new();
+        #[cfg(unix)] { use std::os::unix::fs::DirBuilderExt; builder.mode(0o700); }
+        builder.create(&dir).map_err(|_| "image storage unavailable")?;
+        let image=ImageFile { path: dir.join(format!("image.{extension}")) };
+        let mut options=std::fs::OpenOptions::new(); options.write(true).create_new(true);
+        #[cfg(unix)] { use std::os::unix::fs::OpenOptionsExt; options.mode(0o600); }
+        let mut output=options.open(&image.path).map_err(|_| "image storage unavailable")?;
+        output.write_all(&bytes).map_err(|_| "image storage unavailable")?;
+        Ok(image)
+    };
+    tokio::time::timeout(Duration::from_secs(10).min(budget),fetch).await.map_err(|_| "image download timed out".to_string())?.map_err(str::to_string)
 }
 
 fn health(j: &Shared, source: &str, state: &str, reason: Option<&str>) {
@@ -168,6 +226,49 @@ pub(crate) fn html(text: &str) -> String {
     out
 }
 
+/// Native rich Markdown also accepts HTML. Escape raw tags/entities outside code, once at the output boundary (§4).
+fn markdown(text: &str) -> String {
+    let mut out=String::new();
+    let mut fence: Option<(char,usize)>=None;
+    let mut inline=0;
+    for line in text.split_inclusive('\n') {
+        let trimmed=line.trim_start();
+        let mark=trimmed.chars().next().unwrap_or(' ');
+        let count=trimmed.chars().take_while(|c|*c==mark).count();
+        let indent=line.len()-trimmed.len();
+        if matches!(mark,'`'|'~') && count>=3 && inline==0 && indent<=3 {
+            if let Some((f,n))=fence {
+                if mark==f && count>=n && trimmed[count..].trim().is_empty() { fence=None; }
+            } else if mark!='`' || !trimmed[count..].contains('`') { fence=Some((mark,count)); }
+            if fence.is_some() || trimmed[count..].trim().is_empty() { out.push_str(line); continue; }
+        }
+        if fence.is_some() { out.push_str(line); continue; }
+        let mut chars=line.chars().peekable();
+        while let Some(c)=chars.next() {
+            if c=='\\' && inline==0 {
+                out.push(c);
+                if let Some(next)=chars.next() { out.push(next); }
+            } else if c=='`' {
+                let mut n=1;
+                while chars.peek()==Some(&'`') { chars.next(); n+=1; }
+                if inline==n { inline=0; } else if inline==0 {
+                    let mut rest=chars.clone();
+                    while let Some(c)=rest.next() {
+                        if c=='`' {
+                            let mut closing=1;
+                            while rest.peek()==Some(&'`') { rest.next(); closing+=1; }
+                            if closing==n { inline=n; break; }
+                        }
+                    }
+                }
+                out.extend(std::iter::repeat_n('`',n));
+            } else if inline>0 { out.push(c); }
+            else { match c { '<'=>out.push_str("&lt;"),'&'=>out.push_str("&amp;"),_=>out.push(c) } }
+        }
+    }
+    out
+}
+
 /// Raw JSON for Bot API methods newer than teloxide (§3). Never expose a token-bearing request URL in diagnostics.
 async fn raw(bot: &Bot, j: &Shared, method: &str, body: Value) -> Result<Value, Sent> {
     let chat = body["chat_id"].as_i64().unwrap_or(0);
@@ -206,7 +307,7 @@ async fn send(bot: &Bot, j: &Shared, d: &Delivery) -> Sent {
         };
     }
     if d.kind == "rich" {
-        let mut body = json!({"chat_id":d.chat,"rich_message":{"html":html(&d.text)}});
+        let mut body = json!({"chat_id":d.chat,"rich_message":{"markdown":markdown(&d.text)}});
         if let Some(t) = d.topic { body["message_thread_id"] = json!(t); }
         if let Some(m) = d.reply_to { body["reply_parameters"] = json!({"message_id":m,"allow_sending_without_reply":true}); }
         return match raw(bot, j, "sendRichMessage", body).await {
@@ -274,7 +375,7 @@ pub async fn drafts(bot: Bot, j: Shared) {
             if let Some(t) = topic { body["message_thread_id"] = json!(t); }
             let result = if entry.1 {
                 let text: String = text.chars().scan(0, |n,c| { *n += c.len_utf16(); (*n<=32768).then_some(c) }).collect();
-                body["rich_message"] = json!({"html":html(&text)});
+                body["rich_message"] = json!({"markdown":markdown(&text)});
                 raw(&bot,&j,"sendRichMessageDraft",body.clone()).await
             } else {
                 body["text"] = json!(crate::journal::chunks(&text)[0]);
@@ -326,6 +427,37 @@ pub async fn deliver(bot: Bot, j: Shared, wake: Arc<Notify>) {
 #[cfg(test)]
 mod tests {
     use super::html;
+
+    // #72 / R13: Telegram photos and image documents retain captions and enter the same model queue.
+    #[test]
+    fn image_messages_are_input() {
+        for media in [serde_json::json!({"photo":[{"file_id":"invented-photo","file_unique_id":"invented-id","file_size":8,"width":2,"height":2}]}),
+                      serde_json::json!({"document":{"file_id":"invented-document","file_unique_id":"invented-id","file_size":8,"mime_type":"image/png"}}),
+                      serde_json::json!({"document":{"file_id":"invented-document","file_unique_id":"invented-id","file_size":8,"file_name":"screenshot.PNG"}})] {
+            for caption in [None, Some("Inspect this screenshot")] {
+                let mut m=serde_json::json!({"message_id":1,"date":0,"chat":{"id":7,"type":"private","first_name":"A"},"from":{"id":7,"is_bot":false,"first_name":"A"}});
+                m.as_object_mut().unwrap().extend(media.as_object().unwrap().clone());
+                if let Some(c)=caption { m["caption"]=serde_json::json!(c); }
+                let message: teloxide::types::Message=serde_json::from_value(m).expect("valid image message");
+                let u=teloxide::types::UpdateKind::Message(message);
+                let i=super::input(&u).expect("person message");
+                assert_eq!(i.kind,"image");
+                assert_eq!(i.text.as_deref(),caption);
+            }
+        }
+    }
+
+
+    // #72 / §4: native Markdown preserves layout but must not interpret literal HTML or rewrite code.
+    #[test]
+    fn rich_markdown_keeps_layout_and_literal_source() {
+        let plan=include_str!("../tests/fixtures/telegram-plan.md").trim_end();
+        assert_eq!(super::markdown(plan),plan.replace("<raw>","&lt;raw>").replace(" & "," &amp; "));
+        let code="`<b>&amp;</b>`\n```html\n<b>&amp;</b>\n```\n~~~html\n<b>&amp;</b>\n~~~\n";
+        assert_eq!(super::markdown(code),code);
+        assert_eq!(super::markdown("`unmatched <b>x</b>"),"`unmatched &lt;b>x&lt;/b>");
+        assert_eq!(super::markdown("\\`escaped <b>x</b>"),"\\`escaped &lt;b>x&lt;/b>");
+    }
 
     // §4/§8: model text and link attributes cannot inject Telegram HTML or an unsafe link scheme.
     #[test]

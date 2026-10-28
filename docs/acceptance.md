@@ -609,3 +609,14 @@ After merge and the PM's `live` push, the PM updates FRA through `pilotq update`
 ### Task #68 reply-flow checks
 
 The changed presentation follows [§4](../pilotq.md#delivery), [§5](../pilotq.md#direct-actions-keys-and-project-switching) and [§12](../pilotq.md#telegram-feedback). `telegram_reply_delivery_fallbacks` checks private drafts, one-second coalescing, reaction failure, draft failure, rich rejection, HTML entity rejection, final delivery and absence of DM reply quotes. `project_list_is_scoped_and_marks_current` protects registry/grant filtering and revocation. The journal cases protect duplicate receipts, queue notices across restart and ordered fallback receipts. A40’s discussion case now requires a real `project_list` call and reaction receipts without queued-text spam. Per the approved §9 handoff, the PM runs the updated suite after merge on FRA; the owner checks the DM flow. These remain unverified until their run and observation are recorded.
+
+### Telegram layout and image input, task #72
+
+The owner’s image decision is in [§1 and §11](../pilotq.md#11-decisions-still-open); presentation follows [§12](../pilotq.md#telegram-feedback). The original rich-delivery regression failed because `rich_message.markdown` was absent. With the former text-only classification temporarily restored, `image_messages_are_input` failed with `other` instead of `image`; restoring the fix passes the same case. The initial image fixture used `Update` deserialization incorrectly; that fixture error is not product failure evidence.
+
+- `telegram_reply_delivery_fallbacks` and `telegram::rich_markdown_keeps_layout_and_literal_source` protect paragraphs, list/heading/bold Markdown, literal HTML/code, and the retained durable HTML/plain fallback. The plan sample is `tests/fixtures/telegram-plan.md`.
+- `telegram_images_reach_same_session` checks photo/image-document inputs with and without captions, actual local image bytes at the fake model boundary, session resume across restart, duplicate suppression and temporary-file removal.
+- `telegram_image_failures_are_bounded_and_private` and `journal::image_identity_is_durable_and_scoped` protect ignored senders, grant revocation, durable file identity/caption, size/corrupt-file failure, localized short replies and credential exclusion. No failed image becomes a text-only successful answer.
+- Existing journal migration, route isolation, queue/fence, receipt, retry and management checks remain required. Upgrade from schemas 8 and 9 explicitly refreshes native instructions without replaying completed effects. Schema 10 refuses unsafe downgrade to 0.2.3.
+
+These are deterministic model/adapter observations, not Telegram rendering or real-model qualification. After merge, the PM publishes 0.2.4, updates FRA and runs A40; the owner checks the chat, including the one-line action effect and next step. No production-cutover claim follows from this task.
