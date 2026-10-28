@@ -649,6 +649,17 @@ impl Journal {
         Ok(admitted)
     }
 
+    /// §4: Telegram retry_after applies across methods and topics in the same chat, including restart.
+    pub fn telegram_cooldown(&self, chat: i64) -> Result<i64, String> {
+        self.0.query_row("SELECT value FROM meta WHERE key=?1", [format!("telegram-cooldown:{chat}")], |r| r.get(0))
+            .optional().map(|v|v.unwrap_or(0)).map_err(|e|e.to_string())
+    }
+
+    pub fn cool_telegram(&self, chat: i64, until: i64) -> Result<(), String> {
+        self.0.execute("INSERT INTO meta(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=max(value,excluded.value)",
+            params![format!("telegram-cooldown:{chat}"),until]).map(drop).map_err(|e|e.to_string())
+    }
+
     /// The next delivery due at `now`, else the earliest time one becomes due. Only the oldest pending row of a route
     /// (chat and topic) is eligible, so a retrying head keeps later replies in that route behind it.
     pub fn due(&self, now: i64) -> Result<(Option<Delivery>, Option<i64>), String> {
@@ -669,7 +680,7 @@ impl Journal {
                 // a status row edits the task's latest delivered status message, resolved now, after every earlier row of its route
                 &format!(
                     "SELECT id, chat, topic, reply_to, html, text, attempts, CASE WHEN kind='status' THEN (SELECT s.sent_message FROM outbox s WHERE s.task=o.task AND s.project=o.project AND s.chat=o.chat AND s.topic IS o.topic
-                        AND s.kind='status' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1) END, kind {heads} AND next_at<=?1 ORDER BY (kind='reaction') DESC,id LIMIT 1"
+                        AND s.kind='status' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1) END, kind {heads} AND next_at<=?1 AND coalesce((SELECT value FROM meta WHERE key='telegram-cooldown:' || o.chat),0)<=?1 ORDER BY (kind='reaction') DESC,id LIMIT 1"
                 ),
                 [now],
                 |r| Ok(Delivery { id: r.get(0)?, chat: r.get(1)?, topic: r.get(2)?, reply_to: r.get(3)?, html: r.get(4)?, text: r.get(5)?, attempts: r.get(6)?, edit: r.get(7)?, kind: r.get(8)? }),
@@ -682,6 +693,15 @@ impl Journal {
 
     /// Records one send attempt. Retries stop at `ATTEMPTS`; the row stays for operator recovery, never deleted.
     pub fn record(&mut self, id: i64, sent: &Sent, now: i64) -> Result<(), String> {
+        let uncertain: bool = self.0.query_row("SELECT possible_duplicate FROM outbox WHERE id=?1", [id], |r|r.get(0)).map_err(|e|e.to_string())?;
+        let retry = Sent::Retry { after: 1, ambiguous: true, error: "rich rejection after ambiguous send; fallback blocked".into() };
+        let sent = if uncertain && matches!(sent, Sent::RichFallback) { &retry } else { sent };
+        if let Sent::Retry { after, error, .. } = sent {
+            if error == "Telegram retry-after" {
+                let chat = self.0.query_row("SELECT chat FROM outbox WHERE id=?1", [id], |r|r.get(0)).map_err(|e|e.to_string())?;
+                self.cool_telegram(chat, now.saturating_add(*after).saturating_add(1))?;
+            }
+        }
         let tx = self.0.transaction().map_err(|e| e.to_string())?;
         if matches!(sent, Sent::RichFallback | Sent::Receipt) {
             if matches!(sent, Sent::RichFallback) {
@@ -2082,6 +2102,43 @@ mod tests {
         assert_eq!(j.due(7).unwrap().0.unwrap().id,second.id);
         drop(j);
         let _ = std::fs::remove_dir_all(p);
+    }
+
+    // §4/§12: rate limits survive restart, cover other methods/topics, and do not delay other chats.
+    #[test]
+    fn telegram_cooldown_survives_restart() {
+        let (mut j, p) = journal("telegram-cooldown");
+        j.admit(&[(1, msg(7, 7, 1)), (2, msg(8, 7, 2))], 0).unwrap();
+        j.cool_telegram(7, 10).unwrap();
+        j.cool_telegram(7, 5).unwrap();
+        drop(j);
+        let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
+        assert_eq!(j.telegram_cooldown(7).unwrap(),10);
+        while let Some(d)=j.due(9).unwrap().0 {
+            assert_ne!(d.chat,7);
+            j.record(d.id,&Sent::Ok(1),9).unwrap();
+        }
+        assert_eq!(j.due(10).unwrap().0.unwrap().chat,7);
+        drop(j); let _=std::fs::remove_dir_all(p);
+    }
+
+    // §4: a later rejection cannot erase uncertainty from a lost rich receipt, including after restart.
+    #[test]
+    fn ambiguous_rich_never_activates_fallback() {
+        use crate::manager::Outcome;
+        let (mut j, p) = journal("rich-ambiguous");
+        j.admit(&[(1, msg(7, 7, 1))], 0).unwrap();
+        let r = j.claim_next(4, 0).unwrap().remove(0);
+        j.finish(&r, None, None, &Outcome::Answered("answer".into()), 1).unwrap();
+        for _ in 0..2 { let d=j.due(2).unwrap().0.unwrap(); j.record(d.id,&Sent::Ok(1),2).unwrap(); }
+        let d=j.due(2).unwrap().0.unwrap();
+        j.record(d.id,&Sent::Retry{after:1,ambiguous:true,error:"lost".into()},2).unwrap();
+        drop(j);
+        let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
+        for at in 3..7 { j.record(d.id,&Sent::RichFallback,at).unwrap(); }
+        assert_eq!(count(&j,"SELECT count(*) FROM outbox WHERE kind='rich_part' AND state='standby'"),1);
+        assert_eq!(count(&j,"SELECT count(*) FROM outbox WHERE kind='rich' AND state='exhausted' AND possible_duplicate=1"),1);
+        drop(j); let _=std::fs::remove_dir_all(p);
     }
 
     // §4/§9: an older fixed native tool catalogue rebuilds once, preserving recorded context and receipts.

@@ -39,6 +39,7 @@ struct Fake {
     reaction_fail: bool,
     draft_fail: bool,
     rich_reject: bool,
+    rate_method: Option<&'static str>,
 
 }
 
@@ -100,6 +101,10 @@ fn handle(stream: std::net::TcpStream, st: &State) {
         return respond(&mut out, 200, r#"{"ok":true,"result":true}"#);
     }
     f.api.push((method.clone(),body.clone(),Instant::now()));
+    if f.rate_method == Some(method.as_str()) {
+        f.rate_method = None;
+        return respond(&mut out,429,r#"{"ok":false,"error_code":429,"description":"Too Many Requests","parameters":{"retry_after":3}}"#);
+    }
     if method == "setmessagereaction" {
         if f.reaction_fail { return respond(&mut out,400,r#"{"ok":false,"error_code":400,"description":"Bad Request: reaction not allowed"}"#); }
         f.reactions.push(body);
@@ -513,6 +518,24 @@ fn telegram_reply_delivery_fallbacks() {
         } else { assert_eq!(f.reactions.len(),1); }
         drop(f);
         stop(c,d);
+    }
+}
+
+// §4/§12: reaction and draft 429s delay every later send in that chat; drafts never fail the answer.
+#[test]
+fn telegram_reply_rate_limits() {
+    for method in ["setmessagereaction", "sendrichmessagedraft"] {
+        let (d,st)=setup(method,vec![text(1,OWNER,None,OWNER,"stream")]);
+        limits(&d,&script(&d,"fake-codex",FAKE),json!({"first_event":3,"silent":6,"deadline":12}));
+        st.lock().unwrap().rate_method=Some(method);
+        let c=spawn(&d,None);
+        wait("final delivered",20,||try_query(&d,"SELECT count(*) FROM outbox WHERE kind='rich' AND state='delivered'")==Some(1));
+        let f=st.lock().unwrap();
+        let index=f.api.iter().position(|a|a.0==method).unwrap();
+        let next=f.api[index+1..].iter().find(|a|a.1["chat_id"]==OWNER).unwrap();
+        assert!(next.2.duration_since(f.api[index].2)>=Duration::from_secs(3),"{method}: cooldown ignored");
+        assert_eq!(query(&d,"SELECT count(*) FROM requests WHERE state='answered'"),1);
+        drop(f); stop(c,d);
     }
 }
 

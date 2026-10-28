@@ -169,7 +169,11 @@ pub(crate) fn html(text: &str) -> String {
 }
 
 /// Raw JSON for Bot API methods newer than teloxide (§3). Never expose a token-bearing request URL in diagnostics.
-async fn raw(bot: &Bot, method: &str, body: Value) -> Result<Value, Sent> {
+async fn raw(bot: &Bot, j: &Shared, method: &str, body: Value) -> Result<Value, Sent> {
+    let chat = body["chat_id"].as_i64().unwrap_or(0);
+    let until = j.lock().unwrap().telegram_cooldown(chat)
+        .map_err(|_|Sent::Held("cannot read Telegram cooldown".into()))?;
+    if until > now() { return Err(Sent::Retry {after:until.saturating_sub(now()),ambiguous:false,error:"Telegram retry-after".into()}); }
     let url = bot.api_url().join(&format!("./bot{}/{method}", bot.token())).map_err(|_| Sent::Failed("invalid Bot API base URL".into()))?;
     let response = bot.client().post(url).json(&body).timeout(Duration::from_secs(4)).send().await
         .map_err(|e| Sent::Retry {after:1,ambiguous:!e.is_connect(),error:"Bot API connection failed".into()})?;
@@ -180,17 +184,24 @@ async fn raw(bot: &Bot, method: &str, body: Value) -> Result<Value, Sent> {
     if code == 403 || error.contains("chat not found") || error.contains("thread not found") || v["parameters"]["migrate_to_chat_id"].is_number() {
         return Err(Sent::Held("Telegram destination unavailable; administrator action required".into()));
     }
-    if code == 429 { return Err(Sent::Retry {after:v["parameters"]["retry_after"].as_i64().unwrap_or(1).max(1),ambiguous:false,error:"Telegram retry-after".into()}); }
+    if code == 429 {
+        let after = v["parameters"]["retry_after"].as_i64().unwrap_or(1).max(1);
+        if j.lock().unwrap().cool_telegram(chat, now().saturating_add(after).saturating_add(1)).is_err() {
+            return Err(Sent::Held("cannot persist Telegram cooldown".into()));
+        }
+        return Err(Sent::Retry {after,ambiguous:false,error:"Telegram retry-after".into()});
+    }
     if matches!(code, 400 | 404) && method == "sendRichMessage" { return Err(Sent::RichFallback); }
     if code >= 500 || code == 0 { return Err(Sent::Retry {after:1,ambiguous:true,error:"Bot API temporarily unavailable".into()}); }
     Err(Sent::Failed("Bot API rejected request".into()))
 }
 
-async fn send(bot: &Bot, d: &Delivery) -> Sent {
+async fn send(bot: &Bot, j: &Shared, d: &Delivery) -> Sent {
     let backoff = d.attempts + 1;
     if d.kind == "reaction" {
-        return match raw(bot, "setMessageReaction", json!({"chat_id":d.chat,"message_id":d.reply_to,"reaction":[{"type":"emoji","emoji":"👀"}]})).await {
+        return match raw(bot, j, "setMessageReaction", json!({"chat_id":d.chat,"message_id":d.reply_to,"reaction":[{"type":"emoji","emoji":"👀"}]})).await {
             Ok(_) => Sent::Ok(d.reply_to.unwrap_or(0)),
+            Err(e @ Sent::Retry { .. }) | Err(e @ Sent::Held(_)) => e,
             Err(_) => Sent::Receipt,
         };
     }
@@ -198,7 +209,7 @@ async fn send(bot: &Bot, d: &Delivery) -> Sent {
         let mut body = json!({"chat_id":d.chat,"rich_message":{"html":html(&d.text)}});
         if let Some(t) = d.topic { body["message_thread_id"] = json!(t); }
         if let Some(m) = d.reply_to { body["reply_parameters"] = json!({"message_id":m,"allow_sending_without_reply":true}); }
-        return match raw(bot, "sendRichMessage", body).await {
+        return match raw(bot, j, "sendRichMessage", body).await {
             Ok(v) => v["message_id"].as_i64().map(Sent::Ok).unwrap_or(Sent::Retry {after:backoff,ambiguous:true,error:"rich message receipt missing".into()}),
             Err(e) => e,
         };
@@ -235,11 +246,14 @@ pub async fn typing(bot: Bot, j: Shared, deadline: Duration) {
     loop {
         let routes = j.lock().unwrap().typing(now(), deadline.as_secs() as i64).unwrap_or_default();
         for (chat, topic) in routes {
+            if j.lock().unwrap().telegram_cooldown(chat).unwrap_or(i64::MAX) > now() { continue; }
             let mut r = bot.send_chat_action(ChatId(chat), ChatAction::Typing);
             if let Some(t) = topic {
                 r = r.message_thread_id(ThreadId(MessageId(t as i32)));
             }
-            let _ = r.await;
+            if let Err(RequestError::RetryAfter(delay)) = r.await {
+                let _ = j.lock().unwrap().cool_telegram(chat, now() + delay.seconds() as i64 + 1);
+            }
         }
         tokio::time::sleep(Duration::from_secs(4)).await;
     }
@@ -261,13 +275,17 @@ pub async fn drafts(bot: Bot, j: Shared) {
             let result = if entry.1 {
                 let text: String = text.chars().scan(0, |n,c| { *n += c.len_utf16(); (*n<=32768).then_some(c) }).collect();
                 body["rich_message"] = json!({"html":html(&text)});
-                raw(&bot,"sendRichMessageDraft",body.clone()).await
+                raw(&bot,&j,"sendRichMessageDraft",body.clone()).await
             } else {
                 body["text"] = json!(crate::journal::chunks(&text)[0]);
-                raw(&bot,"sendMessageDraft",body).await
+                raw(&bot,&j,"sendMessageDraft",body).await
             };
             // Fallback starts on the next tick, so even rejected rich drafts never exceed one update per second.
-            if result.is_err() && entry.1 { entry.1=false; } else { entry.0=text; }
+            match result {
+                Err(Sent::Retry { .. }) => {} // Rate limits and temporary losses never trigger another method.
+                Err(_) if entry.1 => entry.1=false,
+                _ => entry.0=text,
+            }
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
@@ -279,7 +297,7 @@ pub async fn deliver(bot: Bot, j: Shared, wake: Arc<Notify>) {
         let due = j.lock().unwrap().due(now());
         match due {
             Ok((Some(d), _)) => {
-                let sent = send(&bot, &d).await;
+                let sent = send(&bot, &j, &d).await;
                 match &sent {
                     Sent::Ok(_) => health(&j, "delivery", "ok", None),
                     Sent::Plain | Sent::RichFallback | Sent::Receipt => {}
