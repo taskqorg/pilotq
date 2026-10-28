@@ -36,7 +36,7 @@ Supporting documents, README, instructions, tests and code follow this contract.
 
 **Proposed scope for the first release**
 
-One Linux host, one Telegram bot, one manager runtime, existing TaskQ boards and explicitly registered project roots. Text, replies, task links and inline decisions are core inputs. Detect voice, images and documents; preserve their identity and report unsupported input explicitly. Media interpretation enters the cutover scope if the Hermes inventory shows it is needed.
+One Linux host, one Telegram bot, one manager runtime, existing TaskQ boards and explicitly registered project roots. Text, replies, task links and inline decisions are core inputs. Accept Telegram photos and image documents, with or without captions, as image input in the same Codex conversation. Preserve their file identity and caption in the request journal. Voice and other documents remain unsupported and receive one short plain-language line.
 
 Recurring work stays with an existing scheduler or TaskQ capability. PilotQ has no worker scheduler, autonomous goal engine, reviewer, new task board or general plugin marketplace. Its local inbox schedules conversation handling and delivery only; TaskQ remains authoritative for execution.
 
@@ -162,7 +162,7 @@ Commit final replies, worker questions and results to an outbox with immutable d
 
 Record Telegram message IDs after successful sends; update a known status message when useful. Telegram `sendMessage` has no general client idempotency key: after a lost send response, a duplicate visible reply is possible. Report an ambiguous send as such and use bounded at-least-once delivery for results. Never repeat task execution to solve a delivery problem.
 
-**Owner, task #68:** normal accepted text uses an 👀 reaction within five seconds, without a text acknowledgement. If the reaction fails, send a short text receipt. If an unstarted request waits over 30 seconds, send one “Queued behind N” notice with the observed number of earlier requests in its conversation. Busy, unsupported-input and recovery-control replies remain text. Keep the first-use retention notice as a separate message once per person. Normal answers omit internal request numbers; /status, /audit, failures and stop notices retain them.
+**Owner, task #68:** normal accepted text uses an 👀 reaction within five seconds, without a text acknowledgement. If the reaction fails, send a short text receipt. If an unstarted request waits over 30 seconds, send one “Queued behind N” notice with the observed number of earlier requests in its conversation. Busy, unsupported-input and recovery-control replies remain text. Keep the first-use retention notice as a separate message once per person. No Telegram reply exposes internal request numbers, including controls, failures and limits; IDs remain available through the operator CLI and audit records.
 
 Private-chat answers do not quote the latest user message. Groups and topics retain reply correlation, typing and edited task status messages. While generating in a private chat, stream user-visible answer text through sendRichMessageDraft, falling back to sendMessageDraft. Coalesce updates to at most one per second; drafts are ephemeral, fenced to the active run, and failures never change the request outcome or replace final delivery.
 
@@ -357,7 +357,9 @@ Follow coreq: `releases/<version>`, `current` and `previous` in the install dire
 
 The installed Linux service checks for releases every five minutes, including at startup when no recent check is recorded. It persists the attempt time before the check so restarts do not reset the retry interval. A separate maintenance thread keeps health reporting and conversations available during downloads. Manual and scheduled updates share one OS-held update lock. A journal drain flag gates both CLI and Telegram claims in their claim transactions, so a new run cannot race the drain. Before activation, stop new manager turns and wait up to 65 seconds for running requests; an incomplete or failed drain refuses activation and preserves the current release. Failed downloads, checksum checks or selftests retain the current release and resume admission. Successful scheduled activation exits the service with code 75; the coreq Linux unit restarts it through the launcher. `pilotq update --pause` and `--resume` persist and read back automatic-update admission; pausing does not stop health or conversations. Manual updates remain available.
 
-This release retains coreq `v0.14.6` (locked in `Cargo.lock`) and journal schema 9. It opens existing schemas 0–9 through the current migrations and refuses newer schemas; rollback to a binary that cannot read the resulting schema is unsafe. The installation owner runs the user service and owns its protected configuration. See the [tester guide](docs/tester-guide.md) for installation, checks and current limitations. A published release and successful selftest do not qualify production cutover or the open decisions in section 11.
+**Owner, task #72:** prepare `0.2.4` with clean rich layout, image input and concise action status. After merge-queue acceptance, the PM publishes through `live`, updates the FRA test pilot and runs A40; the owner checks the chat. Production cutover is not authorized.
+
+This release retains coreq `v0.14.6` (locked in `Cargo.lock`) and journal schema 10. It opens existing schemas 0–10 through the current migrations and refuses newer schemas; rollback to a binary that cannot read the resulting schema is unsafe. The installation owner runs the user service and owns its protected configuration. See the [tester guide](docs/tester-guide.md) for installation, checks and current limitations. A published release and successful selftest do not qualify production cutover or the open decisions in section 11.
 
 ### Development
 
@@ -379,7 +381,7 @@ For a later same-token cutover, stop and verify the old poller before enabling P
 ## 11. Decisions still open
 
 - Codex account and subscription entitlement for a shared server deployment.
-- Required voice/image/document behavior for Hermes cutover.
+- Required voice and non-image document behavior for Hermes cutover. Image input is decided by the owner in task #72.
 - Final retention/capacity thresholds and permitted telemetry content, including the proposed audit retention (365 days metadata, 90 days message text).
 
 Closed 2026-10-23 (owner, option B): short-action grants and Telegram key entry. Direct actions are reads per grant, the owner alone comments on and labels board issues, nothing else is written directly, and keys enter only through the CLI ([section 5](#direct-actions-keys-and-project-switching)).
@@ -397,6 +399,10 @@ Track transport health, request activity and delivery separately. A successful e
 The runtime supervisor observes startup/first-event latency, last useful runtime/tool event and the absolute run deadline. The first-event watch starts before invoking Codex; it cannot depend on Codex having emitted its first event. Typing, polling and periodic status timers never renew useful-progress time. Token activity cannot extend the absolute short-action budget. Waiting states retain their reason and wake condition without busy retries. Use monotonic time within a process; persist deadlines/attempts across restart and handle wall-clock jumps without granting a fresh unlimited budget.
 
 ### Telegram feedback
+
+**Owner, task #72:** send rich final replies and drafts as Markdown, preserving model-authored paragraphs, lists, headings and bold. Keep safe escaped HTML and plain-text fallback from §4. Action replies lead with one short factual effect line (saved locally only, created on the board with its verified task link, started, or nothing done), followed by the next step. Plans stay short. Never claim that saving a plan created or started board work. Failures, limits and unsupported-input replies use one short sentence in the person’s language and omit internal request numbers; detailed diagnostics remain in the audit.
+
+Images use the same admission, queue, session, fence, audit and retry path as text (R10, R13, R17). Download only after admission and current-grant validation, with a 20 MiB cap, bounded time and protected temporary files removed after the turn. Never pass a Telegram token or download URL to Codex. Persist file identity before confirming updates; failed downloads are explicit outcomes, never successful text-only answers. Image content is untrusted source material, not authorization.
 
 | Event | User-visible behavior | Source of truth |
 |---|---|---|

@@ -257,7 +257,8 @@ fn service_run(t: &Tool) -> ! {
         let deadline = c.codex.limits.deadline;
         let tq = c.taskq.map(Arc::new);
         let (mj, mwake, codex, drain, mtq, d) = (j.clone(), wake.clone(), c.codex, t.install.join(DRAIN), tq.clone(), Arc::new(c.direct));
-        std::thread::spawn(move || manager::serve(codex, mj, mwake, || now() as i64, drain, mtq, d));
+        let manager_bot = bot.clone();
+        std::thread::spawn(move || manager::serve(codex, mj, mwake, || now() as i64, drain, mtq, d, manager_bot));
         if let Some(tq) = tq {
             let (wj, wwake) = (j.clone(), wake.clone());
             std::thread::spawn(move || taskq::watch(tq, wj, wwake));

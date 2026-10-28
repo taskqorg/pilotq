@@ -1,6 +1,6 @@
 # Test PilotQ
 
-Use PilotQ to discuss work, approve a saved plan and follow TaskQ in Telegram. This guide describes the first release candidate, `0.2.3`, not production-cutover acceptance ([contract §9](../pilotq.md#first-release-delivery)). The owner releases by fast-forwarding `live` after merge-queue acceptance; the download commands work after that workflow publishes the assets.
+Use PilotQ to discuss work, approve a saved plan and follow TaskQ in Telegram. This guide describes the first release candidate, `0.2.4`, not production-cutover acceptance ([contract §9](../pilotq.md#first-release-delivery)). The owner releases by fast-forwarding `live` after merge-queue acceptance; the download commands work after that workflow publishes the assets.
 
 ## Join an existing test bot
 
@@ -25,7 +25,7 @@ Read back the grants before telling the tester access is ready. Revocation uses 
 
 The operator inspects `pilotq routes list --json`. To select a shared topic explicitly, use `pilotq routes set CHAT:TOPIC shared --json`; replace `CHAT:TOPIC` with verified numeric IDs. `isolated` selects per-person context. New routes default to isolated. Do not expect Telegram privacy mode to deliver every ordinary group message; the operator must verify the chosen bot permissions and message delivery with an allowed tester.
 
-Each accepted input gets a request number and acknowledgement unless the answer arrives first. Typing is only feedback, not completion. Send text for this trial; voice, images and documents are detected and reported unsupported.
+Accepted text and images get an 👀 reaction, with a short text receipt if the reaction fails. Typing and drafts are feedback, not completion. Replies omit internal request numbers. Send a photo or PNG, JPEG, WebP or GIF image document, with or without a caption; voice and other documents receive a short unsupported-format reply. Images are limited to 20 MiB. Rich Markdown keeps paragraphs, lists, headings and bold. Action replies lead with the verified effect and next step; saving a plan is local until explicitly run.
 
 ## Plan, authorize and follow work
 
@@ -59,23 +59,23 @@ After publication, download and verify the release before executing it:
 ```sh
 mkdir pilotq-download
 cd pilotq-download
-curl -fSLO https://github.com/taskqorg/pilotq/releases/download/v0.2.3/pilotq-0.2.3-linux-x86_64
-curl -fSLO https://github.com/taskqorg/pilotq/releases/download/v0.2.3/SHA256SUMS
-curl -fSLO https://github.com/taskqorg/pilotq/releases/download/v0.2.3/latest.json
+curl -fSLO https://github.com/taskqorg/pilotq/releases/download/v0.2.4/pilotq-0.2.4-linux-x86_64
+curl -fSLO https://github.com/taskqorg/pilotq/releases/download/v0.2.4/SHA256SUMS
+curl -fSLO https://github.com/taskqorg/pilotq/releases/download/v0.2.4/latest.json
 sha256sum -c SHA256SUMS
-chmod 755 pilotq-0.2.3-linux-x86_64
-./pilotq-0.2.3-linux-x86_64 selftest
-./pilotq-0.2.3-linux-x86_64 update --check
+chmod 755 pilotq-0.2.4-linux-x86_64
+./pilotq-0.2.4-linux-x86_64 selftest
+./pilotq-0.2.4-linux-x86_64 update --check
 ```
 
-All checksum entries must pass. A fresh installation running this same version prints `update: up to date` after fetching the release manifest. An older installed selection sees `update: 0.2.3 available`; `pilotq update` verifies the download and runs offline selftest before activation. A checksum or selftest failure must leave the old selection intact. Selftest checks the local fixture, not Telegram, Codex login or the full task flow.
+All checksum entries must pass. A fresh installation running this same version prints `update: up to date` after fetching the release manifest. An older installed selection sees `update: 0.2.4 available`; `pilotq update` verifies the download and runs offline selftest before activation. A checksum or selftest failure must leave the old selection intact. Selftest checks the local fixture, not Telegram, Codex login or the full task flow.
 
 The default install directory is `$HOME/.local/share/pilotq`. Use the dedicated account's default for service installation; the generated user unit does not preserve an arbitrary `PILOTQ_INSTALL` override. Before starting a poller:
 
 1. Create the install directory with mode 0700. Write its `config.json` with mode 0600 using protected local editing, with `bot_token`, numeric `owner_id`, an absolute `codex` binary path, and `taskq` containing absolute `bin` and `root` paths. The registered root's `taskq.json` must name `taskqorg/pilotq` and have the create-claim prerequisite. Never paste the config into chat or a report.
 2. Sign in to the approved subscription account with `CODEX_HOME="$HOME/.local/share/pilotq/codex" codex login`. API-key login is refused; no billed API fallback exists (R9). This is Codex login, not GitHub device login. Have the owner provision TaskQ's existing host GitHub credential through its protected store.
-3. Register the project with `pilotq projects add pilotq ROOT --json`, substituting the real registered root. When running the downloaded binary before installation, substitute `./pilotq-0.2.3-linux-x86_64` for `pilotq`. Read back `projects list`, grants and route policies.
-4. Run `./pilotq-0.2.3-linux-x86_64 service install` only after explicitly authorizing this test instance. It installs and starts the coreq user service. Inspect `pilotq service status` and `pilotq status --json` using `$HOME/.local/share/pilotq/pilotq` if it is not on PATH.
+3. Register the project with `pilotq projects add pilotq ROOT --json`, substituting the real registered root. When running the downloaded binary before installation, substitute `./pilotq-0.2.4-linux-x86_64` for `pilotq`. Read back `projects list`, grants and route policies.
+4. Run `./pilotq-0.2.4-linux-x86_64 service install` only after explicitly authorizing this test instance. It installs and starts the coreq user service. Inspect `pilotq service status` and `pilotq status --json` using `$HOME/.local/share/pilotq/pilotq` if it is not on PATH.
 5. Verify bot identity and route delivery with an admitted person's DM, group and topic inputs. Then perform the authorized TaskQ flow above. A CLI-only answer or fresh health file does not prove Telegram acceptance (R13).
 
 `pilotq doctor --json` checks bot identity, the isolated ChatGPT login and a complete TaskQ board snapshot without polling or starting a model turn. A failed or unavailable check returns nonzero; this is setup evidence, not full-flow acceptance. The installed Linux service checks releases every five minutes; failures retain the old release. Updates stop new manager turns and wait up to 65 seconds for running requests before activation. A successful scheduled update exits for the native unit to restart through the launcher. `pilotq update --pause` pauses future automatic attempts; `pilotq update --resume` enables them again. Health and conversations continue while paused. Manual updates still work. Publication alone does not prove a host updated; the operator checks its reported version.
@@ -86,6 +86,8 @@ Report to the test administrator or [PilotQ board](https://github.com/taskqorg/p
 
 The operator can use `pilotq status --json`, `pilotq audit --request ID --json` and service logs locally. Distinguish unavailable observations from healthy ones. Do not resend execution because a Telegram reply is missing: delivery may be pending or ambiguous while the task already exists. Preserve uncertain effects and original destinations; never redirect private output to another chat.
 
-For a failed test installation, stop it with `pilotq service stop`, verify the poller stopped and retain accepted requests, the outbox and protected configuration. Preserve a supported SQLite snapshot before any restore; copying a live database file alone is not restore proof. The first fresh install has no previous release. An existing install keeps `previous`, and the coreq launcher can fall back after three unhealthy starts; only use a previous binary compatible with journal schema 9. There is no PilotQ rollback command. Do not delete the journal, resubmit admitted tasks or restart another consumer as a rollback shortcut (§4, §12).
+For a failed test installation, stop it with `pilotq service stop`, verify the poller stopped and retain accepted requests, the outbox and protected configuration. Preserve a supported SQLite snapshot before any restore; copying a live database file alone is not restore proof. The first fresh install has no previous release. An existing install keeps `previous`, and the coreq launcher can fall back after three unhealthy starts; only use a previous binary compatible with journal schema 10. There is no PilotQ rollback command. Do not delete the journal, resubmit admitted tasks or restart another consumer as a rollback shortcut (§4, §12).
 
 Task #68 reply checks: an accepted text gets an 👀 reaction, with a text receipt only on reaction failure or a queue wait over 30 seconds. The retention notice appears once. Private answers stream a draft and arrive without quoting the input; groups and topics keep their reply and status correlation. Ask “which projects do you see” to inspect accessible registered projects. Rich-message rejection falls back to ordered HTML chunks, then plain text on entity errors. Draft previews do not establish final delivery. After merge, the PM updates FRA and runs A40; the owner verifies the DM flow (§9).
+
+For 0.2.4 acceptance, the PM updates FRA and runs A40 after merge and publication. The owner then checks rich layout, screenshot interpretation and action wording in chat. These checks remain separate from the deterministic fake-adapter suite.
