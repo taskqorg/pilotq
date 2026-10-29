@@ -611,6 +611,16 @@ impl Journal {
             }
             up("PRAGMA user_version=10; COMMIT;")?;
         }
+        // §4 / #95: native sessions keep their original policy. A changed shared pin or
+        // PilotQ addition rebuilds from journal history and receipts, never by replaying effects.
+        let policy = crate::instructions::fingerprint();
+        up("BEGIN IMMEDIATE;")?;
+        let previous: Option<i64> = c.query_row("SELECT value FROM meta WHERE key='instructions'", [], |r| r.get(0)).optional().map_err(|e| e.to_string())?;
+        if previous != Some(policy) {
+            up("INSERT OR IGNORE INTO meta(key,value) SELECT 'refresh:' || session,1 FROM conversations WHERE thread IS NOT NULL;")?;
+            c.execute("INSERT INTO meta(key,value) VALUES ('instructions',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [policy]).map_err(|e| e.to_string())?;
+        }
+        up("COMMIT;")?;
         // TaskQ op IDs are permanent board claims; a random installation ID keeps a fresh journal from reusing another's
         let salt = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as i64) ^ ((std::process::id() as i64) << 40);
         c.execute("INSERT INTO meta(key, value) VALUES ('instance', ?1) ON CONFLICT(key) DO NOTHING", [salt & i64::MAX]).map_err(|e| e.to_string())?;
@@ -2430,6 +2440,30 @@ mod tests {
         assert_eq!(next.thread.as_deref(),Some("native-new"));
         drop(j); let _=std::fs::remove_dir_all(p);
         }
+    }
+
+    // #95 / §4: a policy upgrade rebuilds once, preserves the transcript and never
+    // replays effects. An unchanged policy resumes the existing native conversation.
+    #[test]
+    fn instruction_change_rebuilds_once() {
+        use crate::manager::Outcome;
+        let (mut j,p)=journal("instruction-change");
+        let r=j.ask(7,"earlier request",0).unwrap();
+        j.finish(&r,Some("old"),None,&Outcome::Answered("earlier answer".into()),1).unwrap();
+        j.0.execute("UPDATE meta SET value=0 WHERE key='instructions'", []).unwrap();
+        drop(j);
+        let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
+        let r=j.ask(7,"new request",2).unwrap();
+        assert!(j.refresh_tools(&r).unwrap());
+        let context=j.rebuild(&r,3).unwrap().to_string();
+        assert!(context.contains("earlier request") && context.contains("earlier answer"));
+        j.finish(&r,Some("new"),None,&Outcome::Answered("answer".into()),4).unwrap();
+        drop(j);
+        let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
+        let r=j.ask(7,"follow up",5).unwrap();
+        assert!(!j.refresh_tools(&r).unwrap());
+        assert_eq!(r.thread.as_deref(),Some("new"));
+        drop(j); let _=std::fs::remove_dir_all(p);
     }
 
     // R5, §9: recover schema 9 with either v10 column already present without losing accepted work.

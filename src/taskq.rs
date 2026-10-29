@@ -28,7 +28,7 @@ pub struct Taskq {
 pub fn tools() -> Value {
     let ticket = json!({"type": "object", "properties": {
         "title": {"type": "string", "description": "Imperative task title, at most 80 characters"},
-        "goal": {"type": "string", "description": "The user outcome, one or two sentences"},
+        "goal": {"type": "string", "description": "The user outcome, one or two lines, at most 240 characters per line"},
         "acceptance": {"type": "array", "items": {"type": "string"}, "description": "1-8 observable checks, one line each"},
         "scope": {"type": "array", "items": {"type": "string"}, "description": "Optional boundaries, at most 3 lines"}},
         "required": ["title", "goal", "acceptance"]});
