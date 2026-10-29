@@ -367,6 +367,7 @@ pub(crate) fn html(text: &str) -> String {
 fn markdown(text: &str) -> String {
     // a line that starts its own block never needs a hard break before it
     fn block(l: &str) -> bool {
+        if l == "\u{a0}\n" { return false; } // #141: the footer spacer needs hard breaks on both sides
         let l=l.trim_start();
         let digits=l.chars().take_while(char::is_ascii_digit).count();
         l.trim().is_empty() || ["- ","* ","+ ","#",">","|","```","~~~"].iter().any(|m|l.starts_with(m))
@@ -412,7 +413,7 @@ fn markdown(text: &str) -> String {
             else { match c { '<'=>out.push_str("&lt;"),'&'=>out.push_str("&amp;"),_=>out.push(c) } }
         }
         let body=line.trim_end_matches('\n');
-        if inline==0 && line.ends_with('\n') && !trimmed.starts_with('#') && !body.trim().is_empty() && !body.ends_with([' ','\\'])
+        if inline==0 && line.ends_with('\n') && !trimmed.starts_with('#') && (!body.trim().is_empty() || body == "\u{a0}") && !body.ends_with([' ','\\'])
             && lines.get(i+1).is_some_and(|next|!block(next)) {
             out.pop();
             out.push_str("  \n");
@@ -649,6 +650,21 @@ mod tests {
         assert_eq!(super::markdown(code),code);
         assert_eq!(super::markdown("`unmatched <b>x</b>"),"`unmatched &lt;b>x&lt;/b>");
         assert_eq!(super::markdown("\\`escaped <b>x</b>"),"\\`escaped &lt;b>x&lt;/b>");
+    }
+
+    // #141 / §12: rich Markdown must contain two hard breaks around a visible empty
+    // line, rather than two adjacent paragraphs. HTML/plain preserve the same spacer.
+    #[test]
+    fn footer_spacer_survives_markdown() {
+        for body in ["Answer", "- **Answer**", "# Answer", "```\nanswer\n```"] {
+            let source = format!("{body}\n\u{a0}\nmodel · status");
+            let rich = super::markdown(&source);
+            assert!(rich.ends_with("\u{a0}  \nmodel · status"), "{rich}");
+            if body == "Answer" || body.starts_with("- ") {
+                assert!(rich.contains("  \n\u{a0}  \n"), "{rich}");
+            }
+            assert!(html(&source).ends_with("\u{a0}\nmodel · status"));
+        }
     }
 
     // §4/§8: model text and link attributes cannot inject Telegram HTML or an unsafe link scheme.
