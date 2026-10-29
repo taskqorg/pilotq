@@ -150,10 +150,85 @@ impl Taskq {
 /// Transitional #94 board read, until TaskQ #1785 publishes canonical accepted-answer snapshot fields.
 /// Use the same GitHub trust/edit rules as TaskQ; a missing or unreadable receipt remains unknown.
 fn board_answers(tq: &Taskq, board: &str, task: i64) -> Option<Value> {
-    let output = Command::new("gh").args(["api", "--paginate", "--slurp", &format!("repos/{board}/issues/{task}/comments?per_page=100")])
-        .current_dir(&tq.root).stdin(Stdio::null()).output().ok()?;
-    if !output.status.success() { return None; }
-    serde_json::from_slice(&output.stdout).ok()
+    let endpoint = format!("repos/{board}/issues/{task}/comments?per_page=100");
+    match gh_comments(tq, &["api", "--paginate", &endpoint]) {
+        Ok(pages) => Some(pages),
+        Err(error) => { log_answer_read(&error); None }
+    }
+}
+
+fn log_answer_read(error: &str) {
+    let mut safe = crate::keys::Keys(crate::tool().install.join("keys.json")).scrub(error);
+    for name in ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"] {
+        if let Ok(secret) = std::env::var(name) {
+            if !secret.is_empty() { safe = safe.replace(&secret, "[credential]"); }
+        }
+    }
+    eprintln!("board answers: {safe}");
+}
+
+/// gh 2.45 emits consecutive JSON arrays with --paginate; parse every page, never a partial read.
+fn gh_comments(tq: &Taskq, args: &[&str]) -> Result<Value, String> {
+    let output = gh_output(&tq.root, args)?;
+    let pages = serde_json::Deserializer::from_slice(&output).into_iter::<Value>()
+        .collect::<Result<Vec<_>,_>>().map_err(|e| format!("gh {args:?}: invalid JSON: {e}"))?;
+    if pages.is_empty() || pages.iter().any(|p| !p.is_array()) {
+        return Err(format!("gh {args:?}: expected comment arrays"));
+    }
+    Ok(Value::Array(pages))
+}
+
+/// Bound both doctor and the periodic reader, draining pipes concurrently to avoid pipe deadlock.
+fn gh_output(root: &std::path::Path, args: &[&str]) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let mut cmd = Command::new("gh");
+    cmd.args(args).current_dir(root).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    let mut child = cmd.spawn().map_err(|e| format!("gh {args:?}: {e}"))?;
+    let mut stdout = child.stdout.take().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+    let out = std::thread::spawn(move || { let mut b=Vec::new(); stdout.read_to_end(&mut b).map(|_|b) });
+    let err = std::thread::spawn(move || { let mut b=Vec::new(); stderr.read_to_end(&mut b).map(|_|b) });
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if std::time::Instant::now() < until => std::thread::sleep(Duration::from_millis(25)),
+            _ => break None,
+        }
+    };
+    #[cfg(unix)]
+    let _ = Command::new("kill").args(["-KILL", "--", &format!("-{}", child.id())]).stderr(Stdio::null()).status();
+    let _ = child.kill(); let _ = child.wait();
+    let stdout = out.join().map_err(|_|format!("gh {args:?}: stdout reader failed"))?
+        .map_err(|e|format!("gh {args:?}: {e}"))?;
+    let stderr = err.join().map_err(|_|format!("gh {args:?}: stderr reader failed"))?
+        .map_err(|e|format!("gh {args:?}: {e}"))?;
+    if !status.is_some_and(|s|s.success()) {
+        return Err(format!("gh {args:?}: {}: stderr: {}",status.map(|s|s.to_string()).unwrap_or("timed out".into()),String::from_utf8_lossy(&stderr)));
+    }
+    Ok(stdout)
+}
+
+/// §9 / #127: operator metadata only; Telegram's doctor projection exposes check outcomes.
+pub fn answer_readiness(tq: &Taskq, board: Option<&str>) -> (bool, Value) {
+    let path = std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p)
+        .map(|p|p.join("gh")).find(|p| {
+            #[cfg(unix)]
+            { use std::os::unix::fs::PermissionsExt; p.metadata().is_ok_and(|m|m.is_file() && m.permissions().mode() & 0o111 != 0) }
+            #[cfg(not(unix))]
+            { p.is_file() }
+        }));
+    let version_output = gh_output(&tq.root, &["--version"]);
+    if let Err(error) = &version_output { log_answer_read(error); }
+    let version = version_output.ok().and_then(|b|String::from_utf8(b).ok())
+        .and_then(|s|s.lines().next().filter(|l|l.starts_with("gh version ")).map(str::to_string));
+    // One page is enough to qualify API access and parsing, without scanning all historical comments.
+    let read = board.ok_or_else(|| "registered board unavailable".to_string())
+        .and_then(|board|gh_comments(tq, &["api", &format!("repos/{board}/issues/comments?per_page=1")]));
+    if let Err(error) = &read { log_answer_read(error); }
+    (path.is_some() && version.is_some() && read.is_ok(), json!({"path":path,"version":version}))
 }
 
 // TaskQ §2: fields exist only with op-id; revision is a writer readback fence,
@@ -817,6 +892,56 @@ mod tests {
         assert!(text.contains("· Visible processing"));
         assert!(!text.contains("Open the task"));
         assert!(task_link("taskqorg/pilotq", 91, Some("A [title] & <tag>")).contains(r"A \[title\] & <tag>"));
+    }
+
+    // #127 / §5: an old gh must deliver all pages to the existing trusted-answer fold.
+    // Run with a child-only PATH so parallel tests never inherit the fake executable.
+    #[cfg(unix)]
+    #[test]
+    fn board_answers_old_gh() {
+        use std::os::unix::fs::PermissionsExt;
+        if let Some(root) = std::env::var_os("PILOTQ_OLD_GH_FIXTURE") {
+            let tq = Taskq { bin: "unused".into(), root: root.into(), poll: Duration::from_secs(1) };
+            let fails = tq.root.join("fail").exists() || tq.root.join("bad").exists();
+            let pages = board_answers(&tq, BOARD, 127);
+            if fails { assert!(pages.is_none()); }
+            else { assert_eq!(answer_entry(&pages.expect("old gh board read must succeed"),127,10), Some("Answered by alex: long".into())); }
+            let (ok, metadata) = answer_readiness(&tq, Some(BOARD));
+            assert_eq!(ok, !fails);
+            assert_eq!(metadata["path"], json!(tq.root.join("gh")));
+            assert_eq!(metadata["version"], "gh version 2.45.0 (invented)");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("pilotq-old-gh-{}",std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("gh"), r#"#!/bin/sh
+[ "$1" = --version ] && { echo 'gh version 2.45.0 (invented)'; exit 0; }
+for arg in "$@"; do
+  if [ "$arg" = --slurp ]; then echo 'unknown flag: --slurp' >&2; exit 1; fi
+done
+[ -f fail ] && { echo "API unavailable $GH_TOKEN" >&2; exit 1; }
+[ -f bad ] && { cat pages.json; echo '{broken'; exit 0; }
+cat pages.json
+"#).unwrap();
+        std::fs::set_permissions(dir.join("gh"),std::fs::Permissions::from_mode(0o700)).unwrap();
+        let entry = |id,body| json!({"id":id,"body":body,"author_association":"MEMBER","created_at":"invented","updated_at":"invented","user":{"login":"alex"}});
+        std::fs::write(dir.join("pages.json"),format!("{}\n{}\n",json!([entry(10,"taskq: ask attempt 3\n1. short ★\n2. long")]),json!([entry(11,"taskq: answer 2 attempt 3")]))).unwrap();
+        for mode in ["ok", "fail", "bad"] {
+            if mode != "ok" { std::fs::write(dir.join(mode), "").unwrap(); }
+            let out = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact","taskq::tests::board_answers_old_gh","--nocapture"])
+                .env("PILOTQ_OLD_GH_FIXTURE",&dir).env("PILOTQ_INSTALL",&dir)
+                .env("GH_TOKEN", "invented-test-credential")
+                .env("PATH",format!("{}:{}",dir.display(),std::env::var("PATH").unwrap_or_default()))
+                .output().unwrap();
+            assert!(out.status.success(),"{}{}",String::from_utf8_lossy(&out.stdout),String::from_utf8_lossy(&out.stderr));
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if mode == "fail" { assert!(stderr.contains("gh [\"api\"") && stderr.contains("API unavailable [credential]"),"{stderr}"); }
+            if mode == "bad" { assert!(stderr.contains("invalid JSON"),"{stderr}"); }
+            assert!(!stderr.contains("invented-test-credential"));
+            if mode != "ok" { std::fs::remove_file(dir.join(mode)).unwrap(); }
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     // #94 / §5: preserve trusted literal answers and option semantics; never borrow a newer question's answer.

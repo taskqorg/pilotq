@@ -1009,9 +1009,9 @@ fn tq_setup(tag: &str, claim: bool) -> (PathBuf, State) {
         fs::write(p, body).unwrap();
         fs::set_permissions(p, fs::Permissions::from_mode(0o755)).unwrap();
     }
-    fs::write(d.join("gh"), "#!/bin/sh\ncat \"$(dirname \"$0\")/comments.json\"\n").unwrap();
+    fs::write(d.join("gh"), "#!/bin/sh\nfor arg; do [ \"$arg\" != --slurp ] || { echo 'unknown flag: --slurp' >&2; exit 1; }; done\ncat \"$(dirname \"$0\")/comments.json\"\n").unwrap();
     fs::set_permissions(d.join("gh"), fs::Permissions::from_mode(0o755)).unwrap();
-    fs::write(d.join("comments.json"), "[[]]").unwrap();
+    fs::write(d.join("comments.json"), "[]").unwrap();
     fs::create_dir_all(d.join("root")).unwrap();
     root(&d, claim);
     limits(&d, &codex, json!({"first_event": 10, "silent": 10, "deadline": 20}));
@@ -2666,10 +2666,10 @@ fn u94_answer_elsewhere_closes_question() {
     let q = sent(&st).into_iter().find(|m| m["text"].as_str().unwrap().contains("\n⚑")).unwrap();
     let rev = board(&d)["tasks"]["19"]["revision"].as_i64().unwrap();
     let entry = |id, body: &str, trust, edited| json!({"id":id,"body":body,"author_association":trust,"created_at":"invented-time","updated_at":if edited {"edited-time"} else {"invented-time"},"user":{"login":"alex"}});
-    fs::write(d.join("comments.json"), json!([[entry(rev,"taskq: ask attempt 1\nProblem: pick\n1. short ★\n2. long","MEMBER",false),
+    fs::write(d.join("comments.json"), json!([entry(rev,"taskq: ask attempt 1\nProblem: pick\n1. short ★\n2. long","MEMBER",false),
         entry(rev+1,"taskq: answer\nwrong","NONE",false), entry(rev+2,"taskq: answer\nchanged","MEMBER",true),
         entry(rev+3,"taskq: answer 1 attempt 99\nop-id: invented-wrong\nrevision: 103","MEMBER",false),
-        entry(rev+4,"taskq: answer 2\nop-id: invented-answer\nrevision: 103","MEMBER",false)]]).to_string()).unwrap();
+        entry(rev+4,"taskq: answer 2\nop-id: invented-answer\nrevision: 103","MEMBER",false)]).to_string()).unwrap();
     set_task(&d, 19, |t| { t["state"]=json!("doing"); t["card"]=Value::Null; t["revision"]=json!(1); });
     wait("answered question edited", 15, || sent(&st).iter().any(|m| m["edit"]==true && m["id"]==q["id"] && m["text"].as_str().unwrap().contains("Answered by alex: long")));
     let edit=sent(&st).into_iter().find(|m|m["edit"]==true && m["id"]==q["id"]).unwrap();
@@ -3087,6 +3087,10 @@ fn doctor_voice_readiness() {
     c["codex"] = json!(script(&d, "login", "echo 'Logged in using ChatGPT'"));
     let ffmpeg = script(&d, "decode", r#"while [ "$1" != "-i" ]; do shift; done; input=$2; for a; do out=$a; done; cp "$input" "$out""#);
     let recognizer = script(&d, "recognize", "echo '{\"text\":\"\"}'");
+    // #127 / §9: keep the voice check independent of host gh/authentication.
+    let gh_ok = r#"if [ "$1" = --version ]; then echo 'gh version 2.45.0 (invented)'; else echo '[]'; fi"#;
+    script(&d, "gh", gh_ok);
+    let gh_path = format!("{}:{}",d.display(),std::env::var("PATH").unwrap_or_default());
     let model = d.join("model");
     fs::create_dir(&model).unwrap();
     for (mode, expected) in [(0,"voice not configured"),(1,"voice recognizer unavailable"),(2,"voice model unavailable"),
@@ -3101,11 +3105,25 @@ fn doctor_voice_readiness() {
         if mode == 7 { script(&d, "recognize", "exec sleep 20"); }
         if mode == 5 { c["voice"]["ffmpeg"] = json!(d.join("absent")); }
         fs::write(&cfg, c.to_string()).unwrap();
-        let out = Command::new(env!("CARGO_BIN_EXE_pilotq")).env("PILOTQ_INSTALL", &d).args(["doctor","--json"]).output().unwrap();
+        let out = Command::new(env!("CARGO_BIN_EXE_pilotq")).env("PILOTQ_INSTALL", &d).env("PATH", &gh_path).args(["doctor","--json"]).output().unwrap();
         let report: Value = serde_json::from_slice(&out.stdout).unwrap();
         assert_eq!(report["checks"]["voice"], expected, "mode {mode}: {report}");
         assert_eq!(out.status.success(), mode == 4, "mode {mode}: {report}");
         assert_eq!(report["ok"], mode == 4);
+        if mode == 4 {
+            assert_eq!(report["gh"]["path"], json!(d.join("gh")));
+            assert_eq!(report["gh"]["version"], "gh version 2.45.0 (invented)");
+            for body in ["echo invented-api-failure >&2; exit 1", "echo '{malformed'", "echo '{}'"] {
+                script(&d,"gh",body);
+                let failed = Command::new(env!("CARGO_BIN_EXE_pilotq")).env("PILOTQ_INSTALL",&d).env("PATH",&gh_path)
+                    .args(["doctor","--json"]).output().unwrap();
+                let report: Value = serde_json::from_slice(&failed.stdout).unwrap();
+                assert!(!failed.status.success());
+                assert_eq!(report["checks"]["board_answers"], "failed");
+                assert!(!String::from_utf8_lossy(&failed.stdout).contains("invented-api-failure"));
+            }
+            script(&d,"gh",gh_ok);
+        }
         assert!(!d.join("journal.sqlite").exists(), "doctor never admits a request");
         assert!(!String::from_utf8_lossy(&out.stdout).contains("private-dependency-output"));
     }
