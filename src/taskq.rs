@@ -736,6 +736,8 @@ fn scan(tq: &Taskq, j: &Mutex<Journal>) -> bool {
 /// transition is found without a nudge. Every pass rereads the journal; a timer is a wakeup, never the only copy of work.
 pub fn watch(tq: std::sync::Arc<Taskq>, j: crate::telegram::Shared, wake: std::sync::Arc<tokio::sync::Notify>) {
     let mut last = std::time::Instant::now() - tq.poll;
+    // an answer is written once per process; a failed end leaves it `running` to resume after a restart, never every pass
+    let mut tried = std::collections::HashSet::new();
     loop {
         let mut work = last.elapsed() >= tq.poll && recover_effects(&tq, &j);
         let runs = j.lock().unwrap().due_runs(now(), LEASE);
@@ -751,6 +753,7 @@ pub fn watch(tq: std::sync::Arc<Taskq>, j: crate::telegram::Shared, wake: std::s
             eprintln!("taskq: {e}");
             vec![]
         }) {
+            if !tried.insert(a.request) { continue; }
             answer(&tq, &j, &a, resumed);
             work = true;
         }
