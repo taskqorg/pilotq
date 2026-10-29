@@ -2782,7 +2782,7 @@ fn u110_one_draft_launch_states_and_cancel() {
     assert_eq!(query(&d, "SELECT count(DISTINCT draft) FROM plans"), 1, "follow-ups revise one draft");
     for m in &displays {
         let t = m["text"].as_str().unwrap();
-        assert!(t.contains("Plan draft") && (0..10).all(|n| !t.contains(&format!("Draft {n}"))), "no numbered plan: {t}");
+        assert!(t.contains("Updated plan") && (0..10).all(|n| !t.contains(&format!("Draft {n}"))), "no numbered plan: {t}");
         assert_eq!(m["reply_markup"]["inline_keyboard"][1][0]["text"], "Cancel");
     }
     let closed = |id: &Value| st.lock().unwrap().api.iter().any(|(m, b, _)| m == "editmessagereplymarkup" && b["message_id"] == *id);
