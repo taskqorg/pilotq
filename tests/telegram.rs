@@ -1316,6 +1316,8 @@ fn u10_restart_new_status_pause_and_park() {
     wait("plan", 15, || sent_has(&st, "Draft saved locally."));
     push(&st, call(2, OWNER, None, OWNER, "task_run_plan", json!({"revision": 1})));
     wait("status", 15, || sent_has(&st, "\nready"));
+    // Restart after the receipt commits; a lost send response may legitimately duplicate (§4).
+    wait("status receipt", 15, || query(&d, "SELECT count(*) FROM outbox WHERE state NOT IN ('delivered','superseded')") == 0);
     drop(c);
     set_task(&d, 19, |t| t["state"] = json!("doing"));
     let c = spawn(&d, None);
@@ -2666,6 +2668,8 @@ fn u94_answer_elsewhere_closes_question() {
     let edit=sent(&st).into_iter().find(|m|m["edit"]==true && m["id"]==q["id"]).unwrap();
     assert_eq!(edit["reply_markup"]["inline_keyboard"],json!([]));
     assert_eq!(edit["message_thread_id"],5);
+    // The fake API observes the send before the service commits its receipt (§4).
+    wait("answer edit receipt", 15, || query(&d, "SELECT count(*) FROM outbox WHERE state NOT IN ('delivered','superseded')") == 0);
     drop(c);
     let c = spawn(&d, None);
     set_task(&d,19,|t| { t["revision"]=json!(rev+4); t["state"]=json!("ask"); t["card"]=json!("Done: updated\nProblem: another pick\n1. tiny ★\n2. huge"); });
