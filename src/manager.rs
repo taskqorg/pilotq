@@ -78,11 +78,17 @@ impl Proc {
     }
 }
 
+/// `--` ends options: procps-ng 4.0.4 reads `kill -9 -1301449` as `kill(-1, SIGKILL)` and kills every process of the user.
+/// Found on the Linux host, where each Codex stop killed the whole service user.
+fn group_kill_args(pid: u32) -> [String; 3] {
+    ["-9".into(), "--".into(), format!("-{pid}")]
+}
+
 impl Drop for Proc {
     fn drop(&mut self) {
         // ponytail: `kill` on the process group; a pidfd/cgroup supervisor if children escape the group
         #[cfg(unix)]
-        let _ = Command::new("kill").args(["-9", &format!("-{}", self.child.id())]).stderr(Stdio::null()).status();
+        let _ = Command::new("kill").args(group_kill_args(self.child.id())).stderr(Stdio::null()).status();
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -478,5 +484,13 @@ pub fn serve(
         }
         // ponytail: 0.5 s journal poll; a wake channel from ingress if admission latency matters
         std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn group_kill_ends_options_before_the_negative_pid() {
+        assert_eq!(super::group_kill_args(1301449), ["-9", "--", "-1301449"]);
     }
 }
