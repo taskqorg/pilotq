@@ -2,6 +2,7 @@
 
 mod direct;
 mod journal;
+mod instructions;
 mod keys;
 mod manager;
 mod taskq;

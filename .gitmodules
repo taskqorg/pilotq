@@ -1,0 +1,3 @@
+[submodule "specq"]
+	path = specq
+	url = https://github.com/taskqorg/specq.git

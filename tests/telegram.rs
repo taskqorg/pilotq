@@ -2453,3 +2453,105 @@ fn telegram_image_failures_are_bounded_and_private() {
         stop(c,d);
     }
 }
+
+// #95 A1 / R13: inspect the actual app-server boundary, not a separate prompt helper.
+// Regression risk: a hand-written policy silently omits pinned decision/intake/icon rules.
+#[test]
+fn u95_pinned_instructions_reach_codex() {
+    let (d, st) = tq_setup("u95-instructions", true);
+    let c = spawn(&d, None);
+    push(&st, text(1, OWNER, None, OWNER, "hello"));
+    wait("answer", 15, || sent_has(&st, "re: hello"));
+    let log = fs::read_to_string(d.join("codex.log")).unwrap();
+    let start: Value = log.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find(|m| m["method"] == "thread/start").unwrap();
+    let policy = start["params"]["developerInstructions"].as_str().unwrap();
+    for source in [include_str!("../specq/caveman/rules/core.md"),
+        include_str!("../specq/caveman/rules/indicators.md")] {
+        assert!(policy.contains(source), "pinned shared source absent from app-server instructions");
+    }
+    assert!(policy.contains("## Task intake"), "pinned workflow intake missing");
+    assert!(policy.contains("## Telegram feedback"), "PilotQ additions missing");
+    stop(c, d);
+}
+
+const U95_CARD: &str = "Done: drafted both versions\nProblem: Choose the tester guide wording; this changes how much detail testers see.\n1. Short wording. Plus: quick to scan. Minus: omits setup detail. ★\n2. Detailed wording. Plus: includes setup detail. Minus: slower to scan.\nRecommended: short wording, because the linked guide already covers setup.\nTo answer: `taskq answer 19.K` or comment `K` or the option text.";
+
+// #95 A2/A3 / §5/§12: one script connects real admission, model tools, held creation,
+// board projection and Telegram rendering. The fake checks wiring; live checks model behavior.
+fn u95_cases(live: bool) {
+    let (d, st) = tq_setup(if live { "u95-live" } else { "u95-cases" }, true);
+    let _login = live.then(|| live_login(&d));
+    if live {
+        use_codex(&d, Path::new("codex"));
+        limits(&d, Path::new("codex"), json!({"first_event":60,"silent":60,"deadline":180}));
+    } else {
+        // A deterministic model emits tools and replies, not a language-model simulation.
+        let fake = FAKE_TOOLS.replace("if outs:\n            text = \" | \".join(outs)", r#"if outs:
+            if name == 'task_plan':
+                text = 'Saved locally only: plan revision 1.\nReview the tester guide wording; ask me to run revision 1.'
+            elif name == 'task_run_plan':
+                text = 'Queued for a worker: [GitHub · pilotq#19 · Tester guide](https://github.com/taskqorg/pilotq/issues/19).\nWait for the worker result.'
+            else:
+                text = 'The task is queued for a worker.\n[GitHub · pilotq#19 · Tester guide](https://github.com/taskqorg/pilotq/issues/19)'
+        else:
+            text = 'Привет! Готов обсудить задачу.'"#);
+        fs::write(d.join("fake-codex"), fake).unwrap();
+    }
+    let c = spawn(&d, None);
+    let send = |id: i64, message: &str, tool: &str, args: Value| {
+        push(&st, if live || tool.is_empty() {text(id, OWNER, None, OWNER, message)} else {call(id, OWNER, None, OWNER, tool, args)});
+        wait("model outcome", if live {240} else {15}, || try_query(&d,
+            &format!("SELECT count(*) FROM requests WHERE update_id={id} AND state IN ('answered','failed','uncertain')")) == Some(1));
+        assert_eq!(query(&d, &format!("SELECT count(*) FROM requests WHERE update_id={id} AND state='answered'")), 1, "{:?}", texts(&st));
+        let reply = query_text(&d, &format!("SELECT reply FROM requests WHERE update_id={id}"));
+        assert!(!bare_url(&reply) && !reply.contains("Request #") && !reply.contains("request_id"), "{reply}");
+        assert!(reply.encode_utf16().count() <= 4096, "scripted short reply exceeds a Telegram chunk");
+        eprintln!("u95 {} case {id}: {reply}", if live {"live"} else {"fake"});
+        reply
+    };
+    let reply = send(1, "In English, use task_plan to save one pilotq task titled Tester guide. Goal: clarify the tester guide wording. Acceptance: guide describes the setup checks. Show the saved revision and next step; do not run it.", "task_plan", plan(&["Tester guide"]));
+    assert!(reply.to_lowercase().contains("sav") && reply.contains('1'), "plan identifies local save/revision: {reply}");
+    assert_eq!(query(&d, "SELECT count(*) FROM plan_runs"), 0, "planning creates no board work");
+    send(2, "Run saved plan revision 1 now with task_run_plan. Reply briefly in English with the verified task link and distinguish queued admission from worker execution.", "task_run_plan", json!({"revision":1}));
+    assert_eq!(query(&d, "SELECT count(*) FROM plan_runs WHERE state='started'"), 1);
+    let calls = tq_calls(&d);
+    let add = calls.iter().find(|a| a[0] == "add").expect("held creation");
+    assert!(add.iter().any(|x| x == "--op-id"), "creation has a stable operation ID");
+    assert!(calls.iter().position(|a| a[0] == "start").unwrap() > calls.iter().position(|a| a[0] == "add").unwrap());
+    let goal = add.windows(2).find(|a| a[0] == "--goal").unwrap()[1].as_str();
+    assert!(goal.lines().count() <= 2, "TaskQ goal: {goal}");
+    let reply = send(3, "Use task_status for pilotq task #19. In English, state its observed status and give a short labeled link.", "task_status", json!({"task":"19"}));
+    assert!(reply.to_lowercase().contains("worker") || reply.to_lowercase().contains("ready"), "{reply}");
+    assert_eq!(tq_calls(&d).iter().filter(|a| a[0] == "add").count(), 1, "status creates no task");
+    set_task(&d, 19, |t| { t["state"]=json!("ask"); t["card"]=json!(U95_CARD); });
+    wait("complete source question", 15, || sent_has(&st, "Recommended: short wording"));
+    let q = sent(&st).into_iter().find(|s| s["text"].as_str().is_some_and(|s| s.contains("Recommended: short wording"))).unwrap();
+    let body = q["text"].as_str().unwrap();
+    for line in U95_CARD.lines().filter(|l| !l.starts_with("To answer")) {
+        assert!(body.contains(line), "source meaning preserved: {line}: {body}");
+    }
+    assert!(!body.contains("To answer") && !bare_url(body) && !body.contains("request_id"));
+    assert_eq!(q["link_preview_options"]["is_disabled"], true);
+    assert_eq!(q["reply_markup"]["inline_keyboard"].as_array().unwrap().len(), 2);
+    eprintln!("u95 question: {body}");
+    // A relay never asks the model to choose or fabricate trade-offs.
+    assert_eq!(query(&d, "SELECT count(*) FROM runs"), 3);
+    let russian = send(4, "Привет! Ответь одним коротким предложением по-русски, без инструментов.", "", json!({}));
+    assert!(russian.chars().any(|c| ('А'..='я').contains(&c)), "reply follows Russian input: {russian}");
+    if live {
+        eprintln!("u95 provider: OpenAI ChatGPT subscription; model: {}; runtime: {}; agentq: off",
+            query_text(&d, "SELECT coalesce(group_concat(DISTINCT model),'unknown') FROM runs"),
+            query_text(&d, "SELECT coalesce(group_concat(DISTINCT codex_version),'unknown') FROM tool_sizes"));
+    }
+    stop(c, d);
+}
+
+#[test]
+fn u95_scripted_reply_task_question_status() { u95_cases(false); }
+
+// Run on FRA with the subscription login. Fake Telegram/TaskQ avoid live board mutations.
+// PILOTQ_A8_CODEX_HOME=<subscription home> cargo test --locked --test telegram u95_live -- --ignored --nocapture
+#[test]
+#[ignore = "uses the real Codex subscription on FRA"]
+fn u95_live_reply_task_question_status() { u95_cases(true); }
