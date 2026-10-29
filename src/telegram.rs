@@ -35,7 +35,7 @@ fn input(kind: &UpdateKind) -> Option<Input> {
     if let UpdateKind::CallbackQuery(q) = kind {
         let m = q.message.as_ref()?.regular_message()?;
         let k = q.data.as_deref()?.strip_prefix("answer:")?;
-        return Some(Input {
+        return Some(Input { callback: Some(q.id.0.clone()),
             image: None,
             language: q.from.language_code.clone(),
             chat: m.chat.id.0,
@@ -59,7 +59,7 @@ fn input(kind: &UpdateKind) -> Option<Input> {
     });
     let image = m.photo().and_then(|photos| photos.iter().max_by_key(|p| p.width as u64 * p.height as u64).map(|p| &p.file))
         .or_else(|| document.map(|d| &d.file));
-    Some(Input {
+    Some(Input { callback: None,
         image: image.map(|f| f.id.0.clone()),
         language: m.from.as_ref().and_then(|u| u.language_code.clone()),
         chat: m.chat.id.0,
@@ -424,6 +424,13 @@ async fn raw(bot: &Bot, j: &Shared, method: &str, body: Value) -> Result<Value, 
 
 async fn send(bot: &Bot, j: &Shared, d: &Delivery) -> Sent {
     let backoff = d.attempts + 1;
+    if let Some(callback) = d.kind.strip_prefix("toast:") {
+        // Bot API limits callback toasts to 200 characters; the complete receipt stays in the question and audit.
+        let text: String = d.text.chars().take(200).collect();
+        return match raw(bot,j,"answerCallbackQuery",json!({"callback_query_id":callback,"text":text})).await {
+            Ok(_) => Sent::Ok(0), Err(e) => e,
+        };
+    }
     if d.kind == "reaction" {
         return match raw(bot, j, "setMessageReaction", json!({"chat_id":d.chat,"message_id":d.reply_to,"reaction":[{"type":"emoji","emoji":"👀"}]})).await {
             Ok(_) => Sent::Ok(d.reply_to.unwrap_or(0)),
@@ -446,6 +453,7 @@ async fn send(bot: &Bot, j: &Shared, d: &Delivery) -> Sent {
         if d.html.is_some() {
             r = r.parse_mode(ParseMode::Html);
         }
+        if d.kind == "question_answered" { r = r.reply_markup(InlineKeyboardMarkup::new(Vec::<Vec<InlineKeyboardButton>>::new())); }
         match r.await {
             Ok(m) => return Sent::Ok(m.id.0 as i64),
             Err(RequestError::Api(ApiError::MessageNotModified)) => return Sent::Ok(m),

@@ -141,6 +141,72 @@ impl Taskq {
 }
 
 
+/// Transitional #94 board read, until TaskQ #1785 publishes canonical accepted-answer snapshot fields.
+/// Use the same GitHub trust/edit rules as TaskQ; a missing or unreadable receipt remains unknown.
+fn board_answers(tq: &Taskq, board: &str, task: i64) -> Option<Value> {
+    let output = Command::new("gh").args(["api", "--paginate", "--slurp", &format!("repos/{board}/issues/{task}/comments?per_page=100")])
+        .current_dir(&tq.root).stdin(Stdio::null()).output().ok()?;
+    if !output.status.success() { return None; }
+    serde_json::from_slice(&output.stdout).ok()
+}
+
+fn answer_entry(pages: &Value, task: i64, revision: i64) -> Option<String> {
+    let mut entries: Vec<&Value> = pages.as_array()?.iter().filter_map(Value::as_array).flatten().filter(|c|
+        matches!(c["author_association"].as_str(), Some("OWNER" | "MEMBER" | "COLLABORATOR")) && c["created_at"] == c["updated_at"]
+    ).collect();
+    entries.sort_by_key(|c|c["id"].as_i64().unwrap_or(0));
+    let start = entries.iter().position(|c|c["id"] == revision)?;
+    let question = entries[start]["body"].as_str()?;
+    let header = question.lines().next()?;
+    if header.split_whitespace().take(2).collect::<Vec<_>>() != ["taskq:","ask"] { return None; }
+    let attempt = |h: &str| h.split_once(" attempt ").map(|(_,a)|a.to_string());
+    for c in entries.into_iter().skip(start+1) {
+        let body = c["body"].as_str()?;
+        let head = body.lines().next().unwrap_or("");
+        if ["ask", "requeue", "later", "failed", "result", "close", "gone", "spawn"].iter().any(|kind| {
+            head.strip_prefix("taskq: ").is_some_and(|h| h.split_whitespace().next() == Some(kind))
+        }) { break; }
+        let token = head.strip_prefix("taskq: answer").filter(|tail|tail.is_empty() || tail.starts_with(' '));
+        if token.is_none() && head.starts_with("taskq: ") { continue; }
+        if let Some(a) = attempt(head) { if Some(a) != attempt(header) { continue; } }
+        let choice = |k: &str| question.lines().find_map(|line| line.strip_prefix(&format!("{k}. ")).map(|s|s.trim_end_matches('★').trim().to_string()));
+        let text = if let Some(tail) = token {
+            // TaskQ's trailing op-id/revision fields are transport metadata, never answer text.
+            let mut text = body.split_once('\n').map(|(_,t)|t).unwrap_or("").trim_end();
+            let before_revision = text.rsplit_once('\n').filter(|(_,last)|last.trim().strip_prefix("revision: ").is_some_and(|r|r.parse::<i64>().is_ok())).map(|(rest,_)|rest).unwrap_or(text);
+            let (rest,last) = before_revision.rsplit_once('\n').unwrap_or(("",before_revision));
+            if last.trim().starts_with("op-id: ") { text = rest.trim_end(); }
+            let text = text.to_string();
+            if !text.trim().is_empty() { text } else { choice(tail.split_whitespace().next().unwrap_or(""))? }
+        } else {
+            let input = body.trim();
+            let pick = input.strip_prefix(&format!("taskq answer {task}.")).or_else(||input.strip_prefix("taskq answer "));
+            let value = pick.unwrap_or(input);
+            let matched = (1..=4).find_map(|k| {
+                let option = choice(&k.to_string())?;
+                let plain = value.strip_prefix(&format!("{k}. ")).unwrap_or(value);
+                (value == k.to_string() || plain.eq_ignore_ascii_case(&option)).then_some(option)
+            });
+            let Some(text) = matched else { continue }; text
+        };
+        let actor = c["user"]["login"].as_str()?;
+        return Some(format!("Answered by {actor}: {text}"));
+    }
+    None
+}
+
+fn reconcile_questions(tq: &Taskq, j: &Mutex<Journal>, project: &str, board: &str, task: i64, current: i64) {
+    let questions = j.lock().unwrap().open_questions(project,task).unwrap_or_default();
+    let questions: Vec<_> = questions.into_iter().filter(|r| *r < current).collect();
+    if questions.is_empty() { return; }
+    let Some(pages) = board_answers(tq,board,task) else { return };
+    for revision in questions {
+        if let Some(answer) = answer_entry(&pages,task,revision) {
+            if let Err(e) = j.lock().unwrap().answer_question(project,task,revision,&answer,now()) { eprintln!("question receipt: {e}"); }
+        }
+    }
+}
+
 fn find(s: &Value, task: i64) -> Option<&Value> {
     s["tasks"].as_array()?.iter().find(|t| t["n"] == task)
 }
@@ -455,6 +521,13 @@ fn answer(tq: &Taskq, j: &Mutex<Journal>, a: &Answer, resumed: bool) {
     if let Err(e) = ok {
         return end("failed", format!("Not written to task #{n}: {e}."), Some("not authorized"));
     }
+    // Check the accepted board answer even when a tap races the periodic scan. It never authorizes a write.
+    if let Ok(snapshot) = tq.snapshot_for(&board) {
+        let revision = find(&snapshot,n).and_then(|t|t["revision"].as_i64()).unwrap_or(i64::MAX);
+        reconcile_questions(tq,j,&a.project,&board,n,revision);
+    }
+    let receipt = j.lock().unwrap().question_answer(&a.project,n,a.revision).ok().flatten();
+    if let Some(receipt) = receipt { return end("answered",receipt,None); }
     let lines: Vec<&str> = a.text.lines().filter(|l| !l.trim().is_empty()).collect();
     if lines.is_empty() || lines.len() > 4 || lines.iter().any(|l| l.chars().count() > 240) {
         return end("failed", format!("Not written to task #{n}: an answer is 1-4 lines of at most 240 characters."), Some("answer too long"));
@@ -494,7 +567,14 @@ fn answer(tq: &Taskq, j: &Mutex<Journal>, a: &Answer, resumed: bool) {
     };
     match tq.write(args, &op) {
         Ok(rc) if rc["outcome"] == "accepted" => end("answered", format!("Answer written to task #{n}; it is now {}.", describe(rc["state"].as_str().unwrap_or(""))), None),
-        Ok(rc) if rc["outcome"] == "stale" => end("failed", format!("That question is no longer current; nothing was written. {}", current(j)), Some("stale question")),
+        Ok(rc) if rc["outcome"] == "stale" => {
+            reconcile_questions(tq,j,&a.project,&board,n,i64::MAX);
+            let receipt = j.lock().unwrap().question_answer(&a.project,n,a.revision).ok().flatten();
+            match receipt {
+                Some(text) => end("answered",text,None),
+                None => end("failed", format!("That question is no longer current; nothing was written. {}", current(j)), Some("stale question")),
+            }
+        },
         Ok(rc) if rc["outcome"] == "rejected" => {
             end("failed", format!("TaskQ refused the answer to task #{n}: {}. {}", rc["reason"].as_str().unwrap_or("no reason given"), current(j)), Some("rejected"))
         }
@@ -532,6 +612,8 @@ fn scan(tq: &Taskq, j: &Mutex<Journal>) -> bool {
         }
         let snapshot = snapshots.entry(project.clone()).or_insert_with(|| bound.snapshot_for(&board));
         let s = match snapshot { Ok(s) => s, Err(e) => { failure = Some(e.clone()); continue; } };
+        let revision = find(s,n).and_then(|t|t["revision"].as_i64()).unwrap_or(i64::MAX);
+        reconcile_questions(&bound,j,&project,&board,n,revision);
         let j = j.lock().unwrap();
         let r = match find(s, n) {
             Some(t) => {
@@ -597,6 +679,23 @@ mod tests {
         assert!(text.contains("· Visible processing"));
         assert!(!text.contains("Open the task"));
         assert!(task_link("taskqorg/pilotq", 91, Some("A [title] & <tag>")).contains(r"A \[title\] & <tag>"));
+    }
+
+    // #94 / §5: preserve trusted literal answers and option semantics; never borrow a newer question's answer.
+    #[test]
+    fn u94_board_answer_evidence() {
+        let entry = |id,body: &str| json!({"id":id,"body":body,"author_association":"MEMBER","created_at":"invented","updated_at":"invented","user":{"login":"alex"}});
+        let ask = entry(10,"taskq: ask attempt 3\nProblem: pick\n1. short ★\n2. long");
+        for (body,expected) in [("taskq: answer 2\nop-id: invented\nrevision: 10","long"),
+            ("taskq: answer\nkeep this\nrevision: 99","keep this\nrevision: 99"),
+            ("taskq: answer\nkeep <literal> & text\nop-id: invented\nrevision: 10","keep <literal> & text"),
+            ("2","long"),("LONG","long"),("taskq answer 19.2","long")] {
+            assert_eq!(answer_entry(&json!([[ask,entry(11,body)]]),19,10),Some(format!("Answered by alex: {expected}")),"{body}");
+        }
+        for barrier in ["taskq: ask\nProblem: new","taskq: requeue","taskq: later"] {
+            assert_eq!(answer_entry(&json!([[ask,entry(11,barrier),entry(12,"taskq: answer 2")]]),19,10),None);
+        }
+        assert_eq!(answer_entry(&json!([[ask,entry(11,"taskq: answer 2 attempt 99")]]),19,10),None);
     }
 
     // §5 / A40: TaskQ start removes q-held before adding taskq. A complete list can
