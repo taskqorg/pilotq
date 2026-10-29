@@ -842,3 +842,47 @@ board status and a local `pilotq` draft without another project question. Check
 an ambiguous two-project request asks for the project and writes nothing.
 Record the exact running build and Telegram screenshots showing footer spacing.
 Local adapters do not qualify this live appearance or model interpretation.
+
+## Approved installed commands (#126)
+
+Owner-approved capability list: [contract §5](../pilotq.md#installed-read-commands).
+Before this change, `shell_tool` is disabled and no dynamic tool executes an
+installed read command; `taskq list` and `pwd` have no common dispatch path.
+
+- A126.1: with a protected operator entry, direct `taskq status` and an unambiguous
+  natural-language request return the installed program's actual result through
+  the same mechanism as `pwd`. Ambiguous requests require clarification.
+- A126.2: unknown commands, unapproved argument arrays, absent executables,
+  nonzero exits, timeout and output overflow remain distinguishable failures.
+- A126.3: current entry permissions, project grants, board/root registration,
+  request fencing and the original deadline constrain execution. Output cannot
+  grant rights or select another command. No inherited credential environment.
+- A126.4: CLI and Telegram retain request audit correlation through discovery,
+  dispatch and final delivery. Existing direct-write and TaskQ guards remain.
+
+Retained checks: `approved_command_boundary` protects capability enforcement and
+process limits; `u126_installed_commands_share_frontends` runs real PilotQ with
+fixture Codex/TaskQ and installed fixture commands through CLI and fake Telegram.
+The latter proves wiring and factual subprocess output. A development CLI run
+with real Codex under the subscription login also executed `pwd` and a Russian
+request for `taskq list`: the journal recorded the actual cwd with exit zero for
+`pwd`, and exit one with ``Error: unknown command `list`; use `taskq help` `` from
+installed TaskQ. The answer reported that error rather than inventing a list or
+substituting another tool. Thus command dispatch and failure reporting are
+observed; successful listing with that absent TaskQ subcommand is not claimed.
+The owner then corrected A1 to `taskq status` (answer 6497254373). The
+operator example and retained CLI/Telegram fixture now permit `status`, preserving
+the argv refusal, permission and audit protections (R13, R17, §5, §7).
+On 2026-10-29, real PilotQ with subscription Codex and installed TaskQ 4.6.40
+completed the Russian status request in isolated journal request 8:
+`command_run taskq` recorded `start args=["status"]`, then
+`{"status":"success","exit_code":0}` with empty stderr and actual board output
+(`In work 2 · Waiting for answer 0 · Ready 0`, tasks #127 and #126).
+The final answer reported those observations. Before: request 6 recorded
+`exit_nonzero`, exit 1 for `list`. After: request 8 recorded success for `status`.
+An initial retry (request 7) failed with Codex 401 because the test login had been
+removed; the successful run used the existing host subscription login, then
+removed its temporary copy. No model/API fallback or live service change occurred.
+This run used the executor code from `7da47b9`; the continuation changes only the
+contract, operator example and fixture. Live Telegram remains unqualified; no
+deployment is part of #126.

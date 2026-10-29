@@ -2,6 +2,7 @@
 
 mod builtins;
 mod direct;
+mod commands;
 mod journal;
 mod instructions;
 mod keys;

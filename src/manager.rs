@@ -436,6 +436,7 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
             return Ok(outcome);
         }
     };
+    let command_deadline = Instant::now() + codex.limits.deadline.min(Duration::from_secs(60));
     let mut footer = crate::footer::Footer::default();
     let (thread, model, outcome) = codex.turn(
         if refresh {None} else {r.thread.as_deref()},
@@ -457,6 +458,7 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
                     Err(e) => return (false, format!("the tool-call budget could not be read ({e}); nothing was done")),
                 }
                 let (ok, out) = match tq {
+                    _ if crate::commands::NAMES.contains(&name) => crate::commands::call(d,j,r,name,args,command_deadline,tq),
                     _ if direct::NAMES.contains(&name) => direct::call(d, j, r, name, args),
                     Some(tq) => crate::taskq::call(tq, j, r, name, args),
                     None => (false, "TaskQ is not configured".into()),

@@ -120,3 +120,56 @@ not change the saved choice. Use the operator audit to investigate details.
 `pilotq doctor --json` reports `gh.path`, `gh.version` and the `board_answers` check. The check reads one page of comments from the configured board without writing. A failed read exits nonzero; operator stderr records the command and scrubbed error. `/doctor` reports only check outcomes. Selftest stays offline (§9).
 
 For #127 after release and FRA update, record the exact running source and binary, health, selftest, doctor and journal continuity. Answer a real authorized person's subscribed question through TaskQ CLI. Within one board poll, capture the original Telegram card showing `Answered by <actor>: <text>` with no buttons, then tap an earlier client copy of its button and capture the same receipt. Local fake-adapter checks do not qualify this live evidence (§5, §9).
+### Approved installed read commands (#126)
+
+The installation owner may create `commands.json` beside `keys.json`, mode `0600`.
+There is no chat command for editing this file. Each entry is a read capability:
+review the program and every complete argument array for mutations, secret output,
+file access and subprocess behavior before granting it. Never put secrets in arguments. This list does not sandbox
+an arbitrary executable. A program that changes behavior on upgrade needs review.
+
+Invented configuration (replace executable paths, root and user ID):
+
+```json
+{
+  "taskq": {
+    "description": "List tasks on the registered PilotQ board",
+    "executable": "/opt/taskq/taskq",
+    "args": [["status"]],
+    "cwd": "/srv/pilotq",
+    "project": "pilotq",
+    "board": "taskqorg/pilotq",
+    "users": [123456789]
+  },
+  "pwd": {
+    "description": "Show the approved working directory",
+    "executable": "/bin/pwd",
+    "args": [[]],
+    "cwd": "/srv/pilotq",
+    "project": "pilotq",
+    "board": "taskqorg/pilotq",
+    "users": [123456789]
+  }
+}
+```
+
+The project must already be registered with that exact root and board, and its
+`taskq.json` must still name the board. Configured TaskQ must return a fresh complete
+board snapshot within the same deadline before execution. Users need admission, `chat` and the project
+grant as well as an explicit entry in `users`. `command_list` discovers their
+available commands; `command_run` uses a name and one exact `args` array. Both
+`pilotq ask 'taskq status'` and a clear chat request use this common manager path.
+The manager clarifies ambiguity rather than constructing an unapproved command.
+
+The child inherits no credential environment, uses `/usr/bin:/bin` as PATH and
+uses the installation owner's HOME for installed tools' protected stores. Only
+approved programs may read those stores. No keys are injected by this executor.
+The request retains its five-call budget; execution stops at ten seconds or the
+original manager deadline, and retains at most 16 KiB of output bytes. The result
+separates stdout, stderr, exit code, missing executable, timeout, cancellation and
+output overflow. A nonzero exit is a failure. Output remains untrusted material.
+
+Remove an entry or user from the protected file to revoke the capability; current
+project grants are also checked during execution. Keep a copy of the prior file
+for configuration rollback. No database migration is required. These instructions
+configure an accepted build; they do not authorize installation on the live service.
