@@ -3243,26 +3243,26 @@ fn u119_status_footer_delivery() {
 fn u126_installed_commands_share_frontends() {
     let (d,st)=tq_setup("u126",true);
     let code=FAKE_TOOLS.replace("        spec = {\"calls\": []}",r#"        spec = {"calls": []}
-        if text in ("taskq list", "Покажи список задач установленной командой taskq list"):
-            spec = {"calls": [["command_list", {}], ["command_run", {"command": "taskq", "args": ["list"]}]]}
+        if text in ("taskq status", "Покажи список задач установленной командой taskq status"):
+            spec = {"calls": [["command_list", {}], ["command_run", {"command": "taskq", "args": ["status"]}]]}
         if text == "pwd":
             spec = {"calls": [["command_list", {}], ["command_run", {"command": "pwd", "args": []}]]}"#);
     fs::write(d.join("fake-codex"),code).unwrap();
-    let installed=script(&d,"installed-taskq",r#"[ "$#" = 1 ] && [ "$1" = list ] || exit 2
+    let installed=script(&d,"installed-taskq",r#"[ "$#" = 1 ] && [ "$1" = status ] || exit 2
 [ -z "${GH_TOKEN+x}" ] && [ -z "${TASKQ_ATTEMPT+x}" ] || exit 3
 printf 'fixture task #42 ready\n'"#);
     let root=d.join("root");
     ok(cli(&d,&["projects","add","pilotq",root.to_str().unwrap()]));
     let entry=|bin:&Path,args:Value|json!({"description":"invented read capability","executable":bin,"cwd":root,"project":"pilotq","board":"taskqorg/pilotq","users":[OWNER],"args":args});
-    fs::write(d.join("commands.json"),json!({"taskq":entry(&installed,json!([["list"]])),"pwd":entry(Path::new("/bin/pwd"),json!([[]]))}).to_string()).unwrap();
+    fs::write(d.join("commands.json"),json!({"taskq":entry(&installed,json!([["status"]])),"pwd":entry(Path::new("/bin/pwd"),json!([[]]))}).to_string()).unwrap();
     fs::set_permissions(d.join("commands.json"),fs::Permissions::from_mode(0o600)).unwrap();
-    let result=cli(&d,&["ask","taskq list","--json"]);
+    let result=cli(&d,&["ask","taskq status","--json"]);
     let reply=ok(result);
     assert!(reply["reply"].as_str().unwrap().contains("fixture task #42 ready"),"{reply}");
     let reply=ok(cli(&d,&["ask","pwd","--json"]));
     assert!(reply["reply"].as_str().unwrap().contains(root.to_str().unwrap()),"{reply}");
     let c=spawn(&d,None);
-    push(&st,text(1,OWNER,None,OWNER,"Покажи список задач установленной командой taskq list"));
+    push(&st,text(1,OWNER,None,OWNER,"Покажи список задач установленной командой taskq status"));
     wait("installed command through Telegram",15,||sent_has(&st,"fixture task #42 ready"));
     assert_eq!(query(&d,"SELECT count(DISTINCT front) FROM requests WHERE state='answered'"),2);
     assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE target='command_run taskq' AND result LIKE 'start %'"),2);

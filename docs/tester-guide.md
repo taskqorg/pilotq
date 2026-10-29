@@ -135,7 +135,7 @@ Invented configuration (replace executable paths, root and user ID):
   "taskq": {
     "description": "List tasks on the registered PilotQ board",
     "executable": "/opt/taskq/taskq",
-    "args": [["list"]],
+    "args": [["status"]],
     "cwd": "/srv/pilotq",
     "project": "pilotq",
     "board": "taskqorg/pilotq",
@@ -158,7 +158,7 @@ The project must already be registered with that exact root and board, and its
 board snapshot within the same deadline before execution. Users need admission, `chat` and the project
 grant as well as an explicit entry in `users`. `command_list` discovers their
 available commands; `command_run` uses a name and one exact `args` array. Both
-`pilotq ask 'taskq list'` and a clear chat request use this common manager path.
+`pilotq ask 'taskq status'` and a clear chat request use this common manager path.
 The manager clarifies ambiguity rather than constructing an unapproved command.
 
 The child inherits no credential environment, uses `/usr/bin:/bin` as PATH and
