@@ -285,7 +285,7 @@ fn service(d: &Path, fault: Option<&str>) -> Command {
     c
 }
 
-/// A running `pilotq service run` that is killed and reaped when dropped, so a failed or panicking test leaves no orphan.
+/// An isolated service process group, stopped on drop so CLI children cannot outlive fixture cleanup.
 struct Svc(Child);
 
 impl std::ops::Deref for Svc {
@@ -301,15 +301,24 @@ impl std::ops::DerefMut for Svc {
     }
 }
 
+impl Svc {
+    fn kill(&mut self) -> std::io::Result<()> {
+        // TaskQ reads can still be writing fixture files when the service is killed.
+        let status = Command::new("kill").args(["-KILL", "--", &format!("-{}", self.0.id())]).stderr(Stdio::null()).status()?;
+        if status.success() { Ok(()) } else { self.0.kill() }
+    }
+}
+
 impl Drop for Svc {
     fn drop(&mut self) {
-        let _ = self.0.kill();
+        let _ = self.kill();
         let _ = self.0.wait();
     }
 }
 
 fn spawn(d: &Path, fault: Option<&str>) -> Svc {
-    Svc(service(d, fault).spawn().unwrap())
+    use std::os::unix::process::CommandExt;
+    Svc(service(d, fault).process_group(0).spawn().unwrap())
 }
 
 fn wait(what: &str, secs: u64, mut ok: impl FnMut() -> bool) {
@@ -494,6 +503,28 @@ fn stop(mut c: Svc, d: PathBuf) {
     c.kill().unwrap();
     c.wait().unwrap();
     fs::remove_dir_all(d).unwrap();
+}
+
+// §9 candidate gate: stopping a fixture must also stop a CLI child before removing its install.
+#[test]
+fn fixture_stop_reaps_cli_writers() {
+    use std::os::unix::process::CommandExt;
+    let mut command = Command::new("sh");
+    command.args(["-c", "sleep 30 & echo ready; wait"]).process_group(0).stdout(Stdio::piped());
+    let mut child = Svc(command.spawn().unwrap());
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    let mut ready = String::new();
+    output.read_line(&mut ready).unwrap();
+    assert_eq!(ready, "ready\n");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        output.read_to_end(&mut bytes).unwrap();
+        let _ = tx.send(());
+    });
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert!(rx.recv_timeout(Duration::from_secs(2)).is_ok(), "CLI child retained the fixture output after service stop");
 }
 
 // U01: a question and a follow-up in one DM. The follow-up resumes the same Codex thread; each request ends answered with a
