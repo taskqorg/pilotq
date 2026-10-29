@@ -36,7 +36,7 @@ fn input(kind: &UpdateKind) -> Option<Input> {
         let m = q.message.as_ref()?.regular_message()?;
         let data = q.data.as_deref()?;
         let (kind,k) = if let Some(k)=data.strip_prefix("answer:") { ("button",k) }
-            else if data.starts_with("plan:") || data.starts_with("choice:") { ("action",data) }
+            else if data.starts_with("plan:") || data.starts_with("cancel:") || data.starts_with("choice:") { ("action",data) }
             else { return None };
         return Some(Input { callback: Some(q.id.0.clone()),
             media_group: None,
@@ -459,6 +459,14 @@ async fn send(bot: &Bot, j: &Shared, d: &Delivery) -> Sent {
         let text: String = d.text.chars().take(200).collect();
         return match raw(bot,j,"answerCallbackQuery",json!({"callback_query_id":callback,"text":text})).await {
             Ok(_) => Sent::Ok(0), Err(e) => e,
+        };
+    }
+    // #110: a closed draft display keeps its text and loses its buttons; a display never delivered needs no edit
+    if d.kind == "draft_closed" {
+        let Some(m) = d.edit else { return Sent::Ok(0) };
+        return match raw(bot, j, "editMessageReplyMarkup", json!({"chat_id":d.chat,"message_id":m,"reply_markup":{"inline_keyboard":[]}})).await {
+            Err(e @ Sent::Retry { .. }) => e,
+            _ => Sent::Ok(m),
         };
     }
     if d.kind == "reaction" {

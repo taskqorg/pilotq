@@ -198,9 +198,9 @@ Final answers first use sendRichMessage for content within 32768 UTF-16 units. O
 
 | Tool | Grants | Effect |
 |---|---|---|
-| `task_plan` | project scope | Updates the conversation's draft with an immutable revision: one to three tickets, each a title, goal, acceptance and scope. No board write |
+| `task_plan` | project scope | Revises the conversation's one open draft with an immutable revision: one to three tickets, each a title, goal, acceptance and scope. No board write |
 | `discussion_choices` | `chat` | Saves a question with two to four numbered discussion answers; no board write or launch authorization |
-| `task_run_plan` | `taskq` and project scope | Files every ticket of the named revision held, reads each back, then starts them |
+| `task_run_plan` | `taskq` and project scope | Authorizes the current draft's latest revision; after the turn the service files every ticket held, reads each back, then starts them |
 | `task_answer` | `taskq` and project scope | Forwards the person’s answer to a subscribed question at its fresh revision, using the durable answer path |
 | `discussion_answer` | `chat` | Saves the person’s free-text answer to the current discussion card; no board write |
 | `task_status` | project scope | Fresh board read of one task by number or a registered board issue URL. Never creates |
@@ -228,10 +228,12 @@ After a confirmed TaskQ write, persist the selected answer and the edit obligati
 
 **Owner, task #93 (option 1):** discussion develops one draft until launch. Additions update that draft; internal revisions are authorization tokens, never presented as new plans. A new independent draft starts only on an explicit request. Once launch is authorized, later changes are discussed separately and cannot change admitted tickets. Text requests remain supported alongside buttons (R13).
 
+**Owner, task #110:** this replaces #93's explicit separate draft. A conversation has one open draft. Every follow-up revises it, and the draft display carries no number. A new draft starts only after the open one is launched or cancelled. A plan for another project waits until then. Each display has a Launch and a Cancel button. Cancel closes the draft without a board effect or a model call. A newer display, a launch or a cancel removes the buttons of earlier displays. A text launch always means the current draft. For a button or a text launch, the service files and starts the tickets after the turn, outside the model deadline. The reply comes from receipts, not model prose: it lists each filed task with its board state read back at filing or start (held, ready or doing).
+
 - Discussion has no board effect. Saving a draft records its stable identity, project and a new immutable revision. Show the complete current draft and clearly mark it as the updated draft; an earlier message may remain visible but its launch button is stale.
 - A launch button belongs to the displayed revision, saved project, originating conversation generation and the person who requested that display. Recheck current admission and TaskQ/project grants at dispatch. A foreign, forwarded, reset, superseded or repeated press cannot authorize a different revision or create another run. Accepted launches use the same `task_run_plan` boundary, stable operation IDs, readback and audit as text.
 - Concrete discussion questions offer two to four numbered choices, preserved in the message, buttons and recorded answer. Choosing one submits that answer to the conversation; it never authorizes launch. Launch remains a separate button or explicit later text request. Old or already answered choice cards are refused.
-- Example: “Plan reply improvements”, “also keep line breaks”, “and add buttons” produces one draft with three internal revisions, no board tickets. The latest display has “Run plan”; pressing it launches only that display. Pressing either an earlier display or the same button again starts nothing new. “Make a separate plan for images” creates a distinct draft. After launch, “also support audio” starts a separate discussion, preserving the launched scope.
+- Example: “Plan reply improvements”, “also keep line breaks”, “and add buttons” produces one draft with three internal revisions, no board tickets. The latest display has “Run plan”; pressing it launches only that display. Pressing either an earlier display or the same button again starts nothing new. Under #110 a separate idea waits for launch or Cancel, then starts a new draft. After launch, “also support audio” starts a separate discussion, preserving the launched scope.
 
 ### Direct actions, keys and project switching
 

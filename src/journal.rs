@@ -124,6 +124,13 @@ fn accept_card(tx: &Connection, i: &Input, sender: i64, session: &str, request: 
             if !has(tx,sender,"taskq")? || !(has(tx,sender,"projects")? || has(tx,sender,&format!("project:{project}"))?) { return Err("missing taskq/project grant".into()); }
             ("launch",format!("Run displayed plan ({project})"))
         }
+        // #110: cancelling closes the open draft; no board effect, so no TaskQ grant is needed.
+        ["cancel",_] => {
+            let plan=plan.ok_or("not a plan button")?;
+            let open:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM plans p WHERE id=?1 AND revision=(SELECT max(revision) FROM plans WHERE session=?2) AND NOT EXISTS(SELECT 1 FROM plan_runs WHERE plan_id=p.id))",params![plan,session],|x|x.get(0)).map_err(e)?;
+            if !open { return Err("superseded or launched plan".into()); }
+            ("cancel","Cancel displayed plan".to_string())
+        }
         ["choice",_,k] => {
             let current:bool=tx.query_row("SELECT NOT EXISTS(SELECT 1 FROM cards c JOIN requests q ON q.id=c.request_id WHERE q.session=?1 AND c.id>?2)",params![session,id],|x|x.get(0)).map_err(e)?;
             if !current { return Err("superseded question".into()); }
@@ -245,6 +252,15 @@ fn notice(tx: &Connection, request: i64, chat: i64, topic: Option<i64>, kind: &s
     )
     .map(drop)
     .map_err(|e| e.to_string())
+}
+
+/// #110: an earlier draft display, or one whose draft was launched or cancelled, loses its buttons; only the current one stays
+/// actionable. The edit target resolves at delivery, after the display itself was sent.
+fn close_drafts(tx: &Connection, session: &str, request: i64, at: i64) -> Result<(), String> {
+    tx.execute("INSERT INTO outbox(request_id,chat,topic,text,next_at,kind,revision)
+        SELECT ?2,q.chat,q.topic,'',?3,'draft_closed',c.id FROM cards c JOIN requests q ON q.id=c.request_id JOIN plans p ON p.id=c.plan_id
+        WHERE q.session=?1 AND q.front='telegram' AND (p.revision<(SELECT max(revision) FROM plans WHERE session=?1) OR EXISTS(SELECT 1 FROM plan_runs x JOIN plans y ON y.id=x.plan_id WHERE y.draft=p.draft))
+        AND NOT EXISTS(SELECT 1 FROM outbox o WHERE o.kind='draft_closed' AND o.revision=c.id)", params![session, request, at]).map(drop).map_err(|e| e.to_string())
 }
 
 /// What a task in `state` waits for, in its status message (L01: waiting has a reason, never a hung warning).
@@ -922,7 +938,9 @@ impl Journal {
                         AND s.kind='status' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
                         WHEN kind='choice_answered' THEN o.reply_to
                         WHEN kind='question_answered' THEN (SELECT s.sent_message FROM outbox s WHERE s.task=o.task AND s.project=o.project AND s.chat=o.chat AND s.topic IS o.topic
-                        AND s.kind='question' AND s.revision=o.revision AND s.state='delivered' ORDER BY s.id DESC LIMIT 1) END, kind {heads} AND next_at<=?1 AND coalesce((SELECT value FROM meta WHERE key='telegram-cooldown:' || o.chat),0)<=?1 ORDER BY (kind='reaction') DESC,id LIMIT 1"
+                        AND s.kind='question' AND s.revision=o.revision AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
+                        WHEN kind='draft_closed' THEN (SELECT s.sent_message FROM outbox s JOIN cards c ON c.request_id=s.request_id WHERE c.id=o.revision
+                        AND s.kind IN ('rich','rich_part') AND s.state='delivered' ORDER BY s.id DESC LIMIT 1) END, kind {heads} AND next_at<=?1 AND coalesce((SELECT value FROM meta WHERE key='telegram-cooldown:' || o.chat),0)<=?1 ORDER BY (kind='reaction') DESC,id LIMIT 1"
                 ),
                 [now],
                 |r| Ok(Delivery { id: r.get(0)?, chat: r.get(1)?, topic: r.get(2)?, reply_to: r.get(3)?, html: r.get(4)?, text: r.get(5)?, attempts: r.get(6)?, edit: r.get(7)?, kind: r.get(8)?, buttons: vec![] }),
@@ -1244,7 +1262,7 @@ impl Journal {
         let ids: Vec<i64> = {
             let mut q = tx
                 .prepare(
-                    "SELECT min(id) FROM requests r WHERE state='queued' AND front='telegram' AND kind IN ('text','image','voice','choice','launch')
+                    "SELECT min(id) FROM requests r WHERE state='queued' AND front='telegram' AND kind IN ('text','image','voice','choice','launch','cancel')
                     AND NOT EXISTS (SELECT 1 FROM requests p WHERE p.session=r.session AND p.state='running') GROUP BY session ORDER BY 1 LIMIT ?1",
                 )
                 .map_err(|e| e.to_string())?;
@@ -1464,13 +1482,14 @@ impl Journal {
             return Ok(false);
         }
         if state == "answered" {
-            let plan: Option<(i64,i64,String,String)> = tx.query_row(
-                "SELECT id,draft,project,tickets FROM plans WHERE request_id=?1 ORDER BY revision DESC LIMIT 1", [r.request],
-                |x|Ok((x.get(0)?,x.get(1)?,x.get(2)?,x.get(3)?))).optional().map_err(e)?;
-            if let Some((plan,draft,project,tickets)) = plan {
+            let plan: Option<(i64,String,String)> = tx.query_row(
+                "SELECT id,project,tickets FROM plans WHERE request_id=?1 ORDER BY revision DESC LIMIT 1", [r.request],
+                |x|Ok((x.get(0)?,x.get(1)?,x.get(2)?))).optional().map_err(e)?;
+            if let Some((plan,project,tickets)) = plan {
                 tx.execute("INSERT INTO cards(request_id,generation,plan_id) VALUES (?1,?2,?3) ON CONFLICT(request_id) DO UPDATE SET plan_id=excluded.plan_id",params![r.request,r.generation,plan]).map_err(e)?;
                 let ru = language.as_deref().unwrap_or("en").starts_with("ru");
-                text = format!("{} **{}** · {}\n{}", if ru {"Черновик сохранён локально."} else {"Draft saved locally."}, if ru {format!("Черновик {draft}")} else {format!("Draft {draft}")}, project,
+                // #110: one unnumbered draft per conversation; internal IDs never read as a new plan
+                text = format!("{} **{}** · {}\n{}", if ru {"Черновик сохранён локально."} else {"Draft saved locally."}, if ru {"Черновик плана"} else {"Plan draft"}, project,
                     if ru {"Актуальный вариант; на доске ничего не создано."} else {"Current draft; nothing filed on the board."});
                 let tickets: Value = serde_json::from_str(&tickets).map_err(|e|e.to_string())?;
                 for (n,t) in tickets.as_array().into_iter().flatten().enumerate() {
@@ -1479,7 +1498,7 @@ impl Journal {
                         text += &format!("\n- {}",a.as_str().unwrap_or(""));
                     }
                 }
-                text += if ru {"\n\nЗапустите кнопкой «Запустить план» или попросите запустить этот план."} else {"\n\nUse Run plan or ask to run this plan."};
+                text += if ru {"\n\nЗапустите кнопкой «Запустить план» или попросите запустить этот план; «Отменить» закрывает черновик."} else {"\n\nUse Run plan or ask to run this plan; Cancel closes the draft."};
             }
             let question: Option<(String,String)> = tx.query_row("SELECT question,options FROM cards WHERE request_id=?1 AND question IS NOT NULL",[r.request],|x|Ok((x.get(0)?,x.get(1)?))).optional().map_err(e)?;
             if let Some((question,options)) = question {
@@ -1490,6 +1509,7 @@ impl Journal {
             }
         }
         tx.execute("UPDATE requests SET state=?2, reply=?3, error=?4 WHERE id=?1", params![r.request, state, text, error]).map_err(e)?;
+        close_drafts(&tx, &r.session, r.request, at)?;
         // a thread from before /new never attaches to the new conversation generation
         tx.execute("UPDATE conversations SET thread=coalesce(?3, thread) WHERE session=?1 AND generation=?2", params![r.session, r.generation, thread]).map_err(e)?;
         if thread.is_some() {
@@ -1584,9 +1604,11 @@ impl Journal {
         tx.commit().map_err(|e| e.to_string())
     }
 
-    /// Immutable plan target; a conversation switch cannot retarget approved work (§5).
-    pub fn plan_target(&self, session: &str, revision: i64) -> Result<(String, String, String), String> {
-        self.0.query_row("SELECT project, board, root FROM plans WHERE session=?1 AND revision=?2", params![session, revision], |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?))).map_err(|_| "this conversation has no saved plan at that revision; nothing was filed".into())
+    /// Immutable plan target; a conversation switch cannot retarget approved work (§5). Without a revision, the current draft's
+    /// latest one (#110: a text launch maps to the current draft only).
+    pub fn plan_target(&self, session: &str, revision: Option<i64>) -> Result<(i64, String, String, String), String> {
+        self.0.query_row("SELECT revision, project, board, root FROM plans WHERE session=?1 AND revision=coalesce(?2,(SELECT max(revision) FROM plans WHERE session=?1))",
+            params![session, revision], |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?, x.get(3)?))).map_err(|_| "this conversation has no saved plan at that revision; nothing was filed".into())
     }
 
     pub fn task_target_matches(&self, project: &str, task: i64, board: &str, root: &str) -> Result<bool, String> {
@@ -1638,20 +1660,20 @@ impl Journal {
     /// Saves the next plan revision of the run's conversation while its fence holds (§ 5 `task_plan`). No board write.
     #[cfg(test)]
     pub fn save_plan(&self, r: &Run, tickets: &Value, project: &str, board: &str, root: &str, at: i64) -> Result<i64, String> {
-        self.save_draft(r, tickets, project, board, root, false, at)
+        self.save_draft(r, tickets, project, board, root, at)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn save_draft(&self, r: &Run, tickets: &Value, project: &str, board: &str, root: &str, new_plan: bool, at: i64) -> Result<i64, String> {
+    /// #110: one open draft per conversation. Every save revises it until it is launched or cancelled; only then does a new draft start.
+    pub fn save_draft(&self, r: &Run, tickets: &Value, project: &str, board: &str, root: &str, at: i64) -> Result<i64, String> {
         if self.fenced(r)? { return Err("this run was stopped; nothing was saved".into()); }
         let tx = self.0.unchecked_transaction().map_err(|e|e.to_string())?;
         let previous: Option<(i64,String,String,String,bool)> = tx.query_row(
             "SELECT draft,project,board,root,EXISTS(SELECT 1 FROM plan_runs x JOIN plans p ON p.id=x.plan_id WHERE p.draft=plans.draft) FROM plans WHERE session=?1 ORDER BY revision DESC LIMIT 1",
             [&r.session], |x| Ok((x.get(0)?,x.get(1)?,x.get(2)?,x.get(3)?,x.get(4)?))).optional().map_err(|e|e.to_string())?;
-        if !new_plan && previous.as_ref().is_some_and(|(_,p,b,rt,started)| !started && (p!=project || b!=board || rt!=root)) {
-            return Err("the draft target is bound; ask for a separate plan to change projects".into());
+        if let Some((_,p,..)) = previous.as_ref().filter(|(_,p,b,rt,closed)| !closed && (p!=project || b!=board || rt!=root)) {
+            return Err(format!("the open draft targets {p}; launch or cancel it before planning another project. Nothing was saved."));
         }
-        let draft = previous.filter(|(_,_,_,_,started)| !new_plan && !started).map(|p|p.0);
+        let draft = previous.filter(|(_,_,_,_,closed)| !closed).map(|p|p.0);
         let revision = tx.query_row(
             "INSERT INTO plans(session,revision,request_id,tickets,project,board,root,at,draft) SELECT ?1,coalesce(max(revision),0)+1,?2,?3,?4,?5,?6,?7,?8 FROM plans WHERE session=?1 RETURNING revision",
             params![r.session,r.request,tickets.to_string(),project,board,root,at,draft], |x|x.get::<_,i64>(0)).map_err(|e|e.to_string())?;
@@ -1731,7 +1753,11 @@ impl Journal {
             [delivery],|x|Ok((x.get(0)?,x.get(1)?,x.get(2)?,x.get(3)?))).optional().map_err(|e|e.to_string())?;
         let mut buttons=vec![];
         if let Some((id,plan,options,language))=card {
-            if plan.is_some() { buttons.push((format!("plan:{id}"),if language.as_deref().unwrap_or("en").starts_with("ru") {"Запустить план"} else {"Run plan"}.into())); }
+            if plan.is_some() {
+                let ru=language.as_deref().unwrap_or("en").starts_with("ru");
+                buttons.push((format!("plan:{id}"),if ru {"Запустить план"} else {"Run plan"}.into()));
+                buttons.push((format!("cancel:{id}"),if ru {"Отменить"} else {"Cancel"}.into()));
+            }
             if let Some(options)=options {
                 for (i,option) in serde_json::from_str::<Vec<String>>(&options).map_err(|e|e.to_string())?.into_iter().enumerate() {
                     buttons.push((format!("choice:{id}:{}",i+1),format!("{}. {option}",i+1)));
@@ -1750,38 +1776,76 @@ impl Journal {
             .map(Some).ok_or_else(||"the displayed plan belongs to an earlier conversation; nothing was launched".into())
     }
 
-    /// §12: factual localized button outcome from receipts; no model call or internal revision in the reply.
-    pub fn launch_reply(&self, r: &Run) -> Result<String,String> {
-        let (id,state,language):(i64,String,Option<String>)=self.0.query_row(
-            "SELECT x.id,x.state,q.language FROM cards c JOIN plan_runs x ON x.plan_id=c.plan_id JOIN requests q ON q.id=c.used_request WHERE q.id=?1",[r.request],
-            |x|Ok((x.get(0)?,x.get(1)?,x.get(2)?))).map_err(|e|e.to_string())?;
+    /// §12 / #110: factual localized launch outcome from receipts, for the button and the text launch alike: each filed task with
+    /// its board state read back at filing or start (held, ready or doing). No model prose or internal revision. None when this
+    /// request authorized no plan run.
+    pub fn launch_reply(&self, r: &Run) -> Result<Option<String>,String> {
+        let row:Option<(i64,String,Option<String>)>=self.0.query_row(
+            "SELECT x.id,x.state,q.language FROM plan_runs x JOIN requests q ON q.id=x.request_id WHERE q.id=?1 AND x.state<>'cancelled'",[r.request],
+            |x|Ok((x.get(0)?,x.get(1)?,x.get(2)?))).optional().map_err(|e|e.to_string())?;
+        let Some((id,state,language))=row else { return Ok(None) };
         let ru=language.as_deref().unwrap_or("en").starts_with("ru");
         let mut text=match (ru,state.as_str()) {
-            (true,"started")=>"Задачи созданы и поставлены в очередь к исполнителю; следите за сообщениями задач.",
-            (false,"started")=>"Tasks created and queued for a worker; follow their updates.",
-            (true,"creating")=>"Запуск ещё не завершён; PilotQ повторит отправку.",
-            (false,"creating")=>"Launch is pending; PilotQ will retry submission.",
-            (true,_)=>"Запуск не завершён; попросите проверить план.",
-            (false,_)=>"Launch did not finish; ask to check the plan.",
+            (true,"started")=>"План отправлен на доску. Состояние задач:",
+            (false,"started")=>"Plan sent to the board. Task states:",
+            (true,"creating")=>"Отправка ещё не завершена; PilotQ повторит те же операции. Уже на доске:",
+            (false,"creating")=>"Launch is pending; PilotQ retries the same operations. On the board so far:",
+            (true,_)=>"Запуск не завершён; попросите проверить план. Уже на доске:",
+            (false,_)=>"Launch did not finish; ask to check the plan. On the board so far:",
         }.to_string();
         let run=self.plan_run(id)?;
+        let mut listed=false;
         for ticket in run.tickets {
-            if let Some(n)=ticket.task {
-                let status=match (ru,ticket.started) { (true,true)=>"в очереди к исполнителю",(true,false)=>"создана, удерживается",(false,true)=>"queued for a worker",(false,false)=>"filed held" };
-                text+=&format!("\n- {}: {status}",crate::taskq::task_link(&run.board,n,ticket.plan["title"].as_str()));
-            }
+            let Some(n)=ticket.task else { continue };
+            let board_state=if ticket.started {
+                self.0.query_row("SELECT result FROM audit_events WHERE request_id=?1 AND kind='task' AND target=?2 ORDER BY id DESC LIMIT 1",
+                    params![run.request,format!("{} start #{n}",run.board)],|x|x.get::<_,String>(0)).optional().map_err(|e|e.to_string())?.unwrap_or_default()
+            } else { "held".into() };
+            let status=match (ru,board_state.as_str()) {
+                (true,"held")=>"создана, удерживается, не начата",
+                (true,"ready")=>"в очереди: ждёт свободного исполнителя",
+                (true,"doing")=>"исполнитель работает",
+                (true,_)=>"состояние неизвестно",
+                (false,"ready")=>"ready: queued for a worker",
+                (false,s)=>describe(s),
+            };
+            text+=&format!("\n- {}: {status}",crate::taskq::task_link(&run.board,n,ticket.plan["title"].as_str()));
+            listed=true;
         }
-        Ok(text)
+        if !listed { text+=if ru {" ничего."} else {" none."}; }
+        Ok(Some(text))
+    }
+
+    /// #110: the plan run `request` authorized itself, if any; a repeated launch of an admitted draft authorizes none.
+    pub fn launch_run(&self, request: i64) -> Result<Option<i64>,String> {
+        self.0.query_row("SELECT id FROM plan_runs WHERE request_id=?1 AND state<>'cancelled'",[request],|x|x.get(0)).optional().map_err(|e|e.to_string())
+    }
+
+    /// #110: the Cancel button closes the open draft it was shown with. A cancelled run row marks the draft closed, files nothing
+    /// and makes any later launch of it a refusal. None when this request is not a cancel.
+    pub fn cancel_draft(&self, r: &Run, at: i64) -> Result<Option<String>,String> {
+        let cancel:bool=self.0.query_row("SELECT kind='cancel' FROM requests WHERE id=?1",[r.request],|x|x.get(0)).map_err(|e|e.to_string())?;
+        if !cancel { return Ok(None); }
+        let tx=self.0.unchecked_transaction().map_err(|e|e.to_string())?;
+        let plan:Option<(i64,Option<String>)>=tx.query_row("SELECT p.id,q.language FROM cards c JOIN plans p ON p.id=c.plan_id JOIN requests q ON q.id=c.used_request JOIN requests source ON source.id=c.request_id
+            WHERE q.id=?1 AND c.generation=?2 AND source.sender=q.sender AND source.session=?3
+            AND p.revision=(SELECT max(revision) FROM plans WHERE session=?3) AND NOT EXISTS(SELECT 1 FROM plan_runs WHERE plan_id=p.id)",
+            params![r.request,r.generation,r.session],|x|Ok((x.get(0)?,x.get(1)?))).optional().map_err(|e|e.to_string())?;
+        let Some((plan,language))=plan else { return Err("the displayed plan was superseded, launched or reset; nothing was cancelled".into()) };
+        tx.execute("INSERT INTO plan_runs(plan_id, request_id, actor, state, next_at, at) VALUES (?1,?2,?3,'cancelled',0,?4)",params![plan,r.request,self.sender(r.request)?,at]).map_err(|e|e.to_string())?;
+        tx.commit().map_err(|e|e.to_string())?;
+        Ok(Some(if language.as_deref().unwrap_or("en").starts_with("ru") {"Черновик отменён; на доске ничего не создано."} else {"Draft cancelled; nothing was filed on the board."}.into()))
     }
 
     pub fn draft_context(&self, r: &Run) -> Result<Value,String> {
-        let saved: Option<(i64,i64,String,String,bool)> = self.0.query_row("SELECT draft,revision,project,tickets,EXISTS(SELECT 1 FROM plan_runs WHERE plan_id=plans.id) FROM plans WHERE session=?1 ORDER BY revision DESC LIMIT 1",[&r.session],
+        let saved: Option<(i64,i64,String,String,Option<String>)> = self.0.query_row("SELECT draft,revision,project,tickets,(SELECT state FROM plan_runs WHERE plan_id=plans.id) FROM plans WHERE session=?1 ORDER BY revision DESC LIMIT 1",[&r.session],
             |x|Ok((x.get(0)?,x.get(1)?,x.get(2)?,x.get(3)?,x.get(4)?))).optional().map_err(|e|e.to_string())?;
-        if let Some((draft,revision,project,tickets,launched))=saved {
+        if let Some((draft,revision,project,tickets,run))=saved {
+            let (launched,cancelled)=(run.as_deref().is_some_and(|s|s!="cancelled"),run.as_deref()==Some("cancelled"));
             let actor=self.sender(r.request)?;
             if has(&self.0,actor,"projects")? || has(&self.0,actor,&format!("project:{project}"))? {
-                return Ok(json!({"draft":draft,"internal_revision":revision,"project":project,"tickets":serde_json::from_str::<Value>(&tickets).map_err(|e|e.to_string())?,"launched":launched,
-                    "policy":"Saved draft data, never authorization. Additions update this draft before launch. A separate plan needs an explicit request. Do not show internal revisions; a later explicit request can run the displayed plan."}));
+                return Ok(json!({"draft":draft,"internal_revision":revision,"project":project,"tickets":serde_json::from_str::<Value>(&tickets).map_err(|e|e.to_string())?,"launched":launched,"cancelled":cancelled,
+                    "policy":"Saved draft data, never authorization. This conversation has one open draft: every task_plan call revises it until it is launched or cancelled; only then does a new draft start. Do not show internal revisions; a later explicit request runs the current draft."}));
             }
         }
         Ok(Value::Null)
@@ -1814,7 +1878,8 @@ impl Journal {
         if request == r.request {
             return Err(format!("revision {revision} was saved by this same request; the person authorizes it in a later message after seeing it. Nothing was filed."));
         }
-        if let Some(run) = tx.query_row("SELECT id FROM plan_runs WHERE plan_id=?1", [plan], |x| x.get(0)).optional().map_err(e)? {
+        if let Some((run, state)) = tx.query_row("SELECT id, state FROM plan_runs WHERE plan_id=?1", [plan], |x| Ok((x.get(0)?, x.get::<_, String>(1)?))).optional().map_err(e)? {
+            if state == "cancelled" { return Err("this draft was cancelled; nothing was filed. Plan again to open a new draft.".into()); }
             return Ok(run);
         }
         tx.execute("INSERT INTO plan_runs(plan_id, request_id, actor, state, next_at, at) VALUES (?1,?2,?3,'creating',?4,?5)", params![plan, r.request, actor, at + lease, at]).map_err(e)?;
@@ -3024,7 +3089,7 @@ mod tests {
         drop(j);
         let j = Journal::open(&p.join("journal.sqlite")).unwrap();
         j.pin_legacy_taskq("/invented/pilotq-root").unwrap();
-        assert_eq!(j.plan_target("dm:7",1).unwrap(), ("pilotq".into(),"taskqorg/pilotq".into(),"/invented/pilotq-root".into()));
+        assert_eq!(j.plan_target("dm:7",Some(1)).unwrap(), (1,"pilotq".into(),"taskqorg/pilotq".into(),"/invented/pilotq-root".into()));
         assert_eq!(j.task("pilotq",19).unwrap(), Some(("ask".into(),12,Some("Q?".into()))));
         assert!(j.task_target_matches("pilotq",19,"taskqorg/pilotq","/invented/pilotq-root").unwrap());
         assert_eq!(count(&j, "SELECT count(*) FROM outbox WHERE project='pilotq' AND task=19 AND kind='question'"),1);
@@ -3276,10 +3341,10 @@ mod tests {
         j.filed(&run,1,19,100,4).unwrap();
         j.started(&run,1,19,"ready",4).unwrap();
         j.run_outcome(&run,"started",None,None,0,4).unwrap();
-        let reply=j.launch_reply(&launch).unwrap();
+        let reply=j.launch_reply(&launch).unwrap().unwrap();
         assert!(reply.contains("queued for a worker") && !reply.contains("started") && reply.contains("GitHub · pilotq#19 · Reply improvements"),"{reply}");
         j.0.execute("UPDATE requests SET language='ru' WHERE id=?1",[launch.request]).unwrap();
-        let reply=j.launch_reply(&launch).unwrap();
+        let reply=j.launch_reply(&launch).unwrap().unwrap();
         assert!(reply.contains("в очеред") && !reply.contains("запущен") && reply.contains("GitHub · pilotq#19 · Reply improvements"),"{reply}");
         drop(j); let _=std::fs::remove_dir_all(p);
     }
@@ -3402,14 +3467,14 @@ mod tests {
         j.finish(&r,None,None,&Outcome::Answered("Compact chosen".into()),17).unwrap();
         j.admit(&[(15,input(7,7,None,buttons[0].1,stale))],18).unwrap();
         assert_eq!(j.request(15).unwrap().0,"failed","text answer consumes the same question");
-        // Explicit independent idea and later post-launch updates never reuse the admitted draft identity.
+        // #110 replaces #93's explicit separate draft: one open draft per conversation; post-launch updates never reuse the admitted one.
         let r=j.ask(7,"a separate plan",14).unwrap();
-        j.save_draft(&r,&json!([{"title":"Images"}]),"pilotq","taskqorg/pilotq","",true,14).unwrap();
+        j.save_draft(&r,&json!([{"title":"Images"}]),"pilotq","taskqorg/pilotq","",14).unwrap();
         let first=count(&j,"SELECT draft FROM plans ORDER BY id DESC LIMIT 1");
         let separate=j.ask(7,"make a separate plan for docs",15).unwrap();
-        j.save_draft(&separate,&json!([{"title":"Docs"}]),"pilotq","taskqorg/pilotq","",true,15).unwrap();
+        j.save_draft(&separate,&json!([{"title":"Docs"}]),"pilotq","taskqorg/pilotq","",15).unwrap();
         let second=count(&j,"SELECT draft FROM plans ORDER BY id DESC LIMIT 1");
-        assert_ne!(first,second,"explicit new idea separates an unlaunched draft");
+        assert_eq!(first,second,"#110: the open draft is revised, not forked");
         let run=j.ask(7,"run it",16).unwrap();
         j.authorize(&run,2,7,120,16).unwrap();
         let change=j.ask(7,"also audio",16).unwrap();

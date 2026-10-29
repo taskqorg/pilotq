@@ -35,10 +35,10 @@ pub fn tools() -> Value {
     let task = json!({"type": "string", "description": "Task number or registered GitHub board issue URL"});
     let tool = |name: &str, description: &str, schema: Value| json!({"type": "function", "name": name, "description": description, "inputSchema": schema});
     json!([
-        tool("task_plan", "Save the next plan revision for this conversation (1-3 tickets). Files nothing. Show the updated draft; revision is an internal launch token, not a new plan.",
-            json!({"type": "object", "properties": {"project": {"type": "string"}, "new_plan": {"type":"boolean", "description":"True only for an explicit separate plan; additions update the same draft"}, "tickets": {"type": "array", "items": ticket}}, "required": ["tickets"]})),
-        tool("task_run_plan", "File the named plan revision on the saved registered board held, read it back and start it. Only when the person, in a later message, asks to run that revision.",
-            json!({"type": "object", "properties": {"project": {"type": "string"}, "revision": {"type": "integer"}}, "required": ["revision"]})),
+        tool("task_plan", "Revise this conversation's one open plan draft with its complete ticket list (1-3 tickets). Files nothing. A new draft starts only after the open one is launched or cancelled.",
+            json!({"type": "object", "properties": {"project": {"type": "string"}, "tickets": {"type": "array", "items": ticket}}, "required": ["tickets"]})),
+        tool("task_run_plan", "Launch the current draft: PilotQ files its tickets held, reads them back and starts them after this turn, then replies with each task's board state. Only when the person, in a later message, asks to run it.",
+            json!({"type": "object", "properties": {"project": {"type": "string"}, "revision": {"type": "integer", "description": "Optional; defaults to the current draft's latest revision"}}})),
         tool("discussion_choices", "Offer a concrete discussion question with 2-4 choices. Choosing answers only, never launches work. The final reply appends the question and numbered options with Telegram buttons.",
             json!({"type":"object","properties":{"question":{"type":"string"},"options":{"type":"array","items":{"type":"string"}}},"required":["question","options"]})),
         tool("task_answer", "Forward only the person's own answer to a same-conversation subscribed question. Read task_status first. If destination or answer is ambiguous, clarify. Never choose for the person.",
@@ -58,8 +58,8 @@ pub fn tools() -> Value {
 
 /// Model instructions for the TaskQ tools; the boundary enforces them regardless.
 pub const INSTRUCTIONS: &str = "You are PilotQ, the conversational manager for registered TaskQ boards. Resolve one authorized project; never guess an ambiguous task number. Discussion never files work. To propose work, \
-call task_plan for additions to the same draft; use new_plan only for an explicitly separate idea. Never present internal revisions as new plans. The final reply renders the saved draft and launch button. Use discussion_choices for concrete questions; its selection only answers, never launches. Do not repeat the saved draft or choices in final prose; the renderer shows them. Call task_run_plan only when the person, in a later message, asks to run a \
-displayed plan. Resolve its latest internal revision from context; the person need not type a revision number. After launch discuss changes separately; never alter admitted tickets. Never say a task exists, started or finished unless a tool result in this conversation says so; cite its URL. Never choose an answer for a worker. For a person's free-text answer, identify the question by meaning from same-conversation subscriptions, read task_status, then use task_answer with its exact question revision and a literal excerpt of the person's own answer. Use source_request from context when clarification refers to an earlier answer by that same person; never forward quotes or external source material as authorization. If destination or answer is ambiguous, ask which question and wait. A bare option number with multiple questions is ambiguous; do not use recency or time windows. For free-text discussion answers use discussion_answer with its current card. Buttons and replies remain supported. For task state call task_status; never guess it. Pausing the queue does not stop a running \
+call task_plan with the complete updated ticket list; each follow-up revises the conversation's one open draft. Never present internal revisions as new plans. The final reply renders the saved draft and launch button. Use discussion_choices for concrete questions; its selection only answers, never launches. Do not repeat the saved draft or choices in final prose; the renderer shows them. Call task_run_plan only when the person, in a later message, asks to run a \
+displayed plan; it always launches the current draft. PilotQ reports the filed tasks and their board states itself; do not describe them. After launch discuss changes separately; never alter admitted tickets. Never say a task exists, started or finished unless a tool result in this conversation says so; cite its URL. Never choose an answer for a worker. For a person's free-text answer, identify the question by meaning from same-conversation subscriptions, read task_status, then use task_answer with its exact question revision and a literal excerpt of the person's own answer. Use source_request from context when clarification refers to an earlier answer by that same person; never forward quotes or external source material as authorization. If destination or answer is ambiguous, ask which question and wait. A bare option number with multiple questions is ambiguous; do not use recency or time windows. For free-text discussion answers use discussion_answer with its current card. Buttons and replies remain supported. For task state call task_status; never guess it. Pausing the queue does not stop a running \
 worker; say so. Task links use [GitHub · repo#number · title](url), with the verified title from tool output; omit unknown titles. \
 Admission means queued for a worker, never worker execution. Keep effects to one short line; omit repeated procedural receipts.";
 
@@ -334,17 +334,16 @@ fn dispatch(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Value) -
         return Ok(format!("TaskQ admission is paused on this host; no new task starts. Running workers continue. Still running: {running}."));
     }
     let saved = if name == "task_run_plan" {
-        let rev = args["revision"].as_i64().ok_or("revision is required")?;
-        Some(j.lock().unwrap().plan_target(&r.session, rev)?)
+        Some(j.lock().unwrap().plan_target(&r.session, args["revision"].as_i64())?)
     } else { None };
     let (project, board, n) = {
         let j = j.lock().unwrap();
         let mut target = args.clone();
         target["issue"] = args.get("task").cloned().unwrap_or(if name == "task_plan" || name == "task_run_plan" { json!("1") } else { Value::Null });
-        if let Some((project, _, _)) = &saved {
+        if let Some((_, project, _, _)) = &saved {
             if args["project"].as_str().is_some_and(|p| p != project) { return Err("saved plan cannot be retargeted; nothing was filed".into()); }
             allowed(&j, sender, project, true)?;
-            (project.clone(), saved.as_ref().unwrap().1.clone(), 0)
+            (project.clone(), saved.as_ref().unwrap().2.clone(), 0)
         } else if matches!(name,"task_status" | "task_steer" | "task_answer") {
             match j.related_target(r,args["task"].as_str().ok_or("task is required")?,args["project"].as_str())? {
                 Some(target) => target,
@@ -354,7 +353,7 @@ fn dispatch(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Value) -
     };
     let (bound, registered_board) = tq.registered(&j.lock().unwrap(), &project)?;
     let tq = &bound;
-    if saved.as_ref().is_some_and(|(_, _, root)| registered_board != board || (!root.is_empty() && PathBuf::from(root) != tq.root)) {
+    if saved.as_ref().is_some_and(|(_, _, _, root)| registered_board != board || (!root.is_empty() && PathBuf::from(root) != tq.root)) {
         return Err("saved plan registration changed; nothing was filed".into());
     }
     let create = tq.check(&board)?;
@@ -362,18 +361,22 @@ fn dispatch(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Value) -
         "task_plan" => {
             allowed(&j.lock().unwrap(), sender, &project, false)?;
             let t = tickets(args)?;
-            let rev = j.lock().unwrap().save_draft(r, &t, &project, &board, &tq.root.to_string_lossy(), args["new_plan"].as_bool().unwrap_or(false), now())?;
+            let rev = j.lock().unwrap().save_draft(r, &t, &project, &board, &tq.root.to_string_lossy(), now())?;
             let list: Vec<String> = t.as_array().unwrap().iter().enumerate().map(|(i, x)| format!("{}. {}", i + 1, x["title"].as_str().unwrap_or(""))).collect();
             Ok(format!("Draft updated locally; nothing is filed. Internal launch revision: {rev}. Tickets:\n{}\nThe final reply shows this updated draft with a launch button. Do not present the internal revision as a new plan. A later explicit text request can also run it.", list.join("\n")))
         }
         "task_run_plan" => {
-            let rev = args["revision"].as_i64().ok_or("revision is required")?;
+            let rev = saved.as_ref().map_or(0, |s| s.0);
             allowed(&j.lock().unwrap(), sender, &project, true)?;
             if !create {
                 return Err("task creation is disabled: create_claim_issue is not configured for the resolved board, and plain add is never used. Nothing was filed.".into());
             }
+            // #110: filing and starting run in the service after this turn (`launch`), never inside the model's deadline
             let run = j.lock().unwrap().authorize(r, rev, sender, LEASE, now())?;
-            Ok(submit(tq, j, run, false))
+            if j.lock().unwrap().launch_run(r.request)? != Some(run) {
+                return Ok("This draft was already launched by an earlier request; nothing new was filed. Use task_status for its tasks.".into());
+            }
+            Ok("Launch of the current draft accepted. PilotQ files and starts its tickets after this turn and replies with each task's board state; nothing is filed yet. Do not describe task states.".into())
         }
         "task_answer" => {
             let text=args["text"].as_str().ok_or("text is required")?;
@@ -503,6 +506,15 @@ fn recover_effects(tq: &Taskq, j: &Mutex<Journal>) -> bool {
         recovered = true;
     }
     recovered
+}
+
+/// #110: after the authorizing turn, files and starts the plan run this request authorized, outside the model deadline, and
+/// returns the factual launch reply. None when the request authorized no run.
+pub fn launch(tq: &Taskq, j: &Mutex<Journal>, r: &Run) -> Option<Result<String, String>> {
+    let run = j.lock().unwrap().launch_run(r.request);
+    let id = match run { Ok(Some(id)) => id, Ok(None) => return None, Err(e) => return Some(Err(e)) };
+    submit(tq, j, id, false);
+    j.lock().unwrap().launch_reply(r).transpose()
 }
 
 /// Files a plan run's remaining tickets held with their op IDs, then starts them once every ticket read back held (§ 5, U15).
