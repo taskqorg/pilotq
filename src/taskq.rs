@@ -65,7 +65,7 @@ fn url(board: &str, task: i64) -> String {
 }
 
 /// Plain source labels are escaped once for Markdown; Telegram HTML escapes at its own output boundary.
-fn task_link(board: &str, task: i64, title: Option<&str>) -> String {
+pub(crate) fn task_link(board: &str, task: i64, title: Option<&str>) -> String {
     let repo = board.rsplit('/').next().unwrap_or(board);
     let title = title.and_then(|t| t.lines().next()).filter(|t| !t.is_empty());
     let label = format!("GitHub · {repo}#{task}{}", title.map(|t| format!(" · {t}")).unwrap_or_default());

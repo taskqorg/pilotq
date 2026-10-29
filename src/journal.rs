@@ -1577,8 +1577,8 @@ impl Journal {
             |x|Ok((x.get(0)?,x.get(1)?,x.get(2)?))).map_err(|e|e.to_string())?;
         let ru=language.as_deref().unwrap_or("en").starts_with("ru");
         let mut text=match (ru,state.as_str()) {
-            (true,"started")=>"Задачи созданы и запущены; следите за сообщениями задач.",
-            (false,"started")=>"Tasks created and started; follow their updates.",
+            (true,"started")=>"Задачи созданы и поставлены в очередь к исполнителю; следите за сообщениями задач.",
+            (false,"started")=>"Tasks created and queued for a worker; follow their updates.",
             (true,"creating")=>"Запуск ещё не завершён; PilotQ повторит отправку.",
             (false,"creating")=>"Launch is pending; PilotQ will retry submission.",
             (true,_)=>"Запуск не завершён; попросите проверить план.",
@@ -1587,8 +1587,8 @@ impl Journal {
         let run=self.plan_run(id)?;
         for ticket in run.tickets {
             if let Some(n)=ticket.task {
-                let status=match (ru,ticket.started) { (true,true)=>"запущена",(true,false)=>"создана, не запущена",(false,true)=>"started",(false,false)=>"held, not started" };
-                text+=&format!("\n- [{}#{n}](https://github.com/{}/issues/{n}): {status}",run.project,run.board);
+                let status=match (ru,ticket.started) { (true,true)=>"в очереди к исполнителю",(true,false)=>"создана, удерживается",(false,true)=>"queued for a worker",(false,false)=>"filed held" };
+                text+=&format!("\n- {}: {status}",crate::taskq::task_link(&run.board,n,ticket.plan["title"].as_str()));
             }
         }
         Ok(text)
@@ -2994,6 +2994,20 @@ mod tests {
         j.finish(&r,None,None,&Outcome::Answered("Saved.".into()),2).unwrap();
         let reply=j.request(r.request).unwrap().1.unwrap();
         assert!(reply.contains("Keep line breaks") && reply.contains("Buttons work") && reply.contains("No audio") && reply.contains("Run plan"),"display must show the saved scope and launch action: {reply}");
+        // §12/#91: a start receipt means admission, without worker execution evidence.
+        j.admit(&[(2,msg(7,7,2))],3).unwrap();
+        let launch=j.claim_next(4,3).unwrap().remove(0);
+        let id=j.authorize(&launch,1,7,10,3).unwrap();
+        j.0.execute("UPDATE cards SET used_request=?1 WHERE request_id=?2",params![launch.request,r.request]).unwrap();
+        let run=j.plan_run(id).unwrap();
+        j.filed(&run,1,19,100,4).unwrap();
+        j.started(&run,1,19,"ready",4).unwrap();
+        j.run_outcome(&run,"started",None,None,0,4).unwrap();
+        let reply=j.launch_reply(&launch).unwrap();
+        assert!(reply.contains("queued for a worker") && !reply.contains("started") && reply.contains("GitHub · pilotq#19 · Reply improvements"),"{reply}");
+        j.0.execute("UPDATE requests SET language='ru' WHERE id=?1",[launch.request]).unwrap();
+        let reply=j.launch_reply(&launch).unwrap();
+        assert!(reply.contains("в очеред") && !reply.contains("запущен") && reply.contains("GitHub · pilotq#19 · Reply improvements"),"{reply}");
         drop(j); let _=std::fs::remove_dir_all(p);
     }
 

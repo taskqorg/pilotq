@@ -2661,7 +2661,11 @@ fn u93_draft_buttons_through_service() {
         let data=latest["reply_markup"]["inline_keyboard"][0][0]["callback_data"].as_str().unwrap();
         let message=latest["id"].as_i64().unwrap();
         push(&st,press(5,OWNER,None,OWNER,message,data));
-        wait("button starts displayed draft",15,||sent_has(&st,"Tasks created and started"));
+        wait("button admits displayed draft",15,||sent_has(&st,"Tasks created"));
+        // §12/#91: admission has no worker evidence; preserve truthful queue text and saved title.
+        let reply=sent(&st).into_iter().find(|m|m["text"].as_str().is_some_and(|t|t.contains("Tasks created"))).unwrap();
+        let text=reply["text"].as_str().unwrap();
+        assert!(text.contains("queued for a worker") && !text.contains("started") && text.contains("GitHub · pilotq#19 · Reply improvements"),"admission must not claim execution and must name the saved task: {text}");
         let calls=tq_calls(&d);
         assert_eq!(calls.len(),2,"one add and one start: {calls:?}");
         assert_eq!(calls[0][1],"Reply improvements");
