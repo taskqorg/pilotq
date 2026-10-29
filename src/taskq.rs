@@ -35,10 +35,12 @@ pub fn tools() -> Value {
     let task = json!({"type": "string", "description": "Task number or registered GitHub board issue URL"});
     let tool = |name: &str, description: &str, schema: Value| json!({"type": "function", "name": name, "description": description, "inputSchema": schema});
     json!([
-        tool("task_plan", "Save the next plan revision for this conversation (1-3 tickets). Files nothing. Show the person the revision number and tickets.",
-            json!({"type": "object", "properties": {"project": {"type": "string"}, "tickets": {"type": "array", "items": ticket}}, "required": ["tickets"]})),
+        tool("task_plan", "Save the next plan revision for this conversation (1-3 tickets). Files nothing. Show the updated draft; revision is an internal launch token, not a new plan.",
+            json!({"type": "object", "properties": {"project": {"type": "string"}, "new_plan": {"type":"boolean", "description":"True only for an explicit separate plan; additions update the same draft"}, "tickets": {"type": "array", "items": ticket}}, "required": ["tickets"]})),
         tool("task_run_plan", "File the named plan revision on the saved registered board held, read it back and start it. Only when the person, in a later message, asks to run that revision.",
             json!({"type": "object", "properties": {"project": {"type": "string"}, "revision": {"type": "integer"}}, "required": ["revision"]})),
+        tool("discussion_choices", "Offer a concrete discussion question with 2-4 choices. Choosing answers only, never launches work. The final reply appends the question and numbered options with Telegram buttons.",
+            json!({"type":"object","properties":{"question":{"type":"string"},"options":{"type":"array","items":{"type":"string"}}},"required":["question","options"]})),
         tool("task_status", "Read one registered task's current state from the board. Never creates anything.", json!({"type": "object", "properties": {"project": {"type": "string"}, "task": task}, "required": ["task"]})),
         tool("task_park", "Park one registered task (TaskQ later) with the person's reason.",
             json!({"type": "object", "properties": {"project": {"type": "string"}, "task": task, "reason": {"type": "string"}}, "required": ["task", "reason"]})),
@@ -52,8 +54,8 @@ pub fn tools() -> Value {
 
 /// Model instructions for the TaskQ tools; the boundary enforces them regardless.
 pub const INSTRUCTIONS: &str = "You are PilotQ, the conversational manager for registered TaskQ boards. Resolve one authorized project; never guess an ambiguous task number. Discussion never files work. To propose work, \
-call task_plan and show the person the saved revision number and its tickets. Call task_run_plan only when the person, in a later message, asks to run a \
-named revision. Never say a task exists, started or finished unless a tool result in this conversation says so; cite its URL. You cannot answer a worker's \
+call task_plan for additions to the same draft; use new_plan only for an explicitly separate idea. Never present internal revisions as new plans. The final reply renders the saved draft and launch button. Use discussion_choices for concrete questions; its selection only answers, never launches. Do not repeat the saved draft or choices in final prose; the renderer shows them. Call task_run_plan only when the person, in a later message, asks to run a \
+displayed plan. Resolve its latest internal revision from context; the person need not type a revision number. After launch discuss changes separately; never alter admitted tickets. Never say a task exists, started or finished unless a tool result in this conversation says so; cite its URL. You cannot answer a worker's \
 question: the person replies to the relayed question message. For task state call task_status; never guess it. Pausing the queue does not stop a running \
 worker; say so. Task links use [GitHub · repo#number · title](url), with the verified title from tool output; omit unknown titles. \
 Admission means queued for a worker, never worker execution. Keep effects to one short line; omit repeated procedural receipts.";
@@ -63,7 +65,7 @@ fn url(board: &str, task: i64) -> String {
 }
 
 /// Plain source labels are escaped once for Markdown; Telegram HTML escapes at its own output boundary.
-fn task_link(board: &str, task: i64, title: Option<&str>) -> String {
+pub(crate) fn task_link(board: &str, task: i64, title: Option<&str>) -> String {
     let repo = board.rsplit('/').next().unwrap_or(board);
     let title = title.and_then(|t| t.lines().next()).filter(|t| !t.is_empty());
     let label = format!("GitHub · {repo}#{task}{}", title.map(|t| format!(" · {t}")).unwrap_or_default());
@@ -290,6 +292,16 @@ fn dispatch(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Value) -
         }
         j.sender(r.request)?
     };
+    if !j.lock().unwrap().has(sender,"chat")? { return Err("conversation access was revoked; nothing was done".into()); }
+    if name == "discussion_choices" {
+        let question=args["question"].as_str().ok_or("question is required")?;
+        let options:Vec<String>=serde_json::from_value(args["options"].clone()).map_err(|_|"options must be strings")?;
+        j.lock().unwrap().save_choices(r,question,&options)?;
+        return Ok("Discussion choices saved locally; the final reply appends them. Choosing is an answer, not launch authorization.".into());
+    }
+    if name == "task_run_plan" && j.lock().unwrap().is_choice(r)? {
+        return Err("a discussion choice never authorizes launch; ask for the separate launch button or a later explicit request".into());
+    }
     // queue pause is host-scoped; other tools resolve the same target rules as issue tools.
     if name == "queue_pause" {
         let guard = j.lock().unwrap();
@@ -324,9 +336,9 @@ fn dispatch(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Value) -
         "task_plan" => {
             allowed(&j.lock().unwrap(), sender, &project, false)?;
             let t = tickets(args)?;
-            let rev = j.lock().unwrap().save_plan(r, &t, &project, &board, &tq.root.to_string_lossy(), now())?;
+            let rev = j.lock().unwrap().save_draft(r, &t, &project, &board, &tq.root.to_string_lossy(), args["new_plan"].as_bool().unwrap_or(false), now())?;
             let list: Vec<String> = t.as_array().unwrap().iter().enumerate().map(|(i, x)| format!("{}. {}", i + 1, x["title"].as_str().unwrap_or(""))).collect();
-            Ok(format!("Plan revision {rev} saved; nothing is filed. Tickets:\n{}\nShow this revision; the person runs it by naming revision {rev} in a later message.", list.join("\n")))
+            Ok(format!("Draft updated locally; nothing is filed. Internal launch revision: {rev}. Tickets:\n{}\nThe final reply shows this updated draft with a launch button. Do not present the internal revision as a new plan. A later explicit text request can also run it.", list.join("\n")))
         }
         "task_run_plan" => {
             let rev = args["revision"].as_i64().ok_or("revision is required")?;

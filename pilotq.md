@@ -193,7 +193,8 @@ Final answers first use sendRichMessage for content within 32768 UTF-16 units. O
 
 | Tool | Grants | Effect |
 |---|---|---|
-| `task_plan` | project scope | Saves the conversation's next plan revision: one to three tickets, each a title, goal, acceptance and scope. No board write |
+| `task_plan` | project scope | Updates the conversation's draft with an immutable revision: one to three tickets, each a title, goal, acceptance and scope. No board write |
+| `discussion_choices` | `chat` | Saves a question with two to four numbered discussion answers; no board write or launch authorization |
 | `task_run_plan` | `taskq` and project scope | Files every ticket of the named revision held, reads each back, then starts them |
 | `task_status` | project scope | Fresh board read of one task by number or a registered board issue URL. Never creates |
 | `task_park` | `taskq` and project scope | `later` with the person's reason; the worker's own lifecycle stays TaskQ's |
@@ -211,6 +212,15 @@ Final answers first use sendRichMessage for content within 32768 UTF-16 units. O
 - Each filed task has one status message in its originating route, edited in place on each fresh transition and naming what it waits for. A question and the closing outcome are separate messages. **Owner, task #94:** within one board poll after an accepted answer from any surface, edit the originating question in place, remove its buttons and show `Answered by <actor>: <text>`. A late button tap shows that accepted answer as a toast and writes nothing. Read TaskQ’s accepted-answer snapshot fields when available; until then read trusted, unedited answer entries from the board. Bind each receipt to its original question revision; never attach an earlier answer to a newer question. Closing outcomes remain immutable. A projection older than the stored task revision is ignored.
 - A periodic scan of `taskq status --json` recovers missed transitions; restart and `/new` keep subscriptions. An incomplete snapshot reads unknown and closes nothing.
 - **Owner, 2026-10-23:** the live evidence for this step is a scripted run, not a person on the test bot. It uses the real PilotQ binary, real Codex under PilotQ's subscription login, the `taskqorg/pilotq` board and the TaskQ CLI. A local fake Bot API replaces Telegram, with updates from two synthetic users, and records every send. One small real docs task goes from discussion to the reviewer outcome with a PilotQ restart mid-run. The run checks the journal, audit record, board and recorded messages, U23 links included. A later owner check on the test bot is optional.
+
+### Plan discussion and action buttons
+
+**Owner, task #93 (option 1):** discussion develops one draft until launch. Additions update that draft; internal revisions are authorization tokens, never presented as new plans. A new independent draft starts only on an explicit request. Once launch is authorized, later changes are discussed separately and cannot change admitted tickets. Text requests remain supported alongside buttons (R13).
+
+- Discussion has no board effect. Saving a draft records its stable identity, project and a new immutable revision. Show the complete current draft and clearly mark it as the updated draft; an earlier message may remain visible but its launch button is stale.
+- A launch button belongs to the displayed revision, saved project, originating conversation generation and the person who requested that display. Recheck current admission and TaskQ/project grants at dispatch. A foreign, forwarded, reset, superseded or repeated press cannot authorize a different revision or create another run. Accepted launches use the same `task_run_plan` boundary, stable operation IDs, readback and audit as text.
+- Concrete discussion questions offer two to four numbered choices, preserved in the message, buttons and recorded answer. Choosing one submits that answer to the conversation; it never authorizes launch. Launch remains a separate button or explicit later text request. Old or already answered choice cards are refused.
+- Example: “Plan reply improvements”, “also keep line breaks”, “and add buttons” produces one draft with three internal revisions, no board tickets. The latest display has “Run plan”; pressing it launches only that display. Pressing either an earlier display or the same button again starts nothing new. “Make a separate plan for images” creates a distinct draft. After launch, “also support audio” starts a separate discussion, preserving the launched scope.
 
 ### Direct actions, keys and project switching
 
@@ -369,7 +379,7 @@ The installed Linux service checks for releases every five minutes, including at
 
 **PM, task #84 continuation:** the 0.2.6 TaskQ drill sent no incident because an idle scan never read the board. Release `0.2.7` with that fix (PR #88) in this task through the same merge-queue and `live` path, update FRA through `pilotq update`, rerun the TaskQ drill and record its DM on #84. Production cutover remains unauthorized.
 
-This release retains coreq `v0.14.6` (locked in `Cargo.lock`) and journal schema 10. It opens existing schemas 0–10 through the current migrations and refuses newer schemas; rollback to a binary that cannot read the resulting schema is unsafe. The installation owner runs the user service and owns its protected configuration. See the [tester guide](docs/tester-guide.md) for installation, checks and current limitations. A published release and successful selftest do not qualify production cutover or the open decisions in section 11.
+This release retains coreq `v0.14.6` (locked in `Cargo.lock`) and journal schema 11. It opens existing schemas 0–11 through the current migrations and refuses newer schemas; rollback to a binary that cannot read the resulting schema is unsafe. The installation owner runs the user service and owns its protected configuration. See the [tester guide](docs/tester-guide.md) for installation, checks and current limitations. A published release and successful selftest do not qualify production cutover or the open decisions in section 11.
 
 ### Development
 

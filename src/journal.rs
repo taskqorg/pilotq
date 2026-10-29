@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 /// Schema this binary writes; a newer journal is refused rather than guessed (F08).
-const SCHEMA: i64 = 10;
+const SCHEMA: i64 = 11;
 /// Model attempts per request across restarts (§ 7 dependency retry).
 const RUNS: i64 = 3;
 /// Delivery attempts per episode, persisted across restart (§ 7).
@@ -88,6 +88,59 @@ fn insert(tx: &Connection, update: i64, front: &str, chat: i64, topic: Option<i6
     )
     .map_err(|e| e.to_string())?;
     Ok(tx.last_insert_rowid())
+}
+
+/// Accept only a button actually delivered to this person/route/generation. Callback text is untrusted.
+fn accept_card(tx: &Connection, i: &Input, sender: i64, session: &str, request: i64) -> Result<(),String> {
+    let e=|e:rusqlite::Error|e.to_string();
+    let data=i.text.as_deref().unwrap_or("");
+    let parts:Vec<_>=data.split(':').collect();
+    let id=parts.get(1).and_then(|s|s.parse::<i64>().ok()).ok_or("invalid button")?;
+    let card:Option<(Option<i64>,Option<String>,Option<i64>)>=tx.query_row(
+        "SELECT c.plan_id,c.options,c.used_request FROM cards c JOIN requests q ON q.id=c.request_id JOIN conversations v ON v.session=q.session
+        WHERE c.id=?1 AND q.state='answered' AND q.session=?2 AND q.sender=?3 AND c.generation=v.generation
+        AND EXISTS(SELECT 1 FROM outbox o WHERE o.request_id=q.id AND o.chat=?4 AND o.topic IS ?5 AND o.sent_message=?6 AND o.kind IN ('rich','rich_part'))",
+        params![id,session,sender,i.chat,i.topic,i.message],|x|Ok((x.get(0)?,x.get(1)?,x.get(2)?))).optional().map_err(e)?;
+    let (plan,options,used)=card.ok_or("foreign or reset button")?;
+    let pending: bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM requests WHERE session=?1 AND id<?2 AND state IN ('queued','running') AND kind IN ('text','image','choice'))",params![session,request],|x|x.get(0)).map_err(e)?;
+    if pending { return Err("discussion is still updating; wait for its current display".into()); }
+
+    if used.is_some() { return Err("button already answered".into()); }
+    let (kind,text)=match parts.as_slice() {
+        ["plan",_] => {
+            let plan=plan.ok_or("not a plan button")?;
+            let project:Option<String>=tx.query_row("SELECT project FROM plans p WHERE id=?1 AND revision=(SELECT max(revision) FROM plans WHERE session=?2) AND NOT EXISTS(SELECT 1 FROM plan_runs WHERE plan_id=p.id)",params![plan,session],|x|x.get(0)).optional().map_err(e)?;
+            let project=project.ok_or("superseded or launched plan")?;
+            if !has(tx,sender,"taskq")? || !(has(tx,sender,"projects")? || has(tx,sender,&format!("project:{project}"))?) { return Err("missing taskq/project grant".into()); }
+            ("launch",format!("Run displayed plan ({project})"))
+        }
+        ["choice",_,k] => {
+            let current:bool=tx.query_row("SELECT NOT EXISTS(SELECT 1 FROM cards c JOIN requests q ON q.id=c.request_id WHERE q.session=?1 AND c.id>?2)",params![session,id],|x|x.get(0)).map_err(e)?;
+            if !current { return Err("superseded question".into()); }
+            let k=k.parse::<usize>().map_err(|_|"invalid choice")?;
+            let options:Vec<String>=serde_json::from_str(&options.ok_or("no choices")?).map_err(|e|e.to_string())?;
+            let option=options.get(k.checked_sub(1).ok_or("invalid choice")?).ok_or("invalid choice")?;
+            ("choice",format!("{k}. {option}"))
+        }
+        _ => return Err("invalid button".into()),
+    };
+    tx.execute("UPDATE cards SET used_request=?2 WHERE id=?1",params![id,request]).map_err(e)?;
+    tx.execute("INSERT INTO audit_events(request_id,at,kind,target,item,result) SELECT id,received_at,'decision',?2,text,?3 FROM requests WHERE id=?1",params![request,format!("card:{id}"),text]).map_err(e)?;
+    tx.execute("UPDATE requests SET kind=?2,text=CASE WHEN kind='action' THEN ?3 ELSE text END WHERE id=?1",params![request,kind,text]).map_err(e)?;
+    Ok(())
+}
+
+/// Numbered/text option answers share the callback boundary; plain text remains the primary interface (R13).
+fn text_choice(tx: &Connection, i: &Input, sender: i64, session: &str) -> Result<Option<Input>,String> {
+    let card:Option<(i64,String,i64)>=tx.query_row("SELECT c.id,c.options,o.sent_message FROM cards c JOIN requests q ON q.id=c.request_id JOIN outbox o ON o.request_id=q.id
+        WHERE q.state='answered' AND q.session=?1 AND q.sender=?2 AND c.options IS NOT NULL AND o.chat=?3 AND o.topic IS ?4 AND o.sent_message IS NOT NULL
+        AND (?5 IS NULL OR o.sent_message=?5) ORDER BY c.id DESC,o.id DESC LIMIT 1",
+        params![session,sender,i.chat,i.topic,i.reply_to],|x|Ok((x.get(0)?,x.get(1)?,x.get(2)?))).optional().map_err(|e|e.to_string())?;
+    let Some((card,options,message))=card else {return Ok(None)};
+    let text=i.text.as_deref().unwrap_or("").trim();
+    let options:Vec<String>=serde_json::from_str(&options).map_err(|e|e.to_string())?;
+    let choice=options.iter().enumerate().find(|(n,option)|text==(n+1).to_string() || text==option.as_str()).map(|(n,_)|n+1);
+    Ok(choice.map(|choice|Input{callback:None,image:None,language:i.language.clone(),chat:i.chat,topic:i.topic,sender:Some(sender),name:i.name.clone(),message,kind:"action",text:Some(format!("choice:{card}:{choice}")),reply_to:Some(message)}))
 }
 
 /// Telegram's message limit in UTF-16 code units.
@@ -480,6 +533,7 @@ pub struct Delivery {
     /// A task status update edits this delivered status message instead of sending a new one (§ 12, L12).
     pub edit: Option<i64>,
     pub kind: String,
+    pub buttons: Vec<(String, String)>,
 }
 
 /// What one send attempt established.
@@ -622,6 +676,15 @@ impl Journal {
             c.execute("INSERT INTO meta(key,value) VALUES ('instructions',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [policy]).map_err(|e| e.to_string())?;
         }
         up("COMMIT;")?;
+        if version < 11 {
+            up("BEGIN IMMEDIATE;")?;
+            let draft_column: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('plans') WHERE name='draft')",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+            if !draft_column { up("ALTER TABLE plans ADD COLUMN draft INTEGER; UPDATE plans SET draft=id;")?; }
+            up("CREATE TABLE IF NOT EXISTS cards(id INTEGER PRIMARY KEY, request_id INTEGER NOT NULL UNIQUE, generation INTEGER NOT NULL,
+                    plan_id INTEGER, question TEXT, options TEXT, used_request INTEGER);
+                INSERT OR IGNORE INTO meta(key,value) SELECT 'refresh:' || session,1 FROM conversations WHERE thread IS NOT NULL;
+                PRAGMA user_version=11; COMMIT;")?;
+        }
         // TaskQ op IDs are permanent board claims; a random installation ID keeps a fresh journal from reusing another's
         let salt = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as i64) ^ ((std::process::id() as i64) << 40);
         c.execute("INSERT INTO meta(key, value) VALUES ('instance', ?1) ON CONFLICT(key) DO NOTHING", [salt & i64::MAX]).map_err(|e| e.to_string())?;
@@ -679,7 +742,7 @@ impl Journal {
                     let s = session(i.chat, i.topic, sender, shared);
                     let cmd = if i.kind == "text" { control(i.text.as_deref()) } else { None };
                     // controls bypass the backlog: they are answered here, never queued (§ 12)
-                    let busy = cmd.is_none() && matches!(i.kind, "text" | "image") && {
+                    let busy = cmd.is_none() && matches!(i.kind, "text" | "image" | "action") && {
                         let (route, total): (i64, i64) = tx
                             .query_row(
                                 "SELECT count(*) FILTER (WHERE chat=?1 AND topic IS ?2), count(*) FROM requests WHERE state='queued'",
@@ -699,9 +762,9 @@ impl Journal {
                     };
                     let (kind, state) = match (cmd, i.kind) {
                         (Some(_), _) => ("control", "answered"),
-                        (None, "text" | "image") if busy => (i.kind, "failed"),
+                        (None, "text" | "image" | "action") if busy => (i.kind, "failed"),
                         (None, "text" | "button") if question.is_some() => ("answer", "queued"),
-                        (None, "text" | "image") => (i.kind, "queued"),
+                        (None, "text" | "image" | "action") => (i.kind, "queued"),
                         _ => (i.kind, "failed"),
                     };
                     let id = insert(&tx, *update, "telegram", i.chat, i.topic, sender, i.name.as_deref(), i.message, kind, i.text.as_deref(), state, at, &s, i.reply_to)?;
@@ -709,6 +772,20 @@ impl Journal {
                         tx.execute("INSERT INTO meta(key,value) VALUES (?1,?2)", params![format!("callback:{id}"), callback]).map_err(|e| e.to_string())?;
                     }
                     tx.execute("UPDATE requests SET image=?2,language=?3 WHERE id=?1", params![id,i.image,i.language]).map_err(|e|e.to_string())?;
+                    let choice = if i.kind=="text" && cmd.is_none() && !busy { text_choice(&tx,i,sender,&s)? } else { None };
+                    let action = if i.kind=="action" { Some(i) } else { choice.as_ref() };
+                    let action_error = if let Some(action)=action.filter(|_|!busy) {
+                        match accept_card(&tx, action, sender, &s, id) {
+                            Ok(()) => None,
+                            Err(error) => {
+                                tx.execute("UPDATE requests SET state='failed',error=?2 WHERE id=?1", params![id,error]).map_err(|e|e.to_string())?;
+                                Some(if i.language.as_deref().unwrap_or("en").starts_with("ru") {
+                                    "Эта кнопка недоступна; используйте актуальный план или вопрос.".to_string()
+                                } else { "This action is unavailable; use the current plan or question.".to_string() })
+                            }
+                        }
+                    } else { None };
+                    let state = if action_error.is_some() { "failed" } else { state };
                     let first: bool = tx.query_row("SELECT NOT EXISTS (SELECT 1 FROM requests WHERE sender=?1 AND id<>?2)", [sender, id], |r| r.get(0)).map_err(|e| e.to_string())?;
                     let text = match cmd {
                         Some(c) => {
@@ -717,6 +794,7 @@ impl Journal {
                             text
                         }
                         // § 1: unsupported input is detected and gets an explicit outcome, never silence
+                        None if action_error.is_some() => action_error.unwrap(),
                         None if busy => brief(i.language.as_deref(), "busy").into(),
                         None if state == "failed" => brief(i.language.as_deref(), if i.kind == "image_limit" { "image_limit" } else { "unsupported" }).into(),
                         // §12: accepted text gets a reaction obligation below, without a text acknowledgement.
@@ -784,7 +862,7 @@ impl Journal {
         self.0.execute("UPDATE outbox SET state='superseded' WHERE kind='queued' AND state='pending' AND request_id IN (SELECT id FROM requests WHERE state<>'queued')", []).map_err(|e|e.to_string())?;
         let heads = "FROM outbox o WHERE state='pending' AND (o.kind='reaction' OR NOT EXISTS
             (SELECT 1 FROM outbox p WHERE p.state='pending' AND p.chat=o.chat AND p.topic IS o.topic AND p.id<o.id))";
-        let row = self
+        let mut row = self
             .0
             .query_row(
                 // a status row edits the task's latest delivered status message, resolved now, after every earlier row of its route
@@ -795,10 +873,13 @@ impl Journal {
                         AND s.kind='question' AND s.revision=o.revision AND s.state='delivered' ORDER BY s.id DESC LIMIT 1) END, kind {heads} AND next_at<=?1 AND coalesce((SELECT value FROM meta WHERE key='telegram-cooldown:' || o.chat),0)<=?1 ORDER BY (kind='reaction') DESC,id LIMIT 1"
                 ),
                 [now],
-                |r| Ok(Delivery { id: r.get(0)?, chat: r.get(1)?, topic: r.get(2)?, reply_to: r.get(3)?, html: r.get(4)?, text: r.get(5)?, attempts: r.get(6)?, edit: r.get(7)?, kind: r.get(8)? }),
+                |r| Ok(Delivery { id: r.get(0)?, chat: r.get(1)?, topic: r.get(2)?, reply_to: r.get(3)?, html: r.get(4)?, text: r.get(5)?, attempts: r.get(6)?, edit: r.get(7)?, kind: r.get(8)?, buttons: vec![] }),
             )
             .optional()
             .map_err(|e| e.to_string())?;
+        if let Some(d) = &mut row {
+            d.buttons = self.card_buttons(d.id)?;
+        }
         let next = self.0.query_row(&format!("SELECT min(next_at) {heads}"), [], |r| r.get(0)).map_err(|e| e.to_string())?;
         Ok((row, next))
     }
@@ -1111,7 +1192,7 @@ impl Journal {
         let ids: Vec<i64> = {
             let mut q = tx
                 .prepare(
-                    "SELECT min(id) FROM requests r WHERE state='queued' AND front='telegram' AND kind IN ('text','image')
+                    "SELECT min(id) FROM requests r WHERE state='queued' AND front='telegram' AND kind IN ('text','image','choice','launch')
                     AND NOT EXISTS (SELECT 1 FROM requests p WHERE p.session=r.session AND p.state='running') GROUP BY session ORDER BY 1 LIMIT ?1",
                 )
                 .map_err(|e| e.to_string())?;
@@ -1270,6 +1351,32 @@ impl Journal {
             tx.commit().map_err(e)?;
             return Ok(false);
         }
+        if state == "answered" {
+            let plan: Option<(i64,i64,String,String)> = tx.query_row(
+                "SELECT id,draft,project,tickets FROM plans WHERE request_id=?1 ORDER BY revision DESC LIMIT 1", [r.request],
+                |x|Ok((x.get(0)?,x.get(1)?,x.get(2)?,x.get(3)?))).optional().map_err(e)?;
+            if let Some((plan,draft,project,tickets)) = plan {
+                tx.execute("INSERT INTO cards(request_id,generation,plan_id) VALUES (?1,?2,?3) ON CONFLICT(request_id) DO UPDATE SET plan_id=excluded.plan_id",params![r.request,r.generation,plan]).map_err(e)?;
+                let ru = language.as_deref().unwrap_or("en").starts_with("ru");
+                text = format!("{} **{}** · {}\n{}", if ru {"Черновик сохранён локально."} else {"Draft saved locally."}, if ru {format!("Черновик {draft}")} else {format!("Draft {draft}")}, project,
+                    if ru {"Актуальный вариант; на доске ничего не создано."} else {"Current draft; nothing filed on the board."});
+                let tickets: Value = serde_json::from_str(&tickets).map_err(|e|e.to_string())?;
+                for (n,t) in tickets.as_array().into_iter().flatten().enumerate() {
+                    text += &format!("\n\n{}. **{}**\n{}",n+1,t["title"].as_str().unwrap_or(""),t["goal"].as_str().unwrap_or(""));
+                    for a in t["acceptance"].as_array().into_iter().flatten().chain(t["scope"].as_array().into_iter().flatten()) {
+                        text += &format!("\n- {}",a.as_str().unwrap_or(""));
+                    }
+                }
+                text += if ru {"\n\nЗапустите кнопкой «Запустить план» или попросите запустить этот план."} else {"\n\nUse Run plan or ask to run this plan."};
+            }
+            let question: Option<(String,String)> = tx.query_row("SELECT question,options FROM cards WHERE request_id=?1 AND question IS NOT NULL",[r.request],|x|Ok((x.get(0)?,x.get(1)?))).optional().map_err(e)?;
+            if let Some((question,options)) = question {
+                text += &format!("\n\n{question}");
+                for (i,option) in serde_json::from_str::<Vec<String>>(&options).map_err(|e|e.to_string())?.iter().enumerate() {
+                    text += &format!("\n{}. {option}",i+1);
+                }
+            }
+        }
         tx.execute("UPDATE requests SET state=?2, reply=?3, error=?4 WHERE id=?1", params![r.request, state, text, error]).map_err(e)?;
         // a thread from before /new never attaches to the new conversation generation
         tx.execute("UPDATE conversations SET thread=coalesce(?3, thread) WHERE session=?1 AND generation=?2", params![r.session, r.generation, thread]).map_err(e)?;
@@ -1402,17 +1509,106 @@ impl Journal {
     }
 
     /// Saves the next plan revision of the run's conversation while its fence holds (§ 5 `task_plan`). No board write.
+    #[cfg(test)]
     pub fn save_plan(&self, r: &Run, tickets: &Value, project: &str, board: &str, root: &str, at: i64) -> Result<i64, String> {
-        if self.fenced(r)? {
-            return Err("this run was stopped; nothing was saved".into());
+        self.save_draft(r, tickets, project, board, root, false, at)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn save_draft(&self, r: &Run, tickets: &Value, project: &str, board: &str, root: &str, new_plan: bool, at: i64) -> Result<i64, String> {
+        if self.fenced(r)? { return Err("this run was stopped; nothing was saved".into()); }
+        let tx = self.0.unchecked_transaction().map_err(|e|e.to_string())?;
+        let previous: Option<(i64,String,String,String,bool)> = tx.query_row(
+            "SELECT draft,project,board,root,EXISTS(SELECT 1 FROM plan_runs x JOIN plans p ON p.id=x.plan_id WHERE p.draft=plans.draft) FROM plans WHERE session=?1 ORDER BY revision DESC LIMIT 1",
+            [&r.session], |x| Ok((x.get(0)?,x.get(1)?,x.get(2)?,x.get(3)?,x.get(4)?))).optional().map_err(|e|e.to_string())?;
+        if !new_plan && previous.as_ref().is_some_and(|(_,p,b,rt,started)| !started && (p!=project || b!=board || rt!=root)) {
+            return Err("the draft target is bound; ask for a separate plan to change projects".into());
         }
-        self.0
-            .query_row(
-                "INSERT INTO plans(session, revision, request_id, tickets, project, board, root, at) SELECT ?1, coalesce(max(revision), 0) + 1, ?2, ?3, ?5, ?6, ?7, ?4 FROM plans WHERE session=?1 RETURNING revision",
-                params![r.session, r.request, tickets.to_string(), at, project, board, root],
-                |x| x.get(0),
-            )
-            .map_err(|e| e.to_string())
+        let draft = previous.filter(|(_,_,_,_,started)| !new_plan && !started).map(|p|p.0);
+        let revision = tx.query_row(
+            "INSERT INTO plans(session,revision,request_id,tickets,project,board,root,at,draft) SELECT ?1,coalesce(max(revision),0)+1,?2,?3,?4,?5,?6,?7,?8 FROM plans WHERE session=?1 RETURNING revision",
+            params![r.session,r.request,tickets.to_string(),project,board,root,at,draft], |x|x.get::<_,i64>(0)).map_err(|e|e.to_string())?;
+        tx.execute("UPDATE plans SET draft=id WHERE draft IS NULL",[]).map_err(|e|e.to_string())?;
+        tx.commit().map_err(|e|e.to_string())?;
+        Ok(revision)
+    }
+
+    /// §5/#93: structured choices are discussion input, never launch authorization.
+    pub fn save_choices(&self, r: &Run, question: &str, options: &[String]) -> Result<(), String> {
+        if self.fenced(r)? { return Err("this run was stopped".into()); }
+        if question.trim().is_empty() || question.chars().count()>500 || !(2..=4).contains(&options.len()) || options.iter().any(|s|s.trim().is_empty() || s.contains('\n') || s.chars().count()>80) {
+            return Err("use a question up to 500 characters and 2-4 single-line choices up to 80 characters".into());
+        }
+        self.0.execute("INSERT INTO cards(request_id,generation,question,options) VALUES (?1,?2,?3,?4) ON CONFLICT(request_id) DO UPDATE SET question=excluded.question,options=excluded.options",
+            params![r.request,r.generation,question,serde_json::to_string(options).map_err(|e|e.to_string())?]).map(drop).map_err(|e|e.to_string())
+    }
+
+    /// Durable source of buttons, shared by rich delivery and the last HTML/plain fallback part.
+    pub fn card_buttons(&self, delivery: i64) -> Result<Vec<(String,String)>,String> {
+        let card: Option<(i64,Option<i64>,Option<String>,Option<String>)> = self.0.query_row(
+            "SELECT c.id,c.plan_id,c.options,q.language FROM cards c JOIN outbox o ON o.request_id=c.request_id JOIN requests q ON q.id=c.request_id
+            WHERE o.id=?1 AND q.state='answered' AND (o.kind='rich' OR (o.kind='rich_part' AND o.id=(SELECT max(id) FROM outbox WHERE request_id=o.request_id AND kind='rich_part')))",
+            [delivery],|x|Ok((x.get(0)?,x.get(1)?,x.get(2)?,x.get(3)?))).optional().map_err(|e|e.to_string())?;
+        let mut buttons=vec![];
+        if let Some((id,plan,options,language))=card {
+            if plan.is_some() { buttons.push((format!("plan:{id}"),if language.as_deref().unwrap_or("en").starts_with("ru") {"Запустить план"} else {"Run plan"}.into())); }
+            if let Some(options)=options {
+                for (i,option) in serde_json::from_str::<Vec<String>>(&options).map_err(|e|e.to_string())?.into_iter().enumerate() {
+                    buttons.push((format!("choice:{id}:{}",i+1),format!("{}. {option}",i+1)));
+                }
+            }
+        }
+        Ok(buttons)
+    }
+
+    pub fn button_plan(&self, r: &Run) -> Result<Option<Value>,String> {
+        let launch: bool = self.0.query_row("SELECT kind='launch' FROM requests WHERE id=?1",[r.request],|x|x.get(0)).map_err(|e|e.to_string())?;
+        if !launch { return Ok(None); }
+        self.0.query_row("SELECT p.revision,p.project FROM cards c JOIN plans p ON p.id=c.plan_id JOIN requests q ON q.id=c.used_request JOIN requests source ON source.id=c.request_id
+            WHERE q.id=?1 AND c.generation=?2 AND source.sender=q.sender AND source.session=?3",
+            params![r.request,r.generation,r.session],|x|Ok(json!({"revision":x.get::<_,i64>(0)?,"project":x.get::<_,String>(1)?}))).optional().map_err(|e|e.to_string())?
+            .map(Some).ok_or_else(||"the displayed plan belongs to an earlier conversation; nothing was launched".into())
+    }
+
+    /// §12: factual localized button outcome from receipts; no model call or internal revision in the reply.
+    pub fn launch_reply(&self, r: &Run) -> Result<String,String> {
+        let (id,state,language):(i64,String,Option<String>)=self.0.query_row(
+            "SELECT x.id,x.state,q.language FROM cards c JOIN plan_runs x ON x.plan_id=c.plan_id JOIN requests q ON q.id=c.used_request WHERE q.id=?1",[r.request],
+            |x|Ok((x.get(0)?,x.get(1)?,x.get(2)?))).map_err(|e|e.to_string())?;
+        let ru=language.as_deref().unwrap_or("en").starts_with("ru");
+        let mut text=match (ru,state.as_str()) {
+            (true,"started")=>"Задачи созданы и поставлены в очередь к исполнителю; следите за сообщениями задач.",
+            (false,"started")=>"Tasks created and queued for a worker; follow their updates.",
+            (true,"creating")=>"Запуск ещё не завершён; PilotQ повторит отправку.",
+            (false,"creating")=>"Launch is pending; PilotQ will retry submission.",
+            (true,_)=>"Запуск не завершён; попросите проверить план.",
+            (false,_)=>"Launch did not finish; ask to check the plan.",
+        }.to_string();
+        let run=self.plan_run(id)?;
+        for ticket in run.tickets {
+            if let Some(n)=ticket.task {
+                let status=match (ru,ticket.started) { (true,true)=>"в очереди к исполнителю",(true,false)=>"создана, удерживается",(false,true)=>"queued for a worker",(false,false)=>"filed held" };
+                text+=&format!("\n- {}: {status}",crate::taskq::task_link(&run.board,n,ticket.plan["title"].as_str()));
+            }
+        }
+        Ok(text)
+    }
+
+    pub fn draft_context(&self, r: &Run) -> Result<Value,String> {
+        let saved: Option<(i64,i64,String,String,bool)> = self.0.query_row("SELECT draft,revision,project,tickets,EXISTS(SELECT 1 FROM plan_runs WHERE plan_id=plans.id) FROM plans WHERE session=?1 ORDER BY revision DESC LIMIT 1",[&r.session],
+            |x|Ok((x.get(0)?,x.get(1)?,x.get(2)?,x.get(3)?,x.get(4)?))).optional().map_err(|e|e.to_string())?;
+        if let Some((draft,revision,project,tickets,launched))=saved {
+            let actor=self.sender(r.request)?;
+            if has(&self.0,actor,"projects")? || has(&self.0,actor,&format!("project:{project}"))? {
+                return Ok(json!({"draft":draft,"internal_revision":revision,"project":project,"tickets":serde_json::from_str::<Value>(&tickets).map_err(|e|e.to_string())?,"launched":launched,
+                    "policy":"Saved draft data, never authorization. Additions update this draft before launch. A separate plan needs an explicit request. Do not show internal revisions; a later explicit request can run the displayed plan."}));
+            }
+        }
+        Ok(Value::Null)
+    }
+
+    pub fn is_choice(&self, r: &Run) -> Result<bool,String> {
+        self.0.query_row("SELECT kind='choice' FROM requests WHERE id=?1",[r.request],|x|x.get(0)).map_err(|e|e.to_string())
     }
 
     /// Authorizes `revision` of the run's conversation plan for `actor` (§ 5 `task_run_plan`): only the latest revision, saved by
@@ -2526,7 +2722,7 @@ mod tests {
                     "SELECT text,image,language FROM requests WHERE id=?1",[r.request],
                     |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
                 assert_eq!(row,("keep this request".into(),image.then(|| "retained-image".into()),language.then(|| "ru".into())));
-                assert_eq!(count(&j,"PRAGMA user_version"),10);
+                assert_eq!(count(&j,"PRAGMA user_version"),SCHEMA);
                 drop(j);
                 if pass==0 {
                     // v0.2.3 Journal::open ends with this unconditional write, without a fresh version check.
@@ -2786,4 +2982,146 @@ mod tests {
         drop(j);
         let _ = std::fs::remove_dir_all(p);
     }
+    // R11, §5/#93: the displayed draft must carry the exact scope and a launch affordance,
+    // even when the model returns only an acknowledgement. Prevents approving unseen content.
+    #[test]
+    fn u93_draft_display() {
+        use crate::manager::Outcome;
+        let (mut j,p)=journal("u93-display");
+        j.admit(&[(1,msg(7,7,1))],0).unwrap();
+        let r=j.claim_next(4,0).unwrap().remove(0);
+        j.save_plan(&r,&json!([{"title":"Reply improvements","goal":"Keep line breaks","acceptance":["Buttons work"],"scope":["No audio"]}]),"pilotq","taskqorg/pilotq","",1).unwrap();
+        j.finish(&r,None,None,&Outcome::Answered("Saved.".into()),2).unwrap();
+        let reply=j.request(r.request).unwrap().1.unwrap();
+        assert!(reply.contains("Keep line breaks") && reply.contains("Buttons work") && reply.contains("No audio") && reply.contains("Run plan"),"display must show the saved scope and launch action: {reply}");
+        // §12/#91: a start receipt means admission, without worker execution evidence.
+        j.admit(&[(2,msg(7,7,2))],3).unwrap();
+        let launch=j.claim_next(4,3).unwrap().remove(0);
+        let id=j.authorize(&launch,1,7,10,3).unwrap();
+        j.0.execute("UPDATE cards SET used_request=?1 WHERE request_id=?2",params![launch.request,r.request]).unwrap();
+        let run=j.plan_run(id).unwrap();
+        j.filed(&run,1,19,100,4).unwrap();
+        j.started(&run,1,19,"ready",4).unwrap();
+        j.run_outcome(&run,"started",None,None,0,4).unwrap();
+        let reply=j.launch_reply(&launch).unwrap();
+        assert!(reply.contains("queued for a worker") && !reply.contains("started") && reply.contains("GitHub · pilotq#19 · Reply improvements"),"{reply}");
+        j.0.execute("UPDATE requests SET language='ru' WHERE id=?1",[launch.request]).unwrap();
+        let reply=j.launch_reply(&launch).unwrap();
+        assert!(reply.contains("в очеред") && !reply.contains("запущен") && reply.contains("GitHub · pilotq#19 · Reply improvements"),"{reply}");
+        drop(j); let _=std::fs::remove_dir_all(p);
+    }
+
+    // R10/R13/R17, §5/#93: callback payloads cannot substitute another person, route,
+    // reset generation or revoked grant. Discussion choices never authorize task_run_plan.
+    #[test]
+    fn u93_choice_and_authority_boundaries() {
+        use crate::manager::Outcome;
+        let (mut j,p)=journal("u93-authority");
+        j.set_route(7,-100,5,true,0).unwrap();
+        j.grant(7,8,&["chat".into(),"taskq".into(),"projects".into()],0).unwrap();
+        let input=|sender,chat,topic,message,data:&str| Some(Input {callback:None,image:None,language:None,chat,topic,sender:Some(sender),name:None,message,kind:"action",text:Some(data.into()),reply_to:Some(message)});
+        // Mark actual outbox sends and retain the exact callback token/message pairing.
+        let deliver=|j:&mut Journal| {
+            let mut buttons=vec![];
+            while let Some(d)=j.due(100).unwrap().0 {
+                buttons.extend(d.buttons.iter().map(|(data,_)|(data.clone(),1000+d.id)));
+                j.record(d.id,&Sent::Ok(1000+d.id),100).unwrap();
+            }
+            buttons
+        };
+        j.admit(&[(1,Some(Input{callback:None,image:None,language:None,chat:-100,topic:Some(5),sender:Some(7),name:None,message:1,kind:"text",text:Some("Plan reply improvements".into()),reply_to:None}))],0).unwrap();
+        let r=j.claim_next(4,0).unwrap().remove(0);
+        j.save_plan(&r,&json!([{"title":"Replies","goal":"Keep paragraphs","acceptance":["Buttons work"]}]),"pilotq","taskqorg/pilotq","",1).unwrap();
+        j.finish(&r,None,None,&Outcome::Answered("Saved".into()),2).unwrap();
+        let buttons=deliver(&mut j); let (plan,message)=&buttons[0];
+        for (id,sender,chat,topic,m) in [(2,8,-100,Some(5),*message),(3,7,-100,Some(6),*message),(4,7,-200,Some(5),*message),(5,7,-100,Some(5),99999)] {
+            j.admit(&[(id,input(sender,chat,topic,m,plan))],3).unwrap();
+            assert_eq!(j.request(id).unwrap().0,"failed");
+        }
+        j.revoke(7,7,&["taskq".into()],4).unwrap();
+        j.admit(&[(6,input(7,-100,Some(5),*message,plan))],4).unwrap();
+        assert_eq!(j.request(6).unwrap().0,"failed");
+        assert_eq!(count(&j,"SELECT count(*) FROM cards WHERE used_request IS NOT NULL"),0);
+        j.grant(7,7,&["taskq".into()],5).unwrap();
+        j.admit(&[(7,input(7,-100,Some(5),*message,plan))],5).unwrap();
+        assert_eq!(j.request(7).unwrap().0,"queued");
+        // Reset after admission, before dispatch: do not convert an invalid launch into model input.
+        let mut reset=at(-100,Some(5),7,8).unwrap();reset.text=Some("/new".into());
+        j.admit(&[(8,Some(reset))],6).unwrap();
+        let r=j.claim_next(4,6).unwrap().remove(0);
+        assert!(j.button_plan(&r).unwrap_err().contains("earlier conversation"));
+        j.finish(&r,None,None,&Outcome::Failed("stale".into()),7).unwrap();
+        j.admit(&[(9,input(7,-100,Some(5),*message,plan))],8).unwrap();
+        assert_eq!(j.request(9).unwrap().0,"failed");
+        assert_eq!(count(&j,"SELECT count(*) FROM plan_runs"),0);
+
+        j.admit(&[(10,msg(7,7,10))],9).unwrap();
+        let r=j.claim_next(4,9).unwrap().remove(0);
+        j.save_choices(&r,"How should replies look?",&["Compact".into(),"Detailed".into()]).unwrap();
+        j.finish(&r,None,None,&Outcome::Answered("Choose".into()),10).unwrap();
+        let buttons=deliver(&mut j); let (choice,message)=&buttons[1];
+        j.admit(&[(11,input(7,7,None,*message,choice))],11).unwrap();
+        let r=j.claim_next(4,11).unwrap().remove(0);
+        assert_eq!(r.text,"2. Detailed");
+        assert!(j.is_choice(&r).unwrap());
+        assert!(j.button_plan(&r).unwrap().is_none());
+        let tq=crate::taskq::Taskq{bin:"/nonexistent".into(),root:"/nonexistent".into(),poll:std::time::Duration::from_secs(1)};
+        let wrapped=std::sync::Mutex::new(j);
+        let (ok,reason)=crate::taskq::call(&tq,&wrapped,&r,"task_run_plan",&json!({"revision":1}));
+        assert!(!ok && reason.contains("never authorizes launch"));
+        let mut j=wrapped.into_inner().unwrap();
+        j.finish(&r,None,None,&Outcome::Answered("Detailed chosen".into()),12).unwrap();
+        j.admit(&[(12,input(7,7,None,*message,choice))],13).unwrap();
+        assert_eq!(j.request(12).unwrap().0,"failed");
+        j.admit(&[(13,msg(7,7,13))],14).unwrap();
+        let r=j.claim_next(4,14).unwrap().remove(0);
+        j.save_choices(&r,"Choose layout",&["Compact".into(),"Detailed".into()]).unwrap();
+        j.finish(&r,None,None,&Outcome::Answered("Choose".into()),15).unwrap();
+        let buttons=deliver(&mut j); let (stale,_) =&buttons[0];
+        let mut number=msg(7,7,14).unwrap();number.text=Some("1".into());
+        j.admit(&[(14,Some(number))],16).unwrap();
+        let r=j.claim_next(4,16).unwrap().remove(0);
+        assert!(j.is_choice(&r).unwrap());
+        assert_eq!(r.text,"1","audit keeps the person's exact text");
+        j.finish(&r,None,None,&Outcome::Answered("Compact chosen".into()),17).unwrap();
+        j.admit(&[(15,input(7,7,None,buttons[0].1,stale))],18).unwrap();
+        assert_eq!(j.request(15).unwrap().0,"failed","text answer consumes the same question");
+        // Explicit independent idea and later post-launch updates never reuse the admitted draft identity.
+        let r=j.ask(7,"a separate plan",14).unwrap();
+        j.save_draft(&r,&json!([{"title":"Images"}]),"pilotq","taskqorg/pilotq","",true,14).unwrap();
+        let first=count(&j,"SELECT draft FROM plans ORDER BY id DESC LIMIT 1");
+        let separate=j.ask(7,"make a separate plan for docs",15).unwrap();
+        j.save_draft(&separate,&json!([{"title":"Docs"}]),"pilotq","taskqorg/pilotq","",true,15).unwrap();
+        let second=count(&j,"SELECT draft FROM plans ORDER BY id DESC LIMIT 1");
+        assert_ne!(first,second,"explicit new idea separates an unlaunched draft");
+        let run=j.ask(7,"run it",16).unwrap();
+        j.authorize(&run,2,7,120,16).unwrap();
+        let change=j.ask(7,"also audio",16).unwrap();
+        j.save_plan(&change,&json!([{"title":"Audio"}]),"pilotq","taskqorg/pilotq","",16).unwrap();
+        assert_ne!(second,count(&j,"SELECT draft FROM plans ORDER BY id DESC LIMIT 1"));
+        drop(j);let _=std::fs::remove_dir_all(p);
+    }
+
+    // R5, §9/#93: upgrade the actual v10 shape without changing saved work or receipts.
+    #[test]
+    fn u93_schema_10_keeps_work_and_refreshes_tools() {
+        use crate::manager::Outcome;
+        let (mut j,p)=journal("u93-upgrade");
+        let r=j.ask(7,"existing plan",0).unwrap();
+        j.save_plan(&r,&json!([{"title":"Keep me"}]),"pilotq","taskqorg/pilotq","",1).unwrap();
+        j.finish(&r,Some("native-old"),None,&Outcome::Answered("Saved".into()),2).unwrap();
+        j.0.execute_batch("DROP TABLE cards; ALTER TABLE plans DROP COLUMN draft; PRAGMA user_version=10;").unwrap();
+        drop(j);
+        let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
+        let r=j.ask(7,"continue",3).unwrap();
+        assert!(j.refresh_tools(&r).unwrap());
+        assert_eq!(count(&j,"SELECT count(*) FROM plans WHERE draft=id AND tickets LIKE '%Keep me%'"),1);
+        assert_eq!(count(&j,"SELECT count(*) FROM plan_runs"),0);
+        assert_eq!(count(&j,"PRAGMA user_version"),SCHEMA);
+        drop(j);
+        let j=Journal::open(&p.join("journal.sqlite")).unwrap();
+        assert_eq!(count(&j,"SELECT count(*) FROM plans"),1);
+        drop(j);let _=std::fs::remove_dir_all(p);
+    }
+
 }

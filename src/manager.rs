@@ -296,6 +296,31 @@ impl Codex {
 /// Runs one claimed request through Codex and records the outcome under its fence. The CLI and Telegram share this path (R13),
 /// with the direct tools and, when TaskQ is configured, the TaskQ tools, at most `direct::BUDGET` calls per request.
 pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq: Option<&crate::taskq::Taskq>, d: &crate::direct::Direct) -> Result<Outcome, String> {
+    let button_plan = j.lock().unwrap().button_plan(r);
+    let button_plan = match button_plan {
+        Ok(plan) => plan,
+        Err(e) => {
+            let outcome=Outcome::Failed(e);
+            j.lock().unwrap().finish(r,None,None,&outcome,now())?;
+            return Ok(outcome);
+        }
+    };
+    if let Some(args) = button_plan {
+        let outcome = match tq {
+            Some(tq) => {
+                let (ok,text)=crate::taskq::call(tq,j,r,"task_run_plan",&args);
+                if ok {
+                    match j.lock().unwrap().launch_reply(r) {
+                        Ok(reply)=>Outcome::Answered(reply),
+                        Err(error)=>Outcome::Uncertain(error),
+                    }
+                } else { Outcome::Failed(text) }
+            }
+            None => Outcome::Failed("TaskQ is not configured".into()),
+        };
+        j.lock().unwrap().finish(r,None,None,&outcome,now())?;
+        return Ok(outcome);
+    }
     use crate::direct;
     let mut tools = direct::tools();
     let instructions = match tq {
@@ -310,8 +335,9 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
     // Read on every turn, including resumed threads and empty profiles after forget (§ 6, R10, R13).
     // Keep the person's text separate: neither profile values nor old summaries are authorization.
     let profile = j.lock().unwrap().profile(r.request)?;
+    let draft = j.lock().unwrap().draft_context(r)?;
     let refresh = j.lock().unwrap().refresh_tools(r)?;
-    let mut input = json!([{"type": "text", "text": profile.to_string()}, {"type": "text", "text": r.text}]);
+    let mut input = json!([{"type": "text", "text": profile.to_string()}, {"type":"text","text":draft.to_string()}, {"type": "text", "text": r.text}]);
     if let Some(path) = &r.image {
         input.as_array_mut().unwrap().push(json!({"type":"localImage","path":path}));
     }

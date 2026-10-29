@@ -34,7 +34,10 @@ fn input(kind: &UpdateKind) -> Option<Input> {
     // answer checks treat it like a reply with the option number.
     if let UpdateKind::CallbackQuery(q) = kind {
         let m = q.message.as_ref()?.regular_message()?;
-        let k = q.data.as_deref()?.strip_prefix("answer:")?;
+        let data = q.data.as_deref()?;
+        let (kind,k) = if let Some(k)=data.strip_prefix("answer:") { ("button",k) }
+            else if data.starts_with("plan:") || data.starts_with("choice:") { ("action",data) }
+            else { return None };
         return Some(Input { callback: Some(q.id.0.clone()),
             image: None,
             language: q.from.language_code.clone(),
@@ -43,7 +46,7 @@ fn input(kind: &UpdateKind) -> Option<Input> {
             sender: Some(q.from.id.0 as i64),
             name: Some(q.from.full_name()),
             message: m.id.0 as i64,
-            kind: "button",
+            kind,
             text: Some(k.into()),
             reply_to: Some(m.id.0 as i64),
         });
@@ -440,6 +443,7 @@ async fn send(bot: &Bot, j: &Shared, d: &Delivery) -> Sent {
     }
     if d.kind == "rich" {
         let mut body = json!({"chat_id":d.chat,"rich_message":{"markdown":markdown(&d.text)},"link_preview_options":{"is_disabled":true}});
+        if !d.buttons.is_empty() { body["reply_markup"] = json!({"inline_keyboard":d.buttons.iter().map(|(data,label)|vec![json!({"text":label,"callback_data":data})]).collect::<Vec<_>>()}); }
         if let Some(t) = d.topic { body["message_thread_id"] = json!(t); }
         if let Some(m) = d.reply_to { body["reply_parameters"] = json!({"message_id":m,"allow_sending_without_reply":true}); }
         return match raw(bot, j, "sendRichMessage", body).await {
@@ -462,8 +466,8 @@ async fn send(bot: &Bot, j: &Shared, d: &Delivery) -> Sent {
         }
     }
     let mut r = bot.send_message(ChatId(d.chat), d.html.as_deref().unwrap_or(&d.text)).link_preview_options(no_preview());
-    if d.kind == "question" {
-        let rows: Vec<_> = options(&d.text).into_iter().map(|(data, label)| vec![InlineKeyboardButton::callback(label, data)]).collect();
+    if d.kind == "question" || !d.buttons.is_empty() {
+        let rows: Vec<_> = (if d.kind == "question" {options(&d.text)} else {d.buttons.clone()}).into_iter().map(|(data, label)| vec![InlineKeyboardButton::callback(label, data)]).collect();
         if !rows.is_empty() { r = r.reply_markup(InlineKeyboardMarkup::new(rows)); }
     }
     if d.html.is_some() {
