@@ -2559,16 +2559,24 @@ fn u95_pinned_instructions_reach_codex() {
     let c = spawn(&d, None);
     push(&st, text(1, OWNER, None, OWNER, "hello"));
     wait("answer", 15, || sent_has(&st, "re: hello"));
+    push(&st, text(2, OWNER, None, OWNER, "follow up"));
+    wait("resumed answer", 15, || sent_has(&st, "re: follow up"));
     let log = fs::read_to_string(d.join("codex.log")).unwrap();
     let start: Value = log.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok())
         .find(|m| m["method"] == "thread/start").unwrap();
     let policy = start["params"]["developerInstructions"].as_str().unwrap();
     for source in [include_str!("../specq/caveman/rules/core.md"),
-        include_str!("../specq/caveman/rules/indicators.md")] {
+        include_str!("../specq/caveman/rules/indicators.md"),
+        include_str!("../specq/caveman/rules/documentation.md"),
+        include_str!("../specq/caveman/rules/changes.md")] {
         assert!(policy.contains(source), "pinned shared source absent from app-server instructions");
     }
     assert!(policy.contains("## Task intake"), "pinned workflow intake missing");
     assert!(policy.contains("## Telegram feedback"), "PilotQ additions missing");
+    let resumed: Value = log.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find(|m| m["method"] == "thread/resume").unwrap();
+    assert_eq!(resumed["params"]["developerInstructions"], policy,
+        "#139: a native resume receives the same communication profiles as a new session");
     stop(c, d);
 }
 
@@ -2774,7 +2782,7 @@ fn u110_one_draft_launch_states_and_cancel() {
     assert_eq!(query(&d, "SELECT count(DISTINCT draft) FROM plans"), 1, "follow-ups revise one draft");
     for m in &displays {
         let t = m["text"].as_str().unwrap();
-        assert!(t.contains("Plan draft") && (0..10).all(|n| !t.contains(&format!("Draft {n}"))), "no numbered plan: {t}");
+        assert!(t.contains("Updated plan") && (0..10).all(|n| !t.contains(&format!("Draft {n}"))), "no numbered plan: {t}");
         assert_eq!(m["reply_markup"]["inline_keyboard"][1][0]["text"], "Cancel");
     }
     let closed = |id: &Value| st.lock().unwrap().api.iter().any(|(m, b, _)| m == "editmessagereplymarkup" && b["message_id"] == *id);
@@ -3212,6 +3220,7 @@ fn u119_status_footer_delivery() {
         st.lock().unwrap().rich_reject=mode!="rich";
         let fake=FAKE.replace(r#" @ '"$th"'"# , r#" @ '"$th"'\n\n"#).replace("    case \"$text\" in",r#"    case "$text" in
     measured*)
+      text='measured answer\n- **Status**: queued\n- [Task](https://example.invalid/task)'
       echo '{"method":"thread/tokenUsage/updated","params":{"threadId":"'$th'","turnId":"u1","tokenUsage":{"last":{"inputTokens":800,"totalTokens":900},"modelContextWindow":1000}}}'
       # Keep the 3h ceiling away from its boundary during async delivery.
       reset=$(($(date +%s) + 9000))
@@ -3235,6 +3244,15 @@ fn u119_status_footer_delivery() {
         let delivered=sent(&st).into_iter().find(|v|v["text"].as_str().is_some_and(|t|t.contains("re: measured answer"))).unwrap();
         if mode=="plain" { assert!(delivered.get("parse_mode").is_none()); }
         if mode=="html" { assert_eq!(delivered["parse_mode"],"HTML"); }
+        // #139 / §12: the same answer keeps flat lists, emphasis, links and footer
+        // separation through all three sinks. Plain fallback preserves literal source.
+        let body=delivered["text"].as_str().unwrap();
+        if mode=="html" {
+            assert!(body.contains("\n• <b>Status</b>: queued\n• <a href=\"https://example.invalid/task\">Task</a>"), "{body}");
+        } else {
+            assert!(body.contains("\n- **Status**: queued\n- [Task](https://example.invalid/task)"), "{body}");
+        }
+
         push(&st,text(3,chat,topic,OWNER,"missing metrics"));
         wait("missing metrics reply",15,||sent_has(&st,"re: missing metrics"));
         let answer=texts(&st).into_iter().find(|s|s.contains("re: missing metrics")).unwrap();

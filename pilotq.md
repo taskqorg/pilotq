@@ -427,6 +427,8 @@ This release retains coreq `v0.14.6` (locked in `Cargo.lock`) and journal schema
 
 **Owner, task #119 (2026-10-29, option 1):** extend the development-live exception above to the ready #119 status-line change on the existing FRA service, with the same owner, drain, schema, rollback and continuity protections. The PM performs one authorized DM/topic run and attaches Telegram screenshots after the worker asks with the exact build and steps. This is not a Hermes consumer cutover.
 
+**Owner, task #139 continuation (2026-10-29):** FRA is retired; the current live host is PDS 18 (`pds18.ufobe.com`). Finish the #139 PR first. After merge the PM releases, updates PDS 18 and posts conversation examples and A6–A7 live evidence on #139, using the existing drain, schema, rollback and continuity protections. Worker verification remains local/CI; no worker live installation or Hermes cutover is granted. Communication scope and application are owned by [Telegram feedback](docs/telegram-feedback.md) under §12.
+
 PilotQ has its own TaskQ board. Changes follow the TaskQ flow: spec edit first, held task, worker, reviewer, release. Before each release, run the [automatic management suite](docs/acceptance.md#automatic-management-suite-a40) against the release candidate. Suite tasks use a unique reserved `pilotq-e2e-*` host that no service claims; the runner scripts their worker/reviewer board events without launching ordinary workers. This qualifies the management path, not real implementation or review. All cases and cleanup must pass; a blocked or incomplete run is not release evidence.
 
 ## 10. Adoption sequence

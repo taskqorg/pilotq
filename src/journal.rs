@@ -1669,8 +1669,8 @@ impl Journal {
                 tx.execute("INSERT INTO cards(request_id,generation,plan_id) VALUES (?1,?2,?3) ON CONFLICT(request_id) DO UPDATE SET plan_id=excluded.plan_id",params![r.request,r.generation,plan]).map_err(e)?;
                 let ru = language.as_deref().unwrap_or("en").starts_with("ru");
                 // #110: one unnumbered draft per conversation; internal IDs never read as a new plan
-                text = format!("{} **{}** · {}\n{}", if ru {"Черновик сохранён локально."} else {"Draft saved locally."}, if ru {"Черновик плана"} else {"Plan draft"}, project,
-                    if ru {"Актуальный вариант; на доске ничего не создано."} else {"Current draft; nothing filed on the board."});
+                text = format!("{} **{}** · {}. {}", if ru {"Черновик сохранён локально."} else {"Draft saved locally."}, if ru {"Актуальный план"} else {"Updated plan"}, project,
+                    if ru {"На доске ничего не создано."} else {"Nothing filed on the board."});
                 let tickets: Value = serde_json::from_str(&tickets).map_err(|e|e.to_string())?;
                 for (n,t) in tickets.as_array().into_iter().flatten().enumerate() {
                     text += &format!("\n\n{}. **{}**\n{}",n+1,t["title"].as_str().unwrap_or(""),t["goal"].as_str().unwrap_or(""));
@@ -3356,6 +3356,12 @@ mod tests {
         assert_eq!(j.save_plan(&r, &json!([{"title": "A", "goal": "g", "acceptance": ["a"]}]), "pilotq", "taskqorg/pilotq", "", 1).unwrap(), 1);
         assert!(j.authorize(&r, 1, 7, 120, 1).unwrap_err().contains("same request"), "a plan-only request starts nothing");
         j.finish(&r, None, None, &Outcome::Answered("plan".into()), 2).unwrap();
+        // #139 / §12: render the saved draft once; preserve its full worker acceptance.
+        let reply: String = j.0.query_row("SELECT reply FROM requests WHERE id=?1", [r.request], |x| x.get(0)).unwrap();
+        assert!(reply.starts_with("Draft saved locally. **Updated plan** · pilotq. Nothing filed on the board.\n\n1. **A**\ng\n- a"), "{reply}");
+        assert_eq!(reply.matches("1. **A**").count(), 1);
+        assert!(reply.contains("Use Run plan") && reply.contains("Cancel closes the draft"));
+
         j.admit(&[(2, msg(7, 7, 2))], 3).unwrap();
         let r2 = j.claim_next(4, 3).unwrap().remove(0);
         assert!(j.authorize(&r2, 2, 7, 120, 3).unwrap_err().contains("not the latest"));
