@@ -1646,7 +1646,12 @@ fn u11_l05_budget_and_deadline_keep_evidence() {
     push(&st, u);
     wait("deadline", 20, || sent_has(&st, "Результат действия неизвестен; автоматического повтора не будет; сохранено: issue_read taskqorg/pilotq#7: updated 2026-10-20T10:00:00Z; попросите запланировать остальное."));
     assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE id=2 AND state='uncertain'"), 1);
-    assert!(query_text(&d,"SELECT error FROM requests WHERE id=2").contains("Codex did not finish within 4 s"),"the short reply retains diagnostics in the audit");
+    let diagnostic = query_text(&d, "SELECT error FROM requests WHERE id=2");
+    // §7: context preparation consumes the same deadline, so Codex gets only the remaining budget.
+    let seconds = diagnostic.strip_prefix("Codex did not finish within ")
+        .and_then(|s| s.strip_suffix(" s"))
+        .and_then(|s| s.parse::<u64>().ok());
+    assert!(matches!(seconds, Some(0..=4)), "the audit retains the deadline cause and bounded runtime budget: {diagnostic}");
     stop(c, d);
 }
 
