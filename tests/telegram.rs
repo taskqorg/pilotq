@@ -1106,7 +1106,7 @@ fn u15_network_loss_after_ticket_two_reconciles_the_same_ids() {
     assert!(adds.iter().filter(|o| o.ends_with("-t2")).count() >= 2 && adds.iter().filter(|o| o.ends_with("-t1")).count() == 1, "{adds:?}");
     let first_start = calls.iter().position(|c| c[0] == "start").unwrap();
     assert!(calls[first_start..].iter().all(|c| c[0] == "start") && calls[first_start..].len() == 3, "start only after every create: {calls:?}");
-    assert!(sent_has(&st, "#20 <a href=\"https://github.com/taskqorg/pilotq/issues/20\">pilotq#20</a>, #21"), "{:?}", texts(&st));
+    assert!(sent_has(&st, "<a href=\"https://github.com/taskqorg/pilotq/issues/20\">GitHub · pilotq#20 · Two</a>, <a href=\"https://github.com/taskqorg/pilotq/issues/21\">GitHub · pilotq#21 · Three</a>"), "{:?}", texts(&st));
     stop(c, d);
 }
 
@@ -1527,7 +1527,7 @@ fn u04_f04_owner_comment_and_label_once_and_crash_readback() {
     killed(c);
     assert_eq!((comments(&d), query(&d, "SELECT count(*) FROM effects WHERE state='intent'")), (2, 1));
     let c = spawn(&d, None);
-    wait("found on readback", 15, || sent_has(&st, "After a restart, the comment on taskqorg/pilotq#5 was found written once (<a href=\"https://github.com/taskqorg/pilotq/issues/5#issuecomment-501\">pilotq#5</a>); it is not repeated."));
+    wait("found on readback", 15, || sent_has(&st, "After a restart, the comment on taskqorg/pilotq#5 was found written once (<a href=\"https://github.com/taskqorg/pilotq/issues/5#issuecomment-501\">GitHub · pilotq#5</a>); it is not repeated."));
     assert_eq!((comments(&d), posts(&d)), (2, 3), "not repeated");
     drop(c);
 
