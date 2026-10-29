@@ -6,6 +6,7 @@ mod journal;
 mod instructions;
 mod keys;
 mod manager;
+mod footer;
 mod taskq;
 mod telegram;
 mod voice;

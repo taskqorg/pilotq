@@ -402,7 +402,8 @@ fn answer_control(tx: &Connection, session: &str, cmd: &str, request: i64, chat:
             _ => {
                 tx.execute("INSERT INTO conversations(session, generation) VALUES (?1, 1) ON CONFLICT(session) DO UPDATE SET generation=generation+1, thread=NULL", [session])
                     .map_err(e)?;
-                "New conversation started. Earlier requests, task links and receipts stay recorded.".into()
+                let selected: Option<String> = tx.query_row("SELECT CAST(value AS TEXT) FROM meta WHERE key=?1", [format!("model:{session}")], |r|r.get(0)).optional().map_err(e)?;
+                format!("New conversation started. Model: {}.", selected.as_deref().unwrap_or("default (Codex configuration)"))
             }
         },
         None,
@@ -1617,6 +1618,11 @@ impl Journal {
     /// Records a run's outcome, reply and native thread in one transaction, only while its fence holds. Returns false for a
     /// fenced run, which changes nothing but its own run row.
     pub fn finish(&self, r: &Run, thread: Option<&str>, model: Option<&str>, outcome: &crate::manager::Outcome, at: i64) -> Result<bool, String> {
+        self.finish_with_footer(r, thread, model, outcome, None, at)
+    }
+
+    /// #119 / §4: freeze the runtime observation with the final reply, before any delivery.
+    pub fn finish_with_footer(&self, r: &Run, thread: Option<&str>, model: Option<&str>, outcome: &crate::manager::Outcome, footer: Option<&str>, at: i64) -> Result<bool, String> {
         use crate::manager::Outcome;
         let e = |e: rusqlite::Error| e.to_string();
         let tx = self.0.unchecked_transaction().map_err(e)?;
@@ -1672,6 +1678,10 @@ impl Journal {
                     text += &format!("\n{}. {option}",i+1);
                 }
             }
+        }
+        let telegram: bool = tx.query_row("SELECT front='telegram' FROM requests WHERE id=?1", [r.request], |x| x.get(0)).map_err(e)?;
+        if state == "answered" && telegram && let Some(footer) = footer {
+            text += &format!("\n\n{footer}");
         }
         tx.execute("UPDATE requests SET state=?2, reply=?3, error=?4 WHERE id=?1", params![r.request, state, text, error]).map_err(e)?;
         close_drafts(&tx, &r.session, r.request, at)?;
