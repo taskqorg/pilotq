@@ -765,3 +765,32 @@ Downloaded archive SHA256 values matched GitHub release metadata:
 - GigaAM model archive: `f9620a0099019c6afcee26525ef9ed3297fa50dd5691c1902af0c948fc1a470b`.
 
 The candidate doctor on FRA returned all checks `ok`, including `voice`. The model's Russian release sample returned a nonempty Cyrillic transcript with exit code 0. These prove local setup, not A3: a new real Telegram Russian voice note, transcript audit event and delivered answer remain required. Request 68 preserves the prior short failure and is not replayed. The doctor code still requires PR acceptance and the §9 release path before installed use; production cutover is not authorized.
+
+## Built-in commands and model selection (#106)
+
+The owner selected per-conversation manager models; worker policy remains with
+TaskQ ([§9](../pilotq.md#command-line), R9, R13). FRA requests 37–41 on
+2026-10-29 sent `/version`, `/model`, `/doctor`, `/help` and `/restart` to Codex;
+the owner reported `/restart` waiting 40 minutes. The deterministic reproduction
+`cargo test --locked u106_commands_bypass_active_chat` failed before the fix
+with `/version forwarded as text` and passed after dispatch was corrected.
+
+Run `cargo test --locked u106` for these retained protections:
+
+- The journal replay keeps all five commands out of Codex during an active run.
+- The local Bot API checks actual command replies, model buttons, duplicate
+  selection refusal, selected `turn/start` arguments, `/new`, service restart,
+  unsupported skills, CLI parity and command errors. It uses invented models and a
+  fake runtime; no real inference is performed.
+- Journal authority checks cover another person's button, revocation, unknown
+  models, stale generations and a default change during an active run. A late
+  old-model result cannot clear the pending conversation rebuild.
+- The setup subprocess check covers deadline termination and output redaction.
+- The restart receipt check requires a replacement process and the existing
+  healthy-start boundary. The existing `update_drain_timeout_preserves_running_work`
+  check retains refusal of activation while an active request has not drained.
+
+These are model/adapter and process checks, not a live Telegram rendering or
+installed-service restart observation. A7's live Telegram checks, including an
+installed restart with an active request, remain unqualified until performed on
+an authorized test installation; no deployment or production cutover is implied.

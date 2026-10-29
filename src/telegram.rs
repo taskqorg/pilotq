@@ -35,7 +35,9 @@ fn input(kind: &UpdateKind) -> Option<Input> {
     if let UpdateKind::CallbackQuery(q) = kind {
         let m = q.message.as_ref()?.regular_message()?;
         let data = q.data.as_deref()?;
-        let (kind,k) = if let Some(k)=data.strip_prefix("answer:") { ("button",k) }
+        let model_command = data.strip_prefix("model:").map(|s|format!("/model-button {s}"));
+        let (kind,k) = if let Some(k)=model_command.as_deref() { ("text",k) }
+            else if let Some(k)=data.strip_prefix("answer:") { ("button",k) }
             else if data.starts_with("plan:") || data.starts_with("cancel:") || data.starts_with("choice:") { ("action",data) }
             else { return None };
         return Some(Input { callback: Some(q.id.0.clone()),

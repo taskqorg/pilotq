@@ -342,6 +342,16 @@ Use the existing Langfuse installation for optional, bounded telemetry export af
 
 ### Command line
 
+**Owner, task #106 (option 1):** deterministic built-in commands never enter the model backlog, including while a chat run is active. They use the same admission and audit boundary as other requests (R10, R13, R17).
+
+- `/help` lists available controls; `/version` reports this binary's version; `/doctor` runs bounded, read-only setup checks and returns check names and outcomes only. Unknown commands receive a usage error, not a model turn. Commands accept Telegram's `@bot` suffix.
+- `/model` reads the configured Codex app-server's model catalogue and displays selection buttons; `/model MODEL` selects an exact catalogue name, and `/model default` removes the override. The catalogue is not proof of subscription entitlement. Record the requested model separately from the last model reported by Codex. An unavailable catalogue refuses selection without changing the saved choice.
+- A model choice belongs to the existing isolated or shared conversation, requires current `chat` admission, survives restart and `/new`, and applies only to runs claimed after the change. Buttons bind to the displaying person, conversation generation and latest selector. Active runs keep their claimed choice. No automatic model or paid-provider fallback is allowed (R9).
+- Unset choices inherit the isolated Codex configuration. TaskQ worker defaults, inheritance, overrides and host resource admission stay with TaskQ; PilotQ never passes its manager choice to workers or changes running tasks. Model selection does not change the four-conversation budget (§7).
+- `/restart` is owner-only. The installed service acknowledges immediately, drains through the existing §9 path, and reports completion only after the restarted service writes healthy status. A failed drain resumes admission and reports failure. Source runs refuse service restart. Requests, task subscriptions and delivery receipts survive. Duplicate updates cannot restart twice.
+- `/skills` lists enabled skills; `/skill NAME TEXT` is the invocation syntax. No native skills are currently approved for the restricted manager. Both commands explain this without starting a model or enabling native tools; adding an approved skill requires a contract decision under §12.
+- The operator can send the same controls through `pilotq ask '/model MODEL'` (R13). Service restart and setup checks keep their own bounded control worker, independent of chat generation.
+
 **Proposed:** the `pilotq` binary is the service and the operator CLI. The CLI uses the same journal, grants and audit records as Telegram; the local operator acts as the bootstrap owner identity from protected configuration.
 
 | Command | Purpose |

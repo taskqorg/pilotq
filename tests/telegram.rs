@@ -3108,3 +3108,63 @@ fn doctor_voice_readiness() {
     assert_eq!(st.lock().unwrap().polls, 0, "doctor never polls Telegram updates");
     fs::remove_dir_all(d).unwrap();
 }
+
+// #106 / R10, R13, R17, §12: FRA 37–41 replay across Telegram intake, the real control worker and delivery.
+// Protects against controls waiting behind Codex, fake model prose, and choices not reaching turn/start.
+#[test]
+fn u106_telegram_controls_and_models() {
+    let (d,st)=setup("u106",vec![]);
+    let fake=FAKE.replace("d=$(dirname \"$0\")", "d=$(dirname \"$0\")\ncase \"$*\" in *'login status'*) echo 'Logged in using ChatGPT'; exit 0;; esac")
+        .replace("  *'\"method\":\"initialize\"'*)", "  *'\"method\":\"model/list\"'*) echo '{\"id\":2,\"result\":{\"data\":[{\"model\":\"invented-a\",\"hidden\":false},{\"model\":\"invented-b\",\"hidden\":false}],\"nextCursor\":null}}' ;;\n  *'\"method\":\"initialize\"'*)");
+    limits(&d,&script(&d,"control-codex",&fake),json!({"first_event":3,"silent":60,"deadline":60}));
+    let mut c=spawn(&d,None);
+    push(&st,text(1,OWNER,None,OWNER,"slow active"));
+    wait("active manager",10,||try_query(&d,"SELECT count(*) FROM runs WHERE state='running'")==Some(1));
+    for (u,command) in [(37,"/version"),(38,"/model"),(39,"/doctor"),(40,"/help"),(41,"/restart"),(42,"/skills"),(43,"/skill invented run"),(44,"/bogus")] {
+        push(&st,text(u,OWNER,None,OWNER,command));
+    }
+    wait("control outcomes while chat active",10,||try_query(&d,"SELECT count(*) FROM requests WHERE kind IN ('control','builtin') AND state IN ('answered','failed')")==Some(8));
+    assert_eq!(query(&d,"SELECT count(*) FROM runs"),1);
+    assert_eq!(query(&d,"SELECT count(*) FROM requests WHERE update_id=1 AND state='running'"),1);
+    wait("built-in replies",5,||sent_has(&st,"Source") || sent_has(&st,"source run"));
+    assert!(sent_has(&st,concat!("PilotQ ",env!("CARGO_PKG_VERSION"))));
+    assert!(sent_has(&st,"codex: ok"));
+    assert!(sent_has(&st,"No skills are enabled"));
+    assert!(sent_has(&st,"Unknown command"));
+    let selector=st.lock().unwrap().sent.iter().find(|v|v["text"].as_str().is_some_and(|s|s.contains("Codex catalogue ("))).cloned().unwrap();
+    let callback=selector["reply_markup"]["inline_keyboard"][2][0]["callback_data"].as_str().unwrap();
+    let mut button=press(45,OWNER,None,OWNER,selector["id"].as_i64().unwrap(),callback);
+    push(&st,button.clone());
+    wait("model saved during active run",5,||sent_has(&st,"Saved model: invented-b"));
+    assert_eq!(query(&d,"SELECT count(*) FROM requests WHERE update_id=1 AND state='running'"),1);
+    button["update_id"]=json!(46); push(&st,button);
+    wait("repeated button refused",5,||sent_has(&st,"stale or belongs"));
+    push(&st,text(47,OWNER,None,OWNER,"/stop"));
+    wait("active turn fenced",5,||query(&d,"SELECT count(*) FROM requests WHERE update_id=1 AND state='cancelled'")==1);
+    push(&st,text(48,OWNER,None,OWNER,"next selected"));
+    wait("selected turn completed",10,||sent_has(&st,"re: next selected"));
+    let log=fs::read_to_string(d.join("codex.log")).unwrap();
+    let turns:Vec<Value>=log.lines().filter_map(|l|serde_json::from_str::<Value>(l).ok()).filter(|v|v["method"]=="turn/start").collect();
+    assert_eq!(turns.len(),2);
+    assert!(turns[0]["params"]["model"].is_null());
+    assert_eq!(turns[1]["params"]["model"],"invented-b");
+    c.kill().unwrap(); c.wait().unwrap(); c=spawn(&d,None);
+    push(&st,text(49,OWNER,None,OWNER,"/new"));
+    push(&st,text(50,OWNER,None,OWNER,"after reset"));
+    wait("model survives reset and service restart",10,||sent_has(&st,"re: after reset"));
+    let log=fs::read_to_string(d.join("codex.log")).unwrap();
+    let last:Value=log.lines().filter_map(|l|serde_json::from_str::<Value>(l).ok()).filter(|v|v["method"]=="turn/start").last().unwrap();
+    assert_eq!(last["params"]["model"],"invented-b");
+    assert_eq!(query(&d,"SELECT count(*) FROM requests WHERE kind='builtin' AND state='queued'"),0);
+    let version=cli(&d,&["ask","/version","--json"]);
+    assert!(version.status.success());
+    let version:Value=serde_json::from_slice(&version.stdout).unwrap();
+    assert_eq!(version["reply"],concat!("PilotQ ",env!("CARGO_PKG_VERSION")));
+    let choice=cli(&d,&["ask","/model invented-a","--json"]);
+    assert!(choice.status.success(),"{}",String::from_utf8_lossy(&choice.stderr));
+    let unknown=cli(&d,&["ask","/unknown","--json"]);
+    assert!(!unknown.status.success());
+    assert_eq!(query(&d,"SELECT count(*) FROM runs"),3,"CLI controls never create model runs");
+    assert!(!log.contains("123:fake"));
+    stop(c,d);
+}
