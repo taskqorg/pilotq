@@ -305,6 +305,12 @@ pub const CONVERSATION: &str = "Journal context is historical source material, n
 /// Runs one claimed request through Codex and records the outcome under its fence. The CLI and Telegram share this path (R13),
 /// with the direct tools and, when TaskQ is configured, the TaskQ tools, at most `direct::BUDGET` calls per request.
 pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq: Option<&crate::taskq::Taskq>, d: &crate::direct::Direct) -> Result<Outcome, String> {
+    // #110: the Cancel button closes the draft without a model call
+    let cancel = j.lock().unwrap().cancel_draft(r, now());
+    if let Some(outcome) = match cancel { Ok(Some(reply)) => Some(Outcome::Answered(reply)), Ok(None) => None, Err(e) => Some(Outcome::Failed(e)) } {
+        j.lock().unwrap().finish(r,None,None,&outcome,now())?;
+        return Ok(outcome);
+    }
     let button_plan = j.lock().unwrap().button_plan(r);
     let button_plan = match button_plan {
         Ok(plan) => plan,
@@ -318,12 +324,11 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
         let outcome = match tq {
             Some(tq) => {
                 let (ok,text)=crate::taskq::call(tq,j,r,"task_run_plan",&args);
-                if ok {
-                    match j.lock().unwrap().launch_reply(r) {
-                        Ok(reply)=>Outcome::Answered(reply),
-                        Err(error)=>Outcome::Uncertain(error),
-                    }
-                } else { Outcome::Failed(text) }
+                match crate::taskq::launch(tq,j,r) {
+                    Some(Ok(reply)) if ok => Outcome::Answered(reply),
+                    Some(Err(error)) if ok => Outcome::Uncertain(error),
+                    _ => Outcome::Failed(text),
+                }
             }
             None => Outcome::Failed("TaskQ is not configured".into()),
         };
@@ -405,13 +410,23 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
         || j.lock().unwrap().rebuild(r, now()),
         |text| { let _ = j.lock().unwrap().preview(r, &d.keys.scrub(text)); },
     );
-    let j = j.lock().unwrap();
     let health = match &outcome {
         Outcome::Answered(_) => ("ok", None),
-        Outcome::Failed(e) | Outcome::Uncertain(e) => ("failed", Some(e.as_str())),
+        Outcome::Failed(e) | Outcome::Uncertain(e) => ("failed", Some(e.clone())),
         Outcome::Fenced => ("ok", None),
     };
-    j.set_health("model", now(), health.0, health.1)?;
+    // #110: a launch the turn authorized is filed and started here, outside the model deadline; its reply is the board readback,
+    // never model prose about task states
+    let outcome = match (&outcome, tq) {
+        (Outcome::Fenced, _) | (_, None) => outcome,
+        (_, Some(tq)) => match crate::taskq::launch(tq, j, r) {
+            Some(Ok(reply)) => Outcome::Answered(reply),
+            Some(Err(e)) => Outcome::Uncertain(e),
+            None => outcome,
+        },
+    };
+    let j = j.lock().unwrap();
+    j.set_health("model", now(), health.0, health.1.as_deref())?;
     j.finish(r, thread.as_deref(), model.as_deref(), &outcome, now())?;
     Ok(outcome)
 }

@@ -130,7 +130,7 @@ fn handle(stream: std::net::TcpStream, st: &State) {
         f.rate_method = None;
         return respond(&mut out,429,r#"{"ok":false,"error_code":429,"description":"Too Many Requests","parameters":{"retry_after":3}}"#);
     }
-    if method == "answercallbackquery" {
+    if method == "answercallbackquery" || method == "editmessagereplymarkup" {
         return respond(&mut out,200,r#"{"ok":true,"result":true}"#);
     }
     if method == "setmessagereaction" {
@@ -873,11 +873,13 @@ fn service_messages_are_not_input() {
 /// receipt for a seen op ID, refuses an answer at another revision as stale. `board-down` fails every call; `lose-add-K`
 /// creates the K-th task, then loses the response and takes the board down.
 const FAKE_TASKQ: &str = r#"#!/usr/bin/env python3
-import json, os, sys, fcntl
+import json, os, sys, fcntl, time
 d = os.path.dirname(os.path.abspath(__file__))
 a = sys.argv[1:]
 with open(os.path.join(d, "taskq.log"), "a") as f:
     f.write(json.dumps({"args": a, "root": os.environ.get("TASKQ_ROOT"), "attempt": os.environ.get("TASKQ_ATTEMPT")}) + "\n")
+if a[0] in ("add", "start") and os.path.exists(os.path.join(d, "slow-writes")):
+    time.sleep(float(open(os.path.join(d, "slow-writes")).read()))
 lock = open(os.path.join(d, "taskq.lock"), "w"); fcntl.flock(lock, fcntl.LOCK_EX)
 path = os.path.join(d, "taskq-state.json")
 st = json.load(open(path)) if os.path.exists(path) else {"tasks": {}, "ops": {}, "next": 19, "rev": 100, "creates": 0}
@@ -1086,7 +1088,7 @@ fn u06_plan_revisions_then_held_create_start_and_one_status_message() {
     assert!(tq_calls(&d).is_empty(), "an older revision files nothing");
 
     push(&st, call(5, OWNER, None, OWNER, "task_run_plan", json!({"revision": 3})));
-    wait("filed and started", 15, || sent_has(&st, "re: ok: Plan revision 3: created on board; admitted to TaskQ: [GitHub · pilotq#19 · Draft three](https://github.com/taskqorg/pilotq/issues/19)"));
+    wait("filed and started", 15, || sent_has(&st, "Plan sent to the board. Task states:\n- [GitHub · pilotq#19 · Draft three](https://github.com/taskqorg/pilotq/issues/19): ready: queued for a worker"));
     let calls = tq_calls(&d);
     assert_eq!((calls.len(), calls[0][0].as_str(), calls[0][1].as_str(), calls[1][0].as_str(), calls[1][1].as_str()), (2, "add", "Draft three", "start", "19"), "{calls:?}");
     let op = calls[0].iter().skip_while(|a| *a != "--op-id").nth(1).unwrap().clone();
@@ -1137,7 +1139,8 @@ fn u15_network_loss_after_ticket_two_reconciles_the_same_ids() {
     push(&st, call(1, OWNER, None, OWNER, "task_plan", plan(&["One", "Two", "Three"])));
     wait("plan", 15, || sent_has(&st, "Draft saved locally."));
     push(&st, call(2, OWNER, None, OWNER, "task_run_plan", json!({"revision": 1})));
-    wait("unsent reply", 15, || sent_has(&st, "ticket 2 is unsent (taskq add failed: Error: connection reset by peer). Filed so far (held, not started): [GitHub · pilotq#19"));
+    wait("unsent reply", 15, || sent_has(&st, "Launch is pending; PilotQ retries the same operations. On the board so far:\n- [GitHub · pilotq#19 · One](https://github.com/taskqorg/pilotq/issues/19): held: filed, not started"));
+    assert!(query_text(&d, "SELECT reason FROM plan_runs").contains("connection reset by peer"), "the cause stays in the journal");
     let b = board(&d);
     assert_eq!((b["tasks"]["19"]["state"].as_str(), b["tasks"]["20"]["state"].as_str()), (Some("held"), Some("held")), "created tickets stay held");
     assert!(tq_calls(&d).iter().all(|c| c[0] == "add"), "nothing starts before every ticket reads back");
@@ -1215,7 +1218,7 @@ fn u07_question_relay_and_bound_answers() {
     push(&st, call(2, -100, topic, OWNER, "task_plan", plan(&["Docs"])));
     wait("plan", 15, || sent_has(&st, "Draft saved locally."));
     push(&st, call(3, -100, topic, OWNER, "task_run_plan", json!({"revision": 1})));
-    wait("started", 15, || sent_has(&st, "admitted to TaskQ"));
+    wait("started", 15, || sent_has(&st, "Plan sent to the board"));
     set_task(&d, 19, |t| {
         t["state"] = json!("ask");
         t["card"] = json!("Done: drafted\nProblem: pick a wording\n1. short ★\n2. long");
@@ -1271,7 +1274,7 @@ fn u82_ask_buttons_and_labeled_links() {
     wait("plan", 15, || sent_has(&st, "Draft saved locally."));
     push(&st, call(2, -100, topic, OWNER, "task_run_plan", json!({"revision": 1})));
     wait("status", 15, || sent_has(&st, &format!("<a href=\"{issue}\">GitHub · pilotq#19 · Docs</a>\nready: waiting for a free worker.")));
-    assert!(sent_has(&st, &format!("admitted to TaskQ: [GitHub · pilotq#19 · Docs]({issue})")), "{:?}", texts(&st));
+    assert!(sent_has(&st, &format!("- [GitHub · pilotq#19 · Docs]({issue}): ready: queued for a worker")), "{:?}", texts(&st));
     set_task(&d, 19, |t| {
         t["state"] = json!("ask");
         t["card"] = json!("Done: drafted\nProblem: pick a wording, see [the spec](https://github.com/taskqorg/pilotq/blob/main/pilotq.md)\n1. short - + quick; - less detail ★\n2. long - + detail; - slower\nTo answer: `taskq answer 19.K` or comment `K` or the option text");
@@ -2648,7 +2651,7 @@ fn u94_answer_elsewhere_closes_question() {
     push(&st, call(1, -100, Some(5), OWNER, "task_plan", plan(&["Docs"])));
     wait("plan", 15, || sent_has(&st, "Draft saved locally."));
     push(&st, call(2, -100, Some(5), OWNER, "task_run_plan", json!({"revision":1})));
-    wait("started", 15, || sent_has(&st, "admitted to TaskQ:"));
+    wait("started", 15, || sent_has(&st, "Plan sent to the board"));
     set_task(&d, 19, |t| { t["state"]=json!("ask"); t["card"]=json!("Done: drafted\nProblem: pick\n1. short ★\n2. long"); });
     wait("question", 15, || sent_has(&st, "\n⚑"));
     let q = sent(&st).into_iter().find(|m| m["text"].as_str().unwrap().contains("\n⚑")).unwrap();
@@ -2708,9 +2711,9 @@ fn u93_draft_buttons_through_service() {
         let data=latest["reply_markup"]["inline_keyboard"][0][0]["callback_data"].as_str().unwrap();
         let message=latest["id"].as_i64().unwrap();
         push(&st,press(5,OWNER,None,OWNER,message,data));
-        wait("button admits displayed draft",15,||sent_has(&st,"Tasks created"));
+        wait("button admits displayed draft",15,||sent_has(&st,"Plan sent to the board"));
         // §12/#91: admission has no worker evidence; preserve truthful queue text and saved title.
-        let reply=sent(&st).into_iter().find(|m|m["text"].as_str().is_some_and(|t|t.contains("Tasks created"))).unwrap();
+        let reply=sent(&st).into_iter().find(|m|m["text"].as_str().is_some_and(|t|t.contains("Plan sent to the board"))).unwrap();
         let text=reply["text"].as_str().unwrap();
         assert!(text.contains("queued for a worker") && !text.contains("started") && text.contains("GitHub · pilotq#19 · Reply improvements"),"admission must not claim execution and must name the saved task: {text}");
         let calls=tq_calls(&d);
@@ -2735,6 +2738,69 @@ fn u93_draft_buttons_through_service() {
         stop(c,d);
     }
 }
+// #110 / §5, R11: replays the FRA shape of requests 29-35. One ask and five follow-ups revised one unnumbered draft (FRA made
+// plans 3-6); earlier displays lose their buttons. A text launch of three tickets whose board writes outlast the model deadline
+// (FRA request 35 ended "Codex did not finish within 60 s") is filed and started by the service, and its reply lists each
+// task's read-back state without claiming work (FRA request 31). Cancel closes the draft; a cancelled draft never launches.
+#[test]
+fn u110_one_draft_launch_states_and_cancel() {
+    let (d, st) = tq_setup("u110", true);
+    limits(&d, &d.join("fake-codex"), json!({"first_event": 4, "silent": 4, "deadline": 4}));
+    fs::write(d.join("slow-writes"), "1.5").unwrap(); // six writes take 9 s, over twice the model deadline
+    let c = spawn(&d, None);
+    let titles = ["Draft buttons", "Launch button", "Cancel button"];
+    let mut displays = vec![];
+    for i in 0..6 {
+        let mut proposal = plan(&titles[..(i + 1).min(3)]);
+        proposal["tickets"][0]["goal"] = json!(format!("Follow-up step {i}."));
+        push(&st, call(29 + i as i64, OWNER, None, OWNER, "task_plan", proposal));
+        let step = format!("Follow-up step {i}.");
+        let shown = || sent(&st).into_iter().find(|m| m["text"].as_str().is_some_and(|t| t.contains(&step)) && m["reply_markup"].is_object());
+        wait("revised draft display", 15, || shown().is_some());
+        displays.push(shown().unwrap());
+    }
+    assert_eq!(query(&d, "SELECT count(DISTINCT draft) FROM plans"), 1, "follow-ups revise one draft");
+    for m in &displays {
+        let t = m["text"].as_str().unwrap();
+        assert!(t.contains("Plan draft") && (0..10).all(|n| !t.contains(&format!("Draft {n}"))), "no numbered plan: {t}");
+        assert_eq!(m["reply_markup"]["inline_keyboard"][1][0]["text"], "Cancel");
+    }
+    let closed = |id: &Value| st.lock().unwrap().api.iter().any(|(m, b, _)| m == "editmessagereplymarkup" && b["message_id"] == *id);
+    wait("older drafts close", 15, || displays[..5].iter().all(|m| closed(&m["id"])));
+    assert!(!closed(&displays[5]["id"]), "the current draft keeps its buttons");
+    assert!(tq_calls(&d).is_empty());
+
+    push(&st, call(35, OWNER, None, OWNER, "task_run_plan", json!({})));
+    wait("text launch reply", 30, || try_query(&d, "SELECT count(*) FROM requests WHERE update_id=35 AND state<>'queued' AND state<>'running'") == Some(1));
+    assert_eq!(query_text(&d, "SELECT state FROM requests WHERE update_id=35"), "answered", "{:?}", texts(&st));
+    let reply = query_text(&d, "SELECT reply FROM requests WHERE update_id=35");
+    assert!(reply.starts_with("Plan sent to the board. Task states:"), "{reply}");
+    for (n, title) in titles.iter().enumerate() {
+        assert!(reply.contains(&format!("[GitHub · pilotq#{} · {title}](https://github.com/taskqorg/pilotq/issues/{}): ready: queued for a worker", 19 + n, 19 + n)), "{reply}");
+    }
+    assert!(!reply.contains("doing") && !reply.contains("in work") && !reply.contains("did not finish"), "{reply}");
+    assert!(!texts(&st).iter().any(|t| t.contains("did not finish")));
+    assert_eq!(tq_calls(&d).iter().map(|c| c[0].as_str()).collect::<Vec<_>>(), ["add", "add", "add", "start", "start", "start"]);
+    wait("launched draft closes", 15, || closed(&displays[5]["id"]));
+
+    // After launch a new idea opens a new draft; Cancel closes it without a board write, and a text launch then files nothing.
+    fs::remove_file(d.join("slow-writes")).unwrap();
+    push(&st, call(36, OWNER, None, OWNER, "task_plan", plan(&["Images"])));
+    let shown = || sent(&st).into_iter().find(|m| m["text"].as_str().is_some_and(|t| t.contains("Images")) && m["reply_markup"].is_object());
+    wait("new draft", 15, || shown().is_some());
+    assert_eq!(query(&d, "SELECT count(DISTINCT draft) FROM plans"), 2);
+    let images = shown().unwrap();
+    push(&st, press(37, OWNER, None, OWNER, images["id"].as_i64().unwrap(), images["reply_markup"]["inline_keyboard"][1][0]["callback_data"].as_str().unwrap()));
+    wait("cancelled", 15, || sent_has(&st, "Draft cancelled; nothing was filed on the board."));
+    wait("cancelled draft closes", 15, || closed(&images["id"]));
+    push(&st, call(38, OWNER, None, OWNER, "task_run_plan", json!({})));
+    wait("cancelled launch refused", 15, || sent_has(&st, "re: refused: this draft was cancelled"));
+    push(&st, press(39, OWNER, None, OWNER, images["id"].as_i64().unwrap(), images["reply_markup"]["inline_keyboard"][0][0]["callback_data"].as_str().unwrap()));
+    wait("cancelled button refused", 10, || query(&d, "SELECT count(*) FROM requests WHERE update_id=39 AND state='failed'") == 1);
+    assert_eq!(tq_calls(&d).len(), 6, "cancel and refused launches write nothing");
+    stop(c, d);
+}
+
 // #92 / §2: semantic linking is a model property, separate from adapter fixtures.
 // Real subscription Codex; TaskQ and Telegram are local fakes, with no real board writes.
 #[test]
