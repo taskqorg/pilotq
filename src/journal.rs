@@ -140,7 +140,7 @@ fn text_choice(tx: &Connection, i: &Input, sender: i64, session: &str) -> Result
     let text=i.text.as_deref().unwrap_or("").trim();
     let options:Vec<String>=serde_json::from_str(&options).map_err(|e|e.to_string())?;
     let choice=options.iter().enumerate().find(|(n,option)|text==(n+1).to_string() || text==option.as_str()).map(|(n,_)|n+1);
-    Ok(choice.map(|choice|Input{image:None,language:i.language.clone(),chat:i.chat,topic:i.topic,sender:Some(sender),name:i.name.clone(),message,kind:"action",text:Some(format!("choice:{card}:{choice}")),reply_to:Some(message)}))
+    Ok(choice.map(|choice|Input{callback:None,image:None,language:i.language.clone(),chat:i.chat,topic:i.topic,sender:Some(sender),name:i.name.clone(),message,kind:"action",text:Some(format!("choice:{card}:{choice}")),reply_to:Some(message)}))
 }
 
 /// Telegram's message limit in UTF-16 code units.
@@ -3019,7 +3019,7 @@ mod tests {
         let (mut j,p)=journal("u93-authority");
         j.set_route(7,-100,5,true,0).unwrap();
         j.grant(7,8,&["chat".into(),"taskq".into(),"projects".into()],0).unwrap();
-        let input=|sender,chat,topic,message,data:&str| Some(Input {image:None,language:None,chat,topic,sender:Some(sender),name:None,message,kind:"action",text:Some(data.into()),reply_to:Some(message)});
+        let input=|sender,chat,topic,message,data:&str| Some(Input {callback:None,image:None,language:None,chat,topic,sender:Some(sender),name:None,message,kind:"action",text:Some(data.into()),reply_to:Some(message)});
         // Mark actual outbox sends and retain the exact callback token/message pairing.
         let deliver=|j:&mut Journal| {
             let mut buttons=vec![];
@@ -3029,7 +3029,7 @@ mod tests {
             }
             buttons
         };
-        j.admit(&[(1,Some(Input{image:None,language:None,chat:-100,topic:Some(5),sender:Some(7),name:None,message:1,kind:"text",text:Some("Plan reply improvements".into()),reply_to:None}))],0).unwrap();
+        j.admit(&[(1,Some(Input{callback:None,image:None,language:None,chat:-100,topic:Some(5),sender:Some(7),name:None,message:1,kind:"text",text:Some("Plan reply improvements".into()),reply_to:None}))],0).unwrap();
         let r=j.claim_next(4,0).unwrap().remove(0);
         j.save_plan(&r,&json!([{"title":"Replies","goal":"Keep paragraphs","acceptance":["Buttons work"]}]),"pilotq","taskqorg/pilotq","",1).unwrap();
         j.finish(&r,None,None,&Outcome::Answered("Saved".into()),2).unwrap();

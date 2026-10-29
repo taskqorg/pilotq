@@ -2602,7 +2602,7 @@ fn u94_answer_elsewhere_closes_question() {
     let (d, st) = tq_setup("u94", true);
     let c = spawn(&d, None);
     push(&st, call(1, -100, Some(5), OWNER, "task_plan", plan(&["Docs"])));
-    wait("plan", 15, || sent_has(&st, "Plan revision 1 saved"));
+    wait("plan", 15, || sent_has(&st, "Draft saved locally."));
     push(&st, call(2, -100, Some(5), OWNER, "task_run_plan", json!({"revision":1})));
     wait("started", 15, || sent_has(&st, "admitted to TaskQ:"));
     set_task(&d, 19, |t| { t["state"]=json!("ask"); t["card"]=json!("Done: drafted\nProblem: pick\n1. short ★\n2. long"); });
