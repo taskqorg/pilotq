@@ -2576,10 +2576,11 @@ fn u94_answer_elsewhere_closes_question() {
     let q = sent(&st).into_iter().find(|m| m["text"].as_str().unwrap().starts_with("Task #19 asks:")).unwrap();
     let rev = board(&d)["tasks"]["19"]["revision"].as_i64().unwrap();
     let entry = |id, body: &str, trust, edited| json!({"id":id,"body":body,"author_association":trust,"created_at":"invented-time","updated_at":if edited {"edited-time"} else {"invented-time"},"user":{"login":"alex"}});
-    fs::write(d.join("comments.json"), json!([[entry(rev,"taskq: ask\nProblem: pick\n1. short ★\n2. long","MEMBER",false),
+    fs::write(d.join("comments.json"), json!([[entry(rev,"taskq: ask attempt 1\nProblem: pick\n1. short ★\n2. long","MEMBER",false),
         entry(rev+1,"taskq: answer\nwrong","NONE",false), entry(rev+2,"taskq: answer\nchanged","MEMBER",true),
-        entry(rev+3,"taskq: answer 2\nop-id: invented-answer\nrevision: 103","MEMBER",false)]]).to_string()).unwrap();
-    set_task(&d, 19, |t| { t["state"]=json!("doing"); t["card"]=Value::Null; t["revision"]=json!(rev+3); });
+        entry(rev+3,"taskq: answer 1 attempt 99\nop-id: invented-wrong\nrevision: 103","MEMBER",false),
+        entry(rev+4,"taskq: answer 2\nop-id: invented-answer\nrevision: 103","MEMBER",false)]]).to_string()).unwrap();
+    set_task(&d, 19, |t| { t["state"]=json!("doing"); t["card"]=Value::Null; t["revision"]=json!(1); });
     wait("answered question edited", 15, || sent(&st).iter().any(|m| m["edit"]==true && m["id"]==q["id"] && m["text"].as_str().unwrap().contains("Answered by alex: long")));
     let edit=sent(&st).into_iter().find(|m|m["edit"]==true && m["id"]==q["id"]).unwrap();
     assert_eq!(edit["reply_markup"]["inline_keyboard"],json!([]));

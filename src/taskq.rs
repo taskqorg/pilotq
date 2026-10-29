@@ -150,11 +150,32 @@ fn board_answers(tq: &Taskq, board: &str, task: i64) -> Option<Value> {
     serde_json::from_slice(&output.stdout).ok()
 }
 
+// TaskQ §2: fields exist only with op-id; revision is a writer readback fence,
+// not a fold predicate. A raced writer marks its entry edited, which we exclude.
+fn answer_fields(body: &str) -> (&str, Option<&str>) {
+    let text = body.trim_end();
+    let (rest, last) = text.rsplit_once('\n').unwrap_or(("", text));
+    let (rest, last) = if last.trim().strip_prefix("revision: ").is_some_and(|r| r.trim().parse::<u64>().is_ok()) {
+        rest.trim_end().rsplit_once('\n').unwrap_or(("", rest.trim_end()))
+    } else { (rest, last) };
+    match last.trim().strip_prefix("op-id: ") {
+        Some(op) => (rest.trim_end(), Some(op.trim())),
+        None => (body, None),
+    }
+}
+
 fn answer_entry(pages: &Value, task: i64, revision: i64) -> Option<String> {
     let mut entries: Vec<&Value> = pages.as_array()?.iter().filter_map(Value::as_array).flatten().filter(|c|
         matches!(c["author_association"].as_str(), Some("OWNER" | "MEMBER" | "COLLABORATOR")) && c["created_at"] == c["updated_at"]
     ).collect();
     entries.sort_by_key(|c|c["id"].as_i64().unwrap_or(0));
+    let mut ops = std::collections::HashSet::new();
+    entries.retain(|c| {
+        let Some(body) = c["body"].as_str() else { return false };
+        // Bare option comments carry no transport fields (§2).
+        if !body.starts_with("taskq:") && !body.starts_with("taskq answer ") { return true; }
+        answer_fields(body).1.is_none_or(|op| ops.insert(op))
+    });
     let start = entries.iter().position(|c|c["id"] == revision)?;
     let question = entries[start]["body"].as_str()?;
     let header = question.lines().next()?;
@@ -163,20 +184,15 @@ fn answer_entry(pages: &Value, task: i64, revision: i64) -> Option<String> {
     for c in entries.into_iter().skip(start+1) {
         let body = c["body"].as_str()?;
         let head = body.lines().next().unwrap_or("");
+        if let Some(a) = attempt(head) { if Some(a) != attempt(header) { continue; } }
         if ["ask", "requeue", "later", "failed", "result", "close", "gone", "spawn"].iter().any(|kind| {
             head.strip_prefix("taskq: ").is_some_and(|h| h.split_whitespace().next() == Some(kind))
         }) { break; }
         let token = head.strip_prefix("taskq: answer").filter(|tail|tail.is_empty() || tail.starts_with(' '));
         if token.is_none() && head.starts_with("taskq: ") { continue; }
-        if let Some(a) = attempt(head) { if Some(a) != attempt(header) { continue; } }
         let choice = |k: &str| question.lines().find_map(|line| line.strip_prefix(&format!("{k}. ")).map(|s|s.trim_end_matches('★').trim().to_string()));
         let text = if let Some(tail) = token {
-            // TaskQ's trailing op-id/revision fields are transport metadata, never answer text.
-            let mut text = body.split_once('\n').map(|(_,t)|t).unwrap_or("").trim_end();
-            let before_revision = text.rsplit_once('\n').filter(|(_,last)|last.trim().strip_prefix("revision: ").is_some_and(|r|r.parse::<i64>().is_ok())).map(|(rest,_)|rest).unwrap_or(text);
-            let (rest,last) = before_revision.rsplit_once('\n').unwrap_or(("",before_revision));
-            if last.trim().starts_with("op-id: ") { text = rest.trim_end(); }
-            let text = text.to_string();
+            let text = answer_fields(body).0.split_once('\n').map(|(_,t)|t).unwrap_or("").trim().to_string();
             if !text.trim().is_empty() { text } else { choice(tail.split_whitespace().next().unwrap_or(""))? }
         } else {
             let input = body.trim();
@@ -195,9 +211,8 @@ fn answer_entry(pages: &Value, task: i64, revision: i64) -> Option<String> {
     None
 }
 
-fn reconcile_questions(tq: &Taskq, j: &Mutex<Journal>, project: &str, board: &str, task: i64, current: i64) {
+fn reconcile_questions(tq: &Taskq, j: &Mutex<Journal>, project: &str, board: &str, task: i64) {
     let questions = j.lock().unwrap().open_questions(project,task).unwrap_or_default();
-    let questions: Vec<_> = questions.into_iter().filter(|r| *r < current).collect();
     if questions.is_empty() { return; }
     let Some(pages) = board_answers(tq,board,task) else { return };
     for revision in questions {
@@ -523,8 +538,7 @@ fn answer(tq: &Taskq, j: &Mutex<Journal>, a: &Answer, resumed: bool) {
     }
     // Check the accepted board answer even when a tap races the periodic scan. It never authorizes a write.
     if let Ok(snapshot) = tq.snapshot_for(&board) {
-        let revision = find(&snapshot,n).and_then(|t|t["revision"].as_i64()).unwrap_or(i64::MAX);
-        reconcile_questions(tq,j,&a.project,&board,n,revision);
+        reconcile_questions(tq,j,&a.project,&board,n);
     }
     let receipt = j.lock().unwrap().question_answer(&a.project,n,a.revision).ok().flatten();
     if let Some(receipt) = receipt { return end("answered",receipt,None); }
@@ -568,7 +582,7 @@ fn answer(tq: &Taskq, j: &Mutex<Journal>, a: &Answer, resumed: bool) {
     match tq.write(args, &op) {
         Ok(rc) if rc["outcome"] == "accepted" => end("answered", format!("Answer written to task #{n}; it is now {}.", describe(rc["state"].as_str().unwrap_or(""))), None),
         Ok(rc) if rc["outcome"] == "stale" => {
-            reconcile_questions(tq,j,&a.project,&board,n,i64::MAX);
+            reconcile_questions(tq,j,&a.project,&board,n);
             let receipt = j.lock().unwrap().question_answer(&a.project,n,a.revision).ok().flatten();
             match receipt {
                 Some(text) => end("answered",text,None),
@@ -612,8 +626,7 @@ fn scan(tq: &Taskq, j: &Mutex<Journal>) -> bool {
         }
         let snapshot = snapshots.entry(project.clone()).or_insert_with(|| bound.snapshot_for(&board));
         let s = match snapshot { Ok(s) => s, Err(e) => { failure = Some(e.clone()); continue; } };
-        let revision = find(s,n).and_then(|t|t["revision"].as_i64()).unwrap_or(i64::MAX);
-        reconcile_questions(&bound,j,&project,&board,n,revision);
+        reconcile_questions(&bound,j,&project,&board,n);
         let j = j.lock().unwrap();
         let r = match find(s, n) {
             Some(t) => {
@@ -696,6 +709,22 @@ mod tests {
             assert_eq!(answer_entry(&json!([[ask,entry(11,barrier),entry(12,"taskq: answer 2")]]),19,10),None);
         }
         assert_eq!(answer_entry(&json!([[ask,entry(11,"taskq: answer 2 attempt 99")]]),19,10),None);
+        assert_eq!(answer_entry(&json!([[ask,
+            entry(11,"taskq: answer 1 attempt 99\nop-id: wrong-attempt\nrevision: 10"),
+            entry(12,"taskq: answer 2 attempt 3\nop-id: correct\nrevision: 10")]]),19,10),
+            Some("Answered by alex: long".into()));
+        let mut raced = entry(11,"taskq: answer 1\nop-id: raced\nrevision: 9");
+        raced["updated_at"] = json!("edited");
+        assert_eq!(answer_entry(&json!([[ask,raced,entry(12,"taskq: answer 2\nop-id: raced\nrevision: 10")]]),19,10),
+            Some("Answered by alex: long".into()));
+
+        // §2: even an ignored entry consumes its operation ID; duplicates cannot answer.
+        let prior = entry(9,"taskq: steer\nold\nop-id: reused");
+        assert_eq!(answer_entry(&json!([[prior,ask,
+            entry(11,"taskq: answer 1\nop-id: reused\nrevision: 10"),
+            entry(12,"taskq: answer 2\nop-id: fresh\nrevision: 10")]]),19,10),
+            Some("Answered by alex: long".into()));
+
     }
 
     // §5 / A40: TaskQ start removes q-held before adding taskq. A complete list can
