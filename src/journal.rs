@@ -140,7 +140,7 @@ fn text_choice(tx: &Connection, i: &Input, sender: i64, session: &str) -> Result
     let text=i.text.as_deref().unwrap_or("").trim();
     let options:Vec<String>=serde_json::from_str(&options).map_err(|e|e.to_string())?;
     let choice=options.iter().enumerate().find(|(n,option)|text==(n+1).to_string() || text==option.as_str()).map(|(n,_)|n+1);
-    Ok(choice.map(|choice|Input{callback:None,image:None,language:i.language.clone(),chat:i.chat,topic:i.topic,sender:Some(sender),name:i.name.clone(),message,kind:"action",text:Some(format!("choice:{card}:{choice}")),reply_to:Some(message)}))
+    Ok(choice.map(|choice|Input{callback:None,image:None,media_group:None,quote:None,language:i.language.clone(),chat:i.chat,topic:i.topic,sender:Some(sender),name:i.name.clone(),message,kind:"action",text:Some(format!("choice:{card}:{choice}")),reply_to:Some(message)}))
 }
 
 /// Telegram's message limit in UTF-16 code units.
@@ -394,7 +394,8 @@ pub struct Run {
     pub fence: i64,
     pub thread: Option<String>,
     pub text: String,
-    pub image: Option<PathBuf>,
+    pub images: Vec<(i64, PathBuf)>,
+    pub image_gaps: Vec<i64>,
 }
 
 /// Claims one queued request: the request turns running, the conversation's fence advances, and the run row records both.
@@ -411,7 +412,7 @@ fn claim(tx: &Connection, request: i64, at: i64) -> Result<Option<Run>, String> 
         .map_err(e)?;
     tx.execute("INSERT INTO runs(request_id, session, generation, fence, state, started_at) VALUES (?1,?2,?3,?4,'running',?5)", params![request, session, generation, fence, at])
         .map_err(e)?;
-    Ok(Some(Run { id: tx.last_insert_rowid(), request, session, generation, fence, thread, text, image: None }))
+    Ok(Some(Run { id: tx.last_insert_rowid(), request, session, generation, fence, thread, text, images: vec![], image_gaps: vec![] }))
 }
 
 /// Proposed audit retention, told to each person at their first admitted request (§ 7, § 8; an open decision in § 11).
@@ -506,6 +507,9 @@ pub struct Route {
 /// One Telegram message as the ingress sees it. Names are labels, never authority.
 pub struct Input {
     pub callback: Option<String>,
+    pub media_group: Option<String>,
+    /// Deliberately quoted Telegram source, never the quoted author’s authorization.
+    pub quote: Option<Value>,
     pub image: Option<String>,
     pub language: Option<String>,
     pub chat: i64,
@@ -786,6 +790,15 @@ impl Journal {
                         }
                     } else { None };
                     let state = if action_error.is_some() { "failed" } else { state };
+
+                    if let Some(group) = &i.media_group {
+                        tx.execute("INSERT INTO audit_events(request_id,at,kind,item) VALUES (?1,?2,'media_group',?3)",
+                            params![id,at,group]).map_err(|e|e.to_string())?;
+                    }
+                    if let Some(quote) = &i.quote {
+                        tx.execute("INSERT INTO audit_events(request_id,at,kind,item) VALUES (?1,?2,'quote',?3)",
+                            params![id,at,quote.to_string()]).map_err(|e|e.to_string())?;
+                    }
                     let first: bool = tx.query_row("SELECT NOT EXISTS (SELECT 1 FROM requests WHERE sender=?1 AND id<>?2)", [sender, id], |r| r.get(0)).map_err(|e| e.to_string())?;
                     let text = match cmd {
                         Some(c) => {
@@ -1209,10 +1222,45 @@ impl Journal {
         Ok(runs)
     }
 
-    /// File identity remains durable across restart; a revoked caller never gets a download.
-    pub fn image(&self, r: &Run) -> Result<Option<String>, String> {
-        if self.fenced(r)? || !has(&self.0, self.sender(r.request)?, "chat")? { return Err("image access revoked".into()); }
-        self.0.query_row("SELECT image FROM requests WHERE id=?1",[r.request],|x|x.get(0)).map_err(|e|e.to_string())
+    /// §2 / #92: source material for semantic message linking, never a new authorization.
+    /// Same generation and current admission/project grants bound what reaches a resumed or rebuilt model.
+    pub fn conversation_context(&self, r: &Run) -> Result<Value, String> {
+        if self.fenced(r)? || !has(&self.0, self.sender(r.request)?, "chat")? {
+            return Err("conversation access revoked".into());
+        }
+        let e = |e: rusqlite::Error| e.to_string();
+        let mut q = self.0.prepare("SELECT id,sender,name,message,reply_to,text,reply,state,image,
+            (SELECT item FROM audit_events WHERE request_id=requests.id AND kind='quote' LIMIT 1),
+            (SELECT item FROM audit_events WHERE request_id=requests.id AND kind='media_group' LIMIT 1) FROM requests WHERE id IN (
+            SELECT q.id FROM requests q WHERE q.session=?1 AND q.id<?3
+            AND EXISTS(SELECT 1 FROM runs x WHERE x.request_id=q.id AND x.generation=?2)
+            AND EXISTS(SELECT 1 FROM grants g WHERE g.user=q.sender AND g.name='chat')
+            ORDER BY q.id DESC LIMIT 12) OR id=?3 ORDER BY id").map_err(e)?;
+        let recent: Vec<Value> = q.query_map(params![r.session,r.generation,r.request], |x| Ok(json!({
+            "request":x.get::<_,i64>(0)?, "author":x.get::<_,i64>(1)?, "name":x.get::<_,Option<String>>(2)?,
+            "message":x.get::<_,i64>(3)?, "reply_to":x.get::<_,Option<i64>>(4)?, "text":x.get::<_,Option<String>>(5)?,
+            "reply":x.get::<_,Option<String>>(6)?, "state":x.get::<_,String>(7)?, "image":x.get::<_,Option<String>>(8)?,
+            "quote":x.get::<_,Option<String>>(9)?.and_then(|v|serde_json::from_str::<Value>(&v).ok()),
+            "media_group":x.get::<_,Option<String>>(10)?
+        }))).and_then(Iterator::collect).map_err(e)?;
+        let mut q = self.0.prepare("SELECT t.project,t.board,t.number,t.state,t.observed,
+            (SELECT json_extract(p.tickets,'$[' || (k.idx-1) || ']') FROM tickets k JOIN plan_runs pr ON pr.id=k.run_id JOIN plans p ON p.id=pr.plan_id
+             WHERE k.task=t.number AND pr.request_id=t.request_id LIMIT 1) FROM tasks t JOIN requests q ON q.id=t.request_id
+            WHERE q.session=?1 AND (EXISTS(SELECT 1 FROM grants WHERE user=?2 AND name='projects')
+            OR EXISTS(SELECT 1 FROM grants WHERE user=?2 AND name='project:' || t.project)) ORDER BY t.project,t.number").map_err(e)?;
+        let tasks: Vec<Value> = q.query_map(params![r.session,self.sender(r.request)?], |x| Ok(json!({
+            "project":x.get::<_,String>(0)?, "url":format!("https://github.com/{}/issues/{}",x.get::<_,String>(1)?,x.get::<_,i64>(2)?),
+            "state":x.get::<_,String>(3)?, "observed_at":x.get::<_,i64>(4)?,
+            "intent":x.get::<_,Option<String>>(5)?.and_then(|v|serde_json::from_str::<Value>(&v).ok())
+        }))).and_then(Iterator::collect).map_err(e)?;
+        let plan: Option<Value> = self.0.query_row("SELECT revision,project,tickets FROM plans p WHERE session=?1
+            AND (EXISTS(SELECT 1 FROM grants WHERE user=?2 AND name='projects')
+            OR EXISTS(SELECT 1 FROM grants WHERE user=?2 AND name='project:' || p.project)) ORDER BY revision DESC LIMIT 1",
+            params![r.session,self.sender(r.request)?], |x| Ok(json!({"revision":x.get::<_,i64>(0)?,"project":x.get::<_,String>(1)?,
+                "tickets":x.get::<_,String>(2)?}))).optional().map_err(e)?;
+        let context = json!({"policy": crate::manager::CONVERSATION, "recent":recent,"tasks":tasks,"plan":plan});
+        if context.to_string().len() > 100_000 { return Err("conversation context exceeds budget".into()); }
+        Ok(context)
     }
 
     /// §9 / §12: serialize drain admission with request claims on both front ends.
@@ -1724,6 +1772,31 @@ impl Journal {
         tx.commit().map_err(e)
     }
 
+    /// #92 / §5: only trusted same-conversation subscriptions may select a contextual status/steer target.
+    pub fn related_target(&self, r: &Run, task: &str, project: Option<&str>) -> Result<Option<(String,String,i64)>,String> {
+        let (board,number) = match task.trim().strip_prefix("https://github.com/").and_then(|v|v.split_once("/issues/")) {
+            Some((board,n)) => (Some(board),n.trim_end_matches('/')),
+            None => (None,task.trim().trim_start_matches('#')),
+        };
+        let Ok(n) = number.parse::<i64>() else { return Ok(None) };
+        let mut q=self.0.prepare("SELECT t.project,t.board,t.root FROM tasks t JOIN requests q ON q.id=t.request_id WHERE q.session=?1 AND t.number=?2
+            AND (?3 IS NULL OR t.project=?3) AND (?4 IS NULL OR t.board=?4)
+            AND (EXISTS(SELECT 1 FROM grants WHERE user=?5 AND name='projects')
+            OR EXISTS(SELECT 1 FROM grants WHERE user=?5 AND name='project:' || t.project))").map_err(|e|e.to_string())?;
+        let candidates:Vec<(String,String,String)>=q.query_map(params![r.session,n,project,board,self.sender(r.request)?],|x|Ok((x.get(0)?,x.get(1)?,x.get(2)?)))
+            .and_then(Iterator::collect).map_err(|e|e.to_string())?;
+        match candidates.as_slice() {
+            [] => Ok(None),
+            [(project,board,root)] => {
+                let registered:bool=self.0.query_row("SELECT EXISTS(SELECT 1 FROM projects WHERE name=?1 AND repo=?2 AND root=?3)",
+                    params![project,board,root],|x|x.get(0)).map_err(|e|e.to_string())?;
+                if !registered { return Err("subscribed task registration changed; nothing was done".into()); }
+                Ok(Some((project.clone(),board.clone(),n)))
+            }
+            _ => Err("task number matches several subscribed boards; clarify the intended task before acting".into()),
+        }
+    }
+
     /// Open task subscriptions and their stored revisions, after submission settles.
     /// TaskQ start changes eligibility labels in separate writes; a scan during that
     /// gap can omit a filed task without closing it (§5). The creating run owns recovery.
@@ -2102,7 +2175,7 @@ mod tests {
     }
 
     fn msg(chat: i64, sender: i64, message: i64) -> Option<Input> {
-        Some(Input { callback: None, image: None, language: None, chat, topic: None, sender: Some(sender), name: None, message, kind: "text", text: Some("hi".into()), reply_to: None })
+        Some(Input { callback: None, media_group: None, quote: None, image: None, language: None, chat, topic: None, sender: Some(sender), name: None, message, kind: "text", text: Some("hi".into()), reply_to: None })
     }
 
     fn count(j: &Journal, sql: &str) -> i64 {
@@ -2169,7 +2242,7 @@ mod tests {
     }
 
     fn at(chat: i64, topic: Option<i64>, sender: i64, message: i64) -> Option<Input> {
-        Some(Input { callback: None, image: None, language: None, chat, topic, sender: Some(sender), name: None, message, kind: "text", text: Some("hi".into()), reply_to: None })
+        Some(Input { callback: None, media_group: None, quote: None, image: None, language: None, chat, topic, sender: Some(sender), name: None, message, kind: "text", text: Some("hi".into()), reply_to: None })
     }
 
     fn sessions(j: &Journal) -> Vec<(i64, String)> {
@@ -2353,7 +2426,7 @@ mod tests {
 
         j.admit(&[(3, msg(7, 7, 3))], 4).unwrap();
         let r = j.claim_next(4, 4).unwrap().remove(0);
-        j.admit(&[(4, Some(Input { callback: None, image: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: 4, kind: "text", text: Some("/stop".into()), reply_to: None }))], 5).unwrap();
+        j.admit(&[(4, Some(Input { callback: None, media_group: None, quote: None, image: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: 4, kind: "text", text: Some("/stop".into()), reply_to: None }))], 5).unwrap();
         assert!(j.fenced(&r).unwrap());
         assert!(j.typing(5, 60).unwrap().is_empty(), "#91: cancellation ends typing");
         assert!(!j.finish(&r, Some("t-old"), None, &Outcome::Answered("late".into()), 6).unwrap(), "a stopped run cannot reply");
@@ -2361,7 +2434,7 @@ mod tests {
 
         j.admit(&[(5, msg(7, 7, 5))], 7).unwrap();
         let r = j.claim_next(4, 7).unwrap().remove(0);
-        j.admit(&[(6, Some(Input { callback: None, image: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: 6, kind: "text", text: Some("/new".into()), reply_to: None }))], 8).unwrap();
+        j.admit(&[(6, Some(Input { callback: None, media_group: None, quote: None, image: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: 6, kind: "text", text: Some("/new".into()), reply_to: None }))], 8).unwrap();
         assert!(j.finish(&r, Some("t-old"), None, &Outcome::Answered("ok".into()), 9).unwrap());
         assert_eq!(count(&j, "SELECT count(*) FROM conversations WHERE session='dm:7' AND thread IS NULL AND generation=1"), 1);
         drop(j);
@@ -2378,7 +2451,7 @@ mod tests {
         j.grant(7, 8, &["chat".into()], 0).unwrap();
         j.grant(7, 9, &["chat".into()], 0).unwrap();
         let named = |chat, topic, sender, message, text: &str| {
-            Some(Input { callback: None, image: None, language: None, chat, topic, sender: Some(sender), name: Some(format!("P{sender}")), message, kind: "text", text: Some(text.into()), reply_to: None })
+            Some(Input { callback: None, media_group: None, quote: None, image: None, language: None, chat, topic, sender: Some(sender), name: Some(format!("P{sender}")), message, kind: "text", text: Some(text.into()), reply_to: None })
         };
         let secret = "sk-aaaaaaaaaaaaaaaaaaaa"; // invented value standing in for anything a person types
         j.admit(&[(1, named(8, None, 8, 1, &format!("dm question {secret}"))), (2, named(-100, Some(5), 9, 2, "topic question"))], 10).unwrap();
@@ -2445,7 +2518,7 @@ mod tests {
     }
 
     fn input(chat: i64, topic: Option<i64>, sender: Option<i64>, name: &str, kind: &'static str, text: Option<&str>) -> Option<Input> {
-        Some(Input { callback: None, image: None, language: None, chat, topic, sender, name: Some(name.into()), message: 1, kind, text: text.map(str::to_string), reply_to: None })
+        Some(Input { callback: None, media_group: None, quote: None, image: None, language: None, chat, topic, sender, name: Some(name.into()), message: 1, kind, text: text.map(str::to_string), reply_to: None })
     }
 
     // F09, F15, F16, L06, L14: strangers in a DM, a group and a topic, an anonymous sender, a stranger reusing the owner's display
@@ -2492,11 +2565,68 @@ mod tests {
         let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
         let run=j.claim_next(4,3).unwrap().remove(0);
         assert_eq!(run.text,"hi");
-        assert_eq!(j.image(&run).unwrap().as_deref(),Some("invented-photo"));
+        assert_eq!(j.conversation_context(&run).unwrap()["recent"][0]["image"],json!("invented-photo"));
         let audit=j.audit(7,&Filter::default(),4).unwrap();
         assert_eq!(audit[0]["image"],"invented-photo");
         j.revoke(7,7,&["chat".into()],5).unwrap();
-        assert!(j.image(&run).is_err(),"revocation forbids the download");
+        assert!(j.conversation_context(&run).is_err(),"revocation forbids the download");
+        drop(j); let _=std::fs::remove_dir_all(p);
+    }
+
+    // #92 / R1,R10,R13: shared author identity survives restart; private routes, reset generations,
+    // revoked people and inaccessible project subscriptions cannot enter the new turn's projection.
+    #[test]
+    fn related_context_is_durable_and_scoped() {
+        use crate::manager::Outcome;
+        let (mut j,p)=journal("related-context");
+        j.grant(7,8,&["chat".into()],0).unwrap();
+        j.set_route(7,-100,5,true,0).unwrap();
+        let shared=|sender,message| {
+            let mut i=msg(-100,sender,message).unwrap(); i.topic=Some(5); Some(i)
+        };
+        j.admit(&[(1,msg(8,8,1)),(2,shared(8,2))],1).unwrap();
+        for r in j.claim_next(4,2).unwrap() { j.finish(&r,Some("thread"),None,&Outcome::Answered("prior result".into()),3).unwrap(); }
+        j.admit(&[(3,shared(7,3))],4).unwrap();
+        let r=j.claim_next(4,5).unwrap().remove(0);
+        j.save_plan(&r,&json!([{"title":"Keep context"}]),"pilotq","taskqorg/pilotq","invented-root",5).unwrap();
+        j.0.execute("INSERT INTO tasks(number,request_id,chat,topic,state,revision,observed,project,board,root) VALUES (92,?1,-100,5,'doing',1,5,'pilotq','taskqorg/pilotq','invented-root')",[r.request]).unwrap();
+        let context=j.conversation_context(&r).unwrap();
+        assert_eq!(context["recent"].as_array().unwrap().len(),2,"DM excluded from shared topic");
+        assert_eq!(context["recent"][0]["author"],8);
+        assert_eq!(context["recent"][0]["reply"],"prior result");
+        assert_eq!(context["tasks"][0]["url"],"https://github.com/taskqorg/pilotq/issues/92");
+        assert_eq!(context["plan"]["revision"],1);
+        j.add_project(7,"pilotq","taskqorg/pilotq","invented-root",5).unwrap();
+        assert_eq!(j.related_target(&r,"#92",None).unwrap(),Some(("pilotq".into(),"taskqorg/pilotq".into(),92)));
+        let mut foreign=r.clone(); foreign.session="dm:7".into();
+        assert!(j.related_target(&foreign,"#92",None).unwrap().is_none(),"another route cannot select this subscription");
+        j.add_project(7,"other","taskqorg/other","invented-other",5).unwrap();
+        j.0.execute("INSERT INTO tasks SELECT number,request_id,chat,topic,state,revision,card,observed,closed,'other','taskqorg/other','invented-other' FROM tasks WHERE number=92",[]).unwrap();
+        assert!(j.related_target(&r,"#92",None).is_err(),"same numbers on two boards must not be guessed");
+        assert_eq!(j.related_target(&r,"https://github.com/taskqorg/pilotq/issues/92",None).unwrap().unwrap().0,"pilotq");
+        j.0.execute("UPDATE projects SET root='changed-root' WHERE name='pilotq'",[]).unwrap();
+        assert!(j.related_target(&r,"92",Some("pilotq")).is_err(),"changed registration disables contextual target");
+        j.0.execute("UPDATE projects SET root='invented-root' WHERE name='pilotq'",[]).unwrap();
+        j.finish(&r,Some("thread"),None,&Outcome::Answered("clarify: to task 92 or new?".into()),6).unwrap();
+        drop(j);
+        let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
+        j.admit(&[(4,shared(7,4))],7).unwrap();
+        let r=j.claim_next(4,8).unwrap().remove(0);
+        assert_eq!(j.conversation_context(&r).unwrap()["recent"].as_array().unwrap().len(),3);
+        j.revoke(7,8,&["chat".into()],9).unwrap();
+        assert_eq!(j.conversation_context(&r).unwrap()["recent"].as_array().unwrap().len(),2);
+        j.revoke(7,7,&["projects".into()],9).unwrap();
+        let context=j.conversation_context(&r).unwrap();
+        assert!(context["tasks"].as_array().unwrap().is_empty());
+        assert!(context["plan"].is_null());
+        assert!(j.related_target(&r,"92",Some("pilotq")).unwrap().is_none(),"revoked project is excluded");
+        j.finish(&r,None,None,&Outcome::Answered("done".into()),10).unwrap();
+        let mut reset=shared(7,5).unwrap(); reset.text=Some("/new".into());
+        j.admit(&[(5,Some(reset)),(6,shared(7,6))],11).unwrap();
+        let r=j.claim_next(4,12).unwrap().remove(0);
+        assert_eq!(j.conversation_context(&r).unwrap()["recent"].as_array().unwrap().len(),1,"reset excludes prior generation");
+        j.0.execute("UPDATE requests SET text=?2 WHERE id=?1",params![r.request,"x".repeat(100_001)]).unwrap();
+        assert_eq!(j.conversation_context(&r).unwrap_err(),"conversation context exceeds budget","oversized source is refused, never silently truncated");
         drop(j); let _=std::fs::remove_dir_all(p);
     }
 
@@ -2535,7 +2665,7 @@ mod tests {
         let busy = ROUTE_BACKLOG + 1;
         assert_eq!(j.request(busy).unwrap(), ("failed".into(), Some(brief(None, "busy").into()), Some("busy: backlog full".into())));
         j.grant(7, 8, &["chat".into()], 1).unwrap();
-        j.admit(&[(100, msg(8, 8, 100)), (101, Some(Input { callback: None, image: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: 101, kind: "text", text: Some("/status".into()), reply_to: None }))], 2).unwrap();
+        j.admit(&[(100, msg(8, 8, 100)), (101, Some(Input { callback: None, media_group: None, quote: None, image: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: 101, kind: "text", text: Some("/status".into()), reply_to: None }))], 2).unwrap();
         assert_eq!(j.request(busy + 1).unwrap().0, "queued", "another route is admitted");
         assert!(j.request(busy + 2).unwrap().1.unwrap().contains("\nRunning: 0. Queued: 50."), "the control answers on the full route");
         let runs = j.claim_next(4, 3).unwrap();
@@ -2808,7 +2938,7 @@ mod tests {
         assert!(q.edit.is_none() && q.text.starts_with("Task #19 asks:"), "the question is its own message");
         j.record(q.id, &Sent::Ok(500), 8).unwrap();
 
-        let answer = |id, to| Some(Input { callback: None, image: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: id, kind: "text", text: Some("2".into()), reply_to: Some(to) });
+        let answer = |id, to| Some(Input { callback: None, media_group: None, quote: None, image: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: id, kind: "text", text: Some("2".into()), reply_to: Some(to) });
         j.admit(&[(3, answer(3, 500)), (4, answer(4, status))], 9).unwrap();
         let a = j.answers().unwrap();
         assert_eq!(a.iter().map(|(a, resumed)| (a.request, a.task, a.revision, *resumed)).collect::<Vec<_>>(), [(3, 19, 14, false)], "only a reply to the question answers it");
@@ -2829,7 +2959,7 @@ mod tests {
     fn a40_topic_plan_run_audit_project() {
         use crate::manager::Outcome;
         let (mut j, p) = journal("a40-project");
-        let topic = |message| Some(Input { callback: None, image: None, language: None, chat: -100, topic: Some(5), sender: Some(7), name: None,
+        let topic = |message| Some(Input { callback: None, media_group: None, quote: None, image: None, language: None, chat: -100, topic: Some(5), sender: Some(7), name: None,
             message, kind: "text", text: Some("plan or run".into()), reply_to: None });
         j.admit(&[(1, topic(1))], 0).unwrap();
         let r = j.claim_next(4, 0).unwrap().remove(0);
@@ -2879,7 +3009,7 @@ mod tests {
     fn status_shows_version_and_non_ok_sources() {
         let (mut j, p) = journal("status-service");
         let status = |j: &mut Journal, u: i64, at: i64| {
-            j.admit(&[(u, Some(Input { callback: None, image: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: u, kind: "text", text: Some("/status".into()), reply_to: None }))], at).unwrap();
+            j.admit(&[(u, Some(Input { callback: None, media_group: None, quote: None, image: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: u, kind: "text", text: Some("/status".into()), reply_to: None }))], at).unwrap();
             j.request(count(j, "SELECT max(id) FROM requests")).unwrap().1.unwrap()
         };
         let v = env!("CARGO_PKG_VERSION");
@@ -3019,7 +3149,7 @@ mod tests {
         let (mut j,p)=journal("u93-authority");
         j.set_route(7,-100,5,true,0).unwrap();
         j.grant(7,8,&["chat".into(),"taskq".into(),"projects".into()],0).unwrap();
-        let input=|sender,chat,topic,message,data:&str| Some(Input {callback:None,image:None,language:None,chat,topic,sender:Some(sender),name:None,message,kind:"action",text:Some(data.into()),reply_to:Some(message)});
+        let input=|sender,chat,topic,message,data:&str| Some(Input {callback:None,image:None,media_group:None,quote:None,language:None,chat,topic,sender:Some(sender),name:None,message,kind:"action",text:Some(data.into()),reply_to:Some(message)});
         // Mark actual outbox sends and retain the exact callback token/message pairing.
         let deliver=|j:&mut Journal| {
             let mut buttons=vec![];
@@ -3029,7 +3159,7 @@ mod tests {
             }
             buttons
         };
-        j.admit(&[(1,Some(Input{callback:None,image:None,language:None,chat:-100,topic:Some(5),sender:Some(7),name:None,message:1,kind:"text",text:Some("Plan reply improvements".into()),reply_to:None}))],0).unwrap();
+        j.admit(&[(1,Some(Input{callback:None,image:None,media_group:None,quote:None,language:None,chat:-100,topic:Some(5),sender:Some(7),name:None,message:1,kind:"text",text:Some("Plan reply improvements".into()),reply_to:None}))],0).unwrap();
         let r=j.claim_next(4,0).unwrap().remove(0);
         j.save_plan(&r,&json!([{"title":"Replies","goal":"Keep paragraphs","acceptance":["Buttons work"]}]),"pilotq","taskqorg/pilotq","",1).unwrap();
         j.finish(&r,None,None,&Outcome::Answered("Saved".into()),2).unwrap();

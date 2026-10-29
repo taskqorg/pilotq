@@ -23,7 +23,7 @@ pub fn policy() -> String {
 
 pub fn fingerprint() -> i64 {
     let mut hash = std::collections::hash_map::DefaultHasher::new();
-    (policy(), crate::taskq::INSTRUCTIONS, crate::direct::INSTRUCTIONS,
+    (policy(), crate::manager::CONVERSATION, crate::taskq::INSTRUCTIONS, crate::direct::INSTRUCTIONS,
         crate::taskq::tools().to_string(), serde_json::Value::Array(crate::direct::tools()).to_string()).hash(&mut hash);
     hash.finish() as i64
 }
