@@ -3215,8 +3215,9 @@ fn u106_telegram_controls_and_models() {
 // zeroes, cross-turn context and optional quota failure killing a good answer.
 #[test]
 fn u119_status_footer_delivery() {
-    for (mode,chat,topic) in [("rich",OWNER,None),("html",-100,None),("plain",-100,Some(5))] {
-        let (d,st)=setup(&format!("u119-{mode}"),vec![]);
+    for mode in ["rich", "html", "plain"] {
+      for (route,chat,topic) in [("dm",OWNER,None),("group",-100,None),("topic",-100,Some(5))] {
+        let (d,st)=setup(&format!("u119-{mode}-{route}"),vec![]);
         st.lock().unwrap().rich_reject=mode!="rich";
         let fake=FAKE.replace(r#" @ '"$th"'"# , r#" @ '"$th"'\n\n"#).replace("    case \"$text\" in",r#"    case "$text" in
     measured*)
@@ -3235,12 +3236,23 @@ fn u119_status_footer_delivery() {
         push(&st,text(1,chat,topic,OWNER,"/version"));
         wait("retention notice and control delivered",10,||sent_has(&st,concat!("PilotQ ",env!("CARGO_PKG_VERSION"))));
         if mode=="plain" {st.lock().unwrap().faults.push_back("parse");}
+        st.lock().unwrap().faults.push_back("429"); // retry the same persisted final reply (#141)
         push(&st,text(2,chat,topic,OWNER,"measured answer"));
         wait("measured answer",15,||sent_has(&st,"re: measured answer"));
         let answer=texts(&st).into_iter().find(|s|s.contains("re: measured answer")).unwrap();
         assert!(answer.contains("gpt-test · 😣 80% · 🌖 75% ↻ 3h"),"{mode}: {answer}");
-        assert!(answer.contains("\n\ngpt-test"),"#124 exactly one empty line: {mode}: {answer}");
-        assert!(!answer.contains("\n\n\ngpt-test"),"#124 extra empty line: {answer}");
+        assert!(answer.contains("\n\u{a0}\ngpt-test"),"#141 exactly one visible empty line: {mode}/{route}: {answer}");
+        assert_eq!(answer.matches("\n\u{a0}\n").count(),1,"#141 no accumulated spacers: {answer}");
+        {
+            let f=st.lock().unwrap();
+            let attempts: Vec<_>=f.api.iter().filter(|(m,v,_)| {
+                if mode=="rich" { m=="sendrichmessage" && v["rich_message"]["markdown"].as_str().is_some_and(|s|s.contains("re: measured answer")) }
+                else { m=="sendmessage" && (v.get("parse_mode").is_some() == (mode=="html")) && v["text"].as_str().is_some_and(|s|s.contains("re: measured answer")) }
+            }).collect();
+            assert_eq!(attempts.len(),2,"rate-limited final retried once");
+            assert_eq!(attempts[0].1,attempts[1].1,"retry preserves exact payload");
+            if mode=="rich" { assert!(attempts[0].1["rich_message"]["markdown"].as_str().unwrap().contains("  \n\u{a0}  \ngpt-test"),"two hard breaks, not a collapsed paragraph boundary"); }
+        }
         let delivered=sent(&st).into_iter().find(|v|v["text"].as_str().is_some_and(|t|t.contains("re: measured answer"))).unwrap();
         if mode=="plain" { assert!(delivered.get("parse_mode").is_none()); }
         if mode=="html" { assert_eq!(delivered["parse_mode"],"HTML"); }
@@ -3263,6 +3275,7 @@ fn u119_status_footer_delivery() {
         assert_eq!(query(&d,"SELECT count(*) FROM requests WHERE reply LIKE '%😣 80% · 🌖 75% ↻ 3h%'"),1,"persist before sending");
         assert!(!texts(&st).join("\n").contains("invented-secret-plan"));
         stop(c,d);
+      }
     }
 }
 

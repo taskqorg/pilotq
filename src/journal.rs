@@ -1690,7 +1690,9 @@ impl Journal {
         }
         let telegram: bool = tx.query_row("SELECT front='telegram' FROM requests WHERE id=?1", [r.request], |x| x.get(0)).map_err(e)?;
         if state == "answered" && telegram && let Some(footer) = footer {
-            text = format!("{}\n\n{footer}",text.trim_end());
+            // #141 / §12: a non-breaking space occupies one visually empty line.
+            // Plain paragraph separators collapse in rich Markdown. Persist once for every retry/fallback.
+            text = format!("{}\n\u{a0}\n{footer}",text.trim_end());
         }
         tx.execute("UPDATE requests SET state=?2, reply=?3, error=?4 WHERE id=?1", params![r.request, state, text, error]).map_err(e)?;
         close_drafts(&tx, &r.session, r.request, at)?;
