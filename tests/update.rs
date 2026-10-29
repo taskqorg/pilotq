@@ -5,6 +5,8 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use serde_json::Value;
+#[path="support/host.rs"] mod host_support;
 use std::process::{Command, Output};
 
 fn scratch(tag: &str) -> PathBuf {
@@ -31,8 +33,10 @@ fn publish(d: &Path, ver: &str, exe: &[u8]) {
     let sum = Command::new("sh").args(["-c", "sha256sum \"$0\" 2>/dev/null || shasum -a 256 \"$0\"", &name]).current_dir(&site).output().unwrap();
     fs::write(site.join("SHA256SUMS"), sum.stdout).unwrap();
     fs::write(site.join("latest.json"), format!(r#"{{"version":"{ver}","files":{{"{target}":"{name}"}}}}"#)).unwrap();
+    host_support::provision(&bin,&install.join("config.json"));
     // coreq runs `curl -fsSL --max-time 300 -o <to> <url>`
     executable(&bin.join("curl"), format!("#!/bin/sh\ncp \"{}/$(basename \"$6\")\" \"$5\"\n", site.display()).as_bytes());
+    host_support::wrap(&bin.join("curl"),"--version","curl 7.68.0");
 }
 
 fn command(d: &Path) -> Command {
@@ -239,5 +243,75 @@ fn doctor_missing_configuration_is_not_healthy() {
     assert_eq!(report["checks"]["configuration"], "failed");
     for key in ["telegram", "codex", "taskq"] { assert_eq!(report["checks"][key], "unknown"); }
     assert_eq!(fs::read_dir(&d).unwrap().count(), 0);
+    fs::remove_dir_all(d).unwrap();
+}
+
+// #130 A2/A4, §9: an old executable must fail doctor with a concrete repair, never look healthy.
+#[test]
+#[cfg(unix)]
+fn doctor_host_requirements_old_and_missing() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = scratch("host-requirements");
+    let gh = d.join("gh");
+    for (body, found, outcome) in [
+        ("echo 'gh version 2.44.0 (invented)'", Some("2.44.0"), "failed"),
+        ("echo 'gh version 2.45.0 (invented)'", Some("2.45.0"), "ok"),
+        ("echo invented-tool-error >&2; exit 1", None, "failed"),
+    ] {
+        fs::write(&gh, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(&gh,fs::Permissions::from_mode(0o700)).unwrap();
+        let out=Command::new(env!("CARGO_BIN_EXE_pilotq")).env("PILOTQ_INSTALL",&d).env("PATH",&d)
+            .args(["doctor","--json"]).output().unwrap();
+        let report:Value=serde_json::from_slice(&out.stdout).unwrap();
+        let check=report["requirements"].as_array().expect("doctor must declare host requirements").iter().find(|c|c["tool"]=="gh").unwrap();
+        assert_eq!(check["found"], serde_json::json!(found));
+        assert_eq!(check["minimum"],"2.45.0");
+        assert_eq!(check["outcome"],outcome);
+        assert!(check["fix"].as_str().unwrap().contains("Install gh"));
+        assert!(!out.status.success(),"missing configuration cannot pass");
+        if found.is_none() { assert!(String::from_utf8_lossy(&out.stderr).contains("invented-tool-error")); }
+        assert_eq!(report["checks"]["host_tools"],"failed");
+    }
+    fs::remove_file(gh).unwrap();
+    let out=Command::new(env!("CARGO_BIN_EXE_pilotq")).env("PILOTQ_INSTALL",&d).env("PATH",&d)
+        .args(["doctor","--json"]).output().unwrap();
+    let report:Value=serde_json::from_slice(&out.stdout).unwrap();
+    assert!(report["requirements"].as_array().unwrap().iter().filter(|c|c["tool"]!="kill_absolute").all(|c|c["outcome"]=="failed"));
+    // Operator-approved commands also fail on undeclared, old or changed binary identities.
+    let tool=d.join("approved");
+    executable(&tool,b"");
+    let receipt=format!("{}.pilotq-version.json",tool.display());
+    for (minimum,declared,changed,expected) in [(None,"2.0.0",false,"failed"),(Some("2.0.1"),"2.0.0",false,"failed"),(Some("2.0.1"),"2.0.1",false,"ok"),(Some("2.0.1"),"2.0.1",true,"failed")] {
+        fs::write(d.join("commands.json"),serde_json::json!({"approved":{"executable":tool,"minimum_version":minimum}}).to_string()).unwrap();
+        fs::set_permissions(d.join("commands.json"),fs::Permissions::from_mode(0o600)).unwrap();
+        fs::write(&receipt,serde_json::json!({"version":declared,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}).to_string()).unwrap();
+        if changed { fs::write(&tool,"changed").unwrap(); }
+        let out=Command::new(env!("CARGO_BIN_EXE_pilotq")).env("PILOTQ_INSTALL",&d).env("PATH",&d).args(["doctor","--json"]).output().unwrap();
+        let report:Value=serde_json::from_slice(&out.stdout).unwrap();
+        let check=report["requirements"].as_array().unwrap().iter().find(|c|c["tool"]=="command:approved").unwrap();
+        assert_eq!(check["outcome"],expected);
+    }
+    fs::remove_dir_all(d).unwrap();
+}
+
+// §9 / #130 A3: unsupported host tools must stop install/update before activation or draining accepted work.
+#[test]
+fn host_requirements_block_install_and_update() {
+    let d=scratch("host-gates");
+    let bin=d.join("bin");
+    let install=d.join("install");
+    fs::create_dir_all(&install).unwrap();
+    host_support::provision(&bin,&install.join("config.json"));
+    executable(&bin.join("gh"),b"#!/bin/sh\necho 'gh version 2.44.0 (invented)'\n");
+    fs::write(install.join("current"),"0.0.1").unwrap();
+    for args in [vec!["service","install"],vec!["update","--check"],vec!["update"]] {
+        let out=command(&d).args(args).output().unwrap();
+        assert!(!out.status.success());
+        let error=String::from_utf8_lossy(&out.stderr);
+        for expected in ["gh","2.44.0","2.45.0","Install gh"] { assert!(error.contains(expected),"{error}"); }
+        assert_eq!(fs::read_to_string(install.join("current")).unwrap(),"0.0.1");
+        assert!(!install.join("drain").exists());
+        assert!(!install.join("pilotq").exists());
+    }
     fs::remove_dir_all(d).unwrap();
 }

@@ -2,6 +2,7 @@
 // Codex app-server: `pilotq service run` polls and sends through a local HTTP server that keeps Telegram's offset confirmation
 // and injects send faults; a shell script speaks the app-server JSON-RPC lines. Live test-bot and real Codex runs are separate evidence.
 #![cfg(unix)]
+#[path="support/host.rs"] mod host_support;
 
 use serde_json::{Value, json};
 use std::collections::VecDeque;
@@ -3083,7 +3084,9 @@ fn u108_registration_failure() {
 fn doctor_voice_readiness() {
     let (d, st) = tq_setup("doctor-voice", true);
     let cfg = d.join("config.json");
+    host_support::provision(&d,&cfg);
     let mut c: Value = serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
+    c.as_object_mut().unwrap().remove("voice");
     c["codex"] = json!(script(&d, "login", "echo 'Logged in using ChatGPT'"));
     let ffmpeg = script(&d, "decode", r#"while [ "$1" != "-i" ]; do shift; done; input=$2; for a; do out=$a; done; cp "$input" "$out""#);
     let recognizer = script(&d, "recognize", "echo '{\"text\":\"\"}'");
@@ -3099,17 +3102,21 @@ fn doctor_voice_readiness() {
         if mode == 1 { c["voice"]["recognizer"] = json!(d.join("absent")); }
         if mode >= 3 {
             for f in ["tokens.txt", "encoder.int8.onnx", "decoder.onnx", "joiner.onnx"] { fs::write(model.join(f), "invented model").unwrap(); }
-            script(&d, "recognize", if mode == 3 { "echo private-dependency-output; exit 1" } else { "echo '{\"text\":\"\"}'" });
+            script(&d, "recognize", if mode == 3 { "echo private-dependency-output >&2; exit 1" } else { "echo '{\"text\":\"\"}'" });
         }
         if mode == 6 { script(&d, "recognize", "echo private-dependency-output"); }
         if mode == 7 { script(&d, "recognize", "exec sleep 20"); }
         if mode == 5 { c["voice"]["ffmpeg"] = json!(d.join("absent")); }
         fs::write(&cfg, c.to_string()).unwrap();
+        host_support::wrap(std::path::Path::new(c["codex"].as_str().unwrap()),"--version","codex-cli 0.162.0");
+        host_support::wrap(&ffmpeg,"-version","ffmpeg version 6.1.0");
+        host_support::wrap(&recognizer,"--version","2.0.1");
         let out = Command::new(env!("CARGO_BIN_EXE_pilotq")).env("PILOTQ_INSTALL", &d).env("PATH", &gh_path).args(["doctor","--json"]).output().unwrap();
         let report: Value = serde_json::from_slice(&out.stdout).unwrap();
         assert_eq!(report["checks"]["voice"], expected, "mode {mode}: {report}");
         assert_eq!(out.status.success(), mode == 4, "mode {mode}: {report}");
         assert_eq!(report["ok"], mode == 4);
+        if mode == 3 { assert!(String::from_utf8_lossy(&out.stderr).contains("private-dependency-output")); }
         if mode == 4 {
             assert_eq!(report["gh"]["path"], json!(d.join("gh")));
             assert_eq!(report["gh"]["version"], "gh version 2.45.0 (invented)");
@@ -3123,6 +3130,9 @@ fn doctor_voice_readiness() {
                 assert!(!String::from_utf8_lossy(&failed.stdout).contains("invented-api-failure"));
             }
             script(&d,"gh",gh_ok);
+        }
+        for p in [std::path::PathBuf::from(c["codex"].as_str().unwrap()),ffmpeg.clone(),recognizer.clone()] {
+            fs::rename(p.with_extension("real"),p).unwrap();
         }
         assert!(!d.join("journal.sqlite").exists(), "doctor never admits a request");
         assert!(!String::from_utf8_lossy(&out.stdout).contains("private-dependency-output"));

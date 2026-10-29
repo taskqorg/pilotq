@@ -88,7 +88,7 @@ impl Drop for Proc {
     fn drop(&mut self) {
         // ponytail: `kill` on the process group; a pidfd/cgroup supervisor if children escape the group
         #[cfg(unix)]
-        let _ = Command::new("kill").args(group_kill_args(self.child.id())).stderr(Stdio::null()).status();
+        let _ = crate::host::output(Command::new("kill").args(group_kill_args(self.child.id())));
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -120,12 +120,13 @@ impl Codex {
             .stderr(Stdio::piped());
         #[cfg(unix)]
         std::os::unix::process::CommandExt::process_group(&mut c, 0);
-        let mut child = c.spawn().map_err(|e| format!("codex app-server did not start: {e}"))?;
+        let mut child = c.spawn().map_err(|e| { crate::host::log("codex app-server",&e.to_string()); format!("codex app-server did not start: {e}") })?;
         let (stdin, stdout, stderr) = (child.stdin.take().unwrap(), child.stdout.take().unwrap(), child.stderr.take().unwrap());
         let last_err = std::sync::Arc::new(Mutex::new(None));
         let keep = last_err.clone();
         std::thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok).filter(|l| !l.trim().is_empty()) {
+                crate::host::log("codex app-server stderr",&line);
                 *keep.lock().unwrap() = Some(line.chars().take(200).collect());
             }
         });

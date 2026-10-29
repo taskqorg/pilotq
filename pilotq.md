@@ -389,6 +389,29 @@ Every command that writes prints the readback, supports `--json` and returns a n
 
 Prepare version `0.2.12` for #127. After merge-result CI and review acceptance, the PM publishes #127 through the existing `live` release workflow, updates the existing FRA service through `pilotq update`, and records source/binary identity, health, selftest, doctor and journal continuity with §12 drain and compatible-schema rollback protections. The PM records a real authorized person's question answered through TaskQ CLI, the original Telegram card with buttons removed and `Answered by <actor>: <text>`, and a later tap showing the same receipt. These post-release checks remain required evidence, not inferred from adapter tests. This grants no Hermes consumer cutover.
 
+### Host requirements (task #130)
+
+The supported managed host is Linux x86_64. The installation owner provisions these tools; PilotQ never runs a package manager, elevates privileges or changes a subscription login. Doctor probes the configured binaries and PATH used by the service. Install and manual/scheduled update checks refuse missing, unparseable or older versions, reporting the exact operator step. After remediation, rerun `pilotq doctor --json` and the original install/update command. Offline selftest remains independent of host setup.
+
+| Host tool | Minimum | Required by / remediation |
+|---|---|---|
+| Codex CLI | 0.162.0 | Subscription app-server and catalogue; install `@openai/codex@0.162.0` or newer and set the absolute `codex` path; retain the isolated ChatGPT login |
+| TaskQ service and CLI | 4.6.40 | Board commands and operation receipts; update the existing TaskQ installation to 4.6.40 or newer; doctor checks a checksum-bound CLI release receipt and the service version from `service status --json` |
+| GitHub CLI (`gh`) | 2.45.0 | Board answer reader on PATH and configured direct-action CLI; install gh 2.45.0 or newer and correct PATH / configured `gh` |
+| ffmpeg | 6.1.0 | Audio decode; install ffmpeg 6.1 or newer and set `voice.ffmpeg` |
+| sherpa-onnx-offline | 2.0.1 | GigaAM recognition; install the static no-TTS 2.0.1 release or newer and set `voice.recognizer` |
+| curl | 7.68.0 | CoreQ release download; install curl 7.68 or newer on service PATH |
+| systemctl (systemd) | 245 | CoreQ Linux user service; provision systemd 245 or newer with a working user service manager |
+| kill (procps-ng) | 3.3.17 | Process-group cleanup on PATH and `/bin/kill`; install procps-ng 3.3.17 or newer on service PATH |
+| `commands.json` executables | Each entry declares `minimum_version` | Approved installed reads (§5); provision a checksum-bound release receipt beside each executable; an absent minimum or receipt fails doctor |
+| hostname | 3.23 | Telemetry host identity; install hostname 3.23 or newer on service PATH |
+
+TaskQ 4.6.40 and sherpa-onnx-offline 2.0.1 have no CLI version command. Their installed executable has an owner-provisioned `<binary>.pilotq-version.json` receipt containing the verified release `version` and executable `sha256`; doctor verifies the bytes before trusting that version. The tester guide gives the provisioning step. A missing or mismatched receipt fails with an unavailable version. A later recognizer with a valid version command can report its version directly.
+
+There are no separately installed PilotQ shared libraries: SQLite, Rust TLS and CoreQ 0.14.6 are linked into the artifact through Cargo.lock. The static recognizer is required; ffmpeg and system tools retain their distribution-managed libraries. Doctor's existing silent decode/recognition probe checks the voice runtime and model files in addition to versions. Developer/release-only tools (`cargo`, the Rust compiler, `sha256sum`, and shell utilities in download instructions) are not service runtime dependencies. Optional unsupported platforms are not qualified by the Linux requirement probes.
+
+Doctor's operator JSON adds `requirements` with tool, found version, minimum, outcome and fix; only validated version numbers enter this report. Missing configuration still reports independently probeable requirements and fails configured ones. `/doctor` projects the aggregate `host_tools` outcome without paths, versions or diagnostics (§8). Failed subprocesses log command and scrubbed errors to operator stderr; failures remain errors, never successful empty output. A new flag/API must retain the listed minimum or raise it with its oldest-version fixture.
+
 ### Update and monitoring
 
 Follow coreq: `releases/<version>`, `current` and `previous` in the install directory; GitHub releases with `SHA256SUMS`; `pilotq update` verifies the checksum and runs `pilotq selftest` before the switch; the launcher returns to `previous` after three unhealthy starts. An update waits for the planned-restart drain in section 12.

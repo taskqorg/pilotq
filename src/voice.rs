@@ -2,7 +2,7 @@
 //! RNNT-punct int8 recognizes Russian speech on the local CPU. Both run as subprocesses, so the static build needs no onnxruntime.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 /// Longest accepted recording (§ 12).
@@ -26,18 +26,11 @@ impl Drop for Dir {
 
 /// Runs one child to completion before `until`, stdout into `out`; a late child is killed.
 fn run(c: &mut Command, out: &Path, until: Instant) -> Result<(), &'static str> {
-    let out = std::fs::File::create(out).map_err(|_| "storage unavailable")?;
-    let mut child = c.stdin(Stdio::null()).stdout(out).stderr(Stdio::null()).spawn().map_err(|_| "recognizer unavailable")?;
-    loop {
-        if let Some(status) = child.try_wait().map_err(|_| "recognizer unavailable")? {
-            return if status.success() { Ok(()) } else { Err("failed") };
-        }
-        if Instant::now() >= until {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err("recognition timed out");
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    let remaining = until.saturating_duration_since(Instant::now());
+    match crate::host::output_with_budget(c,remaining) {
+        Ok(o) => std::fs::write(out,o.stdout).map_err(|_|"storage unavailable"),
+        Err(e) if e.contains("timeout") || e.contains("deadline") => Err("recognition timed out"),
+        Err(_) => Err("failed"),
     }
 }
 
@@ -70,7 +63,7 @@ pub fn transcribe(v: &Voice, audio: &[u8], budget: Duration) -> Result<String, S
     // The recognizer prints its result as one JSON line after its configuration dump.
     let printed = std::fs::read_to_string(&out).map_err(|_| fail("recognizer failed"))?;
     let text = printed.lines().rev().find_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()?["text"].as_str().map(str::to_string))
-        .ok_or_else(|| fail("recognizer failed"))?;
+        .ok_or_else(|| { crate::host::log(&v.recognizer,"recognition returned no valid result JSON"); fail("recognizer failed") })?;
     let text = text.trim();
     if text.is_empty() { Err(fail("had no recognized speech")) } else { Ok(text.to_string()) }
 }

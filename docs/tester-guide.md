@@ -50,6 +50,28 @@ If creation is partial or TaskQ is unavailable, keep the request number and obse
 
 Missing grants, a foreign board, stale answers, unregistered targets and the sixth tool call are refusals, not successful actions. Only the configured owner can directly comment or label a PilotQ issue, with a suitable key. Direct writes to other projects are refused; TaskQ mutations remain available on explicitly registered projects within the caller's grants. Keys enter through `pilotq keys add` on the CLI, never Telegram (§5, §8).
 
+## Host tools and readiness
+
+The required versions and their consumers are owned by [contract §9](../pilotq.md#host-requirements-task-130). Use the installation owner's account and the same PATH as the service. Before installation or an update, run `pilotq doctor --json`; inspect every `requirements` entry, including `found`, `minimum`, `outcome` and `fix`. A failed entry blocks service installation and manual/scheduled update checks. The current release keeps running; doctor stays failed until the named step is completed. PilotQ does not elevate privileges or install packages on the owner's behalf.
+
+For an Ubuntu 24.04 managed host, the operator provisions `gh`, `ffmpeg`, `curl`, `procps`, `hostname` and `systemd` with the distribution package manager, then verifies the actual versions with doctor. If the distribution offers an older version, use the tool's upstream package repository or upgrade the host; do not bypass the check. Install Codex with `npm install --global @openai/codex@0.162.0` (or a newer approved version), set its absolute path in configuration and preserve the existing isolated ChatGPT login. Update the existing TaskQ installation with `taskq update`; verify its service version and preserve its existing host credentials. Do not run GitHub device login.
+
+Install the static no-TTS [sherpa-onnx v2.0.1 Linux x64 release](https://github.com/k2-fsa/sherpa-onnx/releases/tag/v2.0.1), or a newer approved release, with the GigaAM files described below. Set the absolute `voice.recognizer` and `voice.ffmpeg` paths. Doctor additionally decodes and recognizes silence; version checks alone do not establish voice readiness.
+
+TaskQ 4.6.40 and sherpa-onnx-offline 2.0.1 do not expose their binary version. After verifying the release source and unpacked executable, record its release version and SHA-256 beside the executable. This receipt is operator-provisioned release identity, not independent upstream attestation. Do not infer a version from a directory name or copy a receipt from another executable. Example for the verified sherpa release; replace the invented absolute path with the installed executable:
+
+```sh
+TOOL_BINARY=/absolute/path/to/sherpa-onnx-offline
+TOOL_VERSION=2.0.1
+TOOL_SHA=$(sha256sum "$TOOL_BINARY" | cut -d ' ' -f 1)
+printf '{"version":"%s","sha256":"%s"}\n' "$TOOL_VERSION" "$TOOL_SHA" > "$TOOL_BINARY.pilotq-version.json"
+chmod 600 "$TOOL_BINARY.pilotq-version.json"
+```
+
+Repeat for the resolved TaskQ CLI release executable with `TOOL_VERSION=4.6.40` or its verified newer release. If `taskq.bin` is a launcher, use the resolved release executable as `taskq.bin` so its receipt identifies the CLI being executed. Regenerate receipts after replacing either executable. Doctor refuses missing receipts, changed bytes and versions below the minimum; the TaskQ service is checked separately. A newer recognizer with a working version flag needs no receipt. Rerun `pilotq doctor --json`, then repeat installation or update. Never alter a receipt merely to silence an unsupported-version failure.
+
+Each protected `commands.json` capability also declares `"minimum_version":"<verified minimum>"`. Doctor checks that executable with the same checksum-bound receipt procedure; it does not run arbitrary version arguments supplied by a capability. For the documented TaskQ status capability, use `"minimum_version":"4.6.40"` and its resolved CLI receipt. No capability file means no additional requirements; an unreadable or malformed file fails doctor. Adding a capability does not install its dependencies.
+
 ## Install a separate Linux test instance
 
 This procedure is for an authorized operator on a separate Linux x86_64 account or host, with `curl`, `sha256sum`, Codex and TaskQ already installed. Use a **separate test bot token** and a verified subscription login. Never reuse the production token. Do not run two pollers with one token (§4). Shared-server subscription entitlement remains an open production decision (§11).
@@ -65,10 +87,9 @@ curl -fSLO https://github.com/taskqorg/pilotq/releases/download/v0.2.4/latest.js
 sha256sum -c SHA256SUMS
 chmod 755 pilotq-0.2.4-linux-x86_64
 ./pilotq-0.2.4-linux-x86_64 selftest
-./pilotq-0.2.4-linux-x86_64 update --check
 ```
 
-All checksum entries must pass. A fresh installation running this same version prints `update: up to date` after fetching the release manifest. An older installed selection sees `update: 0.2.4 available`; `pilotq update` verifies the download and runs offline selftest before activation. A checksum or selftest failure must leave the old selection intact. Selftest checks the local fixture, not Telegram, Codex login or the full task flow.
+All checksum entries must pass. After configuring the host requirements below, `pilotq update --check` on a fresh installation running this same version prints `update: up to date` after fetching the release manifest. An older installed selection sees `update: 0.2.4 available`; `pilotq update` verifies the download and runs offline selftest before activation. A checksum or selftest failure must leave the old selection intact. Selftest checks the local fixture, not Telegram, Codex login or the full task flow.
 
 The default install directory is `$HOME/.local/share/pilotq`. Use the dedicated account's default for service installation; the generated user unit does not preserve an arbitrary `PILOTQ_INSTALL` override. Before starting a poller:
 
@@ -134,6 +155,7 @@ Invented configuration (replace executable paths, root and user ID):
 {
   "taskq": {
     "description": "List tasks on the registered PilotQ board",
+    "minimum_version": "4.6.40",
     "executable": "/opt/taskq/taskq",
     "args": [["status"]],
     "cwd": "/srv/pilotq",
@@ -143,6 +165,7 @@ Invented configuration (replace executable paths, root and user ID):
   },
   "pwd": {
     "description": "Show the approved working directory",
+    "minimum_version": "8.30",
     "executable": "/bin/pwd",
     "args": [[]],
     "cwd": "/srv/pilotq",
