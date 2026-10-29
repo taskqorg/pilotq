@@ -77,7 +77,7 @@ Each trace records initial request/run/effect/delivery state, authorized actor a
 | ID and requirement | Initial state and action | Fault or variation | Observable acceptance evidence |
 |---|---|---|---|
 | L01 R5 R11 | Send a request while a run slot is busy; then free capacity | Fast answer, queued request, failed inbox commit, waiting for a person or TaskQ | Acknowledgement follows durable commit; queued is not running; reaction receipt avoids a redundant text acknowledgement; reaction failure falls back to text; a queue wait over 30 seconds gets one observed queue-depth notice; waiting has a reason and does not trigger a hung-run warning |
-| L02 R1 R5 R11 | Start a Codex turn in a forum topic | No first event; active events; stale activity; wait; cancel; finish; typing API failure | Typing stays in the correct topic, follows section 12's freshness/rate bounds and stops on wait/stale/terminal state; its timer/failure never extends a deadline, creates work or blocks a final reply |
+| L02 R1 R5 R11 | Start a Codex turn in a forum topic | No first event; active events; stale activity; wait; cancel; finish; typing API failure | Typing stays in the correct topic, continues through a long active call until its absolute deadline, follows section 12's rate bound and stops on wait/cancel/terminal state; its timer/failure never extends a deadline, creates work or blocks a final reply |
 | L03 R5 R11 | Emit factual tool/task progress, a stall and subsequent recovery | Event burst, repeated error, service restart, recovery without a successful probe, sensitive text in errors | Coalesced status reflects evidence; incident notices deduplicate across restart; no raw secrets/reasoning; a reset timer alone cannot claim recovery; final/question/failure is not starved by edits |
 | L04 R5 R11 | Spawn a Codex process that never emits an event | Startup hangs, or stops before activity state is initialized | First-event watch still fires within the configured bound; request becomes recoverable/failed with notice; slot and process resources are released or fenced |
 | L05 R2 R5 R7 R11 | Run a chatty model, a quiet tool and compaction under the same request budget | Endless tokens; repeatedly ineffective compaction; no events during bounded legitimate tool work | Absolute deadline and tool-call budget apply despite activity; no unbounded retry/compaction loop; legitimate tool waiting is diagnosed accurately; only remaining work is delegated |
@@ -417,7 +417,7 @@ All 62 scenario families at the end of step 5. "Deterministic" names `cargo test
 | C06 | Pass: resume-failure rebuild, receipt recovery, no repeated effect (#29) | Pass 3/3 at `3e5a3dc` (#29, PM run below) | Real Telegram remains unqualified |
 | C07 | Pass (`c07_current_profiles_reach_each_turn`): corrections, forget, sender and route privacy | Pass 3/3 on FRA after #28; original Mac failure retained above | Agentq comparison: agentq#167 |
 | L01 | Pass | Pass (A8) | Fast-answer suppression: not implemented |
-| L02 | Partial | — | Typing bounded by last useful event |
+| L02 | Partial | — | Owner Telegram check after #91 merge and PM test-bot update |
 | L03 | Partial | — | Incident notices across restart |
 | L04 | Pass | — | — |
 | L05 | Partial: deadline, tool budget | C01 compaction below | Ineffective-compaction loop |
@@ -670,3 +670,9 @@ These checks do not qualify A4. A4 needs A40 and fault drills on FRA after merge
 - Codex: a wrapper with an empty `CODEX_HOME` made two `pilotq ask` runs fail with 401 at 21:50:00 and 21:50:14. The incident DM was queued at 21:50:16 and delivered. After the restore, a successful ask at 21:53:18 produced the recovery DM at 21:53:44.
 - Kill: `kill -9` of the PilotQ process at 22:08:30. systemd restarted it, and the healthy start sent `⚠️ PilotQ restarted without a planned stop` at 22:09:40.
 - TaskQ: a failing TaskQ wrapper produced no incident in 7 minutes. With no subscribed task, `scan` returned before observing the board, so `taskq` health kept its last `ok`. `cargo test --locked scan_without_subscriptions_observes_taskq` failed before the fix (`an unreachable board is observed without subscriptions`) and passes after it: an idle scan now reads the configured root's snapshot. The TaskQ drill must be repeated on a release that contains this fix.
+
+### Task #91 acceptance handoff
+
+Owner option 1 updates §12: typing follows the active-call deadline; task links identify GitHub, repository/number and verified title. Creation held, admission waiting for a worker and execution are separate observations. Unchanged-state revisions do not repeat status messages; revised questions and closing outcomes remain durable.
+
+Local regression checks cover the deadline boundary, unchanged-state revisions, escaped link titles and existing topic/edit/question/closure flows. The PM updates the test bot after merge. The owner then checks typing during a long call and its end after answer, error and cancellation, distinct creation/queue/execution text, readable links and absence of duplicate notifications. A4 remains unverified until that Telegram check is recorded on #91; fake Bot API checks do not establish visual acceptance.
