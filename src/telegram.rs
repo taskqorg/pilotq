@@ -484,7 +484,7 @@ async fn send(bot: &Bot, j: &Shared, d: &Delivery) -> Sent {
         if d.html.is_some() {
             r = r.parse_mode(ParseMode::Html);
         }
-        if d.kind == "question_answered" { r = r.reply_markup(InlineKeyboardMarkup::new(Vec::<Vec<InlineKeyboardButton>>::new())); }
+        if matches!(d.kind.as_str(), "question_answered" | "choice_answered") { r = r.reply_markup(InlineKeyboardMarkup::new(Vec::<Vec<InlineKeyboardButton>>::new())); }
         match r.await {
             Ok(m) => return Sent::Ok(m.id.0 as i64),
             Err(RequestError::Api(ApiError::MessageNotModified)) => return Sent::Ok(m),

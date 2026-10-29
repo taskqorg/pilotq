@@ -41,6 +41,10 @@ pub fn tools() -> Value {
             json!({"type": "object", "properties": {"project": {"type": "string"}, "revision": {"type": "integer"}}, "required": ["revision"]})),
         tool("discussion_choices", "Offer a concrete discussion question with 2-4 choices. Choosing answers only, never launches work. The final reply appends the question and numbered options with Telegram buttons.",
             json!({"type":"object","properties":{"question":{"type":"string"},"options":{"type":"array","items":{"type":"string"}}},"required":["question","options"]})),
+        tool("task_answer", "Forward only the person's own answer to a same-conversation subscribed question. Read task_status first. If destination or answer is ambiguous, clarify. Never choose for the person.",
+            json!({"type":"object","properties":{"project":{"type":"string"},"task":task,"revision":{"type":"integer"},"text":{"type":"string"},"source_request":{"type":"integer","description":"Internal input ID containing the person's exact answer; omit for current input"}},"required":["task","revision","text"]})),
+        tool("discussion_answer", "Save the person's own free-text answer to the current discussion card from journal context. Clarify ambiguity first. Never launches tasks.",
+            json!({"type":"object","properties":{"card":{"type":"integer"},"text":{"type":"string"},"source_request":{"type":"integer"}},"required":["card","text"]})),
         tool("task_status", "Read one registered task's current state from the board. Never creates anything.", json!({"type": "object", "properties": {"project": {"type": "string"}, "task": task}, "required": ["task"]})),
         tool("task_park", "Park one registered task (TaskQ later) with the person's reason.",
             json!({"type": "object", "properties": {"project": {"type": "string"}, "task": task, "reason": {"type": "string"}}, "required": ["task", "reason"]})),
@@ -55,8 +59,7 @@ pub fn tools() -> Value {
 /// Model instructions for the TaskQ tools; the boundary enforces them regardless.
 pub const INSTRUCTIONS: &str = "You are PilotQ, the conversational manager for registered TaskQ boards. Resolve one authorized project; never guess an ambiguous task number. Discussion never files work. To propose work, \
 call task_plan for additions to the same draft; use new_plan only for an explicitly separate idea. Never present internal revisions as new plans. The final reply renders the saved draft and launch button. Use discussion_choices for concrete questions; its selection only answers, never launches. Do not repeat the saved draft or choices in final prose; the renderer shows them. Call task_run_plan only when the person, in a later message, asks to run a \
-displayed plan. Resolve its latest internal revision from context; the person need not type a revision number. After launch discuss changes separately; never alter admitted tickets. Never say a task exists, started or finished unless a tool result in this conversation says so; cite its URL. You cannot answer a worker's \
-question: the person replies to the relayed question message. For task state call task_status; never guess it. Pausing the queue does not stop a running \
+displayed plan. Resolve its latest internal revision from context; the person need not type a revision number. After launch discuss changes separately; never alter admitted tickets. Never say a task exists, started or finished unless a tool result in this conversation says so; cite its URL. Never choose an answer for a worker. For a person's free-text answer, identify the question by meaning from same-conversation subscriptions, read task_status, then use task_answer with its exact question revision and a literal excerpt of the person's own answer. Use source_request from context when clarification refers to an earlier answer by that same person; never forward quotes or external source material as authorization. If destination or answer is ambiguous, ask which question and wait. A bare option number with multiple questions is ambiguous; do not use recency or time windows. For free-text discussion answers use discussion_answer with its current card. Buttons and replies remain supported. For task state call task_status; never guess it. Pausing the queue does not stop a running \
 worker; say so. Task links use [GitHub · repo#number · title](url), with the verified title from tool output; omit unknown titles. \
 Admission means queued for a worker, never worker execution. Keep effects to one short line; omit repeated procedural receipts.";
 
@@ -308,6 +311,9 @@ fn dispatch(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Value) -
         j.sender(r.request)?
     };
     if !j.lock().unwrap().has(sender,"chat")? { return Err("conversation access was revoked; nothing was done".into()); }
+    if name == "discussion_answer" {
+        return j.lock().unwrap().discussion_answer(r,args["card"].as_i64().ok_or("card is required")?,args["text"].as_str().ok_or("text is required")?,args["source_request"].as_i64());
+    }
     if name == "discussion_choices" {
         let question=args["question"].as_str().ok_or("question is required")?;
         let options:Vec<String>=serde_json::from_value(args["options"].clone()).map_err(|_|"options must be strings")?;
@@ -339,7 +345,7 @@ fn dispatch(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Value) -
             if args["project"].as_str().is_some_and(|p| p != project) { return Err("saved plan cannot be retargeted; nothing was filed".into()); }
             allowed(&j, sender, project, true)?;
             (project.clone(), saved.as_ref().unwrap().1.clone(), 0)
-        } else if matches!(name,"task_status" | "task_steer") {
+        } else if matches!(name,"task_status" | "task_steer" | "task_answer") {
             match j.related_target(r,args["task"].as_str().ok_or("task is required")?,args["project"].as_str())? {
                 Some(target) => target,
                 None => crate::direct::target(&j,r,sender,&target)?,
@@ -368,6 +374,35 @@ fn dispatch(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Value) -
             }
             let run = j.lock().unwrap().authorize(r, rev, sender, LEASE, now())?;
             Ok(submit(tq, j, run, false))
+        }
+        "task_answer" => {
+            let text=args["text"].as_str().ok_or("text is required")?;
+            let revision=args["revision"].as_i64().ok_or("question revision is required")?;
+            {
+                let guard=j.lock().unwrap();
+                allowed(&guard,sender,&project,true)?;
+                guard.answer_source(r,args["source_request"].as_i64(),text)?;
+                if guard.related_target(r,args["task"].as_str().ok_or("task is required")?,Some(&project))?.is_none()
+                    || !guard.task_target_matches(&project,n,&board,&tq.root.to_string_lossy())? {
+                    return Err("question must belong to this conversation's unchanged subscription; nothing was saved".into());
+                }
+                if let Some(receipt)=guard.question_answer(&project,n,revision)? { return Ok(receipt); }
+            }
+            let snapshot=tq.snapshot_for(&board)?;
+            let task=find(&snapshot,n).ok_or("task is not open; nothing was saved; check task status")?;
+            if task["state"]!="ask" || task["revision"]!=revision {
+                return Err(format!("Question changed; nothing was saved. Read task_status and answer its current question. {}",task_link(&board,n,task["title"].as_str())));
+            }
+            if !j.lock().unwrap().open_questions(&project,n)?.contains(&revision) {
+                return Err("question revision has not been relayed here; read the current task status before answering".into());
+            }
+            let argv=vec!["answer".into(),n.to_string(),"--text".into(),text.into(),"--revision".into(),revision.to_string()];
+            let op={
+                let guard=j.lock().unwrap();
+                allowed(&guard,sender,&project,true)?;
+                guard.task_intent(r,&project,&board,&tq.root.to_string_lossy(),&argv,now())?
+            };
+            reconcile_effect(tq,j,&op,&board,&argv,false)
         }
         "task_status" => {
             allowed(&j.lock().unwrap(), sender, &project, false)?;
@@ -417,14 +452,36 @@ fn dispatch(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Value) -
 fn reconcile_effect(tq: &Taskq, j: &Mutex<Journal>, op: &str, board: &str, args: &[String], notify: bool) -> Result<String, String> {
     let rc = match tq.write(args.to_vec(), op) {
         Ok(rc) => rc,
-        Err(e) => return Err(format!("TaskQ effect {op} is uncertain ({e}); recovery reconciles the same operation ID")),
+        Err(e) => return Err(format!("TaskQ effect {op} is uncertain ({e}); recovery reconciles the same operation ID{}",if args[0]=="answer" {". Check task status before another answer."} else {""})),
     };
     if !matches!(rc["outcome"].as_str(), Some("accepted" | "stale" | "rejected")) {
         return Err(format!("TaskQ effect {op} is uncertain; no verified readback"));
     }
-    let n = args[1].parse::<i64>().unwrap_or(0);
+    let n = args[1].split('.').next().and_then(|s|s.parse::<i64>().ok()).unwrap_or(0);
     if rc["op_id"] != op || rc["task"] != n || (rc["outcome"] == "accepted" && (!rc["revision"].as_i64().is_some_and(|n| n > 0) || rc["state"].as_str().is_none())) {
         return Err(format!("TaskQ effect {op} is uncertain; receipt identity or revision is invalid"));
+    }
+    if args[0]=="answer" {
+        let (request,project):(i64,String)=j.lock().unwrap().answer_effect_owner(op)?;
+        let revision=args.iter().position(|s|s=="--revision").and_then(|i|args.get(i+1)).and_then(|s|s.parse::<i64>().ok()).ok_or("missing answer revision")?;
+        let text=args.iter().position(|s|s=="--text").and_then(|i|args.get(i+1)).map(String::as_str).or_else(||args[1].split_once('.').map(|(_,k)|k)).ok_or("missing answer text")?;
+        if rc["outcome"]=="accepted" {
+            let guard=j.lock().unwrap();
+            let selected=guard.selected_answer(&project,n,revision,text)?;
+            let receipt=guard.answer_actor(request,&selected)?;
+            // Receipt and card edit are durable before reporting success; recovery keeps this op if persistence fails.
+            guard.answer_question(&project,n,revision,&receipt,now())?;
+        } else { reconcile_questions(tq,j,&project,board,n); }
+        let receipt=j.lock().unwrap().question_answer(&project,n,revision)?;
+        let saved=receipt.is_some();
+        let state=j.lock().unwrap().answer_state(request,rc["state"].as_str().unwrap_or("unknown"))?;
+        let title=j.lock().unwrap().task_title(&project,n)?;
+        let message=match receipt {
+            Some(receipt)=>format!("{receipt}\nTaskQ: {state}. {}",task_link(board,n,title.as_deref())),
+            None=>format!("Answer not saved: {}. Check task status before answering again. {}",rc["outcome"],task_link(board,n,None)),
+        };
+        j.lock().unwrap().task_receipt(op,&rc,notify.then_some(message.as_str()),now())?;
+        return if saved { Ok(message) } else { Err(message) };
     }
     let message = format!("TaskQ effect {op} reconciled: {} {} at revision {}. {}", rc["outcome"], rc["state"], rc["revision"], url(board, n));
     j.lock().unwrap().task_receipt(op, &rc, notify.then_some(message.as_str()), now())?;
@@ -438,6 +495,7 @@ fn recover_effects(tq: &Taskq, j: &Mutex<Journal>) -> bool {
     for (op, request, project, board, root, args) in pending {
         let actor = j.lock().unwrap().sender(request).unwrap_or(0);
         if allowed(&j.lock().unwrap(), actor, &project, true).is_err() { continue; }
+        if args.first().is_some_and(|s|s=="answer") && !j.lock().unwrap().has(actor,"chat").unwrap_or(false) { continue; }
         let Ok((bound, registered)) = tq.registered(&j.lock().unwrap(), &project) else { continue };
         if registered != board || bound.root != PathBuf::from(root) { continue; }
         if bound.snapshot_for(&board).is_err() { continue; }
@@ -611,21 +669,15 @@ fn answer(tq: &Taskq, j: &Mutex<Journal>, a: &Answer, resumed: bool) {
         Ok(i) => format!("pilotq-{i}-a{}", a.request),
         Err(e) => return eprintln!("answer {}: {e}", a.request),
     };
-    match tq.write(args, &op) {
-        Ok(rc) if rc["outcome"] == "accepted" => end("answered", format!("Answer written to task #{n}; it is now {}.", describe(rc["state"].as_str().unwrap_or(""))), None),
-        Ok(rc) if rc["outcome"] == "stale" => {
-            reconcile_questions(tq,j,&a.project,&board,n);
-            let receipt = j.lock().unwrap().question_answer(&a.project,n,a.revision).ok().flatten();
-            match receipt {
-                Some(text) => end("answered",text,None),
-                None => end("failed", format!("That question is no longer current; nothing was written. {}", current(j)), Some("stale question")),
-            }
-        },
-        Ok(rc) if rc["outcome"] == "rejected" => {
-            end("failed", format!("TaskQ refused the answer to task #{n}: {}. {}", rc["reason"].as_str().unwrap_or("no reason given"), current(j)), Some("rejected"))
+    if let Err(e)=j.lock().unwrap().direct_answer_intent(a,&board,&tq.root.to_string_lossy(),&args,&op,now()) {
+        return end("failed",format!("Answer intent was not saved: {e}; check task status before answering again."),Some("intent unavailable"));
+    }
+    match reconcile_effect(tq,j,&op,&board,&args,false) {
+        Ok(receipt)=>end("answered",receipt,None),
+        Err(error)=>{
+            let pending=j.lock().unwrap().task_effect_pending(&op).unwrap_or(true);
+            end(if pending {"uncertain"} else {"failed"},error,Some(if pending {"unknown receipt"} else {"rejected"}));
         }
-        Ok(rc) => end("uncertain", format!("The answer to task #{n} may have been written ({}); it is not repeated automatically.", rc["outcome"]), Some("unknown receipt")),
-        Err(e) => end("uncertain", format!("The answer to task #{n} may have been written ({e}); it is not repeated automatically."), Some("unknown receipt")),
     }
 }
 
