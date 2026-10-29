@@ -3150,6 +3150,7 @@ fn u106_telegram_controls_and_models() {
     assert_eq!(turns[1]["params"]["model"],"invented-b");
     c.kill().unwrap(); c.wait().unwrap(); c=spawn(&d,None);
     push(&st,text(49,OWNER,None,OWNER,"/new"));
+    wait("reset names saved selection",5,||sent_has(&st,"New conversation started. Model: invented-b."));
     push(&st,text(50,OWNER,None,OWNER,"after reset"));
     wait("model survives reset and service restart",10,||sent_has(&st,"re: after reset"));
     let log=fs::read_to_string(d.join("codex.log")).unwrap();
@@ -3167,4 +3168,47 @@ fn u106_telegram_controls_and_models() {
     assert_eq!(query(&d,"SELECT count(*) FROM runs"),3,"CLI controls never create model runs");
     assert!(!log.contains("123:fake"));
     stop(c,d);
+}
+
+// #119 / §2, §4, §12: observations must reach the durable final reply in each route
+// and fallback. Protects against an absent footer, leaked account metadata, invented
+// zeroes, cross-turn context and optional quota failure killing a good answer.
+#[test]
+fn u119_status_footer_delivery() {
+    for (mode,chat,topic) in [("rich",OWNER,None),("html",-100,None),("plain",-100,Some(5))] {
+        let (d,st)=setup(&format!("u119-{mode}"),vec![]);
+        st.lock().unwrap().rich_reject=mode!="rich";
+        let fake=FAKE.replace("    case \"$text\" in",r#"    case "$text" in
+    measured*)
+      echo '{"method":"thread/tokenUsage/updated","params":{"threadId":"'$th'","turnId":"u1","tokenUsage":{"last":{"inputTokens":800,"totalTokens":900},"modelContextWindow":1000}}}'
+      reset=$(($(date +%s) + 7201))
+      echo '{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"codex","planType":"invented-secret-plan","secondary":{"usedPercent":25,"windowDurationMins":10080,"resetsAt":'$reset'}}}}'
+      echo '{"id":4,"result":{"rateLimits":{"secondary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":'$reset'}}}}'
+      echo '{"method":"thread/tokenUsage/updated","params":{"threadId":"other","turnId":"u1","tokenUsage":{"last":{"inputTokens":0},"modelContextWindow":1000}}}' ;;
+    missing*) echo '{"id":4,"error":{"code":-32601,"message":"invented missing quota source"}}' ;;
+    esac
+    case "$text" in"#);
+        use_codex(&d,&script(&d,"footer-codex",&fake));
+        let c=spawn(&d,None);
+        push(&st,text(1,chat,topic,OWNER,"/version"));
+        wait("retention notice and control delivered",10,||sent_has(&st,concat!("PilotQ ",env!("CARGO_PKG_VERSION"))));
+        if mode=="plain" {st.lock().unwrap().faults.push_back("parse");}
+        push(&st,text(2,chat,topic,OWNER,"measured answer"));
+        wait("measured answer",15,||sent_has(&st,"re: measured answer"));
+        let answer=texts(&st).into_iter().find(|s|s.contains("re: measured answer")).unwrap();
+        assert!(answer.contains("gpt-test · 😣 80% · 🌖 75% ↻ 3h"),"{mode}: {answer}");
+        let delivered=sent(&st).into_iter().find(|v|v["text"].as_str().is_some_and(|t|t.contains("re: measured answer"))).unwrap();
+        if mode=="plain" { assert!(delivered.get("parse_mode").is_none()); }
+        if mode=="html" { assert_eq!(delivered["parse_mode"],"HTML"); }
+        push(&st,text(3,chat,topic,OWNER,"missing metrics"));
+        wait("missing metrics reply",15,||sent_has(&st,"re: missing metrics"));
+        let answer=texts(&st).into_iter().find(|s|s.contains("re: missing metrics")).unwrap();
+        assert!(answer.contains("? context unavailable · ? unavailable"),"{answer}");
+        push(&st,text(4,chat,topic,OWNER,"/new"));
+        wait("reset model announcement",10,||sent_has(&st,"New conversation started. Model: default (Codex configuration)."));
+        assert_eq!(query(&d,"SELECT count(*) FROM runs"),2,"/new is deterministic");
+        assert_eq!(query(&d,"SELECT count(*) FROM requests WHERE reply LIKE '%😣 80% · 🌖 75% ↻ 3h%'"),1,"persist before sending");
+        assert!(!texts(&st).join("\n").contains("invented-secret-plan"));
+        stop(c,d);
+    }
 }

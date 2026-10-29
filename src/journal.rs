@@ -402,7 +402,8 @@ fn answer_control(tx: &Connection, session: &str, cmd: &str, request: i64, chat:
             _ => {
                 tx.execute("INSERT INTO conversations(session, generation) VALUES (?1, 1) ON CONFLICT(session) DO UPDATE SET generation=generation+1, thread=NULL", [session])
                     .map_err(e)?;
-                "New conversation started. Earlier requests, task links and receipts stay recorded.".into()
+                let selected: Option<String> = tx.query_row("SELECT CAST(value AS TEXT) FROM meta WHERE key=?1", [format!("model:{session}")], |r|r.get(0)).optional().map_err(e)?;
+                format!("New conversation started. Model: {}.", selected.as_deref().unwrap_or("default (Codex configuration)"))
             }
         },
         None,
@@ -1557,7 +1558,7 @@ impl Journal {
         tx.execute("INSERT INTO audit_events(request_id,run_id,at,kind,target,result) VALUES (?1,?2,?3,'rebuild',?4,'native session unavailable; journal context prepared')", params![r.request,r.id,at,r.thread]).map_err(e)?;
         let (front, chat, topic, message): (String,i64,Option<i64>,i64) = tx.query_row("SELECT front,chat,topic,message FROM requests WHERE id=?1", [r.request], |x| Ok((x.get(0)?,x.get(1)?,x.get(2)?,x.get(3)?))).map_err(e)?;
         if front == "telegram" && !notified {
-            outbox(&tx,r.request,chat,topic,Some(message),None,"I am rebuilding from recorded requests, replies and receipts to refresh or recover the native conversation; earlier actions will not be repeated.",at)?;
+            outbox(&tx,r.request,chat,topic,(chat != self.sender(r.request)?).then_some(message),None,"I am rebuilding from recorded requests, replies and receipts to refresh or recover the native conversation; earlier actions will not be repeated.",at)?;
         }
         drop(q);
         tx.commit().map_err(e)?;
@@ -1617,6 +1618,11 @@ impl Journal {
     /// Records a run's outcome, reply and native thread in one transaction, only while its fence holds. Returns false for a
     /// fenced run, which changes nothing but its own run row.
     pub fn finish(&self, r: &Run, thread: Option<&str>, model: Option<&str>, outcome: &crate::manager::Outcome, at: i64) -> Result<bool, String> {
+        self.finish_with_footer(r, thread, model, outcome, None, at)
+    }
+
+    /// #119 / §4: freeze the runtime observation with the final reply, before any delivery.
+    pub fn finish_with_footer(&self, r: &Run, thread: Option<&str>, model: Option<&str>, outcome: &crate::manager::Outcome, footer: Option<&str>, at: i64) -> Result<bool, String> {
         use crate::manager::Outcome;
         let e = |e: rusqlite::Error| e.to_string();
         let tx = self.0.unchecked_transaction().map_err(e)?;
@@ -1672,6 +1678,10 @@ impl Journal {
                     text += &format!("\n{}. {option}",i+1);
                 }
             }
+        }
+        let telegram: bool = tx.query_row("SELECT front='telegram' FROM requests WHERE id=?1", [r.request], |x| x.get(0)).map_err(e)?;
+        if state == "answered" && telegram && let Some(footer) = footer {
+            text += &format!("\n\n{footer}");
         }
         tx.execute("UPDATE requests SET state=?2, reply=?3, error=?4 WHERE id=?1", params![r.request, state, text, error]).map_err(e)?;
         close_drafts(&tx, &r.session, r.request, at)?;
@@ -3190,6 +3200,29 @@ mod tests {
         assert_eq!(count(&j,"SELECT count(*) FROM outbox WHERE kind='rich_part' AND state='standby'"),1);
         assert_eq!(count(&j,"SELECT count(*) FROM outbox WHERE kind='rich' AND state='exhausted' AND possible_duplicate=1"),1);
         drop(j); let _=std::fs::remove_dir_all(p);
+    }
+
+    // #119 / §4: private topics keep their destination without quoting user input,
+    // including recovery notices; group topics retain reply correlation.
+    #[test]
+    fn u119_private_topic_replies() {
+        for chat in [7, -100] {
+            let (mut j, p) = journal("u119-private-topic");
+            j.admit(&[(1, at(chat, Some(5), 7, 1))], 0).unwrap();
+            let r = j.claim_next(1, 1).unwrap().remove(0);
+            j.rebuild(&r, 2).unwrap();
+            j.finish(&r, None, None, &crate::manager::Outcome::Answered("answer".into()), 3).unwrap();
+            let mut q = j.0.prepare("SELECT topic,reply_to FROM outbox WHERE text LIKE 'I am rebuilding%' OR kind='rich'").unwrap();
+            let rows: Vec<(Option<i64>, Option<i64>)> = q.query_map([], |x| Ok((x.get(0)?, x.get(1)?))).unwrap().map(Result::unwrap).collect();
+            assert_eq!(rows.len(), 2);
+            for (topic, reply) in rows {
+                assert_eq!(topic, Some(5));
+                assert_eq!(reply, (chat != 7).then_some(1), "§4: private topic must not quote input");
+            }
+            drop(q);
+            drop(j);
+            std::fs::remove_dir_all(p).unwrap();
+        }
     }
 
     // §4/§9: an older fixed native tool catalogue rebuilds once, preserving recorded context and receipts.

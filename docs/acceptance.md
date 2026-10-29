@@ -794,3 +794,23 @@ These are model/adapter and process checks, not a live Telegram rendering or
 installed-service restart observation. A7's live Telegram checks, including an
 installed restart with an active request, remain unqualified until performed on
 an authorized test installation; no deployment or production cutover is implied.
+
+## Status footer (#119)
+
+The owner selected the reply footer for DMs, groups and topics; see
+[research and placement review](status-line-research.md) and contract §12.
+`cargo test --locked u119` protects indicator thresholds, reset rounding,
+invalid/stale readings and the full fake-app-server → journal → rich/HTML/plain
+Telegram path. It also checks that missing quota cannot fail an answer, late
+snapshot data cannot overwrite a newer notification, and another thread cannot
+supply context. The existing `u106_telegram_controls_and_models` chain checks
+that `/new` names the saved model after restart without starting inference.
+These tests do not qualify Telegram appearance or live subscription readings.
+
+A4 was performed by the PM on FRA on 2026-10-29 with code candidate `de82e17`:
+[report and Telegram screenshots](https://github.com/taskqorg/pilotq/pull/122#issuecomment-6493225953).
+The run covers `/new`, a model switch, DM/topic replies and an unavailable quota
+source. The report records journal continuity and restoration of release 0.2.10;
+it also retains a nonblocking recovery-notice wording observation. See the
+[exact build and evidence](status-line-research.md#implementation-and-live-evidence).
+Worker question cards retain their no-footer rule under contract §12.
