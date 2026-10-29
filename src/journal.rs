@@ -1558,7 +1558,7 @@ impl Journal {
         tx.execute("INSERT INTO audit_events(request_id,run_id,at,kind,target,result) VALUES (?1,?2,?3,'rebuild',?4,'native session unavailable; journal context prepared')", params![r.request,r.id,at,r.thread]).map_err(e)?;
         let (front, chat, topic, message): (String,i64,Option<i64>,i64) = tx.query_row("SELECT front,chat,topic,message FROM requests WHERE id=?1", [r.request], |x| Ok((x.get(0)?,x.get(1)?,x.get(2)?,x.get(3)?))).map_err(e)?;
         if front == "telegram" && !notified {
-            outbox(&tx,r.request,chat,topic,Some(message),None,"I am rebuilding from recorded requests, replies and receipts to refresh or recover the native conversation; earlier actions will not be repeated.",at)?;
+            outbox(&tx,r.request,chat,topic,(chat != self.sender(r.request)?).then_some(message),None,"I am rebuilding from recorded requests, replies and receipts to refresh or recover the native conversation; earlier actions will not be repeated.",at)?;
         }
         drop(q);
         tx.commit().map_err(e)?;
@@ -3200,6 +3200,29 @@ mod tests {
         assert_eq!(count(&j,"SELECT count(*) FROM outbox WHERE kind='rich_part' AND state='standby'"),1);
         assert_eq!(count(&j,"SELECT count(*) FROM outbox WHERE kind='rich' AND state='exhausted' AND possible_duplicate=1"),1);
         drop(j); let _=std::fs::remove_dir_all(p);
+    }
+
+    // #119 / §4: private topics keep their destination without quoting user input,
+    // including recovery notices; group topics retain reply correlation.
+    #[test]
+    fn u119_private_topic_replies() {
+        for chat in [7, -100] {
+            let (mut j, p) = journal("u119-private-topic");
+            j.admit(&[(1, at(chat, Some(5), 7, 1))], 0).unwrap();
+            let r = j.claim_next(1, 1).unwrap().remove(0);
+            j.rebuild(&r, 2).unwrap();
+            j.finish(&r, None, None, &crate::manager::Outcome::Answered("answer".into()), 3).unwrap();
+            let mut q = j.0.prepare("SELECT topic,reply_to FROM outbox WHERE text LIKE 'I am rebuilding%' OR kind='rich'").unwrap();
+            let rows: Vec<(Option<i64>, Option<i64>)> = q.query_map([], |x| Ok((x.get(0)?, x.get(1)?))).unwrap().map(Result::unwrap).collect();
+            assert_eq!(rows.len(), 2);
+            for (topic, reply) in rows {
+                assert_eq!(topic, Some(5));
+                assert_eq!(reply, (chat != 7).then_some(1), "§4: private topic must not quote input");
+            }
+            drop(q);
+            drop(j);
+            std::fs::remove_dir_all(p).unwrap();
+        }
     }
 
     // §4/§9: an older fixed native tool catalogue rebuilds once, preserving recorded context and receipts.

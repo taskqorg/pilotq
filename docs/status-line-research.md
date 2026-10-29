@@ -92,11 +92,16 @@ The [PM report and Telegram screenshots](https://github.com/taskqorg/pilotq/pull
 record default and selected-model `/new`, model buttons, topic replies
 and a real Codex answer with the optional quota source suppressed. Screenshots
 show the context percentages, weekly quota/reset and `? unavailable` fallback.
-Review found topic-creator badges and quoted replies in the screenshots labeled
-DM: they establish group/topic rendering, not private-chat rendering (§4).
-A4 remains incomplete until a genuine bot DM run verifies chat ID equals sender
-ID, no reply quote, `/new`, a model switch, a normal reply and missing quota.
-The existing topic evidence and metric/delivery regression guards are retained.
+The PM subsequently verified from the journal that the supposed DM screenshots
+were genuine private-chat topics: chat equals sender. Topic badges and reply
+quotes alone do not establish chat type. The quoted recovery notice exposed a
+§4 defect: rebuild notices always attached the input message, whereas final
+answers already suppressed quotes for private chats. The fix applies the same
+chat/sender boundary to recovery notices and retains the topic destination.
+The regression case checks private-topic recovery/final replies and group-topic
+correlation. Cargo is unavailable in this worker environment, so no local
+before/after pass is claimed. A4 needs the PM's rerun on the corrected build;
+the existing topic and metric/delivery evidence remains retained.
 
 The PM reports a drained source-build activation without modifying the published
 release slot, a SQLite backup, schema 11 and matched journal counts across
