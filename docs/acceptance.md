@@ -751,3 +751,17 @@ Owner decision: §5, task #108 option 2. A person may answer without a Telegram 
 The regression boundary is the journal plus the real service with fake Codex, TaskQ and Bot API adapters. `u108_semantic_answer_receipt` covers two open questions, a free-text answer to one exact revision, the original card edit and a clarification card selecting the destination, forwarding the earlier source text, and a late button press after restart without another write. Journal checks cover durable discussion receipts, source ownership, stale cards and refusal of launch from a choice. The uncertainty case covers button, reply and semantic answers after a lost CLI response and restart, checking stable operation IDs. Existing U07/U82/U94 retain revision, grant, link and external-answer protections; their success assertions now require the saved choice and factual state, and a late press shows the saved answer under #94. Before the fix, the semantic service check failed waiting for the saved choice in the original card; it passed after the fix. These checks qualify adapter wiring; they cannot establish language-model interpretation or Telegram appearance.
 
 A6 is a post-merge PM check after release: record a question, its button and text answer paths, the saved choice with removed buttons, the next observed TaskQ state, a stale/repeated press, and an ambiguous free-text answer that asks which question. Attach the Telegram evidence to the release note. Do not mark A6 passed from the local adapters. Production cutover is not authorized.
+
+
+## Voice installation readiness (#120)
+
+Task #120 A2 extends §9 doctor to the local §12 voice path. `cargo test --locked doctor_voice_readiness` failed before the change because `checks.voice` was absent. The regression checks missing configuration, missing recognizer, missing model files, recognition failure, malformed output, timeout, missing ffmpeg and a working silent probe. With other setup checks passing, a failed voice check must make the command exit nonzero; a working probe makes it succeed. Dependency output stays private, and doctor neither creates a journal nor polls updates. Existing `telegram_voice_*` checks retain grant, limit, transcript, audit and short-failure protection.
+
+On FRA, the initial live request 68 failed with `voice recognition is not configured`. The operator installed ffmpeg and the documented sherpa-onnx v2.0.1 static recognizer and GigaAM v3 model, saved absolute dependency paths in protected configuration, gated new claims, waited for zero running requests and restarted only the test PilotQ service. A protected configuration backup allows restoring the previous setup. No installed PilotQ release was replaced.
+
+Downloaded archive SHA256 values matched GitHub release metadata:
+
+- sherpa-onnx static archive: `ea25c18660047a8ec8aa0cda291ccf806ae9c18a9b3b76372399cc4a7f4d7663`.
+- GigaAM model archive: `f9620a0099019c6afcee26525ef9ed3297fa50dd5691c1902af0c948fc1a470b`.
+
+The candidate doctor on FRA returned all checks `ok`, including `voice`. The model's Russian release sample returned a nonempty Cyrillic transcript with exit code 0. These prove local setup, not A3: a new real Telegram Russian voice note, transcript audit event and delivered answer remain required. Request 68 preserves the prior short failure and is not replayed. The doctor code still requires PR acceptance and the §9 release path before installed use; production cutover is not authorized.
