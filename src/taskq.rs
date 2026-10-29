@@ -615,7 +615,8 @@ fn answer(tq: &Taskq, j: &Mutex<Journal>, a: &Answer, resumed: bool) {
         }
     };
     let n = a.task;
-    let (bound, board) = match tq.registered(&j.lock().unwrap(), &a.project) {
+    let registered = tq.registered(&j.lock().unwrap(), &a.project);
+    let (bound, board) = match registered {
         Ok(x) => x, Err(e) => return end("failed", e, Some("registered board unavailable")),
     };
     let tq = &bound;
@@ -669,7 +670,8 @@ fn answer(tq: &Taskq, j: &Mutex<Journal>, a: &Answer, resumed: bool) {
         Ok(i) => format!("pilotq-{i}-a{}", a.request),
         Err(e) => return eprintln!("answer {}: {e}", a.request),
     };
-    if let Err(e)=j.lock().unwrap().direct_answer_intent(a,&board,&tq.root.to_string_lossy(),&args,&op,now()) {
+    let intent = j.lock().unwrap().direct_answer_intent(a,&board,&tq.root.to_string_lossy(),&args,&op,now());
+    if let Err(e) = intent {
         return end("failed",format!("Answer intent was not saved: {e}; check task status before answering again."),Some("intent unavailable"));
     }
     match reconcile_effect(tq,j,&op,&board,&args,false) {

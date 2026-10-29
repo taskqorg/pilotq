@@ -2969,3 +2969,33 @@ fn u108_answer_uncertain_restart() {
     stop(c,d);
     }
 }
+
+// #108 / §4–5 / R5: registration and intent-storage refusals must finish the
+// answer and release the route queue without a board write.
+#[test]
+fn u108_registration_failure() {
+    for failure in ["registration", "intent"] {
+    let (d, st) = tq_setup(&format!("u108-refusal-{failure}"), true);
+    let c = spawn(&d, None);
+    push(&st, call(1, OWNER, None, OWNER, "task_plan", plan(&["Docs"])));
+    wait("plan", 15, || sent_has(&st, "Draft saved locally."));
+    push(&st, call(2, OWNER, None, OWNER, "task_run_plan", json!({"revision":1})));
+    wait("admitted", 15, || board(&d)["tasks"]["19"]["state"] == "ready");
+    set_task(&d, 19, |t| { t["state"] = json!("ask"); t["card"] = json!("Done: draft\nProblem: pick\n1. short ★\n2. long"); });
+    wait("question", 15, || sent_has(&st, "⚑ pick"));
+    let q = sent(&st).into_iter().find(|m| m["text"].as_str().is_some_and(|s| s.contains("⚑ pick"))).unwrap();
+    if failure == "registration" {
+        fs::write(d.join("root/taskq.json"), "{}").unwrap();
+    } else {
+        rusqlite::Connection::open(d.join("journal.sqlite")).unwrap().execute_batch(
+            "CREATE TRIGGER refuse_answer_intent BEFORE INSERT ON task_effects BEGIN SELECT RAISE(FAIL, 'invented storage failure'); END;").unwrap();
+    }
+    push(&st, press(3, OWNER, None, OWNER, q["id"].as_i64().unwrap(), "answer:2"));
+    wait("registration refusal finishes", 8, || try_query(&d, "SELECT count(*) FROM requests WHERE update_id=3 AND state='failed'") == Some(1));
+    assert!(!query_text(&d, "SELECT reply FROM requests WHERE update_id=3").is_empty());
+    assert!(!tq_calls(&d).iter().any(|a| a[0] == "answer"));
+    push(&st, text(4, OWNER, None, OWNER, "Continue conversation"));
+    wait("queue progresses", 15, || try_query(&d, "SELECT count(*) FROM requests WHERE update_id=4 AND state='answered'") == Some(1));
+    stop(c, d);
+    }
+}
