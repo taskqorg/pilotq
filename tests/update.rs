@@ -276,7 +276,21 @@ fn doctor_host_requirements_old_and_missing() {
     let out=Command::new(env!("CARGO_BIN_EXE_pilotq")).env("PILOTQ_INSTALL",&d).env("PATH",&d)
         .args(["doctor","--json"]).output().unwrap();
     let report:Value=serde_json::from_slice(&out.stdout).unwrap();
-    assert!(report["requirements"].as_array().unwrap().iter().all(|c|c["outcome"]=="failed"));
+    assert!(report["requirements"].as_array().unwrap().iter().filter(|c|c["tool"]!="kill_absolute").all(|c|c["outcome"]=="failed"));
+    // Operator-approved commands also fail on undeclared, old or changed binary identities.
+    let tool=d.join("approved");
+    executable(&tool,b"");
+    let receipt=format!("{}.pilotq-version.json",tool.display());
+    for (minimum,declared,changed,expected) in [(None,"2.0.0",false,"failed"),(Some("2.0.1"),"2.0.0",false,"failed"),(Some("2.0.1"),"2.0.1",false,"ok"),(Some("2.0.1"),"2.0.1",true,"failed")] {
+        fs::write(d.join("commands.json"),serde_json::json!({"approved":{"executable":tool,"minimum_version":minimum}}).to_string()).unwrap();
+        fs::set_permissions(d.join("commands.json"),fs::Permissions::from_mode(0o600)).unwrap();
+        fs::write(&receipt,serde_json::json!({"version":declared,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}).to_string()).unwrap();
+        if changed { fs::write(&tool,"changed").unwrap(); }
+        let out=Command::new(env!("CARGO_BIN_EXE_pilotq")).env("PILOTQ_INSTALL",&d).env("PATH",&d).args(["doctor","--json"]).output().unwrap();
+        let report:Value=serde_json::from_slice(&out.stdout).unwrap();
+        let check=report["requirements"].as_array().unwrap().iter().find(|c|c["tool"]=="command:approved").unwrap();
+        assert_eq!(check["outcome"],expected);
+    }
     fs::remove_dir_all(d).unwrap();
 }
 

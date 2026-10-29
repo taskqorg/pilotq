@@ -402,7 +402,8 @@ The supported managed host is Linux x86_64. The installation owner provisions th
 | sherpa-onnx-offline | 2.0.1 | GigaAM recognition; install the static no-TTS 2.0.1 release or newer and set `voice.recognizer` |
 | curl | 7.68.0 | CoreQ release download; install curl 7.68 or newer on service PATH |
 | systemctl (systemd) | 245 | CoreQ Linux user service; provision systemd 245 or newer with a working user service manager |
-| kill (procps-ng) | 3.3.17 | Process-group cleanup; install procps-ng 3.3.17 or newer on service PATH |
+| kill (procps-ng) | 3.3.17 | Process-group cleanup on PATH and `/bin/kill`; install procps-ng 3.3.17 or newer on service PATH |
+| `commands.json` executables | Each entry declares `minimum_version` | Approved installed reads (§5); provision a checksum-bound release receipt beside each executable; an absent minimum or receipt fails doctor |
 | hostname | 3.23 | Telemetry host identity; install hostname 3.23 or newer on service PATH |
 
 TaskQ 4.6.40 and sherpa-onnx-offline 2.0.1 have no CLI version command. Their installed executable has an owner-provisioned `<binary>.pilotq-version.json` receipt containing the verified release `version` and executable `sha256`; doctor verifies the bytes before trusting that version. The tester guide gives the provisioning step. A missing or mismatched receipt fails with an unavailable version. A later recognizer with a valid version command can report its version directly.

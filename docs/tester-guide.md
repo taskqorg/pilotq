@@ -70,6 +70,8 @@ chmod 600 "$TOOL_BINARY.pilotq-version.json"
 
 Repeat for the resolved TaskQ CLI release executable with `TOOL_VERSION=4.6.40` or its verified newer release. If `taskq.bin` is a launcher, use the resolved release executable as `taskq.bin` so its receipt identifies the CLI being executed. Regenerate receipts after replacing either executable. Doctor refuses missing receipts, changed bytes and versions below the minimum; the TaskQ service is checked separately. A newer recognizer with a working version flag needs no receipt. Rerun `pilotq doctor --json`, then repeat installation or update. Never alter a receipt merely to silence an unsupported-version failure.
 
+Each protected `commands.json` capability also declares `"minimum_version":"<verified minimum>"`. Doctor checks that executable with the same checksum-bound receipt procedure; it does not run arbitrary version arguments supplied by a capability. For the documented TaskQ status capability, use `"minimum_version":"4.6.40"` and its resolved CLI receipt. No capability file means no additional requirements; an unreadable or malformed file fails doctor. Adding a capability does not install its dependencies.
+
 ## Install a separate Linux test instance
 
 This procedure is for an authorized operator on a separate Linux x86_64 account or host, with `curl`, `sha256sum`, Codex and TaskQ already installed. Use a **separate test bot token** and a verified subscription login. Never reuse the production token. Do not run two pollers with one token (§4). Shared-server subscription entitlement remains an open production decision (§11).
@@ -153,6 +155,7 @@ Invented configuration (replace executable paths, root and user ID):
 {
   "taskq": {
     "description": "List tasks on the registered PilotQ board",
+    "minimum_version": "4.6.40",
     "executable": "/opt/taskq/taskq",
     "args": [["status"]],
     "cwd": "/srv/pilotq",
@@ -162,6 +165,7 @@ Invented configuration (replace executable paths, root and user ID):
   },
   "pwd": {
     "description": "Show the approved working directory",
+    "minimum_version": "8.30",
     "executable": "/bin/pwd",
     "args": [[]],
     "cwd": "/srv/pilotq",

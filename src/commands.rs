@@ -13,7 +13,7 @@ pub fn tools() -> Vec<Value> {
     ]
 }
 
-fn load(d: &Direct) -> Result<Value, String> {
+pub(crate) fn load(d: &Direct) -> Result<Value, String> {
     let path = d.keys.0.with_file_name("commands.json");
     let file = match std::fs::File::open(path) {
         Ok(f) => f,
@@ -111,9 +111,10 @@ fn command(bin: impl AsRef<std::ffi::OsStr>, cwd: &str, argv: &[&str]) -> Comman
 fn execute(mut command: Command, end: Instant, active: impl Fn() -> bool) -> Value {
     if !active() { return json!({"status":"cancelled","exit_code":null}); }
     if Instant::now() >= end { return json!({"status":"timeout","exit_code":null}); }
+    let diagnostic=format!("{:?} {:?}",command.get_program(),command.get_args().collect::<Vec<_>>());
     let mut child = match command.spawn() {
         Ok(c) => c,
-        Err(e) => return json!({"status":if e.kind()==std::io::ErrorKind::NotFound {"missing"} else {"spawn_failed"},"exit_code":null}),
+        Err(e) => { crate::host::log(&diagnostic,&e.to_string()); return json!({"status":if e.kind()==std::io::ErrorKind::NotFound {"missing"} else {"spawn_failed"},"exit_code":null}); },
     };
     let (tx,rx) = mpsc::sync_channel(4);
     fn reader(mut pipe: impl Read + Send + 'static, tx: mpsc::SyncSender<(bool,Result<Vec<u8>,std::io::Error>)>, stderr: bool) {
@@ -162,11 +163,12 @@ fn execute(mut command: Command, end: Instant, active: impl Fn() -> bool) -> Val
         std::thread::sleep(Duration::from_millis(10));
     };
     #[cfg(unix)]
-    let _ = Command::new("/bin/kill").args(["-9","--",&format!("-{}",child.id())]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    let _ = crate::host::output(Command::new("/bin/kill").args(["-9","--",&format!("-{}",child.id())]));
     let _ = child.kill();
     let _ = child.wait();
     stdout.truncate(CAP);
     stderr.truncate(CAP-stdout.len());
+    if status != "success" { crate::host::log(&diagnostic,&format!("{status}: {}",String::from_utf8_lossy(&stderr))); }
     json!({"status":status,"exit_code":exit.and_then(|c|c.code()),"stdout":String::from_utf8_lossy(&stdout),"stderr":String::from_utf8_lossy(&stderr)})
 }
 

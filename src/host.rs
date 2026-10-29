@@ -76,8 +76,24 @@ pub fn report(c: Option<&crate::Config>) -> Value {
         checks.extend([
             probe("systemctl",Some("systemctl"),&["--version"],"245","systemd ","Provision systemd 245 or newer and its user service manager"),
             probe("kill",Some("kill"),&["--version"],"3.3.17","kill from procps-ng ","Install procps-ng 3.3.17 or newer on the service PATH"),
+            probe("kill_absolute",Some("/bin/kill"),&["--version"],"3.3.17","kill from procps-ng ","Install procps-ng 3.3.17 or newer at /bin/kill"),
             probe("hostname",Some("hostname"),&["--version"],"3.23","hostname ","Install hostname 3.23 or newer on the service PATH"),
         ]);
+    }
+    let direct = c.map(|c|&c.direct);
+    let default_direct=crate::direct(&crate::tool(),None);
+    match crate::commands::load(direct.unwrap_or(&default_direct)) {
+        Ok(entries) => for (name,entry) in entries.as_object().unwrap() {
+            let minimum=entry["minimum_version"].as_str().filter(|s|version(s).is_some());
+            let check=if let Some(minimum)=minimum {
+                let mut v=probe("taskq",entry["executable"].as_str(),&[],minimum,"","Provision the approved executable and its verified .pilotq-version.json receipt (tester guide)");
+                v["tool"]=json!(format!("command:{name}"));v
+            } else {
+                json!({"tool":format!("command:{name}"),"found":null,"minimum":null,"outcome":"failed","fix":"Declare minimum_version in the protected commands.json entry and provision its verified binary receipt"})
+            };
+            checks.push(check);
+        },
+        Err(e) => checks.push(json!({"tool":"installed_commands","found":null,"minimum":null,"outcome":"failed","fix":e})),
     }
     json!(checks)
 }

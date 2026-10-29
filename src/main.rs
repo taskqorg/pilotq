@@ -736,7 +736,13 @@ fn main() {
         ["doctor", rest @ ..] if rest.iter().all(|a| *a == "--json") => {
             let report = doctor(&t);
             if rest.contains(&"--json") { println!("{report}"); }
-            else { for (name, state) in report["checks"].as_object().unwrap() { println!("{name}: {}", state.as_str().unwrap()); } }
+            else {
+                for (name, state) in report["checks"].as_object().unwrap() { println!("{name}: {}", state.as_str().unwrap()); }
+                for r in report["requirements"].as_array().unwrap() {
+                    println!("{}: {} (found {}, minimum {}); {}",r["tool"].as_str().unwrap(),r["outcome"].as_str().unwrap(),
+                        r["found"].as_str().unwrap_or("unavailable"),r["minimum"].as_str().unwrap_or("undeclared"),r["fix"].as_str().unwrap());
+                }
+            }
             if report["ok"] != true { std::process::exit(1); }
         }
         ["selftest"] => selftest(&t).unwrap_or_else(|e| t.die(&e)),
