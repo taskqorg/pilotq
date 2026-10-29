@@ -22,7 +22,7 @@ fn now() -> i64 {
 // ponytail: env-gated fault point; a fault-injection framework only if more points appear.
 pub(crate) fn fault(point: &str) {
     if std::env::var("PILOTQ_FAULT").is_ok_and(|p| p == point) {
-        let _ = std::process::Command::new("kill").args(["-9", &std::process::id().to_string()]).status();
+        let _ = crate::host::output(std::process::Command::new("kill").args(["-9", &std::process::id().to_string()]));
         std::thread::sleep(Duration::from_secs(10));
     }
 }

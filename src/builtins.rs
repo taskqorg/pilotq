@@ -13,10 +13,10 @@ fn setup_report(exe:&std::path::Path,budget:Duration) -> Result<String,String> {
     use std::io::Read;
     use std::process::{Command,Stdio};
     let mut command=Command::new(exe);
-    command.args(["doctor","--json"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    command.args(["doctor","--json"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::inherit());
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut command,0);
-    let mut child=command.spawn().map_err(|_|"Setup checks could not start")?;
+    let mut child=command.spawn().map_err(|e| { crate::host::log("pilotq doctor --json",&e.to_string()); "Setup checks could not start" })?;
     let stdout=child.stdout.take().unwrap();
     let reader=std::thread::spawn(move || { let mut out=Vec::new(); stdout.take(65536).read_to_end(&mut out).map(|_|out) });
     let end=Instant::now()+budget;
@@ -28,13 +28,13 @@ fn setup_report(exe:&std::path::Path,budget:Duration) -> Result<String,String> {
         }
     };
     #[cfg(unix)]
-    let _=Command::new("kill").args(["-KILL","--",&format!("-{}",child.id())]).stderr(Stdio::null()).status();
+    let _=crate::host::output(Command::new("kill").args(["-KILL","--",&format!("-{}",child.id())]));
     let _=child.kill(); let _=child.wait();
     if !completed { return Err("Setup checks timed out; dependency state is unknown.".into()); }
     let output=reader.join().map_err(|_|"Setup checks failed")?.map_err(|_|"Setup checks failed")?;
     let v:Value=serde_json::from_slice(&output).map_err(|_|"Setup checks returned no report")?;
     let mut lines=vec!["Setup checks (read only):".to_string()];
-    for name in ["configuration","telegram","codex","taskq","board_answers"] {
+    for name in ["configuration","telegram","codex","taskq","board_answers","voice","host_tools"] {
         let state=match v["checks"][name].as_str() { Some("ok")=>"ok",Some("failed")=>"failed",_=>"unknown" };
         lines.push(format!("{name}: {state}"));
     }

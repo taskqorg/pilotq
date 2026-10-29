@@ -99,7 +99,8 @@ impl Taskq {
             .current_dir(&self.root)
             .stdin(Stdio::null())
             .output()
-            .map_err(|e| format!("taskq did not start: {e}"))?;
+            .map_err(|e| { crate::host::log(&format!("{:?} {args:?}",self.bin),&e.to_string()); format!("taskq did not start: {e}") })?;
+        if !o.status.success() { crate::host::log(&format!("{:?} {args:?}",self.bin), &format!("{}: {}",o.status,String::from_utf8_lossy(&o.stderr))); }
         let out = String::from_utf8_lossy(&o.stdout).to_string();
         if o.status.success() || out.trim_start().starts_with('{') {
             return Ok(out);
@@ -199,7 +200,7 @@ fn gh_output(root: &std::path::Path, args: &[&str]) -> Result<Vec<u8>, String> {
         }
     };
     #[cfg(unix)]
-    let _ = Command::new("kill").args(["-KILL", "--", &format!("-{}", child.id())]).stderr(Stdio::null()).status();
+    let _ = crate::host::output(Command::new("kill").args(["-KILL", "--", &format!("-{}", child.id())]));
     let _ = child.kill(); let _ = child.wait();
     let stdout = out.join().map_err(|_|format!("gh {args:?}: stdout reader failed"))?
         .map_err(|e|format!("gh {args:?}: {e}"))?;

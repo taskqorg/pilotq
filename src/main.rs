@@ -11,6 +11,7 @@ mod footer;
 mod taskq;
 mod telegram;
 mod voice;
+mod host;
 
 use coreq::Tool;
 use serde_json::{Value, json};
@@ -74,6 +75,7 @@ fn resume_after_update(t: &Tool, withdraw: bool) -> Result<(), String> {
 fn update(t: &Tool, check: bool) -> Result<(Option<String>, Option<String>), String> {
     std::fs::create_dir_all(&t.install).map_err(|e| e.to_string())?;
     let _lock = coreq::file_lock::try_lock(&t.install.join("update.lock")).map_err(|e| format!("update lock: {e}"))?;
+    host::gate(t)?;
     if check { return coreq::update::update(t, true).map(|v| (v, None)); }
     // Probe before draining: an unavailable or unchanged release must not interrupt conversation admission.
     if coreq::update::update(t, true)?.is_none() { return Ok((None, None)); }
@@ -219,7 +221,7 @@ fn now() -> u64 {
 
 /// One service pass's status.json. Nothing is observed yet, so every health source and count reads unknown, never ok or zero.
 fn status_doc(t: &Tool, at: u64) -> Value {
-    let host = std::process::Command::new("hostname").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+    let host = host::output(&mut std::process::Command::new("hostname")).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_else(|_|"unknown".into());
     let mut s = coreq::status::common(t, &host, "", at, None, None);
     let unknown = json!({"at": null, "age": null, "state": "unknown", "reason": "not-observed"});
     s["health"] = SOURCES.iter().map(|k| (k.to_string(), unknown.clone())).collect();
@@ -251,7 +253,11 @@ fn doctor(t: &Tool) -> Value {
     use teloxide::prelude::*;
     use std::process::{Command, Stdio};
     let mut checks = json!({"configuration": "failed", "telegram": "unknown", "codex": "unknown", "taskq": "unknown", "voice": "unknown", "board_answers": "unknown"});
-    let Ok(Some(c)) = config(t) else { return json!({"ok": false, "checks": checks}); };
+    let c = config(t).ok().flatten();
+    let requirements = host::report(c.as_ref());
+    let host_ok = host::healthy(&requirements);
+    checks["host_tools"] = json!(if host_ok { "ok" } else { "failed" });
+    let Some(c) = c else { return json!({"ok": false, "checks": checks,"requirements":requirements}); };
     checks["configuration"] = json!("ok");
     let telegram = tokio::runtime::Builder::new_current_thread().enable_all().build().ok().is_some_and(|rt| rt.block_on(async {
         let mut bot = Bot::new(&c.token);
@@ -264,9 +270,10 @@ fn doctor(t: &Tool) -> Value {
     for k in ["PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR", "SSL_CERT_FILE"] {
         if let Some(v) = std::env::var_os(k) { cmd.env(k, v); }
     }
-    let login = cmd.env("CODEX_HOME", &c.codex.home)
+    cmd.env("CODEX_HOME", &c.codex.home)
         .args(["-c", "forced_login_method=\"chatgpt\"", "login", "status"])
-        .stdin(Stdio::null()).output().ok().is_some_and(|o| {
+        .stdin(Stdio::null());
+    let login = host::output(&mut cmd).ok().is_some_and(|o| {
             o.status.success() && (String::from_utf8_lossy(&o.stdout).contains("Logged in using ChatGPT")
                 || String::from_utf8_lossy(&o.stderr).contains("Logged in using ChatGPT"))
         });
@@ -278,7 +285,7 @@ fn doctor(t: &Tool) -> Value {
     checks["taskq"] = json!(if board.is_some() { "ok" } else { "failed" });
     let voice = voice::readiness(c.voice.as_ref());
     checks["voice"] = json!(voice.as_ref().err().map(String::as_str).unwrap_or("ok"));
-    json!({"ok": telegram && login && board.is_some() && answers && voice.is_ok(), "checks": checks, "gh": gh})
+    json!({"ok": host_ok && telegram && login && board.is_some() && answers && voice.is_ok(), "requirements":requirements, "checks": checks, "gh": gh})
 }
 
 fn service_run(t: &Tool) -> ! {
@@ -584,6 +591,7 @@ fn main() {
     match a.as_slice() {
         ["service", "run"] => service_run(&t),
         ["service", "install"] => {
+            host::gate(&t).unwrap_or_else(|e|t.die(&e));
             let r = coreq::update::install_self(&t).and_then(|_| coreq::service::run_all(&unit().unload, true)).and_then(|_| coreq::service::host_unit(&t));
             let u = r.unwrap_or_else(|e| t.die(&e));
             println!("service install: ok ({})", u.path.display());
