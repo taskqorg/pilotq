@@ -249,13 +249,14 @@ fn tidy(text: &str) -> String {
     out
 }
 
-/// Option buttons for a relayed TaskQ question: one per `K. option` line, label without link syntax (#82).
-fn options(text: &str) -> Vec<(String, String)> {
+/// TaskQ #1787: number, full label and recommendation only; preserve legacy labels and remove link syntax.
+pub(crate) fn options(text: &str) -> Vec<(String, String)> {
     text.lines().filter_map(|l| {
         let (k, rest) = l.split_once(". ")?;
         let k: u8 = k.parse().ok().filter(|k| (1..=4).contains(k))?;
+        let (name, detail) = rest.split_once(" - ").map_or((rest, None), |(name, detail)| (name, Some(detail)));
         let mut label = String::new();
-        let mut s = rest;
+        let mut s = name;
         while let Some(open) = s.find('[') {
             let Some((name, after)) = s[open + 1..].split_once("](") else { break };
             let Some(close) = after.find(')') else { break };
@@ -264,6 +265,7 @@ fn options(text: &str) -> Vec<(String, String)> {
             s = &after[close + 1..];
         }
         label += s;
+        if detail.is_some_and(|d| d.trim_end().ends_with('★')) { label += " ★"; }
         Some((format!("answer:{k}"), format!("{k}. {label}")))
     }).collect()
 }
