@@ -893,7 +893,7 @@ def receipt(n, outcome, reason=None):
 def out(r, code=0):
     if r["outcome"] == "accepted" and opt("--op-id"): st["ops"][opt("--op-id")] = r
     save()
-    if a[0] in ("steer", "requeue") and os.path.exists(os.path.join(d, "lose-control")):
+    if a[0] in ("steer", "requeue", "answer") and os.path.exists(os.path.join(d, "lose-control")):
         os.remove(os.path.join(d, "lose-control")); open(os.path.join(d, "board-down"), "w").close()
         print("Error: connection reset by peer", file=sys.stderr); sys.exit(1)
     print(json.dumps(r)); sys.exit(code)
@@ -1235,7 +1235,7 @@ fn u07_question_relay_and_bound_answers() {
     assert!(!tq_calls(&d).iter().any(|c| c[0] == "answer"), "a stale or foreign answer writes nothing");
 
     push(&st, reply(6, -100, topic, OWNER, q2["id"].as_i64().unwrap(), "2"));
-    wait("answer written", 15, || sent_has(&st, "Answer written to task #19; it is now doing: a worker is on it."));
+    wait("answer written", 15, || sent_has(&st, "Answered by") && sent_has(&st, "2. huge") && sent_has(&st, "TaskQ: doing: a worker is on it."));
     let answers: Vec<_> = tq_calls(&d).into_iter().filter(|c| c[0] == "answer").collect();
     let rev = board(&d)["tasks"]["19"]["revision"].as_i64().unwrap() - 1;
     assert_eq!(answers.len(), 1);
@@ -1281,11 +1281,11 @@ fn u82_ask_buttons_and_labeled_links() {
     assert_eq!(q["text"], format!("? <a href=\"{issue}\">GitHub · pilotq#19 · Docs</a>\n✓ drafted\n⚑ pick a wording, see <a href=\"https://github.com/taskqorg/pilotq/blob/main/pilotq.md\">the spec</a>\n1. short ★\n+ quick; - less detail\n2. long\n+ detail; - slower"));
     assert_eq!(q["reply_markup"]["inline_keyboard"], json!([[{"text": "1. short ★", "callback_data": "answer:1"}], [{"text": "2. long", "callback_data": "answer:2"}]]));
     push(&st, press(3, -100, topic, OWNER, q["id"].as_i64().unwrap(), "answer:2"));
-    wait("press answers", 15, || sent_has(&st, "Answer written to task #19; it is now doing: a worker is on it."));
+    wait("press answers", 15, || sent_has(&st, "Answered by") && sent_has(&st, "2. long") && sent_has(&st, "TaskQ: doing: a worker is on it."));
     let answers: Vec<_> = tq_calls(&d).into_iter().filter(|c| c[0] == "answer").collect();
     assert_eq!((answers.len(), answers[0][1].as_str()), (1, "19.2"), "{answers:?}");
     push(&st, press(4, -100, topic, OWNER, q["id"].as_i64().unwrap(), "answer:1"));
-    wait("stale press refused", 15, || sent_has(&st, "That question is no longer current; nothing was written. Task #19 is doing"));
+    wait("stale press shows saved answer", 15, || st.lock().unwrap().api.iter().any(|(method,b,_)|method=="answercallbackquery" && b["text"].as_str().is_some_and(|s|s.contains("2. long"))));
     assert_eq!(tq_calls(&d).into_iter().filter(|c| c[0] == "answer").count(), 1, "a stale press writes nothing");
     wait("delivered", 15, || query(&d, "SELECT count(*) FROM outbox WHERE state NOT IN ('delivered','superseded')") == 0);
     for m in sent(&st) {
@@ -2887,5 +2887,115 @@ fn telegram_voice_failures_are_short() {
         }
         assert_eq!(st.lock().unwrap().api.iter().any(|a| a.0 == "getfile"), downloads, "{tag}");
         stop(c, d);
+    }
+}
+
+// #108 / §5 / R11,R13: semantic routing must forward the person's text to the exact
+// question revision and persist the card edit, without touching another open question.
+#[test]
+fn u108_semantic_answer_receipt() {
+    let (d, st) = tq_setup("u108-semantic", true);
+    let c = spawn(&d, None);
+    push(&st, call(1, -100, Some(5), OWNER, "task_plan", plan(&["First", "Second"])));
+    wait("plan", 15, || sent_has(&st, "Draft saved locally."));
+    push(&st, call(2, -100, Some(5), OWNER, "task_run_plan", json!({"revision":1})));
+    wait("admitted", 15, || board(&d)["tasks"]["20"]["state"] == "ready");
+    for n in [19,20] {
+        set_task(&d,n,|t| { t["state"]=json!("ask"); t["card"]=json!(format!("Done: drafted\nProblem: choose for {n}\n1. short ★\n2. long")); });
+    }
+    wait("both questions",15,||sent_has(&st,"⚑ choose for 19") && sent_has(&st,"⚑ choose for 20"));
+    let q=sent(&st).into_iter().find(|m|m["text"].as_str().is_some_and(|s|s.contains("⚑ choose for 19"))).unwrap();
+    let revision=board(&d)["tasks"]["19"]["revision"].as_i64().unwrap();
+    push(&st,text(3,-100,Some(5),OWNER,"long"));
+    wait("unaddressed answer reaches model",15,||query(&d,"SELECT count(*) FROM requests WHERE update_id=3 AND kind='text' AND state='answered'")==1);
+    let source=query(&d,"SELECT id FROM requests WHERE update_id=3");
+    assert!(!tq_calls(&d).iter().any(|a|a[0]=="answer"),"unaddressed text must not guess one of two open questions");
+    push(&st,call(4,-100,Some(5),OWNER,"discussion_choices",json!({"question":"Which question is long for?","options":["Task 19","Task 20"]})));
+    wait("clarification card",15,||sent_has(&st,"Which question is long for?"));
+    let choice=sent(&st).into_iter().rev().find(|m|m["reply_markup"]["inline_keyboard"][0][0]["callback_data"].as_str().is_some_and(|s|s.starts_with("choice:"))).unwrap();
+    push(&st,press(5,-100,Some(5),OWNER,choice["id"].as_i64().unwrap(),choice["reply_markup"]["inline_keyboard"][0][0]["callback_data"].as_str().unwrap()));
+    wait("clarification saved",15,||query(&d,"SELECT count(*) FROM requests WHERE update_id=5 AND kind='choice' AND state='answered'")==1);
+    assert!(!tq_calls(&d).iter().any(|a|a[0]=="answer"),"discussion selection does not itself write a board answer");
+    push(&st,call(6,-100,Some(5),OWNER,"task_answer",json!({"task":"19","revision":revision,"text":"long","source_request":source})));
+    wait("saved choice visible",15,||sent(&st).iter().any(|m|m["edit"]==true && m["id"]==q["id"] && m["text"].as_str().is_some_and(|s|s.contains("long") && s.contains("Answered by"))));
+    assert_eq!(board(&d)["tasks"]["19"]["answer"],"long");
+    assert_eq!(board(&d)["tasks"]["20"]["state"],"ask");
+    drop(c);
+    let c=spawn(&d,None);
+    push(&st,press(7,-100,Some(5),OWNER,q["id"].as_i64().unwrap(),"answer:1"));
+    wait("repeat shows receipt",15,||st.lock().unwrap().api.iter().any(|(method,b,_)|method=="answercallbackquery" && b["text"].as_str().is_some_and(|s|s.contains("long"))));
+    assert_eq!(tq_calls(&d).iter().filter(|a|a[0]=="answer").count(),1);
+    stop(c,d);
+}
+
+// #108 / §4-5: lost write response is uncertain; restart reconciles the same operation,
+// preserves its original question receipt and never applies it to a changed question.
+#[test]
+fn u108_answer_uncertain_restart() {
+    for mode in ["semantic","button","reply"] {
+    let (d, st)=tq_setup(&format!("u108-uncertain-{mode}"),true);
+    let c=spawn(&d,None);
+    push(&st,call(1,OWNER,None,OWNER,"task_plan",plan(&["Docs"])));
+    wait("plan",15,||sent_has(&st,"Draft saved locally."));
+    push(&st,call(2,OWNER,None,OWNER,"task_run_plan",json!({"revision":1})));
+    wait("admitted",15,||board(&d)["tasks"]["19"]["state"]=="ready");
+    set_task(&d,19,|t| {t["state"]=json!("ask");t["card"]=json!("Done: draft\nProblem: pick\n1. short ★\n2. long");});
+    wait("question",15,||sent_has(&st,"⚑ pick"));
+    let revision=board(&d)["tasks"]["19"]["revision"].as_i64().unwrap();
+    push(&st,call(3,OWNER,None,OWNER,"task_answer",json!({"task":"19","revision":revision-1,"text":"long"})));
+    wait("stale refusal",15,||sent_has(&st,"Question changed; nothing was saved"));
+    assert!(!tq_calls(&d).iter().any(|a|a[0]=="answer"));
+    fs::write(d.join("lose-control"),"").unwrap();
+    let q=sent(&st).into_iter().find(|m|m["text"].as_str().is_some_and(|s|s.contains("⚑ pick"))).unwrap();
+    let input=match mode {
+        "button"=>press(4,OWNER,None,OWNER,q["id"].as_i64().unwrap(),"answer:2"),
+        "reply"=>reply(4,OWNER,None,OWNER,q["id"].as_i64().unwrap(),"long"),
+        _=>call(4,OWNER,None,OWNER,"task_answer",json!({"task":"19","revision":revision,"text":"long"})),
+    };
+    push(&st,input);
+    wait("uncertain",15,||sent_has(&st,"is uncertain") || sent_has(&st,"unconfirmed"));
+    assert_eq!(query(&d,"SELECT count(*) FROM task_effects WHERE receipt IS NULL"),1);
+    drop(c);
+    fs::remove_file(d.join("board-down")).unwrap();
+    let c=spawn(&d,None);
+    wait("reconciled receipt",15,||query(&d,"SELECT count(*) FROM task_effects WHERE receipt IS NULL")==0);
+    wait("saved answer",15,||sent_has(&st,"Answered by"));
+    assert_eq!(board(&d)["tasks"]["19"]["answer"],if mode=="button" {"19.2"} else {"long"});
+    let answers:Vec<_>=tq_calls(&d).into_iter().filter(|a|a[0]=="answer").collect();
+    assert!(answers.len()>=2);
+    let ops:std::collections::HashSet<_>=answers.iter().map(|a|a[a.iter().position(|x|x=="--op-id").unwrap()+1].clone()).collect();
+    assert_eq!(ops.len(),1,"recovery uses the same operation ID");
+    assert_eq!(query(&d,"SELECT count(*) FROM outbox WHERE kind='question_answered'"),1);
+    stop(c,d);
+    }
+}
+
+// #108 / §4–5 / R5: registration and intent-storage refusals must finish the
+// answer and release the route queue without a board write.
+#[test]
+fn u108_registration_failure() {
+    for failure in ["registration", "intent"] {
+    let (d, st) = tq_setup(&format!("u108-refusal-{failure}"), true);
+    let c = spawn(&d, None);
+    push(&st, call(1, OWNER, None, OWNER, "task_plan", plan(&["Docs"])));
+    wait("plan", 15, || sent_has(&st, "Draft saved locally."));
+    push(&st, call(2, OWNER, None, OWNER, "task_run_plan", json!({"revision":1})));
+    wait("admitted", 15, || board(&d)["tasks"]["19"]["state"] == "ready");
+    set_task(&d, 19, |t| { t["state"] = json!("ask"); t["card"] = json!("Done: draft\nProblem: pick\n1. short ★\n2. long"); });
+    wait("question", 15, || sent_has(&st, "⚑ pick"));
+    let q = sent(&st).into_iter().find(|m| m["text"].as_str().is_some_and(|s| s.contains("⚑ pick"))).unwrap();
+    if failure == "registration" {
+        fs::write(d.join("root/taskq.json"), "{}").unwrap();
+    } else {
+        rusqlite::Connection::open(d.join("journal.sqlite")).unwrap().execute_batch(
+            "CREATE TRIGGER refuse_answer_intent BEFORE INSERT ON task_effects BEGIN SELECT RAISE(FAIL, 'invented storage failure'); END;").unwrap();
+    }
+    push(&st, press(3, OWNER, None, OWNER, q["id"].as_i64().unwrap(), "answer:2"));
+    wait("registration refusal finishes", 8, || try_query(&d, "SELECT count(*) FROM requests WHERE update_id=3 AND state='failed'") == Some(1));
+    assert!(!query_text(&d, "SELECT reply FROM requests WHERE update_id=3").is_empty());
+    assert!(!tq_calls(&d).iter().any(|a| a[0] == "answer"));
+    push(&st, text(4, OWNER, None, OWNER, "Continue conversation"));
+    wait("queue progresses", 15, || try_query(&d, "SELECT count(*) FROM requests WHERE update_id=4 AND state='answered'") == Some(1));
+    stop(c, d);
     }
 }

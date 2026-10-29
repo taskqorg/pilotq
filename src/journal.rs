@@ -109,7 +109,13 @@ fn accept_card(tx: &Connection, i: &Input, sender: i64, session: &str, request: 
     let pending: bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM requests WHERE session=?1 AND id<?2 AND state IN ('queued','running') AND kind IN ('text','image','voice','choice'))",params![session,request],|x|x.get(0)).map_err(e)?;
     if pending { return Err("discussion is still updating; wait for its current display".into()); }
 
-    if used.is_some() { return Err("button already answered".into()); }
+    if let Some(used)=used {
+        let saved: Option<String>=tx.query_row("SELECT result FROM audit_events WHERE request_id=?1 AND kind='decision' ORDER BY id LIMIT 1",[used],|x|x.get(0)).optional().map_err(e)?;
+        return Err(if parts[0]=="choice" {
+            if i.language.as_deref().unwrap_or("en").starts_with("ru") {format!("Уже сохранено: {}",saved.unwrap_or_default())}
+            else {format!("Already saved: {}",saved.unwrap_or_default())}
+        } else {"button already answered".into()});
+    }
     let (kind,text)=match parts.as_slice() {
         ["plan",_] => {
             let plan=plan.ok_or("not a plan button")?;
@@ -131,11 +137,30 @@ fn accept_card(tx: &Connection, i: &Input, sender: i64, session: &str, request: 
     tx.execute("UPDATE cards SET used_request=?2 WHERE id=?1",params![id,request]).map_err(e)?;
     tx.execute("INSERT INTO audit_events(request_id,at,kind,target,item,result) SELECT id,received_at,'decision',?2,text,?3 FROM requests WHERE id=?1",params![request,format!("card:{id}"),text]).map_err(e)?;
     tx.execute("UPDATE requests SET kind=?2,text=CASE WHEN kind='action' THEN ?3 ELSE text END WHERE id=?1",params![request,kind,text]).map_err(e)?;
+    if kind=="choice" { choice_receipt(tx,id,request,&text)?; }
     Ok(())
+}
+
+/// #108: commit the saved discussion answer and its card edit in the admission transaction.
+fn choice_receipt(tx: &Connection, card: i64, request: i64, answer: &str) -> Result<(),String> {
+    let (source,chat,topic,message,text,language):(i64,i64,Option<i64>,i64,String,Option<String>)=tx.query_row(
+        "SELECT q.id,o.chat,o.topic,o.sent_message,o.text,q.language FROM cards c JOIN requests q ON q.id=c.request_id JOIN outbox o ON o.request_id=q.id
+         WHERE c.id=?1 AND o.sent_message IS NOT NULL AND o.kind IN ('rich','rich_part') ORDER BY o.id DESC LIMIT 1",[card],
+        |x|Ok((x.get(0)?,x.get(1)?,x.get(2)?,x.get(3)?,x.get(4)?,x.get(5)?))).map_err(|e|e.to_string())?;
+    let receipt=if language.as_deref().unwrap_or("en").starts_with("ru") {
+        format!("Ответ сохранён: {answer}\nОбсуждение продолжится; задачи не запущены.")
+    } else { format!("Answer saved: {answer}\nConversation processing pending; no tasks launched.") };
+    outbox(tx,source,chat,topic,Some(message),Some(&crate::telegram::html(&format!("{text}\n\n{receipt}"))),&receipt,0)?;
+    tx.execute("UPDATE outbox SET kind='choice_answered',revision=?2 WHERE id=?1",params![tx.last_insert_rowid(),card]).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO audit_events(request_id,at,kind,target,result) SELECT id,received_at,'choice_saved',?2,?3 FROM requests WHERE id=?1",params![request,format!("card:{card}"),receipt]).map(drop).map_err(|e|e.to_string())
 }
 
 /// Numbered/text option answers share the callback boundary; plain text remains the primary interface (R13).
 fn text_choice(tx: &Connection, i: &Input, sender: i64, session: &str) -> Result<Option<Input>,String> {
+    if i.reply_to.is_none() {
+        let worker_question:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM tasks t JOIN requests q ON q.id=t.request_id WHERE q.session=?1 AND t.state='ask' AND t.closed=0)",[session],|x|x.get(0)).map_err(|e|e.to_string())?;
+        if worker_question { return Ok(None); }
+    }
     let card:Option<(i64,String,i64)>=tx.query_row("SELECT c.id,c.options,o.sent_message FROM cards c JOIN requests q ON q.id=c.request_id JOIN outbox o ON o.request_id=q.id
         WHERE q.state='answered' AND q.session=?1 AND q.sender=?2 AND c.options IS NOT NULL AND o.chat=?3 AND o.topic IS ?4 AND o.sent_message IS NOT NULL
         AND (?5 IS NULL OR o.sent_message=?5) ORDER BY c.id DESC,o.id DESC LIMIT 1",
@@ -785,14 +810,14 @@ impl Journal {
                         tx.execute("INSERT INTO meta(key,value) VALUES (?1,?2)", params![format!("callback:{id}"), callback]).map_err(|e| e.to_string())?;
                     }
                     tx.execute("UPDATE requests SET image=?2,language=?3 WHERE id=?1", params![id,i.image,i.language]).map_err(|e|e.to_string())?;
-                    let choice = if i.kind=="text" && cmd.is_none() && !busy { text_choice(&tx,i,sender,&s)? } else { None };
+                    let choice = if i.kind=="text" && cmd.is_none() && question.is_none() && !busy { text_choice(&tx,i,sender,&s)? } else { None };
                     let action = if i.kind=="action" { Some(i) } else { choice.as_ref() };
                     let action_error = if let Some(action)=action.filter(|_|!busy) {
                         match accept_card(&tx, action, sender, &s, id) {
                             Ok(()) => None,
                             Err(error) => {
                                 tx.execute("UPDATE requests SET state='failed',error=?2 WHERE id=?1", params![id,error]).map_err(|e|e.to_string())?;
-                                Some(if i.language.as_deref().unwrap_or("en").starts_with("ru") {
+                                Some(if error.starts_with("Already saved") || error.starts_with("Уже сохранено") { error.clone() } else if i.language.as_deref().unwrap_or("en").starts_with("ru") {
                                     "Эта кнопка недоступна; используйте актуальный план или вопрос.".to_string()
                                 } else { "This action is unavailable; use the current plan or question.".to_string() })
                             }
@@ -895,6 +920,7 @@ impl Journal {
                 &format!(
                     "SELECT id, chat, topic, reply_to, html, text, attempts, CASE WHEN kind='status' THEN (SELECT s.sent_message FROM outbox s WHERE s.task=o.task AND s.project=o.project AND s.chat=o.chat AND s.topic IS o.topic
                         AND s.kind='status' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
+                        WHEN kind='choice_answered' THEN o.reply_to
                         WHEN kind='question_answered' THEN (SELECT s.sent_message FROM outbox s WHERE s.task=o.task AND s.project=o.project AND s.chat=o.chat AND s.topic IS o.topic
                         AND s.kind='question' AND s.revision=o.revision AND s.state='delivered' ORDER BY s.id DESC LIMIT 1) END, kind {heads} AND next_at<=?1 AND coalesce((SELECT value FROM meta WHERE key='telegram-cooldown:' || o.chat),0)<=?1 ORDER BY (kind='reaction') DESC,id LIMIT 1"
                 ),
@@ -1281,12 +1307,12 @@ impl Journal {
         }))).and_then(Iterator::collect).map_err(e)?;
         let mut q = self.0.prepare("SELECT t.project,t.board,t.number,t.state,t.observed,
             (SELECT json_extract(p.tickets,'$[' || (k.idx-1) || ']') FROM tickets k JOIN plan_runs pr ON pr.id=k.run_id JOIN plans p ON p.id=pr.plan_id
-             WHERE k.task=t.number AND pr.request_id=t.request_id LIMIT 1) FROM tasks t JOIN requests q ON q.id=t.request_id
+             WHERE k.task=t.number AND pr.request_id=t.request_id LIMIT 1),t.revision,t.card FROM tasks t JOIN requests q ON q.id=t.request_id
             WHERE q.session=?1 AND (EXISTS(SELECT 1 FROM grants WHERE user=?2 AND name='projects')
             OR EXISTS(SELECT 1 FROM grants WHERE user=?2 AND name='project:' || t.project)) ORDER BY t.project,t.number").map_err(e)?;
         let tasks: Vec<Value> = q.query_map(params![r.session,self.sender(r.request)?], |x| Ok(json!({
             "project":x.get::<_,String>(0)?, "url":format!("https://github.com/{}/issues/{}",x.get::<_,String>(1)?,x.get::<_,i64>(2)?),
-            "state":x.get::<_,String>(3)?, "observed_at":x.get::<_,i64>(4)?,
+            "state":x.get::<_,String>(3)?, "observed_at":x.get::<_,i64>(4)?, "question_revision":x.get::<_,i64>(6)?, "question":x.get::<_,Option<String>>(7)?,
             "intent":x.get::<_,Option<String>>(5)?.and_then(|v|serde_json::from_str::<Value>(&v).ok())
         }))).and_then(Iterator::collect).map_err(e)?;
         let plan: Option<Value> = self.0.query_row("SELECT revision,project,tickets FROM plans p WHERE session=?1
@@ -1294,7 +1320,9 @@ impl Journal {
             OR EXISTS(SELECT 1 FROM grants WHERE user=?2 AND name='project:' || p.project)) ORDER BY revision DESC LIMIT 1",
             params![r.session,self.sender(r.request)?], |x| Ok(json!({"revision":x.get::<_,i64>(0)?,"project":x.get::<_,String>(1)?,
                 "tickets":x.get::<_,String>(2)?}))).optional().map_err(e)?;
-        let context = json!({"policy": crate::manager::CONVERSATION, "recent":recent,"tasks":tasks,"plan":plan});
+        let mut q=self.0.prepare("SELECT c.id,c.question,c.options,c.used_request FROM cards c JOIN requests q ON q.id=c.request_id WHERE q.session=?1 AND c.generation=?2 AND c.options IS NOT NULL AND q.sender=(SELECT sender FROM requests WHERE id=?3) ORDER BY c.id DESC LIMIT 4").map_err(e)?;
+        let questions:Vec<Value>=q.query_map(params![r.session,r.generation,r.request],|x|Ok(json!({"card":x.get::<_,i64>(0)?,"question":x.get::<_,String>(1)?,"options":x.get::<_,String>(2)?,"answered":x.get::<_,Option<i64>>(3)?.is_some()}))).and_then(Iterator::collect).map_err(e)?;
+        let context = json!({"policy": crate::manager::CONVERSATION, "recent":recent,"tasks":tasks,"plan":plan,"discussion_questions":questions});
         if context.to_string().len() > 100_000 { return Err("conversation context exceeds budget".into()); }
         Ok(context)
     }
@@ -1580,10 +1608,25 @@ impl Journal {
         tx.execute("INSERT INTO audit_events(request_id,at,kind,target,item,result) SELECT request_id,?2,'task',board || ' ' || args,op,?3 FROM task_effects WHERE op=?1", params![op,at,receipt.to_string()]).map_err(|e| e.to_string())?;
         tx.execute("UPDATE requests SET project=(SELECT project FROM task_effects WHERE op=?1) WHERE id=(SELECT request_id FROM task_effects WHERE op=?1)", [op]).map_err(|e| e.to_string())?;
         if let Some(text) = notification {
+            tx.execute("UPDATE requests SET state=CASE WHEN ?2='accepted' THEN 'answered' ELSE 'failed' END,reply=?3,error=NULL WHERE kind='answer' AND id=(SELECT request_id FROM task_effects WHERE op=?1)",params![op,receipt["outcome"].as_str(),text]).map_err(|e|e.to_string())?;
             let (request, chat, topic, front): (i64, i64, Option<i64>, String) = tx.query_row("SELECT q.id,q.chat,q.topic,q.front FROM requests q JOIN task_effects e ON e.request_id=q.id WHERE e.op=?1", [op], |x| Ok((x.get(0)?,x.get(1)?,x.get(2)?,x.get(3)?))).map_err(|e| e.to_string())?;
             if front == "telegram" { outbox(&tx, request, chat, topic, None, None, text, at)?; }
         }
         tx.commit().map_err(|e| e.to_string())
+    }
+
+    /// Buttons/replies use the same durable effect store and reconciliation as semantic answers.
+    pub fn direct_answer_intent(&self, a: &Answer, board: &str, root: &str, args: &[String], op: &str, at: i64) -> Result<(),String> {
+        self.0.execute("INSERT INTO task_effects(op,request_id,project,board,root,args,at) VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(op) DO NOTHING",
+            params![op,a.request,a.project,board,root,serde_json::to_string(args).map_err(|e|e.to_string())?,at]).map(drop).map_err(|e|e.to_string())
+    }
+
+    pub fn task_effect_pending(&self, op: &str) -> Result<bool,String> {
+        self.0.query_row("SELECT receipt IS NULL FROM task_effects WHERE op=?1",[op],|x|x.get(0)).map_err(|e|e.to_string())
+    }
+
+    pub fn answer_effect_owner(&self, op: &str) -> Result<(i64,String),String> {
+        self.0.query_row("SELECT request_id,project FROM task_effects WHERE op=?1",[op],|x|Ok((x.get(0)?,x.get(1)?))).map_err(|e|e.to_string())
     }
 
     pub fn pending_task_effects(&self) -> Result<Vec<(String, i64, String, String, String, Vec<String>)>, String> {
@@ -1617,6 +1660,59 @@ impl Journal {
         Ok(revision)
     }
 
+    /// #108: only literal text supplied by this person in this conversation generation can be forwarded.
+    pub fn answer_source(&self, r: &Run, source: Option<i64>, text: &str) -> Result<(),String> {
+        if text.trim().is_empty() || text.lines().count()>4 || text.lines().any(|s|s.trim().is_empty() || s.chars().count()>240) {
+            return Err("answer must be 1-4 nonempty lines of at most 240 characters".into());
+        }
+        let source=source.unwrap_or(r.request);
+        let own:bool=self.0.query_row("SELECT EXISTS(SELECT 1 FROM requests q JOIN runs x ON x.request_id=q.id
+            WHERE q.id=?1 AND q.id<=?2 AND q.sender=(SELECT sender FROM requests WHERE id=?2) AND q.session=?3 AND x.generation=?4
+            AND instr(coalesce(q.text,''),?5)>0)",params![source,r.request,r.session,r.generation,text],|x|x.get(0)).map_err(|e|e.to_string())?;
+        if !own { return Err("answer must quote the person's own input in this conversation generation; clarify before writing".into()); }
+        Ok(())
+    }
+
+    pub fn discussion_answer(&self, r: &Run, card: i64, text: &str, source: Option<i64>) -> Result<String,String> {
+        if self.fenced(r)? { return Err("this run was stopped".into()); }
+        self.answer_source(r,source,text)?;
+        let tx=self.0.unchecked_transaction().map_err(|e|e.to_string())?;
+        let current:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM cards c JOIN requests q ON q.id=c.request_id
+            WHERE c.id=?1 AND q.session=?2 AND q.sender=(SELECT sender FROM requests WHERE id=?3) AND c.generation=?4
+            AND c.options IS NOT NULL AND c.used_request IS NULL AND q.state='answered'
+            AND NOT EXISTS(SELECT 1 FROM cards newer JOIN requests n ON n.id=newer.request_id WHERE n.session=q.session AND newer.id>c.id))",
+            params![card,r.session,r.request,r.generation],|x|x.get(0)).map_err(|e|e.to_string())?;
+        if !current { return Err("question is superseded, already answered or belongs to another person; use the current question".into()); }
+        tx.execute("UPDATE cards SET used_request=?2 WHERE id=?1",params![card,r.request]).map_err(|e|e.to_string())?;
+        tx.execute("INSERT INTO audit_events(request_id,at,kind,target,result) VALUES (?1,?2,'decision',?3,?4)",params![r.request,self.0.query_row("SELECT received_at FROM requests WHERE id=?1",[r.request],|x|x.get::<_,i64>(0)).map_err(|e|e.to_string())?,format!("card:{card}"),text]).map_err(|e|e.to_string())?;
+        tx.execute("UPDATE requests SET kind='choice' WHERE id=?1",[r.request]).map_err(|e|e.to_string())?;
+        choice_receipt(&tx,card,r.request,text)?;
+        tx.commit().map_err(|e|e.to_string())?;
+        Ok(format!("Answer saved locally: {text}. Continue discussion; no launch authorized."))
+    }
+
+    pub fn selected_answer(&self, project: &str, task: i64, revision: i64, text: &str) -> Result<String,String> {
+        let question:Option<String>=self.0.query_row("SELECT text FROM outbox WHERE project=?1 AND task=?2 AND revision=?3 AND kind='question' LIMIT 1",params![project,task,revision],|x|x.get(0)).optional().map_err(|e|e.to_string())?;
+        let prefix=format!("{}. ",text.trim());
+        Ok(question.and_then(|q|q.lines().find(|l|l.starts_with(&prefix)).map(str::to_owned)).unwrap_or_else(||text.to_owned()))
+    }
+
+    pub fn answer_state(&self, request: i64, state: &str) -> Result<String,String> {
+        let ru:bool=self.0.query_row("SELECT coalesce(language,'en') LIKE 'ru%' FROM requests WHERE id=?1",[request],|x|x.get(0)).map_err(|e|e.to_string())?;
+        Ok(if ru { match state {
+            "held"=>"создана, удерживается", "ready"=>"в очереди к исполнителю", "doing"=>"исполнитель работает",
+            "ask"=>"ожидает ответа", "waiting"=>"ожидает зависимые задачи", "review"=>"на проверке", "later"=>"отложена", _=>"состояние неизвестно",
+        }} else {describe(state)}.into())
+    }
+
+    pub fn answer_actor(&self, request: i64, text: &str) -> Result<String,String> {
+        self.0.query_row("SELECT sender,name,language FROM requests WHERE id=?1",[request],|x| {
+            let sender:i64=x.get(0)?; let name:Option<String>=x.get(1)?; let lang:Option<String>=x.get(2)?;
+            let actor=name.unwrap_or_else(||sender.to_string());
+            Ok(if lang.as_deref().unwrap_or("en").starts_with("ru") { format!("Ответил {actor}: {text}") } else { format!("Answered by {actor}: {text}") })
+        }).map_err(|e|e.to_string())
+    }
+
     /// §5/#93: structured choices are discussion input, never launch authorization.
     pub fn save_choices(&self, r: &Run, question: &str, options: &[String]) -> Result<(), String> {
         if self.fenced(r)? { return Err("this run was stopped".into()); }
@@ -1631,7 +1727,7 @@ impl Journal {
     pub fn card_buttons(&self, delivery: i64) -> Result<Vec<(String,String)>,String> {
         let card: Option<(i64,Option<i64>,Option<String>,Option<String>)> = self.0.query_row(
             "SELECT c.id,c.plan_id,c.options,q.language FROM cards c JOIN outbox o ON o.request_id=c.request_id JOIN requests q ON q.id=c.request_id
-            WHERE o.id=?1 AND q.state='answered' AND (o.kind='rich' OR (o.kind='rich_part' AND o.id=(SELECT max(id) FROM outbox WHERE request_id=o.request_id AND kind='rich_part')))",
+            WHERE o.id=?1 AND c.used_request IS NULL AND q.state='answered' AND (o.kind='rich' OR (o.kind='rich_part' AND o.id=(SELECT max(id) FROM outbox WHERE request_id=o.request_id AND kind='rich_part')))",
             [delivery],|x|Ok((x.get(0)?,x.get(1)?,x.get(2)?,x.get(3)?))).optional().map_err(|e|e.to_string())?;
         let mut buttons=vec![];
         if let Some((id,plan,options,language))=card {
@@ -1947,6 +2043,17 @@ impl Journal {
     pub fn end_answer(&self, a: &Answer, state: &str, reply: &str, error: Option<&str>, at: i64) -> Result<(), String> {
         let e = |e: rusqlite::Error| e.to_string();
         let tx = self.0.unchecked_transaction().map_err(e)?;
+        let ru:bool=tx.query_row("SELECT coalesce(language,'en') LIKE 'ru%' FROM requests WHERE id=?1",[a.request],|x|x.get(0)).map_err(e)?;
+        let diagnostic=reply;
+        let localized=if ru { match state {
+            "failed" if error==Some("stale question")=>Some(format!("Вопрос изменился; ответ не сохранён. {}",diagnostic.split_once("nothing was written. ").map(|(_,s)|s).unwrap_or("Проверьте актуальный вопрос."))),
+            "failed" if error==Some("not authorized")=>Some(format!("Нет прав для ответа на задачу #{}; попросите администратора проверить доступ.",a.task)),
+            "failed"=>Some("Ответ не сохранён; проверьте актуальный вопрос и права, затем ответьте ещё раз.".into()),
+            "uncertain"=>Some("Сохранение ответа не подтверждено; проверьте статус задачи перед повторным ответом.".into()),
+            _=>None,
+        }} else { None };
+        let reply=localized.as_deref().unwrap_or(reply);
+        tx.execute("INSERT INTO audit_events(request_id,at,kind,target,result) VALUES (?1,?2,'answer_receipt',?3,?4)",params![a.request,at,format!("{}#{} revision {}",a.project,a.task,a.revision),diagnostic]).map_err(e)?;
         tx.execute("UPDATE requests SET state=?2, reply=?3, error=?4 WHERE id=?1", params![a.request, state, reply, error]).map_err(e)?;
         tx.execute(
             "INSERT INTO audit_events(request_id, at, kind, target, item, result) VALUES (?1,?2,'task',?3,?4,?5)",
@@ -1955,7 +2062,7 @@ impl Journal {
         .map_err(e)?;
         let (chat, topic, message): (i64, Option<i64>, i64) = tx.query_row("SELECT chat, topic, message FROM requests WHERE id=?1", [a.request], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(e)?;
         let callback: Option<String> = tx.query_row("SELECT value FROM meta WHERE key=?1", [format!("callback:{}", a.request)], |r|r.get(0)).optional().map_err(e)?;
-        if let Some(callback) = callback.filter(|_| reply.starts_with("Answered by ")) {
+        if let Some(callback) = callback.filter(|_| !reply.contains("\nTaskQ:") && (reply.starts_with("Answered by ") || reply.starts_with("Ответил "))) {
             outbox(&tx, a.request, chat, topic, None, None, reply, at)?;
             tx.execute("UPDATE outbox SET kind=?2 WHERE id=?1", params![tx.last_insert_rowid(),format!("toast:{callback}")]).map_err(e)?;
         } else {
@@ -3175,6 +3282,49 @@ mod tests {
         let reply=j.launch_reply(&launch).unwrap();
         assert!(reply.contains("в очеред") && !reply.contains("запущен") && reply.contains("GitHub · pilotq#19 · Reply improvements"),"{reply}");
         drop(j); let _=std::fs::remove_dir_all(p);
+    }
+
+    // #108 / §4-5 / R10,R13,R17: a saved discussion choice and edit survive restart,
+    // while text forwarding cannot borrow another person, route or reset generation.
+    #[test]
+    fn u108_discussion_receipt_and_source() {
+        use crate::manager::Outcome;
+        let (mut j,p)=journal("u108-source");
+        let mut input=msg(7,7,1).unwrap(); input.text=Some("Choose layout".into()); input.language=Some("ru".into());
+        j.admit(&[(1,Some(input))],1).unwrap();
+        let r=j.claim_next(4,2).unwrap().remove(0);
+        j.save_choices(&r,"Как оформить?",&["Кратко".into(),"Подробно".into()]).unwrap();
+        j.finish(&r,None,None,&Outcome::Answered("Выберите".into()),3).unwrap();
+        let card=count(&j,"SELECT max(id) FROM cards");
+        while let Some(d)=j.due(4).unwrap().0 { j.record(d.id,&Sent::Ok(100+d.id),4).unwrap(); }
+        let mut input=msg(7,7,2).unwrap();input.text=Some("Подробно, с примерами".into());
+        j.admit(&[(2,Some(input))],5).unwrap();
+        let r=j.claim_next(4,6).unwrap().remove(0);
+        assert!(j.answer_source(&r,None,"Выдуманный ответ").is_err());
+        assert!(j.answer_source(&r,None,"Подробно, с примерами").is_ok());
+        j.discussion_answer(&r,card,"Подробно, с примерами",None).unwrap();
+        assert!(j.discussion_answer(&r,card,"Подробно, с примерами",None).is_err());
+        assert_eq!(count(&j,"SELECT count(*) FROM outbox WHERE kind='choice_answered'"),1);
+        assert!(j.is_choice(&r).unwrap(),"discussion answer never authorizes launch");
+        drop(j);
+        let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
+        let mut receipt=None;
+        while let Some(d)=j.due(7).unwrap().0 {
+            if d.kind=="choice_answered" {receipt=Some((d.edit,d.text.clone(),d.buttons.clone()));}
+            j.record(d.id,&Sent::Ok(100+d.id),7).unwrap();
+        }
+        let (edit,text,buttons)=receipt.unwrap();
+        assert!(edit.is_some() && text.contains("Ответ сохранён: Подробно, с примерами") && buttons.is_empty());
+        j.finish(&r,None,None,&Outcome::Answered("Продолжим".into()),8).unwrap();
+        j.grant(7,8,&["chat".into()],8).unwrap();
+        j.admit(&[(3,msg(8,8,3))],9).unwrap();
+        let foreign=j.claim_next(4,10).unwrap().remove(0);
+        assert!(j.answer_source(&foreign,Some(r.request),"Подробно, с примерами").is_err());
+        let mut reset=msg(7,7,4).unwrap();reset.text=Some("/new".into());
+        j.admit(&[(4,Some(reset)),(5,msg(7,7,5))],11).unwrap();
+        let next=j.claim_next(4,12).unwrap().remove(0);
+        assert!(j.answer_source(&next,Some(r.request),"Подробно, с примерами").is_err());
+        drop(j);std::fs::remove_dir_all(p).unwrap();
     }
 
     // R10/R13/R17, §5/#93: callback payloads cannot substitute another person, route,
