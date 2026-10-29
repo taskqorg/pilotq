@@ -823,7 +823,7 @@ impl Journal {
                     };
                     let id = insert(&tx, *update, "telegram", i.chat, i.topic, sender, i.name.as_deref(), i.message, kind, i.text.as_deref(), state, at, &s, i.reply_to)?;
                     if let Some(callback) = &i.callback {
-                        tx.execute("INSERT INTO meta(key,value) VALUES (?1,?2)", params![format!("callback:{id}"), callback]).map_err(|e| e.to_string())?;
+                        tx.execute("INSERT INTO meta(key,value) VALUES (?1,?2)", params![format!("callback:{id}"), callback.as_bytes()]).map_err(|e| e.to_string())?;
                     }
                     tx.execute("UPDATE requests SET image=?2,language=?3 WHERE id=?1", params![id,i.image,i.language]).map_err(|e|e.to_string())?;
                     let choice = if i.kind=="text" && cmd.is_none() && question.is_none() && !busy { text_choice(&tx,i,sender,&s)? } else { None };
@@ -2126,7 +2126,13 @@ impl Journal {
         )
         .map_err(e)?;
         let (chat, topic, message): (i64, Option<i64>, i64) = tx.query_row("SELECT chat, topic, message FROM requests WHERE id=?1", [a.request], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(e)?;
-        let callback: Option<String> = tx.query_row("SELECT value FROM meta WHERE key=?1", [format!("callback:{}", a.request)], |r|r.get(0)).optional().map_err(e)?;
+        // a numeric callback ID in the INTEGER `value` column reads back as text; new ones are stored as bytes, unconverted
+        let callback: Option<String> = tx.query_row("SELECT value FROM meta WHERE key=?1", [format!("callback:{}", a.request)], |r|r.get::<_, rusqlite::types::Value>(0)).optional().map_err(e)?.and_then(|v| match v {
+            rusqlite::types::Value::Blob(b) => String::from_utf8(b).ok(),
+            rusqlite::types::Value::Text(t) => Some(t),
+            rusqlite::types::Value::Integer(i) => Some(i.to_string()),
+            _ => None,
+        });
         if let Some(callback) = callback.filter(|_| !reply.contains("\nTaskQ:") && (reply.starts_with("Answered by ") || reply.starts_with("Ответил "))) {
             outbox(&tx, a.request, chat, topic, None, None, reply, at)?;
             tx.execute("UPDATE outbox SET kind=?2 WHERE id=?1", params![tx.last_insert_rowid(),format!("toast:{callback}")]).map_err(e)?;

@@ -1257,7 +1257,7 @@ fn bare_url(t: &str) -> bool {
 fn press(id: i64, chat: i64, topic: Option<i64>, sender: i64, message: i64, data: &str) -> Value {
     let mut m = json!({"message_id": message, "date": 1, "chat": text(0, chat, topic, sender, "")["message"]["chat"].clone(), "text": "question"});
     if let Some(t) = topic { m["message_thread_id"] = json!(t); }
-    json!({"update_id": id, "callback_query": {"id": format!("invented-{id}"), "chat_instance": "x", "data": data, "message": m,
+    json!({"update_id": id, "callback_query": {"id": (4_000_000_000_000_000_000 + id).to_string(), "chat_instance": "x", "data": data, "message": m,
         "from": {"id": sender, "is_bot": false, "first_name": "A"}}})
 }
 
