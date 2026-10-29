@@ -1,8 +1,8 @@
 # Status line research for #119
 
 The owner selected a footer on final replies for DMs, ordinary groups and forum
-topics in the answer to #119 at revision `6490594957`. The implementation resumes after #106 reached main. The sanitized Hermes source was inspected and the A2 read-only reviewer
-cross-check passed before code.
+topics in the answer to #119 at revision `6490594957`. Implementation followed #106 reaching main. The sanitized Hermes source was
+inspected and the A2 read-only reviewer cross-check passed before code.
 
 ## Placement comparison
 
@@ -77,17 +77,37 @@ A read-only reviewer cross-checked this stage against the sanitized source and
 A1/A2 acceptance. Task fit passed: approved placement, alternatives, rights,
 rate-limit qualifications, minimal data and the stale-reference discrepancy
 are covered. Implementation quality had no blocking findings in this research;
-no executable or live tests were run. Update the owning contract before
-implementation. A4 still requires
-FRA screenshots covering `/new`, a model switch, DM and topic replies and a
-missing quota source; local tests cannot establish that visual acceptance.
+no executable or live tests were run during that research stage. The contract
+was updated before implementation. The later A4 evidence is recorded below;
+local tests alone do not establish visual acceptance.
 
 ## Implementation and live evidence
 
 #106 reached main at `f501f99bfac85deb3263ff6c9a54c81a0fa85749`.
-The owner extended §9 to #119 on 2026-10-29. One worker ask will name the
-exact candidate and DM/topic steps; the PM performs the authorized run and
-attaches screenshots. A4 remains pending until those observations exist.
+The owner extended §9 to #119 on 2026-10-29. The PM completed the authorized
+A4 run on that date with source `de82e1718dd7e7ce80da1f4ee492935b5f50b149`
+and binary SHA-256
+`83ad89036da6604283f29c422738fdd469f6ac083eda8eedd66f4a8c81486e75`.
+The [PM report and Telegram screenshots](https://github.com/taskqorg/pilotq/pull/122#issuecomment-6493225953)
+record default and selected-model `/new`, model buttons, normal DM/topic replies
+and a real Codex answer with the optional quota source suppressed. Screenshots
+show the context percentages, weekly quota/reset and `? unavailable` fallback.
+The worker inspected the DM, topic and missing-quota screenshots.
+
+The PM reports a drained source-build activation without modifying the published
+release slot, a SQLite backup, schema 11 and matched journal counts across
+restarts, with the pre-existing uncertain effect preserved. Afterward the PM
+restored release 0.2.10, the original Codex configuration and automatic updates,
+and read back healthy sources. This proves that bounded run, not continued
+installation of #119 or production cutover (§9).
+
+The PM noted a nonblocking existing wording issue: after a model switch followed
+by `/new`, the first answer announces a native-conversation rebuild even though
+the conversation is fresh. This observation is retained without claiming a fix.
+The exact code candidate passed `cargo test --locked` (120 passed, 9 live tests
+ignored), `cargo run --locked -- selftest`, and the optimized binary's selftest.
+The missing-footer delivery check failed before implementation and passed after;
+threshold, stale/invalid-data and route/fallback protections remain executable.
 
 The adapter consumes `thread/tokenUsage/updated` (last input tokens and context
 window) and the ordinary `codex` weekly window from `account/rateLimits/read`

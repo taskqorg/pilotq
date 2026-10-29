@@ -807,7 +807,10 @@ supply context. The existing `u106_telegram_controls_and_models` chain checks
 that `/new` names the saved model after restart without starting inference.
 These tests do not qualify Telegram appearance or live subscription readings.
 
-A4 remains pending: the PM runs the exact worker candidate on FRA, sends `/new`,
-switches the model, sends a normal DM and topic request, and checks an unavailable
-quota source. Attach Telegram screenshots and record the observed footer/model
-and reset, including unknown fields. Keep worker question cards footer-free.
+A4 was performed by the PM on FRA on 2026-10-29 with code candidate `de82e17`:
+[report and Telegram screenshots](https://github.com/taskqorg/pilotq/pull/122#issuecomment-6493225953).
+The run covers `/new`, a model switch, DM/topic replies and an unavailable quota
+source. The report records journal continuity and restoration of release 0.2.10;
+it also retains a nonblocking recovery-notice wording observation. See the
+[exact build and evidence](status-line-research.md#implementation-and-live-evidence).
+Worker question cards retain their no-footer rule under contract §12.
