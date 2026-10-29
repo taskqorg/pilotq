@@ -324,6 +324,11 @@ fn dispatch(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Value) -
             if args["project"].as_str().is_some_and(|p| p != project) { return Err("saved plan cannot be retargeted; nothing was filed".into()); }
             allowed(&j, sender, project, true)?;
             (project.clone(), saved.as_ref().unwrap().1.clone(), 0)
+        } else if matches!(name,"task_status" | "task_steer") {
+            match j.related_target(r,args["task"].as_str().ok_or("task is required")?,args["project"].as_str())? {
+                Some(target) => target,
+                None => crate::direct::target(&j,r,sender,&target)?,
+            }
         } else { crate::direct::target(&j, r, sender, &target)? }
     };
     let (bound, registered_board) = tq.registered(&j.lock().unwrap(), &project)?;

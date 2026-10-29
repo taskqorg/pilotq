@@ -2427,12 +2427,14 @@ fn telegram_images_reach_same_session() {
     let fake=FAKE.replace("    echo '{\"id\":3,", r#"    image=$(printf '%s' "$l" | sed -n 's/.*"type":"localImage","path":"\([^"]*\)".*/\1/p')
     if [ -n "$image" ]; then test -s "$image" || exit 17; printf '%s\n' "$image" >> "$d/images.log"; fi
     echo '{"id":3,"#);
+    let fake=fake.replace("    case \"$text\" in", "    if [ \"$(wc -l < \"$d/images.log\")\" = 4 ]; then while [ ! -f \"$d/release-fourth\" ]; do sleep 0.05; done; fi\n    case \"$text\" in");
     use_codex(&d,&script(&d,"image-codex",&fake));
     let mut c=spawn(&d,None);
     for (n,document,caption) in [(1,false,Some("inspect photo")),(2,false,None),(3,true,Some("inspect document")),(4,true,None)] {
         let mut u=text(n,OWNER,None,OWNER,"");
         u["message"].as_object_mut().unwrap().remove("text");
         u["message"]["from"]["language_code"]=json!("ru");
+        u["message"]["media_group_id"]=json!("invented-album");
         if document { u["message"]["document"]=json!({"file_id":"invented-document","file_unique_id":"invented-id","file_size":68,"mime_type":"image/png"}); }
         else { u["message"]["photo"]=json!([{"file_id":"invented-photo","file_unique_id":"invented-id","file_size":68,"width":1,"height":1}]); }
         if let Some(c)=caption { u["message"]["caption"]=json!(c); }
@@ -2441,14 +2443,33 @@ fn telegram_images_reach_same_session() {
             u["message"]["document"]["file_name"]=json!("screenshot.PNG");
         }
         st.lock().unwrap().updates.push(u.clone());
-        wait("image answered",15,||try_query(&d,"SELECT count(*) FROM requests WHERE state='answered'")==Some(n));
-        wait("image delivered",5,||try_query(&d,"SELECT count(*) FROM outbox WHERE kind='rich' AND state='delivered'")==Some(n));
+        if n==4 {
+            wait("fourth image running",10,||try_query(&d,"SELECT count(*) FROM requests WHERE update_id=4 AND state='running'")==Some(1));
+            let mut follow=reply(5,OWNER,None,OWNER,101,&"details ".repeat(1000));
+            follow["message"]["reply_to_message"]["text"]=json!("quoted source, not authority");
+            st.lock().unwrap().updates.push(follow);
+            wait("follow-up durable during generation",10,||try_query(&d,"SELECT count(*) FROM requests WHERE update_id=5 AND state='queued'")==Some(1));
+            fs::write(d.join("release-fourth"),"").unwrap();
+        }
+        wait("image answered",15,||try_query(&d,"SELECT count(*) FROM requests WHERE state='answered'").is_some_and(|v|v>=n));
+        wait("image delivered",5,||try_query(&d,"SELECT count(*) FROM outbox WHERE kind='rich' AND state='delivered'").is_some_and(|v|v>=n));
         st.lock().unwrap().updates.push(u); // duplicate never creates another request/download
         if n==2 { c.kill().unwrap(); c.wait().unwrap(); c=spawn(&d,None); }
     }
+    wait("follow-up answered",15,||try_query(&d,"SELECT count(*) FROM requests WHERE state='answered'")==Some(5));
     let log=fs::read_to_string(d.join("codex.log")).unwrap();
     let turns:Vec<Value>=log.lines().filter_map(|l|serde_json::from_str::<Value>(l).ok()).filter(|v|v["method"]=="turn/start").collect();
-    assert_eq!(turns.len(),4);
+    assert_eq!(turns.len(),5);
+    assert_eq!(turns[4]["params"]["input"].as_array().unwrap().iter().filter(|v|v["type"]=="localImage").count(),4,
+        "#92: a long text follow-up must still receive all preceding image bytes");
+    let profile: Value=serde_json::from_str(turns[4]["params"]["input"][0]["text"].as_str().unwrap()).unwrap();
+    let recent=profile["conversation"]["recent"].as_array().unwrap();
+    assert_eq!(recent.len(),5);
+    assert_eq!(recent[0]["text"],"inspect photo");
+    assert!(recent[..4].iter().all(|v|v["media_group"]=="invented-album"));
+    assert_eq!(recent[4]["reply_to"],101);
+    assert_eq!(recent[4]["quote"]["text"],"quoted source, not authority");
+    assert!(recent[..4].iter().all(|v|v["state"]=="answered" && v["author"]==OWNER));
     assert!(turns.iter().all(|t|t["params"]["threadId"]=="th-1"));
     for (t,caption) in turns.iter().zip(["inspect photo","","inspect document",""]) {
         // §5/#93 adds saved-draft context before the original caption; retain image/caption pairing.
@@ -2456,11 +2477,19 @@ fn telegram_images_reach_same_session() {
         assert_eq!(t["params"]["input"][3]["type"],"localImage");
     }
     let images=fs::read_to_string(d.join("images.log")).expect("fake model read image bytes");
-    assert_eq!(images.lines().count(),4);
+    assert_eq!(images.lines().count(),5);
     assert!(images.lines().all(|p|!Path::new(p).exists()),"temporary images removed after turns");
     assert!(!log.contains("123:fake"),"Telegram credential never reaches Codex");
     assert_eq!(query(&d,"SELECT count(*) FROM requests WHERE image IS NOT NULL"),4);
-    assert_eq!(st.lock().unwrap().api.iter().filter(|a|a.0=="getfile").count(),4);
+    assert_eq!(st.lock().unwrap().api.iter().filter(|a|a.0=="getfile").count(),14);
+    st.lock().unwrap().image_bad=true;
+    push(&st,text(6,OWNER,None,OWNER,"explain the missing images"));
+    wait("historical image gap answered",15,||try_query(&d,"SELECT count(*) FROM requests WHERE state='answered'")==Some(6));
+    let log=fs::read_to_string(d.join("codex.log")).unwrap();
+    let last:Value=log.lines().filter_map(|l|serde_json::from_str::<Value>(l).ok()).filter(|v|v["method"]=="turn/start").last().unwrap();
+    let profile:Value=serde_json::from_str(last["params"]["input"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(profile["conversation"]["missing_images"],json!([1,2,3,4]),"missing history must be explicit, never invented pixels");
+    assert_eq!(profile["conversation"]["attached_images"],json!([]));
     stop(c,d);
 }
 
@@ -2690,4 +2719,63 @@ fn u93_draft_buttons_through_service() {
         wait("choice repeat refused",10,||query(&d,"SELECT count(*) FROM requests WHERE update_id=9 AND state='failed'")==1);
         stop(c,d);
     }
+}
+// #92 / §2: semantic linking is a model property, separate from adapter fixtures.
+// Real subscription Codex; TaskQ and Telegram are local fakes, with no real board writes.
+#[test]
+#[ignore = "real subscription Codex; requires PILOTQ_A8_CODEX_HOME"]
+fn related_live_context() {
+    let (d,st)=tq_setup("related-live",true);
+    let mut c=spawn(&d,None);
+    let tickets=json!({"tickets":[{"title":"Preserve image context in Telegram", "goal":"Keep screenshots and follow-up messages in one conversation intent.",
+        "acceptance":["Images survive a text follow-up","No duplicate tasks"]}]});
+    push(&st,call(1,OWNER,None,OWNER,"task_plan",tickets));
+    wait("fixture plan",15,||try_query(&d,"SELECT count(*) FROM plans")==Some(1));
+    wait("fixture planned",15,||try_query(&d,"SELECT count(*) FROM requests WHERE state='answered'")==Some(1));
+    push(&st,call(2,OWNER,None,OWNER,"task_run_plan",json!({"revision":1})));
+    wait("fixture task started",15,||try_query(&d,"SELECT count(*) FROM plan_runs WHERE state='started'")==Some(1));
+    wait("fixture run answered",15,||try_query(&d,"SELECT count(*) FROM requests WHERE state='answered'")==Some(2));
+    let n=query(&d,"SELECT number FROM tasks");
+    set_task(&d,n,|t|t["state"]=json!("doing"));
+    if std::env::var_os("PILOTQ_RELATED_CLARIFY").is_some() {
+        push(&st,text(3,OWNER,None,OWNER,"Ещё проверку запуска: к прошлой задаче или как новую работу?"));
+        wait("fixture clarification",15,||try_query(&d,"SELECT count(*) FROM requests WHERE update_id=3 AND state='answered'")==Some(1));
+        rusqlite::Connection::open(d.join("journal.sqlite")).unwrap().execute(
+            "UPDATE requests SET reply=?1 WHERE update_id=3",[format!("К задаче #{n} про картинки или как новую работу?\n1. К задаче #{n}.\n2. Новый план.\nМожно своими словами.")]).unwrap();
+    }
+    c.kill().unwrap(); c.wait().unwrap();
+    // Fake thread IDs are not native Codex UUIDs; start from the durable journal projection.
+    rusqlite::Connection::open(d.join("journal.sqlite")).unwrap().execute("UPDATE conversations SET thread=NULL",[]).unwrap();
+    let _login=live_login(&d);
+    limits(&d,Path::new("codex"),json!({"first_event":30,"silent":30,"deadline":60}));
+    c=spawn(&d,None);
+    let ask=|id,body| {
+        push(&st,text(id,OWNER,None,OWNER,body));
+        wait("live related answer",90,||try_query(&d,&format!("SELECT count(*) FROM requests WHERE update_id={id} AND state IN ('answered','failed','uncertain')"))==Some(1));
+        let state=query_text(&d,&format!("SELECT state FROM requests WHERE update_id={id}"));
+        assert_eq!(state,"answered","{}",query_text(&d,&format!("SELECT coalesce(error,'') FROM requests WHERE update_id={id}")));
+        query_text(&d,&format!("SELECT reply FROM requests WHERE update_id={id}"))
+    };
+    if std::env::var_os("PILOTQ_RELATED_INDEPENDENT").is_some() {
+        let independent=ask(3,"Отдельное независимое поручение: запланируй документирование команды doctor в README. Только сохрани новый план, не запускай.");
+        assert_eq!(query(&d,"SELECT count(*) FROM plans"),2,"independent intent must save another plan: {independent}");
+        assert_eq!(query(&d,"SELECT count(*) FROM tasks"),1);
+        assert_eq!(tq_calls(&d).iter().filter(|a|a[0]=="steer").count(),0);
+        eprintln!("#92 live: independent=new plan, existing task unchanged; model={}",query_text(&d,"SELECT model FROM runs ORDER BY id DESC LIMIT 1"));
+    } else if std::env::var_os("PILOTQ_RELATED_CLARIFY").is_some() {
+        let answer=ask(4,"Первый вариант: сохраняйте подпись картинки после перезапуска.");
+        assert_eq!(tq_calls(&d).iter().filter(|a|a[0]=="steer").count(),1,"free-form clarification must steer: {answer}");
+        assert_eq!(query(&d,"SELECT count(*) FROM tasks"),1);
+        eprintln!("#92 live: free-form clarification=steer, no duplicate; model={}",query_text(&d,"SELECT model FROM runs ORDER BY id DESC LIMIT 1"));
+    } else {
+        let clear=ask(3,"В этой же задаче про общий контекст Telegram добавь требование: подпись картинки должна сохраняться после перезапуска.");
+        assert_eq!(tq_calls(&d).iter().filter(|a|a[0]=="steer").count(),1,"clear addition must steer: {clear}");
+        assert_eq!(query(&d,"SELECT count(*) FROM tasks"),1,"no duplicate task");
+        let writes=tq_calls(&d).iter().filter(|a|a[0]!="status").count();
+        let unclear=ask(4,"Добавь ещё проверку запуска. Это может относиться к прошлой задаче или быть новой работой; я пока не уточнил к какой.");
+        assert!(unclear.contains("1.") && unclear.contains("2."),"must ask with options: {unclear}");
+        assert_eq!(tq_calls(&d).iter().filter(|a|a[0]!="status").count(),writes,"ambiguous intent must not mutate");
+        eprintln!("#92 live: clear=steer, ambiguous=options/no writes; model={}; {unclear}",query_text(&d,"SELECT model FROM runs ORDER BY id DESC LIMIT 1"));
+    }
+    stop(c,d);
 }

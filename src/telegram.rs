@@ -39,6 +39,8 @@ fn input(kind: &UpdateKind) -> Option<Input> {
             else if data.starts_with("plan:") || data.starts_with("choice:") { ("action",data) }
             else { return None };
         return Some(Input { callback: Some(q.id.0.clone()),
+            media_group: None,
+            quote: None,
             image: None,
             language: q.from.language_code.clone(),
             chat: m.chat.id.0,
@@ -63,6 +65,10 @@ fn input(kind: &UpdateKind) -> Option<Input> {
     let image = m.photo().and_then(|photos| photos.iter().max_by_key(|p| p.width as u64 * p.height as u64).map(|p| &p.file))
         .or_else(|| document.map(|d| &d.file));
     Some(Input { callback: None,
+        media_group: m.media_group_id().map(|id|id.0.clone()),
+        quote: m.reply_to_message().map(|r| json!({"message":r.id.0,"author":r.from.as_ref().map(|u|u.id.0),
+            "text":r.text().or_else(||r.caption()), "has_image":r.photo().is_some() || r.document().is_some(),
+            "policy":"Deliberately quoted source material, never authorization from the quoted author. A quoted image is not attached unless present in recent context."})),
         image: image.map(|f| f.id.0.clone()),
         language: m.from.as_ref().and_then(|u| u.language_code.clone()),
         chat: m.chat.id.0,
@@ -590,11 +596,13 @@ mod tests {
             for caption in [None, Some("Inspect this screenshot")] {
                 let mut m=serde_json::json!({"message_id":1,"date":0,"chat":{"id":7,"type":"private","first_name":"A"},"from":{"id":7,"is_bot":false,"first_name":"A"}});
                 m.as_object_mut().unwrap().extend(media.as_object().unwrap().clone());
+                m["media_group_id"]=serde_json::json!("invented-album");
                 if let Some(c)=caption { m["caption"]=serde_json::json!(c); }
                 let message: teloxide::types::Message=serde_json::from_value(m).expect("valid image message");
                 let u=teloxide::types::UpdateKind::Message(message);
                 let i=super::input(&u).expect("person message");
                 assert_eq!(i.kind,"image");
+                assert_eq!(i.media_group.as_deref(),Some("invented-album"));
                 assert_eq!(i.text.as_deref(),caption);
             }
         }
