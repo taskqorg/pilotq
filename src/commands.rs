@@ -146,7 +146,10 @@ fn execute_bounded(mut command: Command, end: Instant, active: impl Fn() -> bool
     let mut read_failed = false;
     let mut exit = None;
     let status = loop {
-        while let Ok((err,bytes)) = rx.try_recv() {
+        // Wait for data rather than throttling every four buffered chunks with
+        // a fixed sleep. Board snapshots must share the deadline, not lose it
+        // to reader-channel backpressure (§5 / #137).
+        if let Ok((err,bytes)) = rx.recv_timeout(Duration::from_millis(10)) {
             match bytes {
                 Ok(bytes) if bytes.is_empty() => received += 1,
                 Ok(bytes) => {
@@ -168,7 +171,6 @@ fn execute_bounded(mut command: Command, end: Instant, active: impl Fn() -> bool
             Ok(None) => {},
             Err(_) => break "wait_failed",
         }
-        std::thread::sleep(Duration::from_millis(10));
     };
     #[cfg(unix)]
     let _ = crate::host::output(Command::new("/bin/kill").args(["-9","--",&format!("-{}",child.id())]));
