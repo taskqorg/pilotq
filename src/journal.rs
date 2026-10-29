@@ -61,16 +61,20 @@ fn control(text: Option<&str>) -> Option<&'static str> {
 fn brief(language: Option<&str>, reason: &str) -> &'static str {
     match (language.unwrap_or("en").split('-').next().unwrap_or("en"), reason) {
         ("ru", "busy") => "Сейчас очередь заполнена; отправьте запрос позже.",
-        ("ru", "unsupported") => "Отправьте текст или изображение; этот формат пока не поддерживается.",
+        ("ru", "unsupported") => "Отправьте текст, изображение или голосовое сообщение; этот формат пока не поддерживается.",
         ("ru", "image_limit") => "Изображение слишком большое; отправьте файл до 20 МиБ.",
         ("ru", "image_failed") => "Не удалось прочитать изображение; отправьте его ещё раз.",
+        ("ru", "voice_limit") => "Голосовое сообщение слишком большое; отправьте запись до 5 минут и 20 МиБ.",
+        ("ru", "voice_failed") => "Не удалось распознать голосовое сообщение; отправьте его ещё раз или текстом.",
         ("ru", "limit") => "Лимит запроса исчерпан; попросите продолжить с сохранённого результата.",
         ("ru", "uncertain") => "Результат действия неизвестен; автоматического повтора не будет.",
         ("ru", _) => "Не удалось завершить запрос; попробуйте ещё раз или проверьте /status.",
         (_, "busy") => "PilotQ is busy; send it again later.",
-        (_, "unsupported") => "Send text or an image; this format is not supported yet.",
+        (_, "unsupported") => "Send text, an image or a voice message; this format is not supported yet.",
         (_, "image_limit") => "The image is too large; send a file up to 20 MiB.",
         (_, "image_failed") => "The image could not be read; send it again.",
+        (_, "voice_limit") => "The voice message is too large; send a recording up to 5 minutes and 20 MiB.",
+        (_, "voice_failed") => "The voice message could not be recognized; send it again or as text.",
         (_, "limit") => "The request reached its limit; ask to continue from the saved result.",
         (_, "uncertain") => "The action’s outcome is uncertain; it will not be repeated automatically.",
         _ => "The request failed; try again or check /status.",
@@ -102,7 +106,7 @@ fn accept_card(tx: &Connection, i: &Input, sender: i64, session: &str, request: 
         AND EXISTS(SELECT 1 FROM outbox o WHERE o.request_id=q.id AND o.chat=?4 AND o.topic IS ?5 AND o.sent_message=?6 AND o.kind IN ('rich','rich_part'))",
         params![id,session,sender,i.chat,i.topic,i.message],|x|Ok((x.get(0)?,x.get(1)?,x.get(2)?))).optional().map_err(e)?;
     let (plan,options,used)=card.ok_or("foreign or reset button")?;
-    let pending: bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM requests WHERE session=?1 AND id<?2 AND state IN ('queued','running') AND kind IN ('text','image','choice'))",params![session,request],|x|x.get(0)).map_err(e)?;
+    let pending: bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM requests WHERE session=?1 AND id<?2 AND state IN ('queued','running') AND kind IN ('text','image','voice','choice'))",params![session,request],|x|x.get(0)).map_err(e)?;
     if pending { return Err("discussion is still updating; wait for its current display".into()); }
 
     if used.is_some() { return Err("button already answered".into()); }
@@ -140,7 +144,7 @@ fn text_choice(tx: &Connection, i: &Input, sender: i64, session: &str) -> Result
     let text=i.text.as_deref().unwrap_or("").trim();
     let options:Vec<String>=serde_json::from_str(&options).map_err(|e|e.to_string())?;
     let choice=options.iter().enumerate().find(|(n,option)|text==(n+1).to_string() || text==option.as_str()).map(|(n,_)|n+1);
-    Ok(choice.map(|choice|Input{callback:None,image:None,media_group:None,quote:None,language:i.language.clone(),chat:i.chat,topic:i.topic,sender:Some(sender),name:i.name.clone(),message,kind:"action",text:Some(format!("choice:{card}:{choice}")),reply_to:Some(message)}))
+    Ok(choice.map(|choice|Input{callback:None,image:None,voice:None,media_group:None,quote:None,language:i.language.clone(),chat:i.chat,topic:i.topic,sender:Some(sender),name:i.name.clone(),message,kind:"action",text:Some(format!("choice:{card}:{choice}")),reply_to:Some(message)}))
 }
 
 /// Telegram's message limit in UTF-16 code units.
@@ -415,6 +419,9 @@ fn claim(tx: &Connection, request: i64, at: i64) -> Result<Option<Run>, String> 
     Ok(Some(Run { id: tx.last_insert_rowid(), request, session, generation, fence, thread, text, images: vec![], image_gaps: vec![] }))
 }
 
+/// Marks recognized speech in the request text the model and history see (#104).
+pub const VOICE: &str = "[Voice message, automatic Russian speech recognition; may contain recognition errors]";
+
 /// Proposed audit retention, told to each person at their first admitted request (§ 7, § 8; an open decision in § 11).
 const RETENTION: &str = "metadata 365 days, message text 90 days";
 
@@ -511,6 +518,8 @@ pub struct Input {
     /// Deliberately quoted Telegram source, never the quoted author’s authorization.
     pub quote: Option<Value>,
     pub image: Option<String>,
+    /// Telegram file identity of a voice note, audio file or audio document (#104).
+    pub voice: Option<String>,
     pub language: Option<String>,
     pub chat: i64,
     pub topic: Option<i64>,
@@ -746,7 +755,7 @@ impl Journal {
                     let s = session(i.chat, i.topic, sender, shared);
                     let cmd = if i.kind == "text" { control(i.text.as_deref()) } else { None };
                     // controls bypass the backlog: they are answered here, never queued (§ 12)
-                    let busy = cmd.is_none() && matches!(i.kind, "text" | "image" | "action") && {
+                    let busy = cmd.is_none() && matches!(i.kind, "text" | "image" | "voice" | "action") && {
                         let (route, total): (i64, i64) = tx
                             .query_row(
                                 "SELECT count(*) FILTER (WHERE chat=?1 AND topic IS ?2), count(*) FROM requests WHERE state='queued'",
@@ -766,9 +775,9 @@ impl Journal {
                     };
                     let (kind, state) = match (cmd, i.kind) {
                         (Some(_), _) => ("control", "answered"),
-                        (None, "text" | "image" | "action") if busy => (i.kind, "failed"),
+                        (None, "text" | "image" | "voice" | "action") if busy => (i.kind, "failed"),
                         (None, "text" | "button") if question.is_some() => ("answer", "queued"),
-                        (None, "text" | "image" | "action") => (i.kind, "queued"),
+                        (None, "text" | "image" | "voice" | "action") => (i.kind, "queued"),
                         _ => (i.kind, "failed"),
                     };
                     let id = insert(&tx, *update, "telegram", i.chat, i.topic, sender, i.name.as_deref(), i.message, kind, i.text.as_deref(), state, at, &s, i.reply_to)?;
@@ -791,6 +800,10 @@ impl Journal {
                     } else { None };
                     let state = if action_error.is_some() { "failed" } else { state };
 
+                    if let Some(file) = &i.voice {
+                        tx.execute("INSERT INTO audit_events(request_id,at,kind,item) VALUES (?1,?2,'voice',?3)",
+                            params![id,at,file]).map_err(|e|e.to_string())?;
+                    }
                     if let Some(group) = &i.media_group {
                         tx.execute("INSERT INTO audit_events(request_id,at,kind,item) VALUES (?1,?2,'media_group',?3)",
                             params![id,at,group]).map_err(|e|e.to_string())?;
@@ -809,7 +822,7 @@ impl Journal {
                         // § 1: unsupported input is detected and gets an explicit outcome, never silence
                         None if action_error.is_some() => action_error.unwrap(),
                         None if busy => brief(i.language.as_deref(), "busy").into(),
-                        None if state == "failed" => brief(i.language.as_deref(), if i.kind == "image_limit" { "image_limit" } else { "unsupported" }).into(),
+                        None if state == "failed" => brief(i.language.as_deref(), match i.kind { "image_limit" | "voice_limit" => i.kind, _ => "unsupported" }).into(),
                         // §12: accepted text gets a reaction obligation below, without a text acknowledgement.
                         None => String::new(),
                     };
@@ -1205,7 +1218,7 @@ impl Journal {
         let ids: Vec<i64> = {
             let mut q = tx
                 .prepare(
-                    "SELECT min(id) FROM requests r WHERE state='queued' AND front='telegram' AND kind IN ('text','image','choice','launch')
+                    "SELECT min(id) FROM requests r WHERE state='queued' AND front='telegram' AND kind IN ('text','image','voice','choice','launch')
                     AND NOT EXISTS (SELECT 1 FROM requests p WHERE p.session=r.session AND p.state='running') GROUP BY session ORDER BY 1 LIMIT ?1",
                 )
                 .map_err(|e| e.to_string())?;
@@ -1220,6 +1233,29 @@ impl Journal {
             self.trace(id, at);
         }
         Ok(runs)
+    }
+
+    /// #104: the Telegram file of a voice request that has no stored transcript yet; a recovered run never recognizes twice.
+    pub fn pending_voice(&self, request: i64) -> Result<Option<String>, String> {
+        self.0.query_row("SELECT item FROM audit_events WHERE request_id=?1 AND kind='voice'
+            AND NOT EXISTS(SELECT 1 FROM audit_events WHERE request_id=?1 AND kind='transcript')", [request], |x| x.get(0))
+            .optional().map_err(|e| e.to_string())
+    }
+
+    /// #104: stores the transcript as the request's text after any caption, marked as automatic recognition, under the run's
+    /// fence and the sender's current admission. Returns the text the model receives.
+    pub fn transcript(&self, r: &Run, transcript: &str, at: i64) -> Result<String, String> {
+        if self.fenced(r)? || !has(&self.0, self.sender(r.request)?, "chat")? {
+            return Err("conversation access revoked".into());
+        }
+        let marked = format!("{VOICE}\n{transcript}");
+        let text = if r.text.is_empty() { marked } else { format!("{}\n\n{marked}", r.text) };
+        let e = |e: rusqlite::Error| e.to_string();
+        let tx = self.0.unchecked_transaction().map_err(e)?;
+        tx.execute("INSERT INTO audit_events(request_id,at,kind,item) VALUES (?1,?2,'transcript',?3)", params![r.request, at, transcript]).map_err(e)?;
+        tx.execute("UPDATE requests SET text=?2 WHERE id=?1", params![r.request, text]).map_err(e)?;
+        tx.commit().map_err(e)?;
+        Ok(text)
     }
 
     /// §2 / #92: source material for semantic message linking, never a new authorization.
@@ -1378,7 +1414,7 @@ impl Journal {
             _ if self.fenced(r)? => ("fenced", String::new(), None),
             Outcome::Fenced => ("fenced", String::new(), None),
             Outcome::Answered(a) => ("answered", a.clone(), None),
-            Outcome::Failed(x) => ("failed", brief(language.as_deref(), if x.contains("20 MiB") { "image_limit" } else if x.starts_with("image") || x.contains("image") { "image_failed" } else if x.contains("within") || x.contains("budget") { "limit" } else { "failed" }).into(), Some(x)),
+            Outcome::Failed(x) => ("failed", brief(language.as_deref(), if x.starts_with("voice") { if x.contains("20 MiB") || x.contains("5 minutes") { "voice_limit" } else { "voice_failed" } } else if x.contains("20 MiB") { "image_limit" } else if x.starts_with("image") || x.contains("image") { "image_failed" } else if x.contains("within") || x.contains("budget") { "limit" } else { "failed" }).into(), Some(x)),
             Outcome::Uncertain(x) => ("uncertain", brief(language.as_deref(), "uncertain").into(), Some(x)),
         };
         tx.execute("UPDATE runs SET state=?2, ended_at=?3, outcome=?4, model=?5 WHERE id=?1", params![r.id, state, at, error, model]).map_err(e)?;
@@ -2175,7 +2211,7 @@ mod tests {
     }
 
     fn msg(chat: i64, sender: i64, message: i64) -> Option<Input> {
-        Some(Input { callback: None, media_group: None, quote: None, image: None, language: None, chat, topic: None, sender: Some(sender), name: None, message, kind: "text", text: Some("hi".into()), reply_to: None })
+        Some(Input { callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat, topic: None, sender: Some(sender), name: None, message, kind: "text", text: Some("hi".into()), reply_to: None })
     }
 
     fn count(j: &Journal, sql: &str) -> i64 {
@@ -2242,7 +2278,7 @@ mod tests {
     }
 
     fn at(chat: i64, topic: Option<i64>, sender: i64, message: i64) -> Option<Input> {
-        Some(Input { callback: None, media_group: None, quote: None, image: None, language: None, chat, topic, sender: Some(sender), name: None, message, kind: "text", text: Some("hi".into()), reply_to: None })
+        Some(Input { callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat, topic, sender: Some(sender), name: None, message, kind: "text", text: Some("hi".into()), reply_to: None })
     }
 
     fn sessions(j: &Journal) -> Vec<(i64, String)> {
@@ -2426,7 +2462,7 @@ mod tests {
 
         j.admit(&[(3, msg(7, 7, 3))], 4).unwrap();
         let r = j.claim_next(4, 4).unwrap().remove(0);
-        j.admit(&[(4, Some(Input { callback: None, media_group: None, quote: None, image: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: 4, kind: "text", text: Some("/stop".into()), reply_to: None }))], 5).unwrap();
+        j.admit(&[(4, Some(Input { callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: 4, kind: "text", text: Some("/stop".into()), reply_to: None }))], 5).unwrap();
         assert!(j.fenced(&r).unwrap());
         assert!(j.typing(5, 60).unwrap().is_empty(), "#91: cancellation ends typing");
         assert!(!j.finish(&r, Some("t-old"), None, &Outcome::Answered("late".into()), 6).unwrap(), "a stopped run cannot reply");
@@ -2434,7 +2470,7 @@ mod tests {
 
         j.admit(&[(5, msg(7, 7, 5))], 7).unwrap();
         let r = j.claim_next(4, 7).unwrap().remove(0);
-        j.admit(&[(6, Some(Input { callback: None, media_group: None, quote: None, image: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: 6, kind: "text", text: Some("/new".into()), reply_to: None }))], 8).unwrap();
+        j.admit(&[(6, Some(Input { callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: 6, kind: "text", text: Some("/new".into()), reply_to: None }))], 8).unwrap();
         assert!(j.finish(&r, Some("t-old"), None, &Outcome::Answered("ok".into()), 9).unwrap());
         assert_eq!(count(&j, "SELECT count(*) FROM conversations WHERE session='dm:7' AND thread IS NULL AND generation=1"), 1);
         drop(j);
@@ -2451,7 +2487,7 @@ mod tests {
         j.grant(7, 8, &["chat".into()], 0).unwrap();
         j.grant(7, 9, &["chat".into()], 0).unwrap();
         let named = |chat, topic, sender, message, text: &str| {
-            Some(Input { callback: None, media_group: None, quote: None, image: None, language: None, chat, topic, sender: Some(sender), name: Some(format!("P{sender}")), message, kind: "text", text: Some(text.into()), reply_to: None })
+            Some(Input { callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat, topic, sender: Some(sender), name: Some(format!("P{sender}")), message, kind: "text", text: Some(text.into()), reply_to: None })
         };
         let secret = "sk-aaaaaaaaaaaaaaaaaaaa"; // invented value standing in for anything a person types
         j.admit(&[(1, named(8, None, 8, 1, &format!("dm question {secret}"))), (2, named(-100, Some(5), 9, 2, "topic question"))], 10).unwrap();
@@ -2518,7 +2554,7 @@ mod tests {
     }
 
     fn input(chat: i64, topic: Option<i64>, sender: Option<i64>, name: &str, kind: &'static str, text: Option<&str>) -> Option<Input> {
-        Some(Input { callback: None, media_group: None, quote: None, image: None, language: None, chat, topic, sender, name: Some(name.into()), message: 1, kind, text: text.map(str::to_string), reply_to: None })
+        Some(Input { callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat, topic, sender, name: Some(name.into()), message: 1, kind, text: text.map(str::to_string), reply_to: None })
     }
 
     // F09, F15, F16, L06, L14: strangers in a DM, a group and a topic, an anonymous sender, a stranger reusing the owner's display
@@ -2547,7 +2583,7 @@ mod tests {
             .unwrap();
         assert_eq!(j.grants(8).unwrap(), ["chat"], "a claim in text grants nothing");
         assert_eq!(j.request(2).unwrap().0, "failed");
-        assert!(j.request(2).unwrap().1.unwrap().contains("Send text or an image"), "unsupported media gets an explicit outcome");
+        assert!(j.request(2).unwrap().1.unwrap().contains("Send text, an image or a voice message"), "unsupported media gets an explicit outcome");
         drop(j);
         let _ = std::fs::remove_dir_all(p);
     }
@@ -2665,7 +2701,7 @@ mod tests {
         let busy = ROUTE_BACKLOG + 1;
         assert_eq!(j.request(busy).unwrap(), ("failed".into(), Some(brief(None, "busy").into()), Some("busy: backlog full".into())));
         j.grant(7, 8, &["chat".into()], 1).unwrap();
-        j.admit(&[(100, msg(8, 8, 100)), (101, Some(Input { callback: None, media_group: None, quote: None, image: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: 101, kind: "text", text: Some("/status".into()), reply_to: None }))], 2).unwrap();
+        j.admit(&[(100, msg(8, 8, 100)), (101, Some(Input { callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: 101, kind: "text", text: Some("/status".into()), reply_to: None }))], 2).unwrap();
         assert_eq!(j.request(busy + 1).unwrap().0, "queued", "another route is admitted");
         assert!(j.request(busy + 2).unwrap().1.unwrap().contains("\nRunning: 0. Queued: 50."), "the control answers on the full route");
         let runs = j.claim_next(4, 3).unwrap();
@@ -2938,7 +2974,7 @@ mod tests {
         assert!(q.edit.is_none() && q.text.starts_with("Task #19 asks:"), "the question is its own message");
         j.record(q.id, &Sent::Ok(500), 8).unwrap();
 
-        let answer = |id, to| Some(Input { callback: None, media_group: None, quote: None, image: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: id, kind: "text", text: Some("2".into()), reply_to: Some(to) });
+        let answer = |id, to| Some(Input { callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: id, kind: "text", text: Some("2".into()), reply_to: Some(to) });
         j.admit(&[(3, answer(3, 500)), (4, answer(4, status))], 9).unwrap();
         let a = j.answers().unwrap();
         assert_eq!(a.iter().map(|(a, resumed)| (a.request, a.task, a.revision, *resumed)).collect::<Vec<_>>(), [(3, 19, 14, false)], "only a reply to the question answers it");
@@ -2959,7 +2995,7 @@ mod tests {
     fn a40_topic_plan_run_audit_project() {
         use crate::manager::Outcome;
         let (mut j, p) = journal("a40-project");
-        let topic = |message| Some(Input { callback: None, media_group: None, quote: None, image: None, language: None, chat: -100, topic: Some(5), sender: Some(7), name: None,
+        let topic = |message| Some(Input { callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat: -100, topic: Some(5), sender: Some(7), name: None,
             message, kind: "text", text: Some("plan or run".into()), reply_to: None });
         j.admit(&[(1, topic(1))], 0).unwrap();
         let r = j.claim_next(4, 0).unwrap().remove(0);
@@ -3009,7 +3045,7 @@ mod tests {
     fn status_shows_version_and_non_ok_sources() {
         let (mut j, p) = journal("status-service");
         let status = |j: &mut Journal, u: i64, at: i64| {
-            j.admit(&[(u, Some(Input { callback: None, media_group: None, quote: None, image: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: u, kind: "text", text: Some("/status".into()), reply_to: None }))], at).unwrap();
+            j.admit(&[(u, Some(Input { callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: u, kind: "text", text: Some("/status".into()), reply_to: None }))], at).unwrap();
             j.request(count(j, "SELECT max(id) FROM requests")).unwrap().1.unwrap()
         };
         let v = env!("CARGO_PKG_VERSION");
@@ -3149,7 +3185,7 @@ mod tests {
         let (mut j,p)=journal("u93-authority");
         j.set_route(7,-100,5,true,0).unwrap();
         j.grant(7,8,&["chat".into(),"taskq".into(),"projects".into()],0).unwrap();
-        let input=|sender,chat,topic,message,data:&str| Some(Input {callback:None,image:None,media_group:None,quote:None,language:None,chat,topic,sender:Some(sender),name:None,message,kind:"action",text:Some(data.into()),reply_to:Some(message)});
+        let input=|sender,chat,topic,message,data:&str| Some(Input {callback:None,image:None,voice:None,media_group:None,quote:None,language:None,chat,topic,sender:Some(sender),name:None,message,kind:"action",text:Some(data.into()),reply_to:Some(message)});
         // Mark actual outbox sends and retain the exact callback token/message pairing.
         let deliver=|j:&mut Journal| {
             let mut buttons=vec![];
@@ -3159,7 +3195,7 @@ mod tests {
             }
             buttons
         };
-        j.admit(&[(1,Some(Input{callback:None,image:None,media_group:None,quote:None,language:None,chat:-100,topic:Some(5),sender:Some(7),name:None,message:1,kind:"text",text:Some("Plan reply improvements".into()),reply_to:None}))],0).unwrap();
+        j.admit(&[(1,Some(Input{callback:None,image:None,voice:None,media_group:None,quote:None,language:None,chat:-100,topic:Some(5),sender:Some(7),name:None,message:1,kind:"text",text:Some("Plan reply improvements".into()),reply_to:None}))],0).unwrap();
         let r=j.claim_next(4,0).unwrap().remove(0);
         j.save_plan(&r,&json!([{"title":"Replies","goal":"Keep paragraphs","acceptance":["Buttons work"]}]),"pilotq","taskqorg/pilotq","",1).unwrap();
         j.finish(&r,None,None,&Outcome::Answered("Saved".into()),2).unwrap();

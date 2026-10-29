@@ -79,7 +79,15 @@ fn handle(stream: std::net::TcpStream, st: &State) {
         let mut f=st.lock().unwrap();
         f.api.push((method.clone(),body.clone(),Instant::now()));
         let size=if f.image_large { 20*1024*1024+1 } else { 68 };
-        return respond(&mut out,200,&json!({"ok":true,"result":{"file_id":body["file_id"],"file_unique_id":"invented-id","file_size":size,"file_path":"photos/invented.png"}}).to_string());
+        let path=if body["file_id"].as_str().is_some_and(|f|f.contains("voice")) { "voice/invented.oga" } else { "photos/invented.png" };
+        return respond(&mut out,200,&json!({"ok":true,"result":{"file_id":body["file_id"],"file_unique_id":"invented-id","file_size":size,"file_path":path}}).to_string());
+    }
+    if method == "invented.oga" {
+        let f=st.lock().unwrap();
+        let bytes: &[u8]=if f.image_bad { b"not audio" } else { b"OggS invented voice note" };
+        write!(out,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",bytes.len()).unwrap();
+        out.write_all(bytes).unwrap();
+        return;
     }
     if method == "invented.png" {
         let f=st.lock().unwrap();
@@ -2784,4 +2792,99 @@ fn related_live_context() {
         eprintln!("#92 live: clear=steer, ambiguous=options/no writes; model={}; {unclear}",query_text(&d,"SELECT model FROM runs ORDER BY id DESC LIMIT 1"));
     }
     stop(c,d);
+}
+
+/// #104: fake ffmpeg decodes only bytes that start like OGG; the fake recognizer logs its arguments and prints the
+/// recognizer's configuration line followed by its JSON result, as `sherpa-onnx-offline` does.
+fn use_voice(d: &Path) {
+    let ffmpeg = script(d, "fake-ffmpeg", r#"while [ "$1" != "-i" ]; do shift; done; in=$2; for a; do out=$a; done
+[ "$(head -c 4 "$in")" = OggS ] || exit 1
+cp "$in" "$out""#);
+    let recognizer = script(d, "fake-recognizer", r#"d=$(dirname "$0"); printf '%s\n' "$*" >> "$d/recognizer.log"
+for a; do wav=$a; done; test -s "$wav" || exit 3
+echo 'OfflineRecognizerConfig(feat_config=...)'
+echo '{"lang": "", "text": "Проверь место на диске.", "timestamps": []}'"#);
+    let cfg = d.join("config.json");
+    let mut c: Value = serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
+    c["voice"] = json!({"ffmpeg": ffmpeg, "recognizer": recognizer, "model": d.join("model"), "threads": 2});
+    fs::write(&cfg, c.to_string()).unwrap();
+}
+
+fn voice_update(id: i64, sender: i64, media: &str, file: Value) -> Value {
+    let mut u = text(id, sender, None, sender, "");
+    u["message"].as_object_mut().unwrap().remove("text");
+    u["message"]["from"]["language_code"] = json!("ru");
+    u["message"][media] = file;
+    u
+}
+
+// #104 A2/A3 / R13, R17: an OGG/Opus voice note, an audio file with a caption and an audio document reach the model as the
+// sender's marked transcript; the journal keeps file identity and transcript; no audio, URL or token reaches Codex.
+// Regression risk: voice falls back to the unsupported reply, or a transcript loses its caption, marker or audit record.
+#[test]
+fn telegram_voice_becomes_sender_text() {
+    let (d, st) = setup("voice", vec![]);
+    use_codex(&d, &script(&d, "fake-codex", FAKE));
+    use_voice(&d);
+    let c = spawn(&d, None);
+    let mut caption = voice_update(2, OWNER, "audio", json!({"file_id":"invented-voice-audio","file_unique_id":"invented-a","file_size":24,"duration":4,"mime_type":"audio/mpeg"}));
+    caption["message"]["caption"] = json!("about the disk");
+    for u in [
+        voice_update(1, OWNER, "voice", json!({"file_id":"invented-voice-note","file_unique_id":"invented-v","file_size":24,"duration":3,"mime_type":"audio/ogg"})),
+        caption,
+        voice_update(3, OWNER, "document", json!({"file_id":"invented-voice-doc","file_unique_id":"invented-d","file_size":24,"file_name":"note.M4A"})),
+    ] { push(&st, u); }
+    wait("voice answered", 20, || try_query(&d, "SELECT count(*) FROM requests WHERE kind='voice' AND state='answered'") == Some(3));
+    let marked = "[Voice message, automatic Russian speech recognition; may contain recognition errors]\nПроверь место на диске.";
+    let log = fs::read_to_string(d.join("codex.log")).unwrap();
+    let turns: Vec<Value> = log.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter(|v| v["method"] == "turn/start").collect();
+    let texts: Vec<&str> = turns.iter().map(|t| t["params"]["input"][2]["text"].as_str().unwrap()).collect();
+    assert_eq!(texts, [marked.to_string(), format!("about the disk\n\n{marked}"), marked.to_string()]);
+    assert!(turns.iter().all(|t| t["params"]["input"].as_array().unwrap().iter().all(|i| i["type"] == "text")), "no audio reaches Codex");
+    assert!(!log.contains("123:fake") && !log.contains("invented.oga"), "no token or download path reaches Codex");
+    assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE kind='voice' AND item LIKE 'invented-voice-%'"), 3);
+    assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE kind='transcript' AND item='Проверь место на диске.'"), 3);
+    assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE text LIKE '%Проверь место на диске.'"), 3, "history and audit keep the transcript");
+    let calls = fs::read_to_string(d.join("recognizer.log")).unwrap();
+    assert_eq!(calls.lines().count(), 3);
+    for l in calls.lines() {
+        assert!(l.contains("/model/encoder.int8.onnx") && l.contains("--model-type=nemo_transducer") && l.contains("--num-threads=2"));
+        let wav = l.rsplit(' ').next().unwrap();
+        assert!(!Path::new(wav).exists(), "temporary audio removed after recognition");
+    }
+    stop(c, d);
+}
+
+// #104 A2/A4 / R10, §12: undecodable, oversized, too long or unconfigured voice ends in one short line and no model turn;
+// a stranger's voice is never downloaded. Regression risk: a failed recognition becomes a text-only answer or a silent loss.
+#[test]
+fn telegram_voice_failures_are_short() {
+    let note = |size: u64, duration: u32| json!({"file_id":"invented-voice-note","file_unique_id":"invented-v","file_size":size,"duration":duration,"mime_type":"audio/ogg"});
+    for (tag, sender, bad, configured, file, expected, downloads) in [
+        ("voice-stranger", 9, false, true, note(24, 3), "", false),
+        ("voice-bad", OWNER, true, true, note(24, 3), "Не удалось распознать голосовое сообщение", true),
+        ("voice-large", OWNER, false, true, note(20 * 1024 * 1024 + 1, 3), "Голосовое сообщение слишком большое", false),
+        ("voice-long", OWNER, false, true, note(24, 301), "Голосовое сообщение слишком большое", false),
+        ("voice-unconfigured", OWNER, false, false, note(24, 3), "Не удалось распознать голосовое сообщение", false),
+    ] {
+        let (d, st) = setup(tag, vec![voice_update(1, sender, "voice", file)]);
+        st.lock().unwrap().image_bad = bad;
+        use_codex(&d, &script(&d, "fake-codex", FAKE));
+        if configured { use_voice(&d); }
+        let c = spawn(&d, None);
+        wait("voice disposition", 10, || try_query(&d, "SELECT count(*) FROM updates") == Some(1));
+        if expected.is_empty() {
+            assert_eq!(query(&d, "SELECT count(*) FROM requests"), 0);
+            assert!(st.lock().unwrap().sent.is_empty());
+        } else {
+            wait("short voice failure", 10, || sent_has(&st, expected));
+            // ingress limits fail at admission, with the reply as the recorded outcome; later failures keep their reason
+            let reason = if tag == "voice-large" || tag == "voice-long" { "kind='voice_limit'" } else { "error LIKE 'voice%'" };
+            assert_eq!(query(&d, &format!("SELECT count(*) FROM requests WHERE state='failed' AND {reason}")), 1, "{tag}");
+            assert!(texts(&st).iter().all(|s| !s.contains("Request #") && !s.contains("123:fake")));
+            assert!(!d.join("codex.log").exists(), "a failed recognition cannot become a text-only answer");
+        }
+        assert_eq!(st.lock().unwrap().api.iter().any(|a| a.0 == "getfile"), downloads, "{tag}");
+        stop(c, d);
+    }
 }

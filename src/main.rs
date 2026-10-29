@@ -7,6 +7,7 @@ mod keys;
 mod manager;
 mod taskq;
 mod telegram;
+mod voice;
 
 use coreq::Tool;
 use serde_json::{Value, json};
@@ -150,6 +151,7 @@ struct Config {
     codex: manager::Codex,
     taskq: Option<taskq::Taskq>,
     direct: direct::Direct,
+    voice: Option<voice::Voice>,
 }
 
 /// The key store and the GitHub CLI the direct tools use (§ 5, § 8).
@@ -183,7 +185,15 @@ fn config(t: &Tool) -> Result<Option<Config>, String> {
         (None, None) => None,
         _ => return Err("config.json: taskq needs bin and root".into()),
     };
-    Ok(Some(Config { token, owner, api_url, codex, taskq, direct: direct(t, v["gh"].as_str()) }))
+    // § 12 / #104: local speech recognition; absent, voice requests fail with a short line
+    let vc = &v["voice"];
+    let voice = match (vc["recognizer"].as_str(), vc["model"].as_str()) {
+        (Some(recognizer), Some(model)) => Some(voice::Voice { ffmpeg: vc["ffmpeg"].as_str().unwrap_or("ffmpeg").into(), recognizer: recognizer.into(),
+            model: model.into(), threads: vc["threads"].as_u64().filter(|n| (1..=64).contains(n)).unwrap_or(4) as u32 }),
+        (None, None) if vc.is_null() => None,
+        _ => return Err("config.json: voice needs recognizer and model".into()),
+    };
+    Ok(Some(Config { token, owner, api_url, codex, taskq, direct: direct(t, v["gh"].as_str()), voice }))
 }
 
 fn initial_project(j: &journal::Journal, c: &Config) -> Result<(), String> {
@@ -303,8 +313,8 @@ fn service_run(t: &Tool) -> ! {
         let deadline = c.codex.limits.deadline;
         let tq = c.taskq.map(Arc::new);
         let (mj, mwake, codex, drain, mtq, d) = (j.clone(), wake.clone(), c.codex, t.install.join(DRAIN), tq.clone(), Arc::new(c.direct));
-        let manager_bot = bot.clone();
-        std::thread::spawn(move || manager::serve(codex, mj, mwake, || now() as i64, drain, mtq, d, manager_bot));
+        let (manager_bot, voice) = (bot.clone(), c.voice.map(Arc::new));
+        std::thread::spawn(move || manager::serve(codex, mj, mwake, || now() as i64, drain, mtq, d, manager_bot, voice));
         if let Some(tq) = tq {
             let (wj, wwake) = (j.clone(), wake.clone());
             std::thread::spawn(move || taskq::watch(tq, wj, wwake));
