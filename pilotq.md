@@ -36,7 +36,7 @@ Supporting documents, README, instructions, tests and code follow this contract.
 
 **Proposed scope for the first release**
 
-One Linux host, one Telegram bot, one manager runtime, existing TaskQ boards and explicitly registered project roots. Text, replies, task links and inline decisions are core inputs. Accept Telegram photos and image documents, with or without captions, as image input in the same Codex conversation. Preserve their file identity and caption in the request journal. Voice and other documents remain unsupported and receive one short plain-language line.
+One Linux host, one Telegram bot, one manager runtime, existing TaskQ boards and explicitly registered project roots. Text, replies, task links and inline decisions are core inputs. Accept Telegram photos and image documents, with or without captions, as image input in the same Codex conversation. Preserve their file identity and caption in the request journal. **Owner, task #89 (option 1):** accept Telegram voice notes, audio files and audio documents as Russian speech, recognized locally into text input (§12). Other documents and video remain unsupported and receive one short plain-language line.
 
 Recurring work stays with an existing scheduler or TaskQ capability. PilotQ has no worker scheduler, autonomous goal engine, reviewer, new task board or general plugin marketplace. Its local inbox schedules conversation handling and delivery only; TaskQ remains authoritative for execution.
 
@@ -101,6 +101,7 @@ Plain-language controls are primary. Deterministic `/status`, `/stop` and `/new`
 | Manager runtime | Codex `app-server` under the subscription login, one adapter | R9; [core options](docs/core-options.md) |
 | Journal | SQLite (section 7 settings) | One local file, supported snapshot backup |
 | Work execution | Existing TaskQ CLI | Section 5 |
+| Voice recognition | ffmpeg and `sherpa-onnx-offline` with GigaAM v3 RNNT-punct int8, local CPU subprocesses | Best Russian accuracy per CPU in the #89 benchmark; keeps the static PilotQ build free of onnxruntime |
 
 Grammy, Pi and a new runtime framework are out of scope. Earlier source findings remain in [research](docs/research.md).
 
@@ -406,7 +407,7 @@ For a later same-token cutover, stop and verify the old poller before enabling P
 ## 11. Decisions still open
 
 - Codex account and subscription entitlement for a shared server deployment.
-- Required voice and non-image document behavior for Hermes cutover. Image input is decided by the owner in task #72.
+- Required behavior for documents that are neither images nor audio, and for video, at Hermes cutover. Image input is decided by the owner in task #72. Voice and audio input are decided by the owner in task #89 (option 1): local GigaAM v3 recognition of Russian speech; a Parakeet fallback for other languages is added only if real use shows the need.
 - Final retention/capacity thresholds and permitted telemetry content, including the proposed audit retention (365 days metadata, 90 days message text).
 
 Closed 2026-10-23 (owner, option B): short-action grants and Telegram key entry. Direct actions are reads per grant, the owner alone comments on and labels board issues, nothing else is written directly, and keys enter only through the CLI ([section 5](#direct-actions-keys-and-project-switching)).
@@ -438,6 +439,8 @@ The runtime supervisor observes startup/first-event latency, last useful runtime
 **Owner, task #91 (option 1):** the active-call typing deadline in the presentation defaults below replaces the earlier 30-second presentation window. Task links read `GitHub · pilotq#91 · title`, using the verified task title (the saved plan title when no fresh title is available); omit the title when unknown rather than inventing one. Keep creation (filed held), admission (queued for a worker) and execution (worker running) distinct. Admission is never reported as worker execution. One state change updates the correlated status; a newer revision with unchanged state does not repeat it. Preserve revised questions and terminal outcomes. After merge, the PM updates the test bot and the owner checks A4 in Telegram; local checks do not qualify that visual acceptance.
 
 Images use the same admission, queue, session, fence, audit and retry path as text (R10, R13, R17). Download only after admission and current-grant validation, with a 20 MiB cap, bounded time and protected temporary files removed after the turn. Never pass a Telegram token or download URL to Codex. Persist file identity before confirming updates; failed downloads are explicit outcomes, never successful text-only answers. Image content is untrusted source material, not authorization.
+
+**Owner, task #104:** voice notes, audio files and audio documents use the same admission, grant, 20 MiB cap, queue, session, fence, audit and retry path as images. Recordings longer than 5 minutes or over 20 MiB get one short line without a download. After admission and current-grant validation, PilotQ downloads the file by Telegram identity, decodes it with ffmpeg to 16 kHz mono and recognizes it locally on CPU with GigaAM v3 RNNT-punct int8 through `sherpa-onnx-offline`, all within the original turn deadline. The journal keeps the file identity and the transcript. The model receives the transcript as the sender's own text, marked as an automatic voice transcript, after any caption; it never receives the audio, a download URL or the token. A transcript is recognized speech, not a quotation of authority, and carries only the sender's grant. Recognition is Russian only: a transcript that reads as non-Russian speech or noise gets one short line asking for Russian or text. Missing configuration, an undecodable file, a timeout or an empty transcript is an explicit short failure, never a text-only answer. A recovered run reuses a stored transcript instead of recognizing again. Installation config `voice` names `recognizer` and `model`, optionally `ffmpeg` and `threads`; without it voice requests fail with the short line.
 
 | Event | User-visible behavior | Source of truth |
 |---|---|---|

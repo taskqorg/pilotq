@@ -722,3 +722,24 @@ Under §2 and §12, check an image with a caption followed by long text, several
 The deterministic checks are `cargo test --locked --test telegram telegram_images_reach_same_session` and `cargo test --locked --bin pilotq related_context_is_durable_and_scoped`. They cover byte delivery, durable follow-ups during generation, captions, album identity, quoted reply text, explicit historical image gaps, isolation, revocation and ambiguous or changed task registrations.
 
 For semantic qualification, set `PILOTQ_A8_CODEX_HOME` to a subscription-authenticated Codex home and run `cargo test --locked --test telegram related_live_context -- --ignored --nocapture`. Repeat with `PILOTQ_RELATED_CLARIFY=1` for a free-form answer to a journaled clarification fixture and `PILOTQ_RELATED_INDEPENDENT=1` for a separate saved plan without duplicating the existing task. The default run checks clear steering and ambiguity without a write. All modes use the real Codex adapter and local fake Telegram/TaskQ services; none writes to a real board. These are bounded scenarios, not a guarantee that every natural-language ambiguity is classified correctly.
+
+### Voice input, task #104
+
+The owner's voice decision is in [§1 and §11](../pilotq.md#11-decisions-still-open); the path is in [§12](../pilotq.md#telegram-feedback). With voice temporarily classified as before (`other`), `telegram_voice_becomes_sender_text` failed waiting for answered voice requests; restoring the classification passes it.
+
+- `cargo test --locked --test telegram telegram_voice_becomes_sender_text` sends an OGG/Opus voice note, an MP3 audio file with a caption and an M4A audio document through the fake Bot API, fake ffmpeg and fake recognizer. It checks the marked transcript after the caption at the Codex boundary, journal file identity and transcript, recognizer arguments, temporary-file removal and that no audio, download path or token reaches Codex.
+- `cargo test --locked --test telegram telegram_voice_failures_are_short` covers an undecodable file, a file over 20 MiB, a recording over 5 minutes, missing configuration and an ignored sender: one short localized line, no model turn, no download where admission already decides.
+- The fakes check wiring, not recognition quality or the real binaries.
+
+FRA CPU evidence, 2026-10-29: AMD EPYC 9575F, 8 vCPU, no GPU; `sherpa-onnx-offline` v2.0.1 static, GigaAM v3 RNNT-punct int8, 4 threads. Input: the first 100 FLEURS `ru_ru` test recordings (18.9 minutes, read speech, up to 33.8 seconds), re-encoded to Telegram-like OGG/Opus mono 48 kHz 24 kbit/s. Each recording ran the production steps as separate processes: ffmpeg decode to 16 kHz mono WAV, then one recognizer process including model load.
+
+| Measure | Result |
+|---|---|
+| WER / CER (lowercase, no punctuation, ё→е) | 4.92% / 1.40% |
+| RTF, end to end | 0.065 |
+| Latency p50 / p95 / max | 0.72 s / 0.87 s / 1.11 s |
+| Recognizer peak RSS | 378 MiB |
+
+The same binaries with the exact production arguments confirmed: a garbage file makes ffmpeg exit nonzero; a 400-second recording decodes past the 5-minute size limit and is refused; a 5-minute recording peaks at 611 MiB recognizer RSS. At RTF 0.065 a 5-minute voice note needs about 20 seconds of the 60-second turn deadline.
+
+Retained risk: FLEURS is read speech; spontaneous, noisy Telegram voice notes from real users were not measured. The non-Russian reply depends on the model following the §12 instruction; it is not a language detector.
