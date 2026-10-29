@@ -154,7 +154,7 @@ fn final_outbox(tx: &Connection, request: i64, chat: i64, topic: Option<i64>, re
 }
 
 /// Queues one task message (§ 5): a `status` row, edited in place on delivery when the task already has a delivered status
-/// message; a `question`; or the `final` outcome. Nothing edits a question or a final message.
+/// message; a `question`; or the `final` outcome. Answer receipts edit their original question (#94).
 #[allow(clippy::too_many_arguments)]
 fn notice(tx: &Connection, request: i64, chat: i64, topic: Option<i64>, kind: &str, project: &str, task: i64, revision: i64, text: &str, at: i64) -> Result<(), String> {
     tx.execute(
@@ -452,6 +452,7 @@ pub struct Route {
 
 /// One Telegram message as the ingress sees it. Names are labels, never authority.
 pub struct Input {
+    pub callback: Option<String>,
     pub image: Option<String>,
     pub language: Option<String>,
     pub chat: i64,
@@ -704,6 +705,9 @@ impl Journal {
                         _ => (i.kind, "failed"),
                     };
                     let id = insert(&tx, *update, "telegram", i.chat, i.topic, sender, i.name.as_deref(), i.message, kind, i.text.as_deref(), state, at, &s, i.reply_to)?;
+                    if let Some(callback) = &i.callback {
+                        tx.execute("INSERT INTO meta(key,value) VALUES (?1,?2)", params![format!("callback:{id}"), callback]).map_err(|e| e.to_string())?;
+                    }
                     tx.execute("UPDATE requests SET image=?2,language=?3 WHERE id=?1", params![id,i.image,i.language]).map_err(|e|e.to_string())?;
                     let first: bool = tx.query_row("SELECT NOT EXISTS (SELECT 1 FROM requests WHERE sender=?1 AND id<>?2)", [sender, id], |r| r.get(0)).map_err(|e| e.to_string())?;
                     let text = match cmd {
@@ -786,7 +790,9 @@ impl Journal {
                 // a status row edits the task's latest delivered status message, resolved now, after every earlier row of its route
                 &format!(
                     "SELECT id, chat, topic, reply_to, html, text, attempts, CASE WHEN kind='status' THEN (SELECT s.sent_message FROM outbox s WHERE s.task=o.task AND s.project=o.project AND s.chat=o.chat AND s.topic IS o.topic
-                        AND s.kind='status' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1) END, kind {heads} AND next_at<=?1 AND coalesce((SELECT value FROM meta WHERE key='telegram-cooldown:' || o.chat),0)<=?1 ORDER BY (kind='reaction') DESC,id LIMIT 1"
+                        AND s.kind='status' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
+                        WHEN kind='question_answered' THEN (SELECT s.sent_message FROM outbox s WHERE s.task=o.task AND s.project=o.project AND s.chat=o.chat AND s.topic IS o.topic
+                        AND s.kind='question' AND s.revision=o.revision AND s.state='delivered' ORDER BY s.id DESC LIMIT 1) END, kind {heads} AND next_at<=?1 AND coalesce((SELECT value FROM meta WHERE key='telegram-cooldown:' || o.chat),0)<=?1 ORDER BY (kind='reaction') DESC,id LIMIT 1"
                 ),
                 [now],
                 |r| Ok(Delivery { id: r.get(0)?, chat: r.get(1)?, topic: r.get(2)?, reply_to: r.get(3)?, html: r.get(4)?, text: r.get(5)?, attempts: r.get(6)?, edit: r.get(7)?, kind: r.get(8)? }),
@@ -1569,6 +1575,32 @@ impl Journal {
         Ok(true)
     }
 
+    /// Questions awaiting an accepted-answer receipt; their original revision remains the answer fence (§5, #94).
+    pub fn open_questions(&self, project: &str, task: i64) -> Result<Vec<i64>, String> {
+        let mut q = self.0.prepare("SELECT DISTINCT revision FROM outbox o WHERE project=?1 AND task=?2 AND kind='question'
+            AND NOT EXISTS (SELECT 1 FROM outbox a WHERE a.project=o.project AND a.task=o.task AND a.revision=o.revision AND a.kind='question_answered')").map_err(|e|e.to_string())?;
+        q.query_map(params![project,task],|r|r.get(0)).and_then(Iterator::collect).map_err(|e|e.to_string())
+    }
+
+    pub fn question_answer(&self, project: &str, task: i64, revision: i64) -> Result<Option<String>, String> {
+        self.0.query_row("SELECT text FROM outbox WHERE project=?1 AND task=?2 AND revision=?3 AND kind='question_answered' LIMIT 1",
+            params![project,task,revision],|r|r.get(0)).optional().map_err(|e|e.to_string())
+    }
+
+    /// Persist the receipt and its edit obligation together; duplicate observations never enqueue another edit.
+    pub fn answer_question(&self, project: &str, task: i64, revision: i64, answer: &str, at: i64) -> Result<(), String> {
+        let question: Option<String> = self.0.query_row("SELECT text FROM outbox WHERE project=?1 AND task=?2 AND revision=?3 AND kind='question' LIMIT 1",
+            params![project,task,revision],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
+        let Some(question) = question else { return Ok(()) };
+        let question = question.lines().filter(|l| *l != "Press an option or reply to this message to answer.").collect::<Vec<_>>().join("\n");
+        let html = crate::telegram::html(&format!("{question}\n\n{answer}"));
+        self.0.execute("INSERT INTO outbox(request_id,chat,topic,text,html,next_at,kind,project,task,revision)
+            SELECT request_id,chat,topic,?4,?5,?6,'question_answered',project,task,revision FROM outbox o
+            WHERE project=?1 AND task=?2 AND revision=?3 AND kind='question'
+            AND NOT EXISTS (SELECT 1 FROM outbox a WHERE a.project=o.project AND a.task=o.task AND a.revision=o.revision AND a.kind='question_answered') LIMIT 1",
+            params![project,task,revision,answer,html,at]).map(drop).map_err(|e|e.to_string())
+    }
+
     /// A subscribed task left a complete open snapshot: its closing outcome goes out once, as its own message (§ 5, L12).
     pub fn close_task(&self, project: &str, task: i64, text: &str, at: i64) -> Result<bool, String> {
         let e = |e: rusqlite::Error| e.to_string();
@@ -1617,7 +1649,13 @@ impl Journal {
         )
         .map_err(e)?;
         let (chat, topic, message): (i64, Option<i64>, i64) = tx.query_row("SELECT chat, topic, message FROM requests WHERE id=?1", [a.request], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(e)?;
-        final_outbox(&tx, a.request, chat, topic, (chat != a.sender).then_some(message), reply, at)?;
+        let callback: Option<String> = tx.query_row("SELECT value FROM meta WHERE key=?1", [format!("callback:{}", a.request)], |r|r.get(0)).optional().map_err(e)?;
+        if let Some(callback) = callback.filter(|_| reply.starts_with("Answered by ")) {
+            outbox(&tx, a.request, chat, topic, None, None, reply, at)?;
+            tx.execute("UPDATE outbox SET kind=?2 WHERE id=?1", params![tx.last_insert_rowid(),format!("toast:{callback}")]).map_err(e)?;
+        } else {
+            final_outbox(&tx, a.request, chat, topic, (chat != a.sender).then_some(message), reply, at)?;
+        }
         tx.commit().map_err(e)?;
         self.trace(a.request, at);
         Ok(())
@@ -1868,7 +1906,7 @@ mod tests {
     }
 
     fn msg(chat: i64, sender: i64, message: i64) -> Option<Input> {
-        Some(Input { image: None, language: None, chat, topic: None, sender: Some(sender), name: None, message, kind: "text", text: Some("hi".into()), reply_to: None })
+        Some(Input { callback: None, image: None, language: None, chat, topic: None, sender: Some(sender), name: None, message, kind: "text", text: Some("hi".into()), reply_to: None })
     }
 
     fn count(j: &Journal, sql: &str) -> i64 {
@@ -1935,7 +1973,7 @@ mod tests {
     }
 
     fn at(chat: i64, topic: Option<i64>, sender: i64, message: i64) -> Option<Input> {
-        Some(Input { image: None, language: None, chat, topic, sender: Some(sender), name: None, message, kind: "text", text: Some("hi".into()), reply_to: None })
+        Some(Input { callback: None, image: None, language: None, chat, topic, sender: Some(sender), name: None, message, kind: "text", text: Some("hi".into()), reply_to: None })
     }
 
     fn sessions(j: &Journal) -> Vec<(i64, String)> {
@@ -2119,7 +2157,7 @@ mod tests {
 
         j.admit(&[(3, msg(7, 7, 3))], 4).unwrap();
         let r = j.claim_next(4, 4).unwrap().remove(0);
-        j.admit(&[(4, Some(Input { image: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: 4, kind: "text", text: Some("/stop".into()), reply_to: None }))], 5).unwrap();
+        j.admit(&[(4, Some(Input { callback: None, image: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: 4, kind: "text", text: Some("/stop".into()), reply_to: None }))], 5).unwrap();
         assert!(j.fenced(&r).unwrap());
         assert!(j.typing(5, 60).unwrap().is_empty(), "#91: cancellation ends typing");
         assert!(!j.finish(&r, Some("t-old"), None, &Outcome::Answered("late".into()), 6).unwrap(), "a stopped run cannot reply");
@@ -2127,7 +2165,7 @@ mod tests {
 
         j.admit(&[(5, msg(7, 7, 5))], 7).unwrap();
         let r = j.claim_next(4, 7).unwrap().remove(0);
-        j.admit(&[(6, Some(Input { image: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: 6, kind: "text", text: Some("/new".into()), reply_to: None }))], 8).unwrap();
+        j.admit(&[(6, Some(Input { callback: None, image: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: 6, kind: "text", text: Some("/new".into()), reply_to: None }))], 8).unwrap();
         assert!(j.finish(&r, Some("t-old"), None, &Outcome::Answered("ok".into()), 9).unwrap());
         assert_eq!(count(&j, "SELECT count(*) FROM conversations WHERE session='dm:7' AND thread IS NULL AND generation=1"), 1);
         drop(j);
@@ -2144,7 +2182,7 @@ mod tests {
         j.grant(7, 8, &["chat".into()], 0).unwrap();
         j.grant(7, 9, &["chat".into()], 0).unwrap();
         let named = |chat, topic, sender, message, text: &str| {
-            Some(Input { image: None, language: None, chat, topic, sender: Some(sender), name: Some(format!("P{sender}")), message, kind: "text", text: Some(text.into()), reply_to: None })
+            Some(Input { callback: None, image: None, language: None, chat, topic, sender: Some(sender), name: Some(format!("P{sender}")), message, kind: "text", text: Some(text.into()), reply_to: None })
         };
         let secret = "sk-aaaaaaaaaaaaaaaaaaaa"; // invented value standing in for anything a person types
         j.admit(&[(1, named(8, None, 8, 1, &format!("dm question {secret}"))), (2, named(-100, Some(5), 9, 2, "topic question"))], 10).unwrap();
@@ -2211,7 +2249,7 @@ mod tests {
     }
 
     fn input(chat: i64, topic: Option<i64>, sender: Option<i64>, name: &str, kind: &'static str, text: Option<&str>) -> Option<Input> {
-        Some(Input { image: None, language: None, chat, topic, sender, name: Some(name.into()), message: 1, kind, text: text.map(str::to_string), reply_to: None })
+        Some(Input { callback: None, image: None, language: None, chat, topic, sender, name: Some(name.into()), message: 1, kind, text: text.map(str::to_string), reply_to: None })
     }
 
     // F09, F15, F16, L06, L14: strangers in a DM, a group and a topic, an anonymous sender, a stranger reusing the owner's display
@@ -2301,7 +2339,7 @@ mod tests {
         let busy = ROUTE_BACKLOG + 1;
         assert_eq!(j.request(busy).unwrap(), ("failed".into(), Some(brief(None, "busy").into()), Some("busy: backlog full".into())));
         j.grant(7, 8, &["chat".into()], 1).unwrap();
-        j.admit(&[(100, msg(8, 8, 100)), (101, Some(Input { image: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: 101, kind: "text", text: Some("/status".into()), reply_to: None }))], 2).unwrap();
+        j.admit(&[(100, msg(8, 8, 100)), (101, Some(Input { callback: None, image: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: 101, kind: "text", text: Some("/status".into()), reply_to: None }))], 2).unwrap();
         assert_eq!(j.request(busy + 1).unwrap().0, "queued", "another route is admitted");
         assert!(j.request(busy + 2).unwrap().1.unwrap().contains("\nRunning: 0. Queued: 50."), "the control answers on the full route");
         let runs = j.claim_next(4, 3).unwrap();
@@ -2574,7 +2612,7 @@ mod tests {
         assert!(q.edit.is_none() && q.text.starts_with("Task #19 asks:"), "the question is its own message");
         j.record(q.id, &Sent::Ok(500), 8).unwrap();
 
-        let answer = |id, to| Some(Input { image: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: id, kind: "text", text: Some("2".into()), reply_to: Some(to) });
+        let answer = |id, to| Some(Input { callback: None, image: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: id, kind: "text", text: Some("2".into()), reply_to: Some(to) });
         j.admit(&[(3, answer(3, 500)), (4, answer(4, status))], 9).unwrap();
         let a = j.answers().unwrap();
         assert_eq!(a.iter().map(|(a, resumed)| (a.request, a.task, a.revision, *resumed)).collect::<Vec<_>>(), [(3, 19, 14, false)], "only a reply to the question answers it");
@@ -2595,7 +2633,7 @@ mod tests {
     fn a40_topic_plan_run_audit_project() {
         use crate::manager::Outcome;
         let (mut j, p) = journal("a40-project");
-        let topic = |message| Some(Input { image: None, language: None, chat: -100, topic: Some(5), sender: Some(7), name: None,
+        let topic = |message| Some(Input { callback: None, image: None, language: None, chat: -100, topic: Some(5), sender: Some(7), name: None,
             message, kind: "text", text: Some("plan or run".into()), reply_to: None });
         j.admit(&[(1, topic(1))], 0).unwrap();
         let r = j.claim_next(4, 0).unwrap().remove(0);
@@ -2645,7 +2683,7 @@ mod tests {
     fn status_shows_version_and_non_ok_sources() {
         let (mut j, p) = journal("status-service");
         let status = |j: &mut Journal, u: i64, at: i64| {
-            j.admit(&[(u, Some(Input { image: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: u, kind: "text", text: Some("/status".into()), reply_to: None }))], at).unwrap();
+            j.admit(&[(u, Some(Input { callback: None, image: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: u, kind: "text", text: Some("/status".into()), reply_to: None }))], at).unwrap();
             j.request(count(j, "SELECT max(id) FROM requests")).unwrap().1.unwrap()
         };
         let v = env!("CARGO_PKG_VERSION");

@@ -122,6 +122,9 @@ fn handle(stream: std::net::TcpStream, st: &State) {
         f.rate_method = None;
         return respond(&mut out,429,r#"{"ok":false,"error_code":429,"description":"Too Many Requests","parameters":{"retry_after":3}}"#);
     }
+    if method == "answercallbackquery" {
+        return respond(&mut out,200,r#"{"ok":true,"result":true}"#);
+    }
     if method == "setmessagereaction" {
         if f.reaction_fail { return respond(&mut out,400,r#"{"ok":false,"error_code":400,"description":"Bad Request: reaction not allowed"}"#); }
         f.reactions.push(body);
@@ -274,6 +277,7 @@ fn texts(st: &State) -> Vec<String> {
 
 fn service(d: &Path, fault: Option<&str>) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_pilotq"));
+    c.env("PATH", format!("{}:{}", d.display(), std::env::var("PATH").unwrap_or_default()));
     c.args(["service", "run"]).env("PILOTQ_INSTALL", d).stdout(Stdio::null()).stderr(Stdio::piped());
     if let Some(f) = fault {
         c.env("PILOTQ_FAULT", f);
@@ -281,7 +285,7 @@ fn service(d: &Path, fault: Option<&str>) -> Command {
     c
 }
 
-/// A running `pilotq service run` that is killed and reaped when dropped, so a failed or panicking test leaves no orphan.
+/// An isolated service process group, stopped on drop so CLI children cannot outlive fixture cleanup.
 struct Svc(Child);
 
 impl std::ops::Deref for Svc {
@@ -297,15 +301,24 @@ impl std::ops::DerefMut for Svc {
     }
 }
 
+impl Svc {
+    fn kill(&mut self) -> std::io::Result<()> {
+        // TaskQ reads can still be writing fixture files when the service is killed.
+        let status = Command::new("kill").args(["-KILL", "--", &format!("-{}", self.0.id())]).stderr(Stdio::null()).status()?;
+        if status.success() { Ok(()) } else { self.0.kill() }
+    }
+}
+
 impl Drop for Svc {
     fn drop(&mut self) {
-        let _ = self.0.kill();
+        let _ = self.kill();
         let _ = self.0.wait();
     }
 }
 
 fn spawn(d: &Path, fault: Option<&str>) -> Svc {
-    Svc(service(d, fault).spawn().unwrap())
+    use std::os::unix::process::CommandExt;
+    Svc(service(d, fault).process_group(0).spawn().unwrap())
 }
 
 fn wait(what: &str, secs: u64, mut ok: impl FnMut() -> bool) {
@@ -490,6 +503,28 @@ fn stop(mut c: Svc, d: PathBuf) {
     c.kill().unwrap();
     c.wait().unwrap();
     fs::remove_dir_all(d).unwrap();
+}
+
+// §9 candidate gate: stopping a fixture must also stop a CLI child before removing its install.
+#[test]
+fn fixture_stop_reaps_cli_writers() {
+    use std::os::unix::process::CommandExt;
+    let mut command = Command::new("sh");
+    command.args(["-c", "sleep 30 & echo ready; wait"]).process_group(0).stdout(Stdio::piped());
+    let mut child = Svc(command.spawn().unwrap());
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    let mut ready = String::new();
+    output.read_line(&mut ready).unwrap();
+    assert_eq!(ready, "ready\n");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        output.read_to_end(&mut bytes).unwrap();
+        let _ = tx.send(());
+    });
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert!(rx.recv_timeout(Duration::from_secs(2)).is_ok(), "CLI child retained the fixture output after service stop");
 }
 
 // U01: a question and a follow-up in one DM. The follow-up resumes the same Codex thread; each request ends answered with a
@@ -957,6 +992,9 @@ fn tq_setup(tag: &str, claim: bool) -> (PathBuf, State) {
         fs::write(p, body).unwrap();
         fs::set_permissions(p, fs::Permissions::from_mode(0o755)).unwrap();
     }
+    fs::write(d.join("gh"), "#!/bin/sh\ncat \"$(dirname \"$0\")/comments.json\"\n").unwrap();
+    fs::set_permissions(d.join("gh"), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(d.join("comments.json"), "[[]]").unwrap();
     fs::create_dir_all(d.join("root")).unwrap();
     root(&d, claim);
     limits(&d, &codex, json!({"first_event": 10, "silent": 10, "deadline": 20}));
@@ -2555,3 +2593,37 @@ fn u95_scripted_reply_task_question_status() { u95_cases(false); }
 #[test]
 #[ignore = "uses the real Codex subscription on FRA"]
 fn u95_live_reply_task_question_status() { u95_cases(true); }
+// #94 / §5 / R11: a trusted board answer closes only its original question; stale taps show the receipt without writes.
+#[test]
+fn u94_answer_elsewhere_closes_question() {
+    let (d, st) = tq_setup("u94", true);
+    let c = spawn(&d, None);
+    push(&st, call(1, -100, Some(5), OWNER, "task_plan", plan(&["Docs"])));
+    wait("plan", 15, || sent_has(&st, "Plan revision 1 saved"));
+    push(&st, call(2, -100, Some(5), OWNER, "task_run_plan", json!({"revision":1})));
+    wait("started", 15, || sent_has(&st, "admitted to TaskQ:"));
+    set_task(&d, 19, |t| { t["state"]=json!("ask"); t["card"]=json!("Done: drafted\nProblem: pick\n1. short ★\n2. long"); });
+    wait("question", 15, || sent_has(&st, "asks:"));
+    let q = sent(&st).into_iter().find(|m| m["text"].as_str().unwrap().contains("asks:")).unwrap();
+    let rev = board(&d)["tasks"]["19"]["revision"].as_i64().unwrap();
+    let entry = |id, body: &str, trust, edited| json!({"id":id,"body":body,"author_association":trust,"created_at":"invented-time","updated_at":if edited {"edited-time"} else {"invented-time"},"user":{"login":"alex"}});
+    fs::write(d.join("comments.json"), json!([[entry(rev,"taskq: ask attempt 1\nProblem: pick\n1. short ★\n2. long","MEMBER",false),
+        entry(rev+1,"taskq: answer\nwrong","NONE",false), entry(rev+2,"taskq: answer\nchanged","MEMBER",true),
+        entry(rev+3,"taskq: answer 1 attempt 99\nop-id: invented-wrong\nrevision: 103","MEMBER",false),
+        entry(rev+4,"taskq: answer 2\nop-id: invented-answer\nrevision: 103","MEMBER",false)]]).to_string()).unwrap();
+    set_task(&d, 19, |t| { t["state"]=json!("doing"); t["card"]=Value::Null; t["revision"]=json!(1); });
+    wait("answered question edited", 15, || sent(&st).iter().any(|m| m["edit"]==true && m["id"]==q["id"] && m["text"].as_str().unwrap().contains("Answered by alex: long")));
+    let edit=sent(&st).into_iter().find(|m|m["edit"]==true && m["id"]==q["id"]).unwrap();
+    assert_eq!(edit["reply_markup"]["inline_keyboard"],json!([]));
+    assert_eq!(edit["message_thread_id"],5);
+    drop(c);
+    let c = spawn(&d, None);
+    set_task(&d,19,|t| { t["revision"]=json!(rev+4); t["state"]=json!("ask"); t["card"]=json!("Done: updated\nProblem: another pick\n1. tiny ★\n2. huge"); });
+    wait("new question",15,||sent_has(&st,"Problem: another pick"));
+    push(&st,press(3,-100,Some(5),OWNER,q["id"].as_i64().unwrap(),"answer:1"));
+    wait("accepted answer toast",15,||st.lock().unwrap().api.iter().any(|(method,b,_)|method=="answercallbackquery" && b["text"]=="Answered by alex: long"));
+    assert!(!tq_calls(&d).iter().any(|a|a[0]=="answer"));
+    assert_eq!(sent(&st).iter().filter(|m| m["edit"]==true && m["id"]==q["id"]).count(),1,"receipt survives restart without another edit");
+    assert!(!sent(&st).iter().any(|m|m["edit"]==true && m["id"]!=q["id"] && m["text"].as_str().unwrap().contains("Answered by")),"an older answer never closes the new question");
+    stop(c,d);
+}
