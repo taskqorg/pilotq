@@ -84,15 +84,19 @@ local tests alone do not establish visual acceptance.
 ## Implementation and live evidence
 
 #106 reached main at `f501f99bfac85deb3263ff6c9a54c81a0fa85749`.
-The owner extended §9 to #119 on 2026-10-29. The PM completed the authorized
-A4 run on that date with source `de82e1718dd7e7ce80da1f4ee492935b5f50b149`
+The owner extended §9 to #119 on 2026-10-29. The PM ran the authorized
+A4 recipe on that date with source `de82e1718dd7e7ce80da1f4ee492935b5f50b149`
 and binary SHA-256
 `83ad89036da6604283f29c422738fdd469f6ac083eda8eedd66f4a8c81486e75`.
 The [PM report and Telegram screenshots](https://github.com/taskqorg/pilotq/pull/122#issuecomment-6493225953)
-record default and selected-model `/new`, model buttons, normal DM/topic replies
+record default and selected-model `/new`, model buttons, topic replies
 and a real Codex answer with the optional quota source suppressed. Screenshots
 show the context percentages, weekly quota/reset and `? unavailable` fallback.
-The worker inspected the DM, topic and missing-quota screenshots.
+Review found topic-creator badges and quoted replies in the screenshots labeled
+DM: they establish group/topic rendering, not private-chat rendering (§4).
+A4 remains incomplete until a genuine bot DM run verifies chat ID equals sender
+ID, no reply quote, `/new`, a model switch, a normal reply and missing quota.
+The existing topic evidence and metric/delivery regression guards are retained.
 
 The PM reports a drained source-build activation without modifying the published
 release slot, a SQLite backup, schema 11 and matched journal counts across
