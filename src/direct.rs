@@ -185,8 +185,8 @@ impl Direct {
             let err = String::from_utf8_lossy(&o.stderr);
             return Err(format!("gh api failed: {}", err.lines().find(|l| !l.trim().is_empty()).unwrap_or("no output")));
         }
-        let pages: Vec<Value> = serde_json::Deserializer::from_slice(&o.stdout).into_iter::<Value>().collect::<Result<_, _>>().map_err(|e| { crate::host::log(&format!("{} api {args:?}",self.gh),&format!("invalid JSON: {e}")); "gh api returned no JSON".to_string() })?;
-        if pages.is_empty() { crate::host::log(&format!("{} api {args:?}",self.gh), "empty JSON output"); return Err("gh api returned no JSON".into()); }
+        let pages: Vec<Value> = serde_json::Deserializer::from_slice(&o.stdout).into_iter::<Value>().collect::<Result<_, _>>().map_err(|e| { crate::host::log(&format!("{} api {args:?}",self.gh),&format!("invalid JSON: {e}; stderr: {}",String::from_utf8_lossy(&o.stderr)).replace(token,"[credential]")); "gh api returned no JSON".to_string() })?;
+        if pages.is_empty() { crate::host::log(&format!("{} api {args:?}",self.gh), &format!("empty JSON output; stderr: {}",String::from_utf8_lossy(&o.stderr)).replace(token,"[credential]")); return Err("gh api returned no JSON".into()); }
         Ok(match <[Value; 1]>::try_from(pages) {
             Ok([one]) => one,
             Err(pages) => Value::Array(pages.into_iter().flat_map(|p| p.as_array().cloned().unwrap_or_default()).collect()),

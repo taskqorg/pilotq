@@ -90,6 +90,10 @@ impl Taskq {
 
     /// Runs the CLI with an argument array; Telegram text is never interpolated into a shell. Returns stdout, else the error.
     fn cli(&self, args: &[String]) -> Result<String, String> {
+        self.cli_checked(args, |out| Ok(out.to_string()))
+    }
+
+    fn cli_checked<T>(&self, args: &[String], validate: impl FnOnce(&str) -> Result<T, String>) -> Result<T, String> {
         let o = Command::new(&self.bin)
             .args(args)
             .env("TASKQ_ROOT", &self.root)
@@ -103,7 +107,9 @@ impl Taskq {
         if !o.status.success() { crate::host::log(&format!("{:?} {args:?}",self.bin), &format!("{}: {}",o.status,String::from_utf8_lossy(&o.stderr))); }
         let out = String::from_utf8_lossy(&o.stdout).to_string();
         if o.status.success() || out.trim_start().starts_with('{') {
-            return Ok(out);
+            return validate(&out).inspect_err(|e| crate::host::log(
+                &format!("{:?} {args:?}", self.bin),
+                &format!("{e}; stderr: {}", String::from_utf8_lossy(&o.stderr))));
         }
         let err = String::from_utf8_lossy(&o.stderr);
         let why = err.lines().chain(out.lines()).find(|l| !l.trim().is_empty()).unwrap_or("no output");
@@ -113,8 +119,8 @@ impl Taskq {
     /// One write with `--op-id` and `--json`: its receipt `{task, op_id, outcome, state, revision, reason, next}`.
     fn write(&self, mut args: Vec<String>, op: &str) -> Result<Value, String> {
         args.extend(["--op-id".into(), op.into(), "--json".into()]);
-        let out = self.cli(&args)?;
-        serde_json::from_str(out.trim()).map_err(|_| format!("taskq {} returned no receipt", args[0]))
+        self.cli_checked(&args, |out| serde_json::from_str(out.trim())
+            .map_err(|e| format!("taskq {} returned no receipt: invalid JSON: {e}", args[0])))
     }
 
     /// The board a fresh, complete `status --json` reads under this root (§ 5 Project registration readback).
@@ -124,13 +130,15 @@ impl Taskq {
 
     /// `status --json`; an incomplete snapshot is unknown, never a list of closed tasks.
     fn snapshot(&self) -> Result<Value, String> {
-        let s: Value = serde_json::from_str(self.cli(&["status".into(), "--json".into()])?.trim()).map_err(|_| "taskq status returned no snapshot".to_string())?;
+        self.cli_checked(&["status".into(), "--json".into()], |out| {
+        let s: Value = serde_json::from_str(out.trim()).map_err(|e| format!("taskq status returned no snapshot: invalid JSON: {e}"))?;
         if s["complete"] != true {
             return Err(format!("board snapshot incomplete: {}", s["reason"].as_str().unwrap_or("no reason given")));
         }
         let board = s["board"]["repo"].as_str().ok_or("snapshot names no board")?;
         self.check(board)?;
         Ok(s)
+        })
     }
 
     fn snapshot_for(&self, board: &str) -> Result<Value, String> {
@@ -170,17 +178,17 @@ fn log_answer_read(error: &str) {
 
 /// gh 2.45 emits consecutive JSON arrays with --paginate; parse every page, never a partial read.
 fn gh_comments(tq: &Taskq, args: &[&str]) -> Result<Value, String> {
-    let output = gh_output(&tq.root, args)?;
+    let (output, stderr) = gh_output(&tq.root, args)?;
     let pages = serde_json::Deserializer::from_slice(&output).into_iter::<Value>()
-        .collect::<Result<Vec<_>,_>>().map_err(|e| format!("gh {args:?}: invalid JSON: {e}"))?;
+        .collect::<Result<Vec<_>,_>>().map_err(|e| format!("gh {args:?}: invalid JSON: {e}; stderr: {}", String::from_utf8_lossy(&stderr)))?;
     if pages.is_empty() || pages.iter().any(|p| !p.is_array()) {
-        return Err(format!("gh {args:?}: expected comment arrays"));
+        return Err(format!("gh {args:?}: expected comment arrays; stderr: {}", String::from_utf8_lossy(&stderr)));
     }
     Ok(Value::Array(pages))
 }
 
 /// Bound both doctor and the periodic reader, draining pipes concurrently to avoid pipe deadlock.
-fn gh_output(root: &std::path::Path, args: &[&str]) -> Result<Vec<u8>, String> {
+fn gh_output(root: &std::path::Path, args: &[&str]) -> Result<(Vec<u8>, Vec<u8>), String> {
     use std::io::Read;
     let mut cmd = Command::new("gh");
     cmd.args(args).current_dir(root).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -209,7 +217,7 @@ fn gh_output(root: &std::path::Path, args: &[&str]) -> Result<Vec<u8>, String> {
     if !status.is_some_and(|s|s.success()) {
         return Err(format!("gh {args:?}: {}: stderr: {}",status.map(|s|s.to_string()).unwrap_or("timed out".into()),String::from_utf8_lossy(&stderr)));
     }
-    Ok(stdout)
+    Ok((stdout, stderr))
 }
 
 /// §9 / #127: operator metadata only; Telegram's doctor projection exposes check outcomes.
@@ -223,7 +231,7 @@ pub fn answer_readiness(tq: &Taskq, board: Option<&str>) -> (bool, Value) {
         }));
     let version_output = gh_output(&tq.root, &["--version"]);
     if let Err(error) = &version_output { log_answer_read(error); }
-    let version = version_output.ok().and_then(|b|String::from_utf8(b).ok())
+    let version = version_output.ok().and_then(|(b,_)|String::from_utf8(b).ok())
         .and_then(|s|s.lines().next().filter(|l|l.starts_with("gh version ")).map(str::to_string));
     // One page is enough to qualify API access and parsing, without scanning all historical comments.
     let read = board.ok_or_else(|| "registered board unavailable".to_string())
@@ -921,7 +929,7 @@ for arg in "$@"; do
   if [ "$arg" = --slurp ]; then echo 'unknown flag: --slurp' >&2; exit 1; fi
 done
 [ -f fail ] && { echo "API unavailable $GH_TOKEN" >&2; exit 1; }
-[ -f bad ] && { cat pages.json; echo '{broken'; exit 0; }
+[ -f bad ] && { cat pages.json; echo '{broken'; echo "parse diagnostic $GH_TOKEN" >&2; exit 0; }
 cat pages.json
 "#).unwrap();
         std::fs::set_permissions(dir.join("gh"),std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -938,11 +946,43 @@ cat pages.json
             assert!(out.status.success(),"{}{}",String::from_utf8_lossy(&out.stdout),String::from_utf8_lossy(&out.stderr));
             let stderr = String::from_utf8_lossy(&out.stderr);
             if mode == "fail" { assert!(stderr.contains("gh [\"api\"") && stderr.contains("API unavailable [credential]"),"{stderr}"); }
-            if mode == "bad" { assert!(stderr.contains("invalid JSON"),"{stderr}"); }
+            if mode == "bad" { assert!(stderr.contains("invalid JSON") && stderr.contains("parse diagnostic [credential]"),"{stderr}"); }
             assert!(!stderr.contains("invented-test-credential"));
             if mode != "ok" { std::fs::remove_file(dir.join(mode)).unwrap(); }
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // #130 / §9 and §8: exit-zero invalid responses retain diagnostics, never credentials.
+    #[cfg(unix)]
+    #[test]
+    fn taskq_invalid_response_diagnostics() {
+        use std::os::unix::fs::PermissionsExt;
+        if let Some(root) = std::env::var_os("PILOTQ_BAD_TASKQ") {
+            let root = PathBuf::from(root);
+            let tq = Taskq { bin: root.join("taskq"), root, poll: Duration::from_secs(1) };
+            assert!(tq.snapshot().is_err());
+            if std::fs::read_to_string(&tq.bin).unwrap().contains("not-json") {
+                assert!(tq.write(vec!["answer".into()], "invented-op").is_err());
+            }
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("pilotq-bad-taskq-{}",std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("taskq");
+        for response in ["not-json", "{}", "{\"complete\":true}"] {
+            std::fs::write(&bin,format!("#!/bin/sh\necho '{response}'\necho \"diagnostic $GH_TOKEN\" >&2\n")).unwrap();
+            std::fs::set_permissions(&bin,std::fs::Permissions::from_mode(0o700)).unwrap();
+            let out = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact","taskq::tests::taskq_invalid_response_diagnostics","--nocapture"])
+                .env("PILOTQ_BAD_TASKQ",&dir).env("PILOTQ_INSTALL",&dir)
+                .env("GH_TOKEN","invented-test-credential").output().unwrap();
+            assert!(out.status.success(),"{}",String::from_utf8_lossy(&out.stderr));
+            let err=String::from_utf8_lossy(&out.stderr);
+            assert!(err.contains("status") && (response != "not-json" || err.contains("answer")) && err.contains("diagnostic [credential]"),"{err}");
+            assert!(!err.contains("invented-test-credential"));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     // #94 / §5: preserve trusted literal answers and option semantics; never borrow a newer question's answer.

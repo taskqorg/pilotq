@@ -75,6 +75,8 @@ pub fn call(d: &Direct, j: &Mutex<Journal>, r: &Run, name: &str, args: &Value, d
         let probe = execute(command(&tq.bin,cwd,&["status","--json"]),end,&active);
         let snapshot: Value = probe["stdout"].as_str().and_then(|s|serde_json::from_str(s).ok()).unwrap_or(Value::Null);
         if probe["status"] != "success" || snapshot["complete"] != true || snapshot["board"]["repo"] != entry["board"] {
+            crate::host::log(&format!("{:?} status --json",tq.bin),
+                &format!("invalid, incomplete or mismatched board snapshot; stderr: {}",probe["stderr"].as_str().unwrap_or("unavailable")));
             return Err(format!("registered board unavailable or mismatched ({}); selected command was not executed",probe["status"]));
         }
         {
