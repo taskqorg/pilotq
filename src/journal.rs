@@ -1468,6 +1468,15 @@ impl Journal {
         Ok(text)
     }
 
+    /// #124 / §5: project references come only from the caller in this generation.
+    pub fn own_project_inputs(&self, r: &Run) -> Result<Vec<String>,String> {
+        let mut q = self.0.prepare("SELECT coalesce(q.text,'') FROM requests q
+            WHERE q.session=?1 AND q.sender=(SELECT sender FROM requests WHERE id=?3) AND q.id<?3
+            AND EXISTS(SELECT 1 FROM runs x WHERE x.request_id=q.id AND x.generation=?2)
+            ORDER BY q.id").map_err(|e|e.to_string())?;
+        q.query_map(params![r.session,r.generation,r.request],|x|x.get(0)).and_then(Iterator::collect).map_err(|e|e.to_string())
+    }
+
     /// §2 / #92: source material for semantic message linking, never a new authorization.
     /// Same generation and current admission/project grants bound what reaches a resumed or rebuilt model.
     pub fn conversation_context(&self, r: &Run) -> Result<Value, String> {
@@ -1681,7 +1690,7 @@ impl Journal {
         }
         let telegram: bool = tx.query_row("SELECT front='telegram' FROM requests WHERE id=?1", [r.request], |x| x.get(0)).map_err(e)?;
         if state == "answered" && telegram && let Some(footer) = footer {
-            text += &format!("\n\n{footer}");
+            text = format!("{}\n\n{footer}",text.trim_end());
         }
         tx.execute("UPDATE requests SET state=?2, reply=?3, error=?4 WHERE id=?1", params![r.request, state, text, error]).map_err(e)?;
         close_drafts(&tx, &r.session, r.request, at)?;
@@ -3012,6 +3021,7 @@ mod tests {
         let context=j.conversation_context(&r).unwrap();
         assert_eq!(context["recent"].as_array().unwrap().len(),2,"DM excluded from shared topic");
         assert_eq!(context["recent"][0]["author"],8);
+        assert!(j.own_project_inputs(&r).unwrap().is_empty(),"#124 other authors cannot select a project");
         assert_eq!(context["recent"][0]["reply"],"prior result");
         assert_eq!(context["tasks"][0]["url"],"https://github.com/taskqorg/pilotq/issues/92");
         assert_eq!(context["plan"]["revision"],1);
@@ -3032,6 +3042,7 @@ mod tests {
         j.admit(&[(4,shared(7,4))],7).unwrap();
         let r=j.claim_next(4,8).unwrap().remove(0);
         assert_eq!(j.conversation_context(&r).unwrap()["recent"].as_array().unwrap().len(),3);
+        assert_eq!(j.own_project_inputs(&r).unwrap().len(),1,"#124 only earlier own topic message survives restart");
         j.revoke(7,8,&["chat".into()],9).unwrap();
         assert_eq!(j.conversation_context(&r).unwrap()["recent"].as_array().unwrap().len(),2);
         j.revoke(7,7,&["projects".into()],9).unwrap();
@@ -3044,6 +3055,7 @@ mod tests {
         j.admit(&[(5,Some(reset)),(6,shared(7,6))],11).unwrap();
         let r=j.claim_next(4,12).unwrap().remove(0);
         assert_eq!(j.conversation_context(&r).unwrap()["recent"].as_array().unwrap().len(),1,"reset excludes prior generation");
+        assert!(j.own_project_inputs(&r).unwrap().is_empty(),"#124 reset excludes project mentions");
         j.0.execute("UPDATE requests SET text=?2 WHERE id=?1",params![r.request,"x".repeat(100_001)]).unwrap();
         assert_eq!(j.conversation_context(&r).unwrap_err(),"conversation context exceeds budget","oversized source is refused, never silently truncated");
         drop(j); let _=std::fs::remove_dir_all(p);
