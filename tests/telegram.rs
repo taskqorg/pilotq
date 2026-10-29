@@ -1162,7 +1162,7 @@ fn a40_topic_state_notifications() {
     wait("ready", 15, || sent_has(&st, "\nready"));
     drop(c);
     let c = spawn(&d, None);
-    for (state, label) in [("doing", "doing"), ("later", "parked"), ("ready", "ready"), ("ask", "asks:"), ("review", "review")] {
+    for (state, label) in [("doing", "doing"), ("later", "parked"), ("ready", "ready"), ("ask", "⚑"), ("review", "review")] {
         let before = sent(&st).len();
         set_task(&d, 19, |t| {
             t["state"] = json!(state);
@@ -1211,7 +1211,7 @@ fn u07_question_relay_and_bound_answers() {
         t["state"] = json!("ask");
         t["card"] = json!("Done: drafted\nProblem: pick a wording\n1. short ★\n2. long");
     });
-    let question = |needle: &str| sent(&st).into_iter().find(|s| s["text"].as_str().unwrap().contains("\nasks:") && s["text"].as_str().unwrap().contains(needle));
+    let question = |needle: &str| sent(&st).into_iter().find(|s| s["text"].as_str().unwrap().contains("\n⚑") && s["text"].as_str().unwrap().contains(needle));
     wait("first question", 15, || question("short ★").is_some());
     let q1 = question("short ★").unwrap();
     assert_eq!((q1["chat_id"].as_i64(), q1["message_thread_id"].as_i64()), (Some(-100), Some(5)), "the question reaches the originating topic");
@@ -1265,11 +1265,11 @@ fn u82_ask_buttons_and_labeled_links() {
     assert!(sent_has(&st, &format!("admitted to TaskQ: [GitHub · pilotq#19 · Docs]({issue})")), "{:?}", texts(&st));
     set_task(&d, 19, |t| {
         t["state"] = json!("ask");
-        t["card"] = json!("Done: drafted\nProblem: pick a wording, see [the spec](https://github.com/taskqorg/pilotq/blob/main/pilotq.md)\n1. short ★\n2. long\nTo answer: `taskq answer 19.K` or comment `K` or the option text");
+        t["card"] = json!("Done: drafted\nProblem: pick a wording, see [the spec](https://github.com/taskqorg/pilotq/blob/main/pilotq.md)\n1. short - + quick; - less detail ★\n2. long - + detail; - slower\nTo answer: `taskq answer 19.K` or comment `K` or the option text");
     });
-    wait("question", 15, || sent_has(&st, "\nasks:"));
-    let q = sent(&st).into_iter().find(|s| s["text"].as_str().unwrap().contains("\nasks:")).unwrap();
-    assert_eq!(q["text"], format!("<a href=\"{issue}\">GitHub · pilotq#19 · Docs</a>\nasks:\nDone: drafted\nProblem: pick a wording, see <a href=\"https://github.com/taskqorg/pilotq/blob/main/pilotq.md\">the spec</a>\n1. short ★\n2. long\nPress an option or reply to answer."));
+    wait("question", 15, || sent_has(&st, "\n⚑"));
+    let q = sent(&st).into_iter().find(|s| s["text"].as_str().unwrap().contains("\n⚑")).unwrap();
+    assert_eq!(q["text"], format!("? <a href=\"{issue}\">GitHub · pilotq#19 · Docs</a>\n✓ drafted\n⚑ pick a wording, see <a href=\"https://github.com/taskqorg/pilotq/blob/main/pilotq.md\">the spec</a>\n1. short ★\n+ quick; - less detail\n2. long\n+ detail; - slower"));
     assert_eq!(q["reply_markup"]["inline_keyboard"], json!([[{"text": "1. short ★", "callback_data": "answer:1"}], [{"text": "2. long", "callback_data": "answer:2"}]]));
     push(&st, press(3, -100, topic, OWNER, q["id"].as_i64().unwrap(), "answer:2"));
     wait("press answers", 15, || sent_has(&st, "Answer written to task #19; it is now doing: a worker is on it."));
@@ -1806,7 +1806,7 @@ fn a8_live_board_run() {
     while !exact(&closed) {
         assert!(Instant::now() < end, "timed out waiting for the reviewer outcome: {:?}", texts(&st));
         // a worker question is answered by the synthetic owner with its recommended option, by reply
-        let q = sent(&st).into_iter().filter(|s| s["text"].as_str().unwrap().contains("\nasks:") && s["text"].as_str().unwrap().contains(&url)).last();
+        let q = sent(&st).into_iter().filter(|s| s["text"].as_str().unwrap().contains("\n⚑") && s["text"].as_str().unwrap().contains(&url)).last();
         if let Some(q) = q.filter(|q| try_query(&d, &format!("SELECT count(*) FROM requests WHERE reply_to={}", q["id"])) == Some(0)) {
             let k = q["text"].as_str().unwrap().lines().find(|l| l.ends_with('★')).and_then(|l| l.split('.').next()).unwrap_or("1").to_string();
             say(&format!("answering the worker question with {k}"));
@@ -1821,7 +1821,7 @@ fn a8_live_board_run() {
     // recorded messages: one status message edited in place, the outcome its own message, nothing after it, all in the DM
     let all = sent(&st);
     let task_msgs: Vec<&Value> = all.iter().filter(|s| s["text"].as_str().unwrap().starts_with(&format!("<a href=\"{url}\">"))).collect();
-    let news: Vec<&&Value> = task_msgs.iter().filter(|s| s.get("edit").is_none() && !s["text"].as_str().unwrap().contains("\nasks:")).collect();
+    let news: Vec<&&Value> = task_msgs.iter().filter(|s| s.get("edit").is_none() && !s["text"].as_str().unwrap().contains("\n⚑")).collect();
     assert_eq!(news.len(), 2, "one status message and one outcome: {task_msgs:?}");
     assert!(news[0]["text"].as_str().unwrap().starts_with(&format!("<a href=\"{url}\">")) && news[1]["text"].as_str().unwrap().contains(&closed));
     let edits = task_msgs.iter().filter(|s| s["edit"] == true);
@@ -2387,7 +2387,7 @@ fn u39_registered_boards_steer_requeue_and_stale_answer() {
     wait("pilot start", 15, || board(&d)["tasks"]["19"]["state"] == "ready");
     set_task(&second, 19, |t| { t["state"]=json!("ask"); t["card"]=json!("Second board question?"); });
     wait("other question", 15, || sent_has(&st, "Second board question?"));
-    let q = sent(&st).into_iter().find(|s| s["text"].as_str().is_some_and(|s| s.contains("\nasks:") && s.contains("Second board question?"))).unwrap()["id"].as_i64().unwrap();
+    let q = sent(&st).into_iter().find(|s| s["text"].as_str().is_some_and(|s| s.starts_with("? ") && s.contains("Second board question?"))).unwrap()["id"].as_i64().unwrap();
     drop(c);
     // Advance only the other board while PilotQ is down; the fresh check must reject the old reply.
     set_task(&second, 19, |t| t["card"]=json!("New second-board question?"));
@@ -2604,6 +2604,7 @@ fn u95_cases(live: bool) {
     let q = sent(&st).into_iter().find(|s| s["text"].as_str().is_some_and(|s| s.contains("Recommended: short wording"))).unwrap();
     let body = q["text"].as_str().unwrap();
     for line in U95_CARD.lines().filter(|l| !l.starts_with("To answer")) {
+        let line = line.strip_prefix("Done: ").or_else(|| line.strip_prefix("Problem: ")).unwrap_or(line);
         assert!(body.contains(line), "source meaning preserved: {line}: {body}");
     }
     assert!(!body.contains("To answer") && !bare_url(body) && !body.contains("request_id"));
@@ -2640,8 +2641,8 @@ fn u94_answer_elsewhere_closes_question() {
     push(&st, call(2, -100, Some(5), OWNER, "task_run_plan", json!({"revision":1})));
     wait("started", 15, || sent_has(&st, "admitted to TaskQ:"));
     set_task(&d, 19, |t| { t["state"]=json!("ask"); t["card"]=json!("Done: drafted\nProblem: pick\n1. short ★\n2. long"); });
-    wait("question", 15, || sent_has(&st, "asks:"));
-    let q = sent(&st).into_iter().find(|m| m["text"].as_str().unwrap().contains("asks:")).unwrap();
+    wait("question", 15, || sent_has(&st, "\n⚑"));
+    let q = sent(&st).into_iter().find(|m| m["text"].as_str().unwrap().contains("\n⚑")).unwrap();
     let rev = board(&d)["tasks"]["19"]["revision"].as_i64().unwrap();
     let entry = |id, body: &str, trust, edited| json!({"id":id,"body":body,"author_association":trust,"created_at":"invented-time","updated_at":if edited {"edited-time"} else {"invented-time"},"user":{"login":"alex"}});
     fs::write(d.join("comments.json"), json!([[entry(rev,"taskq: ask attempt 1\nProblem: pick\n1. short ★\n2. long","MEMBER",false),
@@ -2656,7 +2657,7 @@ fn u94_answer_elsewhere_closes_question() {
     drop(c);
     let c = spawn(&d, None);
     set_task(&d,19,|t| { t["revision"]=json!(rev+4); t["state"]=json!("ask"); t["card"]=json!("Done: updated\nProblem: another pick\n1. tiny ★\n2. huge"); });
-    wait("new question",15,||sent_has(&st,"Problem: another pick"));
+    wait("new question",15,||sent_has(&st,"⚑ another pick"));
     push(&st,press(3,-100,Some(5),OWNER,q["id"].as_i64().unwrap(),"answer:1"));
     wait("accepted answer toast",15,||st.lock().unwrap().api.iter().any(|(method,b,_)|method=="answercallbackquery" && b["text"]=="Answered by alex: long"));
     assert!(!tq_calls(&d).iter().any(|a|a[0]=="answer"));

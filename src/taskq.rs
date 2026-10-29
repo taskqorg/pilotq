@@ -239,7 +239,22 @@ fn card(c: &str) -> String {
 }
 
 fn question_text(board: &str, task: i64, c: &str, title: Option<&str>) -> String {
-    format!("{}\nasks:\n{}\nPress an option or reply to answer.", task_link(board, task, title), card(c))
+    let body = card(c).lines().map(|line| {
+        if let Some(text) = line.strip_prefix("Done: ") { return format!("✓ {text}"); }
+        if let Some(text) = line.strip_prefix("Problem: ") { return format!("⚑ {text}"); }
+        if let Some((k, rest)) = line.split_once(". ") {
+            if k.parse::<u8>().is_ok_and(|n| (1..=4).contains(&n)) {
+                if let Some((label, detail)) = rest.split_once(" - ") {
+                    let recommended = detail.trim_end().ends_with('★');
+                    let detail = if recommended { detail.trim_end().trim_end_matches('★').trim_end() } else { detail };
+                    let detail = detail.strip_prefix("+ ").map_or_else(|| detail.to_string(), |text| format!(r"\+ {text}"));
+                    return format!("{k}. {label}{}\n{detail}", if recommended { " ★" } else { "" });
+                }
+            }
+        }
+        line.to_string()
+    }).collect::<Vec<_>>().join("\n");
+    format!("? {}\n{body}", task_link(board, task, title))
 }
 
 fn now() -> i64 {
@@ -699,6 +714,21 @@ pub fn watch(tq: std::sync::Arc<Taskq>, j: crate::telegram::Shared, wake: std::s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // #97 / §12: preserve bilingual source trade-offs, while controls omit details and CLI boilerplate.
+    #[test]
+    fn ask_layout() {
+        for (done, problem, label, other, gain, cost) in [
+            ("checked", "Choose retention", "Keep", "Drop", "history", "disk space"),
+            ("проверено", "Выберите хранение", "Хранить", "Удалить", "история", "место на диске"),
+        ] {
+            let source = format!("Done: {done}\nProblem: {problem}\n1. {label} - + {gain}; - {cost} ★\n2. {other} - + {cost}; - {gain}\nTo answer: taskq answer 97.K");
+            let text = question_text("taskqorg/pilotq", 97, &source, Some("Ask layout"));
+            assert_eq!(text, format!("? {}\n✓ {done}\n⚑ {problem}\n1. {label} ★\n\\+ {gain}; - {cost}\n2. {other}\n\\+ {cost}; - {gain}", task_link("taskqorg/pilotq", 97, Some("Ask layout"))));
+            assert_eq!(crate::telegram::options(&text), vec![("answer:1".into(), format!("1. {label} ★")), ("answer:2".into(), format!("2. {other}"))]);
+            assert_eq!(crate::telegram::options(&source), vec![("answer:1".into(), format!("1. {label} ★")), ("answer:2".into(), format!("2. {other}"))]);
+        }
+    }
 
     // #91 / R8, R11: link identity and admission must not imply execution.
     #[test]
