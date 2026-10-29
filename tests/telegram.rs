@@ -1110,7 +1110,9 @@ fn u06_plan_revisions_then_held_create_start_and_one_status_message() {
     assert!(!all.iter().any(|s| s["edit"] == true && s["message_id"] == fin["id"]), "nothing edits the final outcome");
     assert_eq!(all.iter().filter(|s| s.get("edit").is_none() && s["text"].as_str().unwrap().starts_with("<a href=\"https://github.com/taskqorg/pilotq/issues/19\">")).count(), 2, "one status message and one outcome: {all:?}");
     assert!(!all.iter().any(|s| s["text"].as_str().unwrap().contains("stall") || s["text"].as_str().unwrap().contains("hung")));
-    let a: Value = serde_json::from_slice(&cli(&d, &["audit", "--request", "5", "--json"]).stdout).unwrap();
+    let audit = cli(&d, &["audit", "--request", "5", "--json"]);
+    assert!(audit.status.success(), "audit failed: {:?}: {}", audit.status, String::from_utf8_lossy(&audit.stderr));
+    let a: Value = serde_json::from_slice(&audit.stdout).unwrap();
     assert_eq!(a[0]["tasks"].as_array().unwrap().iter().map(|t| t["target"].as_str().unwrap()).collect::<Vec<_>>(), ["taskqorg/pilotq add #19", "taskqorg/pilotq start #19"]);
     stop(c, d);
 }
@@ -2449,8 +2451,9 @@ fn telegram_images_reach_same_session() {
     assert_eq!(turns.len(),4);
     assert!(turns.iter().all(|t|t["params"]["threadId"]=="th-1"));
     for (t,caption) in turns.iter().zip(["inspect photo","","inspect document",""]) {
-        assert_eq!(t["params"]["input"][1]["text"],caption);
-        assert_eq!(t["params"]["input"][2]["type"],"localImage");
+        // §5/#93 adds saved-draft context before the original caption; retain image/caption pairing.
+        assert_eq!(t["params"]["input"][2]["text"],caption);
+        assert_eq!(t["params"]["input"][3]["type"],"localImage");
     }
     let images=fs::read_to_string(d.join("images.log")).expect("fake model read image bytes");
     assert_eq!(images.lines().count(),4);
