@@ -27,7 +27,7 @@ pub fn tools() -> Vec<Value> {
     let project = json!({"type": "string", "description": "Registered project name; only one the person named in this message, or the conversation's current project"});
     let issue = json!({"type": "string", "description": "Issue number or GitHub issue URL"});
     let key = json!({"type": "string", "description": "Key name from the key store; omit when the person has exactly one key for this tool"});
-    vec![
+    let mut tools = vec![
         tool("project_list", "List registered projects you may access, marking the current project. Use for questions about available projects.", json!({"type":"object", "properties":{}})),
         tool("project_use", "Switch this conversation's current project. Use an unambiguous project named by this person in this conversation generation.",
             json!({"type": "object", "properties": {"project": {"type": "string"}}, "required": ["project"]})),
@@ -37,7 +37,9 @@ pub fn tools() -> Vec<Value> {
             json!({"type": "object", "properties": {"project": project, "issue": issue, "body": {"type": "string", "description": "Comment text, at most 2000 characters"}, "key": key}, "required": ["issue", "body"]})),
         tool("issue_label", "Owner only: add one label to a taskqorg/pilotq issue.",
             json!({"type": "object", "properties": {"project": project, "issue": issue, "label": {"type": "string"}, "key": key}, "required": ["issue", "label"]})),
-    ]
+    ];
+    tools.extend(crate::commands::tools());
+    tools
 }
 
 /// Model instructions for the direct tools; the boundary enforces them regardless.
