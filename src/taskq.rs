@@ -346,7 +346,7 @@ fn dispatch(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Value) -
             allowed(&j, sender, project, true)?;
             (project.clone(), saved.as_ref().unwrap().2.clone(), 0)
         } else if matches!(name,"task_status" | "task_steer" | "task_answer") {
-            let inferred = if name == "task_answer" { None } else { crate::direct::context_project(&j,r,sender)? };
+            let inferred = if name == "task_answer" || args["project"].is_string() { None } else { crate::direct::context_project(&j,r,sender)? };
             match j.related_target(r,args["task"].as_str().ok_or("task is required")?,args["project"].as_str().or(inferred.as_deref()))? {
                 Some(target) => target,
                 None => if name == "task_answer" { crate::direct::target(&j,r,sender,&target)? } else { crate::direct::target_context(&j,r,sender,&target)? },

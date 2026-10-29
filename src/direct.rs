@@ -121,7 +121,6 @@ pub(crate) fn target(j: &Journal, r: &Run, user: i64, args: &Value) -> Result<(S
 }
 
 fn target_inner(j: &Journal, r: &Run, user: i64, args: &Value, context: bool) -> Result<(String,String,i64),String> {
-    let inferred = if context { context_project(j,r,user)? } else { None };
     let issue = args["issue"].as_str().map(str::to_string).or_else(|| args["issue"].as_i64().map(|n| n.to_string())).ok_or("issue is required")?;
     let projects = j.projects()?;
     let current = j.current_project(&r.session)?;
@@ -137,9 +136,11 @@ fn target_inner(j: &Journal, r: &Run, user: i64, args: &Value, context: bool) ->
         && explicit != url {
         return Err("project and issue URL name different registered projects; nothing was done".into());
     }
+    let inferred = if context { context_project(j,r,user)? } else { None };
     let name = match args["project"].as_str().map(str::to_string).or(by_url) {
         Some(p) => {
             let (name, repo, ..) = projects.iter().find(|x| x.0 == p).ok_or(format!("{p} is not a registered project; nothing was done"))?;
+            allowed(j,user,name)?;
             let mentioned = if context { inferred.as_deref() == Some(name) }
                 else { named(&r.text,name) || r.text.contains(&format!("github.com/{repo}")) };
             if current.as_deref() != Some(name) && !mentioned {
