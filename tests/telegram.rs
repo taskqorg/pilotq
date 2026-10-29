@@ -3213,7 +3213,8 @@ fn u119_status_footer_delivery() {
         let fake=FAKE.replace(r#" @ '"$th"'"# , r#" @ '"$th"'\n\n"#).replace("    case \"$text\" in",r#"    case "$text" in
     measured*)
       echo '{"method":"thread/tokenUsage/updated","params":{"threadId":"'$th'","turnId":"u1","tokenUsage":{"last":{"inputTokens":800,"totalTokens":900},"modelContextWindow":1000}}}'
-      reset=$(($(date +%s) + 7201))
+      # Keep the 3h ceiling away from its boundary during async delivery.
+      reset=$(($(date +%s) + 9000))
       echo '{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"codex","planType":"invented-secret-plan","secondary":{"usedPercent":25,"windowDurationMins":10080,"resetsAt":'$reset'}}}}'
       echo '{"id":4,"result":{"rateLimits":{"secondary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":'$reset'}}}}'
       echo '{"method":"thread/tokenUsage/updated","params":{"threadId":"other","turnId":"u1","tokenUsage":{"last":{"inputTokens":0},"modelContextWindow":1000}}}' ;;
