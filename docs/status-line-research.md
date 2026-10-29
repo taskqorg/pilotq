@@ -100,8 +100,21 @@ answers already suppressed quotes for private chats. The fix applies the same
 chat/sender boundary to recovery notices and retains the topic destination.
 The regression case checks private-topic recovery/final replies and group-topic
 correlation. Cargo is unavailable in this worker environment, so no local
-before/after pass is claimed. A4 needs the PM's rerun on the corrected build;
-the existing topic and metric/delivery evidence remains retained.
+before/after pass is claimed. The [PM rerun](https://github.com/taskqorg/pilotq/pull/122#issuecomment-6493750343)
+used exact source `6bb2e55fe0ce04961f9931f0e12b38489ecba8a8`, built with
+`cargo build --release --locked`, binary SHA-256
+`74d309512edbd33fde17ec58938ed74cbbc0c64eb07f30b8c8155927350b5b00`.
+The worker inspected both rerun screenshots: the latest recovery notice and
+answer have no quote, including the missing-quota answer. Earlier quoted
+messages remain visible as history, not output from the corrected run.
+The PM reports `/new`, model selection and normal replies in the genuine private
+topic, outbox reply targets NULL (reaction rows excepted), and preserved group
+topic correlation. The restored release reproduced the quoted recovery notice,
+providing the unfixed baseline; the corrected build removes it (§4).
+The PM restored release 0.2.10 and original configuration, resumed updates,
+read back healthy status and verified conversation continuity. A4's DM rerun
+and retained topic evidence are complete; the Cargo regression and selftest
+for the changed candidate remain unverified in the worker environment.
 
 The PM reports a drained source-build activation without modifying the published
 release slot, a SQLite backup, schema 11 and matched journal counts across
