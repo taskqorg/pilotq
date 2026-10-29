@@ -537,7 +537,7 @@ fn answer(tq: &Taskq, j: &Mutex<Journal>, a: &Answer, resumed: bool) {
         return end("failed", format!("Not written to task #{n}: {e}."), Some("not authorized"));
     }
     // Check the accepted board answer even when a tap races the periodic scan. It never authorizes a write.
-    if let Ok(snapshot) = tq.snapshot_for(&board) {
+    if tq.snapshot_for(&board).is_ok() {
         reconcile_questions(tq,j,&a.project,&board,n);
     }
     let receipt = j.lock().unwrap().question_answer(&a.project,n,a.revision).ok().flatten();

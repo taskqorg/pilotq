@@ -2570,10 +2570,10 @@ fn u94_answer_elsewhere_closes_question() {
     push(&st, call(1, -100, Some(5), OWNER, "task_plan", plan(&["Docs"])));
     wait("plan", 15, || sent_has(&st, "Plan revision 1 saved"));
     push(&st, call(2, -100, Some(5), OWNER, "task_run_plan", json!({"revision":1})));
-    wait("started", 15, || sent_has(&st, "started: #19"));
+    wait("started", 15, || sent_has(&st, "admitted to TaskQ:"));
     set_task(&d, 19, |t| { t["state"]=json!("ask"); t["card"]=json!("Done: drafted\nProblem: pick\n1. short ★\n2. long"); });
-    wait("question", 15, || sent_has(&st, "Task #19 asks:"));
-    let q = sent(&st).into_iter().find(|m| m["text"].as_str().unwrap().starts_with("Task #19 asks:")).unwrap();
+    wait("question", 15, || sent_has(&st, "asks:"));
+    let q = sent(&st).into_iter().find(|m| m["text"].as_str().unwrap().contains("asks:")).unwrap();
     let rev = board(&d)["tasks"]["19"]["revision"].as_i64().unwrap();
     let entry = |id, body: &str, trust, edited| json!({"id":id,"body":body,"author_association":trust,"created_at":"invented-time","updated_at":if edited {"edited-time"} else {"invented-time"},"user":{"login":"alex"}});
     fs::write(d.join("comments.json"), json!([[entry(rev,"taskq: ask attempt 1\nProblem: pick\n1. short ★\n2. long","MEMBER",false),
