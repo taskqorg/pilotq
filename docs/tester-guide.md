@@ -114,3 +114,9 @@ The operator uses the same path with, for example,
 `pilotq ask '/model default' --json`. Setup diagnostics and model catalogue reads
 have absolute deadlines; dependency failures leave observations unknown and do
 not change the saved choice. Use the operator audit to investigate details.
+
+### GitHub answer-reader readiness
+
+`pilotq doctor --json` reports `gh.path`, `gh.version` and the `board_answers` check. The check reads one page of comments from the configured board without writing. A failed read exits nonzero; operator stderr records the command and scrubbed error. `/doctor` reports only check outcomes. Selftest stays offline (§9).
+
+For #127 after release and FRA update, record the exact running source and binary, health, selftest, doctor and journal continuity. Answer a real authorized person's subscribed question through TaskQ CLI. Within one board poll, capture the original Telegram card showing `Answered by <actor>: <text>` with no buttons, then tap an earlier client copy of its button and capture the same receipt. Local fake-adapter checks do not qualify this live evidence (§5, §9).
