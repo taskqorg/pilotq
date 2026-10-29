@@ -203,6 +203,14 @@ Contract detail: [first TaskQ tool contract](docs/taskq-tool-contract.md) holds 
 - Concrete discussion questions offer two to four numbered choices, preserved in the message, buttons and recorded answer. Choosing one submits that answer to the conversation; it never authorizes launch. Launch remains a separate button or explicit later text request. Old or already answered choice cards are refused.
 - Example: “Plan reply improvements”, “also keep line breaks”, “and add buttons” produces one draft with three internal revisions, no board tickets. The latest display has “Run plan”; pressing it launches only that display. Pressing either an earlier display or the same button again starts nothing new. Under #110 a separate idea waits for launch or Cancel, then starts a new draft. After launch, “also support audio” starts a separate discussion, preserving the launched scope.
 
+### Human trial
+
+**Owner, 2026-10-26 (task #42 continuation):** the two existing FRA users, the owner and Simon, test on the fly with test tasks on the separate test bot. This supersedes the earlier owner-plus-two-invitees plan: there is no invitation or private-ID step and no new readiness gate. The owner supplies the A40 evidence: PM run 14/14 at `49043392fb12b80d2e6d4c8db3fee28942d916ce`, referencing [#62](https://github.com/taskqorg/pilotq/issues/62). This is owner-supplied evidence, not a worker rerun or proof of a different installed revision.
+
+**Owner, 2026-10-29 (task #42 continuation):** end the human trial now using available audit and feedback, replacing its planned seven-day duration. The observation window is 2026-10-27T15:15Z to 2026-10-29T20:46Z. Report request IDs, outcomes, refusals, failures and tester feedback; file discovered defects as held tasks unless already tracked. Use existing authorized identities and grants (R10), the [tester guide](docs/tester-guide.md) and request audit (R17). The readiness ask was answered: on 2026-10-27 the owner named the owner and Simon as the two administrators. Naming administrators does not itself apply grants or expand authority.
+
+This human feedback supplements the 2026-10-23 scripted-run evidence above. Keep [gate 4](docs/acceptance.md#selection-gates) separate and preserve its existing pilot start. Hermes production cutover remains outside scope (§10 step 6). See the [trial cases](docs/acceptance.md#human-trial-task-42).
+
 ### Direct actions, keys and project switching
 
 **Owner decision 2026-10-23 (option B, task #23, section 10 step 4):** direct actions are reads. Only the owner (`owner_id` from protected configuration) may write directly, and only a comment or a label on an issue of the `taskqorg/pilotq` board; there are no other direct writes. Keys enter only through the CLI.

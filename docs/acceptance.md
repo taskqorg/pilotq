@@ -255,6 +255,24 @@ It checks, in order: U18 (an ungranted message is ignored and not replayed after
 
 Run 1 failed before any board write and exposed a defect. Three requests started Codex together on a fresh Codex home, and one app-server exited with `failed to initialize sqlite state runtime`. PilotQ reported it only as `Codex exited without a terminal event`. Fix: Codex startup is serialized until `initialize` answers, and the stderr reason goes to the operator log, never to a reply (`concurrent_codex_starts_do_not_race`, which failed without the lock). The live test bot was not used. It ran the pre-step3 build and journal throughout, restored after the earlier attempt. A later owner check there is optional.
 
+## Human trial (task #42)
+
+[Contract §5](../pilotq.md#human-trial) records the owner's 2026-10-26 simplification: the two existing FRA users, the owner and Simon, test on the fly with test tasks. No invitation, private-ID exchange or additional readiness gate is required. This supersedes the earlier three-person plan. The owner ended the human trial on 2026-10-29 using available evidence, shortening the planned seven-day observation period; the request-linked report remains and gate 4 stays separate.
+
+### Testing and feedback
+
+Use existing authorized identities and grants with the [tester guide](tester-guide.md#plan-authorize-and-follow-work). Discuss and revise a plan, authorize its saved revision in a later message, follow status and answer actual worker questions by replying to them. Keep existing R10 authorization checks; do not infer administrator privileges from participation. The owner named the owner and Simon as administrators on 2026-10-27 after the readiness ask. No grant change is claimed here.
+
+Keep request IDs and task links for outcomes, refusals, failures and feedback about usefulness, clarity and required nudges. Each accepted request retains its R17 audit record. Record interventions and outages with `pilot note`; investigate missing replies through effect and delivery receipts rather than repeating execution (§4). File each discovered defect held, linking an existing open issue where it already covers the defect. No completed human trial or absence of defects is claimed before observation.
+
+### Report
+
+Record the actual UTC observation window, release revisions used, participating users by approved labels, request IDs with outcomes/refusals/failures and tester feedback, and held defect links. Keep waiting, uncertain and missing observations visible. Preserve the existing gate 4 pilot start; `pilot report --since T --json` supplies since-boundary counts, while `--until` bounds tool sizes only. Use audit receive times and request IDs to identify the final trial cohort. Keep private message content and credentials out of public reports (§8).
+
+**Readiness evidence:** owner 2026-10-26 reports PM A40 14/14 at `49043392fb12b80d2e6d4c8db3fee28942d916ce`, referencing [#62](https://github.com/taskqorg/pilotq/issues/62). The worker read #62's merged fix and green merge-result CI record; the 14/14 result is supplied by the owner, not independently rerun here. It does not prove an installed 0.2.2 run. No further A40 or continuity submission is added as a gate for this human trial.
+
+A1 records the current plan in the contract and these cases. The owner's continuation supplies the tester choice for A2 and replaces the invitation procedure. A3 uses existing grants and the guide; the PM export records one active user, while Simon sent no requests. A4 evidence and existing defect references are recorded in the [trial report](trial-42.md). The report preserves missing observations and does not qualify two-user behavior, gate 4 or production acceptance.
+
 ## Step 4 qualification
 
 Results for the [section 10](../pilotq.md#10-adoption-sequence) step 4 slice, task [#23](https://github.com/taskqorg/pilotq/issues/23), against [direct actions, keys and project switching](../pilotq.md#direct-actions-keys-and-project-switching). Deterministic traces run in `cargo test --locked` with a fake `gh` (`FAKE_GH` in `tests/telegram.rs`: argument log, a token check that never records the token, issues, comments and labels in a state file, an option that makes an issue body echo the token), the fake TaskQ CLI as the registration readback, a fake Codex that makes several dynamic tool calls per turn (`multi`, or `hex` so that the person's text names nothing the calls use), the fake Bot API and the `PILOTQ_FAULT` crash points `before-effect` and `after-effect`. Fakes do not qualify GitHub, real Codex tool choice or Telegram; the live run is listed separately.
