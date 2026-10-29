@@ -1575,7 +1575,7 @@ impl Journal {
 
     /// `pilotq audit` (§ 9): records `reader` may see, and the read recorded in the same transaction.
     pub fn audit(&mut self, reader: i64, f: &Filter, at: i64) -> Result<Vec<Value>, String> {
-        let tx = self.0.transaction().map_err(|e| e.to_string())?;
+        let tx = self.0.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
         let rows = records(&tx, reader, "cli", f, at)?;
         tx.commit().map_err(|e| e.to_string())?;
         Ok(rows)
@@ -2658,6 +2658,29 @@ mod tests {
     // U23 (journal part): a DM, a forum topic and the CLI each leave one audit record with who, when, where, text, tools and
     // outcome; a person without `audit` sees only their own records whatever the filter; the owner sees all; every read is
     // recorded; the CoreQ event per request carries its trace ID and no request text.
+    // R17, §8: CLI audit must record its read while the service owns a WAL write transaction.
+    // A deferred read-to-write upgrade fails immediately instead of waiting for that writer.
+    #[test]
+    fn u23_audit_waits_for_concurrent_writer() {
+        let (mut j, p) = journal("audit-writer");
+        let path = j.0.path().unwrap().to_owned();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            let c = Connection::open(path).unwrap();
+            c.execute_batch("BEGIN IMMEDIATE; INSERT INTO meta(key,value) VALUES ('audit-concurrency',1);").unwrap();
+            ready_tx.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            c.execute_batch("COMMIT").unwrap();
+        });
+        ready_rx.recv().unwrap();
+        let result = j.audit(7, &Filter::default(), 20);
+        writer.join().unwrap();
+        assert!(result.is_ok(), "audit must wait for the service writer: {result:?}");
+        assert_eq!(count(&j, "SELECT count(*) FROM audit_reads"), 1);
+        drop(j);
+        std::fs::remove_dir_all(p).unwrap();
+    }
+
     #[test]
     fn u23_audit_records_and_readers() {
         use crate::manager::Outcome;
