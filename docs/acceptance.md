@@ -814,3 +814,31 @@ source. The report records journal continuity and restoration of release 0.2.10;
 it also retains a nonblocking recovery-notice wording observation. See the
 [exact build and evidence](status-line-research.md#implementation-and-live-evidence).
 Worker question cards retain their no-footer rule under contract §12.
+
+
+## Conversation project and board status (#124)
+
+Contract §5 and §12 own this behavior. `project_context_boundary` and
+`u119_status_footer_delivery` failed before the fix: the earlier “Pilot Q”
+mention resolved to no project, and a final answer with trailing newlines kept
+extra empty lines before the footer. Both checks pass after the fix.
+
+Retained checks:
+
+- `project_context_boundary`: earlier own naming, spaced product spelling,
+  multiple fits, clarification, quoted-name refusal and revoked project grants.
+- `project_status_context_read`: fresh registered-board CLI read, unchanged
+  task/runtime/session fields and read time, draft target from earlier wording,
+  incomplete/mismatched/missing task lists, and revoked grants. The fake CLI
+  refuses every command except `status --json`.
+- `related_context_is_durable_and_scoped`: earlier own inputs survive restart;
+  other authors, private routes and reset generations cannot select a project.
+- `u119_status_footer_delivery`: exactly one empty line through rich DM, HTML
+  group and plain topic delivery, including model text with trailing newlines.
+
+A8 remains a post-release live FRA check. In the owner DM/topic, ask “What is
+the task status for Pilot Q?”, then “Make a task so this works”; verify fresh
+board status and a local `pilotq` draft without another project question. Check
+an ambiguous two-project request asks for the project and writes nothing.
+Record the exact running build and Telegram screenshots showing footer spacing.
+Local adapters do not qualify this live appearance or model interpretation.

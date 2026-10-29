@@ -968,6 +968,9 @@ for line in sys.stdin:
         send({"id": 3, "result": {"turn": {"id": "u1", "status": "inProgress", "items": []}}})
         if text.startswith("slow "):
             time.sleep(float(text.split()[1]))
+        # Explicit user prose selects the project; the following JSON only drives this fake.
+        if text.startswith("Project: ") and "\n" in text:
+            text = text.split("\n", 1)[1]
         spec = {"calls": []}
         if text.startswith("call "):
             _, name, args = text.split(" ", 2)
@@ -1051,7 +1054,8 @@ fn tq_calls(d: &Path) -> Vec<Vec<String>> {
 }
 
 fn call(id: i64, chat: i64, topic: Option<i64>, sender: i64, tool: &str, args: Value) -> Value {
-    text(id, chat, topic, sender, &format!("call {tool} {args}"))
+    let own = args["project"].as_str().map(|p|format!("Project: {p}\n")).unwrap_or_default();
+    text(id, chat, topic, sender, &format!("{own}call {tool} {args}"))
 }
 
 fn plan(titles: &[&str]) -> Value {
@@ -1616,7 +1620,7 @@ fn u09_f09_f10_switch_ambiguity_redirect_and_revoke() {
     wait("ambiguous", 15, || sent_has(&st, "re: refused: #3 is ambiguous: name its project (other, pilotq) or switch with project_use; nothing was done"));
 
     let switch = json!({"calls": [["project_use", {"project": "other"}], ["issue_read", {"issue": "3"}]]});
-    push(&st, text(2, OWNER, None, OWNER, &format!("multi {switch}")));
+    push(&st, text(2, OWNER, None, OWNER, &format!("Project: other\nmulti {switch}")));
     wait("switched", 15, || sent_has(&st, "re: ok: This conversation now uses project other (taskqorg/other). | ok: taskqorg/other#3 (open)"));
     assert_eq!(query_text(&d, "SELECT project FROM conversations WHERE session='dm:7'"), "other");
 
@@ -3178,7 +3182,7 @@ fn u119_status_footer_delivery() {
     for (mode,chat,topic) in [("rich",OWNER,None),("html",-100,None),("plain",-100,Some(5))] {
         let (d,st)=setup(&format!("u119-{mode}"),vec![]);
         st.lock().unwrap().rich_reject=mode!="rich";
-        let fake=FAKE.replace("    case \"$text\" in",r#"    case "$text" in
+        let fake=FAKE.replace(r#" @ '"$th"'"# , r#" @ '"$th"'\n\n"#).replace("    case \"$text\" in",r#"    case "$text" in
     measured*)
       echo '{"method":"thread/tokenUsage/updated","params":{"threadId":"'$th'","turnId":"u1","tokenUsage":{"last":{"inputTokens":800,"totalTokens":900},"modelContextWindow":1000}}}'
       reset=$(($(date +%s) + 7201))
@@ -3197,6 +3201,8 @@ fn u119_status_footer_delivery() {
         wait("measured answer",15,||sent_has(&st,"re: measured answer"));
         let answer=texts(&st).into_iter().find(|s|s.contains("re: measured answer")).unwrap();
         assert!(answer.contains("gpt-test · 😣 80% · 🌖 75% ↻ 3h"),"{mode}: {answer}");
+        assert!(answer.contains("\n\ngpt-test"),"#124 exactly one empty line: {mode}: {answer}");
+        assert!(!answer.contains("\n\n\ngpt-test"),"#124 extra empty line: {answer}");
         let delivered=sent(&st).into_iter().find(|v|v["text"].as_str().is_some_and(|t|t.contains("re: measured answer"))).unwrap();
         if mode=="plain" { assert!(delivered.get("parse_mode").is_none()); }
         if mode=="html" { assert_eq!(delivered["parse_mode"],"HTML"); }
