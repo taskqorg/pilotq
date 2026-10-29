@@ -4,6 +4,8 @@ use serde_json::{Value, json};
 use std::{io::Read, path::Path, process::{Command, Stdio}, sync::{Mutex, mpsc}, time::{Duration, Instant}};
 
 const CAP: usize = 16 * 1024;
+// Internal board validation is not command output returned to the model (§5).
+const BOARD_CAP: usize = 1024 * 1024;
 pub const NAMES: [&str; 2] = ["command_list", "command_run"];
 
 pub fn tools() -> Vec<Value> {
@@ -72,7 +74,7 @@ pub fn call(d: &Direct, j: &Mutex<Journal>, r: &Run, name: &str, args: &Value, d
         // §5: a complete fresh board observation is required before project reads.
         // The probe and selected command share a deadline; each has bounded output.
         let tq = tq.ok_or("TaskQ is not configured; cannot verify the registered board")?;
-        let probe = execute(command(&tq.bin,cwd,&["status","--json"]),end,&active);
+        let probe = execute_bounded(command(&tq.bin,cwd,&["status","--json"]),end,&active,BOARD_CAP);
         let snapshot: Value = probe["stdout"].as_str().and_then(|s|serde_json::from_str(s).ok()).unwrap_or(Value::Null);
         if probe["status"] != "success" || snapshot["complete"] != true || snapshot["board"]["repo"] != entry["board"] {
             crate::host::log(&format!("{:?} status --json",tq.bin),
@@ -110,7 +112,11 @@ fn command(bin: impl AsRef<std::ffi::OsStr>, cwd: &str, argv: &[&str]) -> Comman
     command
 }
 
-fn execute(mut command: Command, end: Instant, active: impl Fn() -> bool) -> Value {
+fn execute(command: Command, end: Instant, active: impl Fn() -> bool) -> Value {
+    execute_bounded(command,end,active,CAP)
+}
+
+fn execute_bounded(mut command: Command, end: Instant, active: impl Fn() -> bool, cap: usize) -> Value {
     if !active() { return json!({"status":"cancelled","exit_code":null}); }
     if Instant::now() >= end { return json!({"status":"timeout","exit_code":null}); }
     let diagnostic=format!("{:?} {:?}",command.get_program(),command.get_args().collect::<Vec<_>>());
@@ -144,7 +150,7 @@ fn execute(mut command: Command, end: Instant, active: impl Fn() -> bool) -> Val
             match bytes {
                 Ok(bytes) if bytes.is_empty() => received += 1,
                 Ok(bytes) => {
-                    let left = CAP-stdout.len()-stderr.len();
+                    let left = cap-stdout.len()-stderr.len();
                     limited |= bytes.len()>left;
                     let output = if err { &mut stderr } else { &mut stdout };
                     output.extend_from_slice(&bytes[..bytes.len().min(left)]);
@@ -168,8 +174,8 @@ fn execute(mut command: Command, end: Instant, active: impl Fn() -> bool) -> Val
     let _ = crate::host::output(Command::new("/bin/kill").args(["-9","--",&format!("-{}",child.id())]));
     let _ = child.kill();
     let _ = child.wait();
-    stdout.truncate(CAP);
-    stderr.truncate(CAP-stdout.len());
+    stdout.truncate(cap);
+    stderr.truncate(cap-stdout.len());
     if status != "success" { crate::host::log(&diagnostic,&format!("{status}: {}",String::from_utf8_lossy(&stderr))); }
     json!({"status":status,"exit_code":exit.and_then(|c|c.code()),"stdout":String::from_utf8_lossy(&stdout),"stderr":String::from_utf8_lossy(&stderr)})
 }
@@ -204,6 +210,9 @@ mod tests {
         let tq=crate::taskq::Taskq{bin:probe.to_str().unwrap().into(),root:dir.clone(),poll:Duration::from_secs(1)};
         let call=|name:&str,args:Value,deadline|super::call(&d,&j,&r,name,&args,deadline,Some(&tq));
         let deadline=||Instant::now()+Duration::from_secs(2);
+        // #137 / §5: a growing board must not consume the command's 16 KiB output budget.
+        let board = json!({"complete":true,"board":{"repo":"taskqorg/pilotq"},"padding":"x".repeat(64 * 1024)});
+        std::fs::write(&probe,format!("#!/bin/sh\nprintf '%s' '{}'\n",board)).unwrap();
         let (ok,list)=call("command_list",json!({}),deadline());
         assert!(ok && list.contains("pwd"));
         for (command,args,status) in [("pwd",json!([]),"success"),("exit",json!([]),"exit_nonzero"),("missing",json!([]),"missing"),("flood",json!([]),"output_limit")] {
@@ -219,10 +228,16 @@ mod tests {
         for args in [json!({"command":"pwd","args":["; touch forbidden"]}),json!({"command":"unknown","args":[]})] {
             assert!(!call("command_run",args,deadline()).0);
         }
+        let (_, unknown)=call("command_run",json!({"command":"unknown","args":[]}),deadline());
+        assert!(unknown.contains("unknown or unapproved command"));
         std::fs::write(dir.join("taskq.json"),r#"{"repo":"taskqorg/other"}"#).unwrap();
         assert!(!call("command_run",json!({"command":"pwd","args":[]}),deadline()).0);
         std::fs::write(dir.join("taskq.json"),r#"{"repo":"taskqorg/pilotq"}"#).unwrap();
         let saved_probe = std::fs::read(&probe).unwrap();
+        // The separate board budget remains bounded and refuses dispatch on overflow.
+        std::fs::write(&probe,"#!/bin/sh\nexec /usr/bin/yes\n").unwrap();
+        let (ok, overflow)=call("command_run",json!({"command":"pwd","args":[]}),deadline());
+        assert!(!ok && overflow.contains("output_limit") && overflow.contains("selected command was not executed"));
         std::fs::write(&probe,"#!/bin/sh\nprintf '%s' '{\"complete\":false}'\n").unwrap();
         assert!(!call("command_run",json!({"command":"pwd","args":[]}),deadline()).0);
         std::fs::write(&probe,saved_probe).unwrap();
@@ -237,6 +252,8 @@ mod tests {
         let mut denied = entries.clone();
         denied["pwd"]["users"] = json!([]);
         std::fs::write(&config,denied.to_string()).unwrap();
+        let (_, refusal)=call("command_run",json!({"command":"pwd","args":[]}),deadline());
+        assert_eq!(refusal,"command permission denied");
         assert!(!call("command_run",json!({"command":"pwd","args":[]}),deadline()).0);
         std::fs::write(&config,entries.to_string()).unwrap();
         j.lock().unwrap().revoke(7,7,&["projects".into()],2).unwrap();
