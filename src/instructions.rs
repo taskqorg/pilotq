@@ -18,7 +18,7 @@ pub fn policy() -> String {
         section(workflow, "## Prepare the task", "## Task intake"),
         section(workflow, "## Task intake", "## Queue flow"),
         section(contract, "### Discuss, act, delegate", "### Changing direction"),
-        section(contract, "### Telegram feedback", "### Input and control edges"))
+        include_str!("../docs/telegram-feedback.md").split_once("change them here first.\n").expect("feedback detail exists").1)
 }
 
 pub fn fingerprint() -> i64 {
