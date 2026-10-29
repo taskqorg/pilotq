@@ -55,10 +55,20 @@ pub const INSTRUCTIONS: &str = "You are PilotQ, the conversational manager for r
 call task_plan and show the person the saved revision number and its tickets. Call task_run_plan only when the person, in a later message, asks to run a \
 named revision. Never say a task exists, started or finished unless a tool result in this conversation says so; cite its URL. You cannot answer a worker's \
 question: the person replies to the relayed question message. For task state call task_status; never guess it. Pausing the queue does not stop a running \
-worker; say so.";
+worker; say so. Task links use [GitHub · repo#number · title](url), with the verified title from tool output; omit unknown titles. \
+Admission means queued for a worker, never worker execution. Keep effects to one short line; omit repeated procedural receipts.";
 
 fn url(board: &str, task: i64) -> String {
     format!("https://github.com/{board}/issues/{task}")
+}
+
+/// Plain source labels are escaped once for Markdown; Telegram HTML escapes at its own output boundary.
+fn task_link(board: &str, task: i64, title: Option<&str>) -> String {
+    let repo = board.rsplit('/').next().unwrap_or(board);
+    let title = title.and_then(|t| t.lines().next()).filter(|t| !t.is_empty());
+    let label = format!("GitHub · {repo}#{task}{}", title.map(|t| format!(" · {t}")).unwrap_or_default());
+    let label: String = label.chars().flat_map(|c| if "\\[]*_`".contains(c) { vec!['\\', c] } else { vec![c] }).collect();
+    format!("[{label}]({})", url(board, task))
 }
 
 impl Taskq {
@@ -136,8 +146,8 @@ fn find(s: &Value, task: i64) -> Option<&Value> {
 }
 
 // Task messages render as Telegram HTML with a labeled link, never a bare URL (#82).
-fn status_text(board: &str, task: i64, state: &str) -> String {
-    format!("Task #{task} {}.\n[Open the task]({})", describe(state), url(board, task))
+fn status_text(board: &str, task: i64, state: &str, title: Option<&str>) -> String {
+    format!("{}\n{}.", task_link(board, task, title), describe(state))
 }
 
 /// The card without its CLI `To answer:` line: in Telegram an option button or a reply answers (#82).
@@ -145,8 +155,8 @@ fn card(c: &str) -> String {
     c.lines().filter(|l| !l.starts_with("To answer")).collect::<Vec<_>>().join("\n")
 }
 
-fn question_text(board: &str, task: i64, c: &str) -> String {
-    format!("Task #{task} asks:\n{}\nPress an option or reply to this message to answer.\n[Open the task]({})", card(c), url(board, task))
+fn question_text(board: &str, task: i64, c: &str, title: Option<&str>) -> String {
+    format!("{}\nasks:\n{}\nPress an option or reply to answer.", task_link(board, task, title), card(c))
 }
 
 fn now() -> i64 {
@@ -251,7 +261,7 @@ fn dispatch(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Value) -
             let s = tq.snapshot_for(&board)?;
             let text = match find(&s, n) {
                 Some(t) => {
-                    let mut text = format!("Task #{n} {} (revision {}, observed {}).\n{}", describe(t["state"].as_str().unwrap_or("")), t["revision"], s["observed"], url(&board, n));
+                    let mut text = format!("Task #{n} {} (revision {}, observed {}).\n{}", describe(t["state"].as_str().unwrap_or("")), t["revision"], s["observed"], task_link(&board, n, t["title"].as_str()));
                     for e in t["executions"].as_array().into_iter().flatten() {
                         text += &format!("\nAttempt {} ({}, {}): {}", e["attempt"], e["role"].as_str().unwrap_or(""), e["state"].as_str().unwrap_or(""), e["reason"].as_str().unwrap_or(""));
                     }
@@ -350,7 +360,7 @@ pub fn submit(tq: &Taskq, j: &Mutex<Journal>, id: i64, notify: bool) -> String {
     if let Err(e) = ok {
         return end(&run, "failed", Some(&e), format!("Plan revision {} was not filed: {e}.", run.revision));
     }
-    let filed = |run: &PlanRun| run.tickets.iter().filter_map(|t| t.task).map(|n| format!("#{n} {}", url(&board, n))).collect::<Vec<_>>().join(", ");
+    let filed = |run: &PlanRun| run.tickets.iter().filter_map(|t| t.task.map(|n| task_link(&board, n, t.plan["title"].as_str()))).collect::<Vec<_>>().join(", ");
     let mut run = run;
     if let Err(e) = tq.snapshot_for(&board) {
         return end(&run, "creating", Some(&e), format!("Plan revision {}: ticket 1 is unsent ({e}). Filed so far (held, not started): {}. PilotQ retries with the same operation IDs.", run.revision, or_none(filed(&run))));
@@ -417,7 +427,7 @@ pub fn submit(tq: &Taskq, j: &Mutex<Journal>, id: i64, notify: bool) -> String {
             }
         }
     }
-    end(&run, "started", None, format!("Plan revision {}: filed held, read back and started: {}.", run.revision, filed(&run)))
+    end(&run, "started", None, format!("Plan revision {}: created on board; admitted to TaskQ: {}.", run.revision, filed(&run)))
 }
 
 fn or_none(s: String) -> String {
@@ -526,9 +536,11 @@ fn scan(tq: &Taskq, j: &Mutex<Journal>) -> bool {
         let r = match find(s, n) {
             Some(t) => {
                 let (state, card) = (t["state"].as_str().unwrap_or(""), t["card"].as_str());
-                j.observe(&project, n, state, t["revision"].as_i64().unwrap_or(0), card, &status_text(&board, n, state), card.map(|c| question_text(&board, n, c)).as_deref(), now())
+                let saved = j.task_title(&project, n).ok().flatten();
+                let title = t["title"].as_str().or(saved.as_deref());
+                j.observe(&project, n, state, t["revision"].as_i64().unwrap_or(0), card, &status_text(&board, n, state, title), card.map(|c| question_text(&board, n, c, title)).as_deref(), now())
             }
-            None => j.close_task(&project, n, &format!("Task #{n} is closed on the board; its verdict and evidence are on the [issue]({}).", url(&board, n)), now()),
+            None => j.close_task(&project, n, &format!("{}\nClosed on the board; verdict and evidence are on the issue.", task_link(&board, n, j.task_title(&project, n).ok().flatten().as_deref())), now()),
         };
         match r {
             Ok(q) => queued |= q,
@@ -575,6 +587,17 @@ pub fn watch(tq: std::sync::Arc<Taskq>, j: crate::telegram::Shared, wake: std::s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // #91 / R8, R11: link identity and admission must not imply execution.
+    #[test]
+    fn compact_task_status() {
+        let text = status_text("taskqorg/pilotq", 91, "ready", Some("Visible processing"));
+        assert!(text.contains("GitHub · pilotq#91"), "{text}");
+        assert!(text.contains("waiting for a free worker"), "{text}");
+        assert!(text.contains("· Visible processing"));
+        assert!(!text.contains("Open the task"));
+        assert!(task_link("taskqorg/pilotq", 91, Some("A [title] & <tag>")).contains(r"A \[title\] & <tag>"));
+    }
 
     // §5 / A40: TaskQ start removes q-held before adding taskq. A complete list can
     // omit the just-filed task in that interval; it must not end its subscription.

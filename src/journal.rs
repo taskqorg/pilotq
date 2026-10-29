@@ -1481,6 +1481,14 @@ impl Journal {
         tx.commit().map_err(e)
     }
 
+    /// Saved title for a subscribed task, including after it leaves the open snapshot (§12).
+    pub fn task_title(&self, project: &str, task: i64) -> Result<Option<String>, String> {
+        let row: Option<(String, i64)> = self.0.query_row(
+            "SELECT p.tickets, k.idx FROM tickets k JOIN plan_runs r ON r.id=k.run_id JOIN plans p ON p.id=r.plan_id WHERE p.project=?1 AND k.task=?2 ORDER BY r.id DESC LIMIT 1",
+            params![project, task], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(|e| e.to_string())?;
+        row.map(|(text, idx)| serde_json::from_str::<Value>(&text).map(|v| v[idx.saturating_sub(1) as usize]["title"].as_str().map(str::to_owned)).map_err(|e| e.to_string())).transpose().map(Option::flatten)
+    }
+
     /// Records a ticket's start receipt.
     pub fn started(&self, run: &PlanRun, idx: i64, task: i64, state: &str, at: i64) -> Result<(), String> {
         let e = |e: rusqlite::Error| e.to_string();
@@ -1497,7 +1505,8 @@ impl Journal {
         let e = |e: rusqlite::Error| e.to_string();
         let tx = self.0.unchecked_transaction().map_err(e)?;
         tx.execute("UPDATE plan_runs SET state=?2, reason=?3, next_at=?4 WHERE id=?1", params![run.id, state, reason, next_at]).map_err(e)?;
-        if let Some(text) = notify {
+        let duplicate: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM outbox WHERE request_id=?1 AND text=?2)", params![run.request, notify], |r| r.get(0)).map_err(e)?;
+        if let Some(text) = notify.filter(|_| !duplicate) {
             outbox(&tx, run.request, run.chat, run.topic, None, None, text, at)?;
         }
         tx.commit().map_err(e)
@@ -1535,8 +1544,14 @@ impl Journal {
             return Ok(false);
         }
         tx.execute("UPDATE tasks SET state=?2, revision=?3, card=?4, observed=?5 WHERE number=?1 AND project=?6", params![task, state, revision, card, at, project]).map_err(e)?;
-        tx.execute("UPDATE outbox SET state='superseded' WHERE task=?1 AND project=?2 AND kind='status' AND state='pending'", params![task, project]).map_err(e)?;
-        notice(&tx, request, chat, topic, "status", project, task, revision, status, at)?;
+        if state == old && state != "ask" {
+            tx.commit().map_err(e)?;
+            return Ok(false);
+        }
+        if state != old {
+            tx.execute("UPDATE outbox SET state='superseded' WHERE task=?1 AND project=?2 AND kind='status' AND state='pending'", params![task, project]).map_err(e)?;
+            notice(&tx, request, chat, topic, "status", project, task, revision, status, at)?;
+        }
         if let (Some(q), "ask") = (question, state) {
             notice(&tx, request, chat, topic, "question", project, task, revision, q, at)?;
         }
@@ -1757,7 +1772,7 @@ impl Journal {
     pub fn typing(&self, now: i64, window: i64) -> Result<Vec<(i64, Option<i64>)>, String> {
         let mut q = self
             .0
-            .prepare("SELECT DISTINCT q.chat, q.topic FROM runs r JOIN requests q ON q.id=r.request_id WHERE r.state='running' AND q.state='running' AND q.front='telegram' AND r.started_at>=?1")
+            .prepare("SELECT DISTINCT q.chat, q.topic FROM runs r JOIN requests q ON q.id=r.request_id WHERE r.state='running' AND q.state='running' AND q.front='telegram' AND r.started_at>?1")
             .map_err(|e| e.to_string())?;
         q.query_map([now - window], |r| Ok((r.get(0)?, r.get(1)?))).and_then(Iterator::collect).map_err(|e| e.to_string())
     }
@@ -1936,6 +1951,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(p);
     }
 
+    // #91 / R11: a long active call keeps typing, but its deadline and terminal states stop it.
+    #[test]
+    fn typing_active_call_deadline() {
+        let (mut j, p) = journal("typing-deadline");
+        j.admit(&[(1, msg(7, 7, 1))], 0).unwrap();
+        let r = j.claim_next(4, 0).unwrap().remove(0);
+        assert_eq!(j.typing(45, 60).unwrap(), [(7, None)]);
+        assert!(j.typing(60, 60).unwrap().is_empty(), "typing must stop at the deadline");
+        j.finish(&r, None, None, &crate::manager::Outcome::Answered("done".into()), 46).unwrap();
+        assert!(j.typing(47, 60).unwrap().is_empty());
+        j.admit(&[(2, msg(7, 7, 2))], 50).unwrap();
+        let r = j.claim_next(4, 50).unwrap().remove(0);
+        j.finish(&r, None, None, &crate::manager::Outcome::Failed("offline".into()), 51).unwrap();
+        assert!(j.typing(52, 60).unwrap().is_empty(), "failure ends typing");
+        drop(j);
+        let _ = std::fs::remove_dir_all(p);
+    }
+
     // U17: two people's profiles stay distinct across reopen; a correction persists; a private DM fact is visible only in that
     // person's DM; a preference change leaves grants alone; administration does not reveal someone else's private fact.
     #[test]
@@ -2078,6 +2111,7 @@ mod tests {
         let r = j.claim_next(4, 4).unwrap().remove(0);
         j.admit(&[(4, Some(Input { image: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: 4, kind: "text", text: Some("/stop".into()), reply_to: None }))], 5).unwrap();
         assert!(j.fenced(&r).unwrap());
+        assert!(j.typing(5, 60).unwrap().is_empty(), "#91: cancellation ends typing");
         assert!(!j.finish(&r, Some("t-old"), None, &Outcome::Answered("late".into()), 6).unwrap(), "a stopped run cannot reply");
         assert_eq!(j.request(r.request).unwrap(), ("cancelled".into(), None, Some("stopped by /stop".into())));
 
@@ -2480,6 +2514,11 @@ mod tests {
         let pr = j.plan_run(run).unwrap();
         assert_eq!((pr.tickets.len(), pr.tickets[0].plan["title"].as_str(), pr.tickets[0].op_id.ends_with("-t1")), (1, Some("A"), true));
         j.filed(&pr, 1, 19, 10, 4).unwrap();
+        assert_eq!(j.task_title("pilotq", 19).unwrap().as_deref(), Some("A"));
+        assert_eq!(j.task_title("other", 19).unwrap(), None);
+        j.run_outcome(&pr, "creating", Some("offline"), Some("Waiting for board"), 5, 4).unwrap();
+        j.run_outcome(&pr, "creating", Some("offline"), Some("Waiting for board"), 6, 5).unwrap();
+        assert_eq!(count(&j, "SELECT count(*) FROM outbox WHERE text='Waiting for board'"), 1, "#91: deferred retries do not repeat notifications");
 
         let rows = |j: &Journal, s: &str| count(j, &format!("SELECT count(*) FROM outbox WHERE task=19 AND kind='status' AND state='{s}'"));
         assert!(j.observe("pilotq", 19, "ready", 11, None, "ready", None, 5).unwrap());
@@ -2487,12 +2526,13 @@ mod tests {
         assert_eq!((rows(&j, "pending"), rows(&j, "superseded")), (1, 1), "a burst leaves one pending status update");
         assert!(!j.observe("pilotq", 19, "ready", 11, None, "stale", None, 6).unwrap(), "an older observation is ignored");
         assert!(!j.observe("pilotq", 19, "doing", 12, None, "same", None, 6).unwrap(), "an unchanged one too");
+        assert!(!j.observe("pilotq", 19, "doing", 13, None, "doing again", None, 6).unwrap(), "#91: a newer revision alone must not repeat a status");
         while let (Some(d), _) = j.due(7).unwrap() {
             assert!(d.edit.is_none() && d.text != "ready", "the superseded update is never sent");
             j.record(d.id, &Sent::Ok(100 + d.id), 7).unwrap();
         }
         let status: i64 = count(&j, "SELECT sent_message FROM outbox WHERE task=19 AND kind='status' AND state='delivered'");
-        assert!(j.observe("pilotq", 19, "ask", 13, Some("Q?"), "ask", Some("Task #19 asks:\nQ?"), 8).unwrap());
+        assert!(j.observe("pilotq", 19, "ask", 14, Some("Q?"), "ask", Some("Task #19 asks:\nQ?"), 8).unwrap());
         let (d, _) = j.due(8).unwrap();
         assert_eq!((d.as_ref().unwrap().edit, d.as_ref().unwrap().text.as_str()), (Some(status), "ask"), "the status message is edited in place");
         j.record(d.unwrap().id, &Sent::Ok(status), 8).unwrap();
@@ -2503,7 +2543,7 @@ mod tests {
         let answer = |id, to| Some(Input { image: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: id, kind: "text", text: Some("2".into()), reply_to: Some(to) });
         j.admit(&[(3, answer(3, 500)), (4, answer(4, status))], 9).unwrap();
         let a = j.answers().unwrap();
-        assert_eq!(a.iter().map(|(a, resumed)| (a.request, a.task, a.revision, *resumed)).collect::<Vec<_>>(), [(3, 19, 13, false)], "only a reply to the question answers it");
+        assert_eq!(a.iter().map(|(a, resumed)| (a.request, a.task, a.revision, *resumed)).collect::<Vec<_>>(), [(3, 19, 14, false)], "only a reply to the question answers it");
         assert_eq!(j.request(4).unwrap().0, "queued", "another reply is ordinary text for the model");
         assert!(j.claim_next(4, 9).unwrap().iter().all(|r| r.request != 3), "the model never takes an answer");
 

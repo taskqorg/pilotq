@@ -199,7 +199,7 @@ fn tidy(text: &str) -> String {
     fn label(u: &url::Url) -> String {
         let seg: Vec<&str> = u.path_segments().map(|s| s.filter(|p| !p.is_empty()).collect()).unwrap_or_default();
         match (u.host_str().unwrap_or(""), seg.as_slice()) {
-            ("github.com", [_, repo, "issues" | "pull", n, ..]) => format!("{repo}#{n}"),
+            ("github.com", [_, repo, "issues" | "pull", n, ..]) => format!("GitHub · {repo}#{n}"),
             ("github.com", [_, _, "blob" | "tree", _, .., file]) => file.to_string(),
             ("github.com", [owner, repo, ..]) => format!("{owner}/{repo}"),
             (host, _) => host.trim_start_matches("www.").to_string(),
@@ -475,21 +475,28 @@ async fn send(bot: &Bot, j: &Shared, d: &Delivery) -> Sent {
 
 /// Best-effort typing in the exact originating chat and topic while a turn runs, refreshed every 4 s (§ 12, L02). It stops
 /// when the run ends or its deadline passes; a failure is ignored and never touches the run.
-// ponytail: bounded by the run's absolute deadline, not by its last useful event; an event clock in the journal if stale turns need it
+// §12 / #91: the active call deadline owns typing; cosmetic activity never renews model supervision.
 pub async fn typing(bot: Bot, j: Shared, deadline: Duration) {
+    let mut tick = tokio::time::interval(Duration::from_secs(4));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
+        tick.tick().await;
+        let mut sends = tokio::task::JoinSet::new();
         let routes = j.lock().unwrap().typing(now(), deadline.as_secs() as i64).unwrap_or_default();
         for (chat, topic) in routes {
             if j.lock().unwrap().telegram_cooldown(chat).unwrap_or(i64::MAX) > now() { continue; }
-            let mut r = bot.send_chat_action(ChatId(chat), ChatAction::Typing);
-            if let Some(t) = topic {
-                r = r.message_thread_id(ThreadId(MessageId(t as i32)));
-            }
-            if let Err(RequestError::RetryAfter(delay)) = r.await {
-                let _ = j.lock().unwrap().cool_telegram(chat, now() + delay.seconds() as i64 + 1);
-            }
+            let (bot, j) = (bot.clone(), j.clone());
+            sends.spawn(async move {
+                let mut r = bot.send_chat_action(ChatId(chat), ChatAction::Typing);
+                if let Some(t) = topic {
+                    r = r.message_thread_id(ThreadId(MessageId(t as i32)));
+                }
+                if let Ok(Err(RequestError::RetryAfter(delay))) = tokio::time::timeout(Duration::from_secs(3), r.send()).await {
+                    let _ = j.lock().unwrap().cool_telegram(chat, now() + delay.seconds() as i64 + 1);
+                }
+            });
         }
-        tokio::time::sleep(Duration::from_secs(4)).await;
+        while sends.join_next().await.is_some() {}
     }
 }
 
@@ -626,7 +633,7 @@ mod tests {
     fn links_are_labeled_and_paths_are_code() {
         let issue="https://github.com/taskqorg/pilotq/issues/81#issuecomment-5";
         assert_eq!(super::markdown(&format!("Filed {issue}, see docs/status-notifications.md.")),
-            format!("Filed [pilotq#81]({issue}), see `docs/status-notifications.md`."));
+            format!("Filed [GitHub · pilotq#81]({issue}), see `docs/status-notifications.md`."));
         assert_eq!(html("Read (https://example.invalid/a/b?x=1) and **pilotq.md**"),
             "Read (<a href=\"https://example.invalid/a/b?x=1\">example.invalid</a>) and <b><code>pilotq.md</code></b>");
         let kept="[Open the spec](https://github.com/taskqorg/pilotq/blob/main/pilotq.md) `docs/x.md https://x.invalid`\n```\nsrc/main.rs\n```\n";

@@ -1039,7 +1039,7 @@ fn u06_plan_revisions_then_held_create_start_and_one_status_message() {
     assert!(tq_calls(&d).is_empty(), "an older revision files nothing");
 
     push(&st, call(5, OWNER, None, OWNER, "task_run_plan", json!({"revision": 3})));
-    wait("filed and started", 15, || sent_has(&st, "re: ok: Plan revision 3: filed held, read back and started: #19 [pilotq#19](https://github.com/taskqorg/pilotq/issues/19)"));
+    wait("filed and started", 15, || sent_has(&st, "re: ok: Plan revision 3: created on board; admitted to TaskQ: [GitHub · pilotq#19 · Draft three](https://github.com/taskqorg/pilotq/issues/19)"));
     let calls = tq_calls(&d);
     assert_eq!((calls.len(), calls[0][0].as_str(), calls[0][1].as_str(), calls[1][0].as_str(), calls[1][1].as_str()), (2, "add", "Draft three", "start", "19"), "{calls:?}");
     let op = calls[0].iter().skip_while(|a| *a != "--op-id").nth(1).unwrap().clone();
@@ -1049,28 +1049,28 @@ fn u06_plan_revisions_then_held_create_start_and_one_status_message() {
     let log = fs::read_to_string(d.join("taskq.log")).unwrap();
     assert!(log.contains(&format!("\"root\": \"{}\"", d.join("root").display())) && log.contains("\"attempt\": null"), "{log}");
 
-    wait("status message", 15, || sent_has(&st, "Task #19 ready: waiting for a free worker."));
-    let status = sent(&st).into_iter().find(|s| s["text"].as_str().unwrap().starts_with("Task #19 ready")).unwrap();
+    wait("status message", 15, || sent_has(&st, "\nready: waiting for a free worker."));
+    let status = sent(&st).into_iter().find(|s| s["text"].as_str().unwrap().contains("\nready")).unwrap();
     let id = status["id"].as_i64().unwrap();
     set_task(&d, 19, |t| t["state"] = json!("doing"));
-    wait("edit to doing", 15, || sent(&st).iter().any(|s| s["edit"] == true && s["message_id"] == id && s["text"].as_str().unwrap().starts_with("Task #19 doing")));
+    wait("edit to doing", 15, || sent(&st).iter().any(|s| s["edit"] == true && s["message_id"] == id && s["text"].as_str().unwrap().contains("\ndoing")));
     // F14: an observation older than the stored revision is ignored
     set_task(&d, 19, |t| {
         t["state"] = json!("ready");
         t["revision"] = json!(50);
     });
     std::thread::sleep(Duration::from_millis(2500));
-    assert!(!sent(&st).iter().any(|s| s["edit"] == true && s["text"].as_str().unwrap().starts_with("Task #19 ready")), "a stale projection overwrote a newer status");
+    assert!(!sent(&st).iter().any(|s| s["edit"] == true && s["text"].as_str().unwrap().contains("\nready")), "a stale projection overwrote a newer status");
     set_task(&d, 19, |t| t["state"] = json!("review"));
     wait("edit to review", 15, || sent(&st).iter().any(|s| s["edit"] == true && s["message_id"] == id && s["text"].as_str().unwrap().contains("a reviewer checks it")));
     set_task(&d, 19, |t| t["closed"] = json!(true));
-    wait("closing outcome", 15, || sent_has(&st, "Task #19 is closed on the board"));
-    let fin = sent(&st).into_iter().find(|s| s["text"].as_str().unwrap().starts_with("Task #19 is closed")).unwrap();
+    wait("closing outcome", 15, || sent_has(&st, "Closed on the board"));
+    let fin = sent(&st).into_iter().find(|s| s["text"].as_str().unwrap().contains("Closed on the board")).unwrap();
     assert!(fin.get("edit").is_none() && fin["id"] != id, "the outcome is its own message");
     std::thread::sleep(Duration::from_millis(2000));
     let all = sent(&st);
     assert!(!all.iter().any(|s| s["edit"] == true && s["message_id"] == fin["id"]), "nothing edits the final outcome");
-    assert_eq!(all.iter().filter(|s| s.get("edit").is_none() && s["text"].as_str().unwrap().starts_with("Task #19 ")).count(), 2, "one status message and one outcome: {all:?}");
+    assert_eq!(all.iter().filter(|s| s.get("edit").is_none() && s["text"].as_str().unwrap().starts_with("<a href=\"https://github.com/taskqorg/pilotq/issues/19\">")).count(), 2, "one status message and one outcome: {all:?}");
     assert!(!all.iter().any(|s| s["text"].as_str().unwrap().contains("stall") || s["text"].as_str().unwrap().contains("hung")));
     let a: Value = serde_json::from_slice(&cli(&d, &["audit", "--request", "5", "--json"]).stdout).unwrap();
     assert_eq!(a[0]["tasks"].as_array().unwrap().iter().map(|t| t["target"].as_str().unwrap()).collect::<Vec<_>>(), ["taskqorg/pilotq add #19", "taskqorg/pilotq start #19"]);
@@ -1088,7 +1088,7 @@ fn u15_network_loss_after_ticket_two_reconciles_the_same_ids() {
     push(&st, call(1, OWNER, None, OWNER, "task_plan", plan(&["One", "Two", "Three"])));
     wait("plan", 15, || sent_has(&st, "Plan revision 1 saved"));
     push(&st, call(2, OWNER, None, OWNER, "task_run_plan", json!({"revision": 1})));
-    wait("unsent reply", 15, || sent_has(&st, "ticket 2 is unsent (taskq add failed: Error: connection reset by peer). Filed so far (held, not started): #19"));
+    wait("unsent reply", 15, || sent_has(&st, "ticket 2 is unsent (taskq add failed: Error: connection reset by peer). Filed so far (held, not started): [GitHub · pilotq#19"));
     let b = board(&d);
     assert_eq!((b["tasks"]["19"]["state"].as_str(), b["tasks"]["20"]["state"].as_str()), (Some("held"), Some("held")), "created tickets stay held");
     assert!(tq_calls(&d).iter().all(|c| c[0] == "add"), "nothing starts before every ticket reads back");
@@ -1096,7 +1096,7 @@ fn u15_network_loss_after_ticket_two_reconciles_the_same_ids() {
 
     fs::remove_file(d.join("board-down")).unwrap();
     let c = spawn(&d, None);
-    wait("started after restart", 20, || sent_has(&st, "Plan revision 1: filed held, read back and started: #19"));
+    wait("started after restart", 20, || sent_has(&st, "Plan revision 1: created on board; admitted to TaskQ"));
     let b = board(&d);
     assert_eq!(b["creates"], 3, "ticket two was found by its op ID, not created again");
     assert!(["19", "20", "21"].iter().all(|n| b["tasks"][n]["state"] == "ready"), "{b}");
@@ -1106,7 +1106,7 @@ fn u15_network_loss_after_ticket_two_reconciles_the_same_ids() {
     assert!(adds.iter().filter(|o| o.ends_with("-t2")).count() >= 2 && adds.iter().filter(|o| o.ends_with("-t1")).count() == 1, "{adds:?}");
     let first_start = calls.iter().position(|c| c[0] == "start").unwrap();
     assert!(calls[first_start..].iter().all(|c| c[0] == "start") && calls[first_start..].len() == 3, "start only after every create: {calls:?}");
-    assert!(sent_has(&st, "#20 <a href=\"https://github.com/taskqorg/pilotq/issues/20\">pilotq#20</a>, #21"), "{:?}", texts(&st));
+    assert!(sent_has(&st, "<a href=\"https://github.com/taskqorg/pilotq/issues/20\">GitHub · pilotq#20 · Two</a>, <a href=\"https://github.com/taskqorg/pilotq/issues/21\">GitHub · pilotq#21 · Three</a>"), "{:?}", texts(&st));
     stop(c, d);
 }
 
@@ -1119,7 +1119,7 @@ fn a40_topic_state_notifications() {
     push(&st, call(1, -100, Some(5), OWNER, "task_plan", plan(&["Docs"])));
     wait("plan", 15, || sent_has(&st, "Plan revision 1 saved"));
     push(&st, call(2, -100, Some(5), OWNER, "task_run_plan", json!({"revision": 1})));
-    wait("ready", 15, || sent_has(&st, "Task #19 ready"));
+    wait("ready", 15, || sent_has(&st, "\nready"));
     drop(c);
     let c = spawn(&d, None);
     for (state, label) in [("doing", "doing"), ("later", "parked"), ("ready", "ready"), ("ask", "asks:"), ("review", "review")] {
@@ -1128,19 +1128,19 @@ fn a40_topic_state_notifications() {
             t["state"] = json!(state);
             if state == "ask" { t["card"] = json!("Done: draft\nProblem: choose\n1. yes\n2. no"); }
         });
-        wait(label, 15, || sent(&st).iter().skip(before).any(|m| m["text"].as_str().unwrap().starts_with(&format!("Task #19 {label}"))));
+        wait(label, 15, || sent(&st).iter().skip(before).any(|m| m["text"].as_str().unwrap().contains(&format!("\n{label}"))));
     }
     let mut b = board(&d);
     b["tasks"].as_object_mut().unwrap().remove("19");
     fs::write(d.join("taskq-state.json.t"), b.to_string()).unwrap();
     fs::rename(d.join("taskq-state.json.t"), d.join("taskq-state.json")).unwrap();
-    wait("closed", 15, || sent_has(&st, "Task #19 is closed on the board"));
+    wait("closed", 15, || sent_has(&st, "Closed on the board"));
     wait("delivered", 15, || query(&d, "SELECT count(*) FROM outbox WHERE state NOT IN ('delivered','superseded')") == 0);
     assert_eq!(query(&d, "SELECT count(*) FROM outbox WHERE task=19 AND (chat != -100 OR topic IS NOT 5)"), 0);
     let messages = sent(&st);
     assert!(messages.iter().any(|m| m["edit"] == true), "exercise status edits");
     assert!(messages.iter().all(|m| m["chat_id"] == -100 && m["message_thread_id"] == 5), "{messages:#?}");
-    let terminal = messages.iter().find(|m| m["text"].as_str().unwrap().starts_with("Task #19 is closed on the board")).unwrap();
+    let terminal = messages.iter().find(|m| m["text"].as_str().unwrap().contains("Closed on the board")).unwrap();
     assert!(terminal.get("edit").is_none());
     assert!(!messages.iter().any(|m| m["edit"] == true && m["message_id"] == terminal["id"]));
     stop(c, d);
@@ -1166,12 +1166,12 @@ fn u07_question_relay_and_bound_answers() {
     push(&st, call(2, -100, topic, OWNER, "task_plan", plan(&["Docs"])));
     wait("plan", 15, || sent_has(&st, "Plan revision 1 saved"));
     push(&st, call(3, -100, topic, OWNER, "task_run_plan", json!({"revision": 1})));
-    wait("started", 15, || sent_has(&st, "started: #19"));
+    wait("started", 15, || sent_has(&st, "admitted to TaskQ"));
     set_task(&d, 19, |t| {
         t["state"] = json!("ask");
         t["card"] = json!("Done: drafted\nProblem: pick a wording\n1. short ★\n2. long");
     });
-    let question = |needle: &str| sent(&st).into_iter().find(|s| s["text"].as_str().unwrap().starts_with("Task #19 asks:") && s["text"].as_str().unwrap().contains(needle));
+    let question = |needle: &str| sent(&st).into_iter().find(|s| s["text"].as_str().unwrap().contains("\nasks:") && s["text"].as_str().unwrap().contains(needle));
     wait("first question", 15, || question("short ★").is_some());
     let q1 = question("short ★").unwrap();
     assert_eq!((q1["chat_id"].as_i64(), q1["message_thread_id"].as_i64()), (Some(-100), Some(5)), "the question reaches the originating topic");
@@ -1221,15 +1221,15 @@ fn u82_ask_buttons_and_labeled_links() {
     push(&st, call(1, -100, topic, OWNER, "task_plan", plan(&["Docs"])));
     wait("plan", 15, || sent_has(&st, "Plan revision 1 saved"));
     push(&st, call(2, -100, topic, OWNER, "task_run_plan", json!({"revision": 1})));
-    wait("status", 15, || sent_has(&st, &format!("Task #19 ready: waiting for a free worker.\n<a href=\"{issue}\">Open the task</a>")));
-    assert!(sent_has(&st, &format!("started: #19 [pilotq#19]({issue})")), "{:?}", texts(&st));
+    wait("status", 15, || sent_has(&st, &format!("<a href=\"{issue}\">GitHub · pilotq#19 · Docs</a>\nready: waiting for a free worker.")));
+    assert!(sent_has(&st, &format!("admitted to TaskQ: [GitHub · pilotq#19 · Docs]({issue})")), "{:?}", texts(&st));
     set_task(&d, 19, |t| {
         t["state"] = json!("ask");
         t["card"] = json!("Done: drafted\nProblem: pick a wording, see [the spec](https://github.com/taskqorg/pilotq/blob/main/pilotq.md)\n1. short ★\n2. long\nTo answer: `taskq answer 19.K` or comment `K` or the option text");
     });
-    wait("question", 15, || sent_has(&st, "Task #19 asks:"));
-    let q = sent(&st).into_iter().find(|s| s["text"].as_str().unwrap().starts_with("Task #19 asks:")).unwrap();
-    assert_eq!(q["text"], format!("Task #19 asks:\nDone: drafted\nProblem: pick a wording, see <a href=\"https://github.com/taskqorg/pilotq/blob/main/pilotq.md\">the spec</a>\n1. short ★\n2. long\nPress an option or reply to this message to answer.\n<a href=\"{issue}\">Open the task</a>"));
+    wait("question", 15, || sent_has(&st, "\nasks:"));
+    let q = sent(&st).into_iter().find(|s| s["text"].as_str().unwrap().contains("\nasks:")).unwrap();
+    assert_eq!(q["text"], format!("<a href=\"{issue}\">GitHub · pilotq#19 · Docs</a>\nasks:\nDone: drafted\nProblem: pick a wording, see <a href=\"https://github.com/taskqorg/pilotq/blob/main/pilotq.md\">the spec</a>\n1. short ★\n2. long\nPress an option or reply to answer."));
     assert_eq!(q["reply_markup"]["inline_keyboard"], json!([[{"text": "1. short ★", "callback_data": "answer:1"}], [{"text": "2. long", "callback_data": "answer:2"}]]));
     push(&st, press(3, -100, topic, OWNER, q["id"].as_i64().unwrap(), "answer:2"));
     wait("press answers", 15, || sent_has(&st, "Answer written to task #19; it is now doing: a worker is on it."));
@@ -1263,11 +1263,11 @@ fn u10_restart_new_status_pause_and_park() {
     push(&st, call(1, OWNER, None, OWNER, "task_plan", plan(&["Docs"])));
     wait("plan", 15, || sent_has(&st, "Plan revision 1 saved"));
     push(&st, call(2, OWNER, None, OWNER, "task_run_plan", json!({"revision": 1})));
-    wait("status", 15, || sent_has(&st, "Task #19 ready"));
+    wait("status", 15, || sent_has(&st, "\nready"));
     drop(c);
     set_task(&d, 19, |t| t["state"] = json!("doing"));
     let c = spawn(&d, None);
-    wait("missed transition recovered", 15, || sent(&st).iter().any(|s| s["edit"] == true && s["text"].as_str().unwrap().starts_with("Task #19 doing")));
+    wait("missed transition recovered", 15, || sent(&st).iter().any(|s| s["edit"] == true && s["text"].as_str().unwrap().contains("\ndoing")));
     push(&st, text(3, OWNER, None, OWNER, "/new"));
     wait("new", 15, || sent_has(&st, "New conversation started"));
     push(&st, call(4, OWNER, None, OWNER, "task_status", json!({"task": "https://github.com/taskqorg/pilotq/issues/19"})));
@@ -1285,7 +1285,7 @@ fn u10_restart_new_status_pause_and_park() {
     st.lock().unwrap().edit_gone = true;
     push(&st, call(8, OWNER, None, OWNER, "task_park", json!({"task": "#19", "reason": "owner asked"})));
     wait("park", 15, || sent_has(&st, "re: ok: Task #19: later accepted; TaskQ readback later"));
-    wait("status parked", 15, || sent(&st).iter().any(|s| s.get("edit").is_none() && s["chat_id"] == OWNER && s["text"].as_str().unwrap().starts_with("Task #19 parked")));
+    wait("status parked", 15, || sent(&st).iter().any(|s| s.get("edit").is_none() && s["chat_id"] == OWNER && s["text"].as_str().unwrap().contains("\nparked")));
     let b = board(&d);
     assert_eq!((b["creates"].as_i64(), b["paused"].as_bool()), (Some(1), Some(true)), "status reads never create");
     assert_eq!(tq_calls(&d).iter().map(|c| c[0].as_str()).collect::<Vec<_>>(), ["add", "start", "service", "later"]);
@@ -1313,7 +1313,7 @@ fn f07_board_unavailable_or_no_create_claim() {
     wait("unsent", 15, || sent_has(&st, "ticket 1 is unsent (taskq status failed: Error: board unreachable: connection refused)"));
     wait("taskq health", 15, || try_query(&d, "SELECT count(*) FROM plan_runs WHERE state='creating' AND reason LIKE '%board unreachable%'") == Some(1));
     fs::remove_file(d.join("board-down")).unwrap();
-    wait("scan files it", 15, || sent_has(&st, "Plan revision 1: filed held, read back and started: #19"));
+    wait("scan files it", 15, || sent_has(&st, "Plan revision 1: created on board; admitted to TaskQ"));
     assert_eq!(board(&d)["creates"], 1);
     stop(c, d);
 }
@@ -1507,7 +1507,7 @@ fn u04_f04_owner_comment_and_label_once_and_crash_readback() {
     let comments = |d: &Path| gh_state(d)["taskqorg/pilotq"]["5"]["comments"].as_array().map_or(0, Vec::len);
     let c = spawn(&d, None);
     push(&st, call(1, OWNER, None, OWNER, "issue_comment", json!({"project": "pilotq", "issue": "5", "body": "Owner note."})));
-    wait("comment", 15, || sent_has(&st, "re: ok: Comment written once on taskqorg/pilotq#5 and read back: [pilotq#5](https://github.com/taskqorg/pilotq/issues/5#issuecomment-500). Operation pilotq-"));
+    wait("comment", 15, || sent_has(&st, "re: ok: Comment written once on taskqorg/pilotq#5 and read back: [GitHub · pilotq#5](https://github.com/taskqorg/pilotq/issues/5#issuecomment-500). Operation pilotq-"));
     push(&st, call(2, OWNER, None, OWNER, "issue_label", json!({"project": "pilotq", "issue": "#5", "label": "pilotq-live"})));
     wait("label", 15, || sent_has(&st, "re: ok: Label written once on taskqorg/pilotq#5 and read back: label pilotq-live on taskqorg/pilotq#5."));
     push(&st, call(3, 8, None, 8, "issue_comment", json!({"project": "pilotq", "issue": "5", "body": "Not the owner."})));
@@ -1527,7 +1527,7 @@ fn u04_f04_owner_comment_and_label_once_and_crash_readback() {
     killed(c);
     assert_eq!((comments(&d), query(&d, "SELECT count(*) FROM effects WHERE state='intent'")), (2, 1));
     let c = spawn(&d, None);
-    wait("found on readback", 15, || sent_has(&st, "After a restart, the comment on taskqorg/pilotq#5 was found written once (<a href=\"https://github.com/taskqorg/pilotq/issues/5#issuecomment-501\">pilotq#5</a>); it is not repeated."));
+    wait("found on readback", 15, || sent_has(&st, "After a restart, the comment on taskqorg/pilotq#5 was found written once (<a href=\"https://github.com/taskqorg/pilotq/issues/5#issuecomment-501\">GitHub · pilotq#5</a>); it is not repeated."));
     assert_eq!((comments(&d), posts(&d)), (2, 3), "not repeated");
     drop(c);
 
@@ -1747,21 +1747,21 @@ fn a8_live_board_run() {
     assert!(issue.contains("taskq: hold") && issue.contains("taskq: start"), "held, then started: {issue}");
     say(&format!("filed and started #{n}"));
 
-    let status = |s: &str| format!("Task #{n} {s}.\n<a href=\"{url}\">Open the task</a>");
+    let status = |s: &str| format!("\n{s}.");
     let doing = status("doing: a worker is on it");
-    let exact = |t: &str| sent(&st).iter().any(|s| s["text"] == t);
+    let exact = |t: &str| sent(&st).iter().any(|s| s["text"].as_str().is_some_and(|s| s.contains(&url) && s.contains(t)));
     wait("doing", 1800, || exact(&doing));
     // a PilotQ restart while the worker runs: TaskQ keeps the task; the scan keeps reporting it
     c.kill().unwrap();
     c.wait().unwrap();
     say("PilotQ killed while doing; restarting");
     c = spawn(&d, None);
-    let closed = format!("Task #{n} is closed on the board; its verdict and evidence are on the <a href=\"{url}\">issue</a>.");
+    let closed = "Closed on the board; verdict and evidence are on the issue.".to_string();
     let end = Instant::now() + Duration::from_secs(7200);
     while !exact(&closed) {
         assert!(Instant::now() < end, "timed out waiting for the reviewer outcome: {:?}", texts(&st));
         // a worker question is answered by the synthetic owner with its recommended option, by reply
-        let q = sent(&st).into_iter().filter(|s| s["text"].as_str().unwrap().starts_with(&format!("Task #{n} asks:"))).last();
+        let q = sent(&st).into_iter().filter(|s| s["text"].as_str().unwrap().contains("\nasks:") && s["text"].as_str().unwrap().contains(&url)).last();
         if let Some(q) = q.filter(|q| try_query(&d, &format!("SELECT count(*) FROM requests WHERE reply_to={}", q["id"])) == Some(0)) {
             let k = q["text"].as_str().unwrap().lines().find(|l| l.ends_with('★')).and_then(|l| l.split('.').next()).unwrap_or("1").to_string();
             say(&format!("answering the worker question with {k}"));
@@ -1775,13 +1775,13 @@ fn a8_live_board_run() {
 
     // recorded messages: one status message edited in place, the outcome its own message, nothing after it, all in the DM
     let all = sent(&st);
-    let task_msgs: Vec<&Value> = all.iter().filter(|s| s["text"].as_str().unwrap().starts_with(&format!("Task #{n} "))).collect();
-    let news: Vec<&&Value> = task_msgs.iter().filter(|s| s.get("edit").is_none() && !s["text"].as_str().unwrap().contains(" asks:")).collect();
+    let task_msgs: Vec<&Value> = all.iter().filter(|s| s["text"].as_str().unwrap().starts_with(&format!("<a href=\"{url}\">"))).collect();
+    let news: Vec<&&Value> = task_msgs.iter().filter(|s| s.get("edit").is_none() && !s["text"].as_str().unwrap().contains("\nasks:")).collect();
     assert_eq!(news.len(), 2, "one status message and one outcome: {task_msgs:?}");
-    assert!(news[0]["text"].as_str().unwrap().starts_with(&format!("Task #{n} ")) && news[1]["text"] == closed.as_str());
+    assert!(news[0]["text"].as_str().unwrap().starts_with(&format!("<a href=\"{url}\">")) && news[1]["text"].as_str().unwrap().contains(&closed));
     let edits = task_msgs.iter().filter(|s| s["edit"] == true);
     assert!(edits.clone().all(|s| s["message_id"] == news[0]["id"]), "every update edits the status message");
-    assert!(edits.clone().any(|s| s["text"] == doing.as_str()) && edits.clone().any(|s| s["text"] == status("review: the worker handed in a result; a reviewer checks it").as_str()));
+    assert!(edits.clone().any(|s| s["text"].as_str().unwrap().contains(&doing)) && edits.clone().any(|s| s["text"].as_str().unwrap().contains(&status("review: the worker handed in a result; a reviewer checks it"))));
     assert!(task_msgs.iter().all(|s| s["chat_id"] == OWNER), "task messages stay in the originating route");
     assert!(!all.iter().any(|s| s["edit"] == true && s["message_id"] == news[1]["id"]), "nothing edits the outcome");
     assert!(!all.iter().any(|s| { let t = s["text"].as_str().unwrap(); t.contains("stall") || t.contains("hung") }));
@@ -2342,7 +2342,7 @@ fn u39_registered_boards_steer_requeue_and_stale_answer() {
     wait("pilot start", 15, || board(&d)["tasks"]["19"]["state"] == "ready");
     set_task(&second, 19, |t| { t["state"]=json!("ask"); t["card"]=json!("Second board question?"); });
     wait("other question", 15, || sent_has(&st, "Second board question?"));
-    let q = sent(&st).into_iter().find(|s| s["text"].as_str().is_some_and(|s| s.starts_with("Task #19 asks:") && s.contains("Second board question?"))).unwrap()["id"].as_i64().unwrap();
+    let q = sent(&st).into_iter().find(|s| s["text"].as_str().is_some_and(|s| s.contains("\nasks:") && s.contains("Second board question?"))).unwrap()["id"].as_i64().unwrap();
     drop(c);
     // Advance only the other board while PilotQ is down; the fresh check must reject the old reply.
     set_task(&second, 19, |t| t["card"]=json!("New second-board question?"));
