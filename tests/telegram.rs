@@ -75,6 +75,9 @@ fn handle(stream: std::net::TcpStream, st: &State) {
     r.read_exact(&mut body).unwrap();
     let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
     let mut out = stream;
+    if method == "getme" {
+        return respond(&mut out, 200, r#"{"ok":true,"result":{"id":123,"is_bot":true,"first_name":"Invented bot","username":"invented_bot","can_join_groups":true,"can_read_all_group_messages":false,"supports_inline_queries":false,"has_main_web_app":false}}"#);
+    }
     if method == "getfile" {
         let mut f=st.lock().unwrap();
         f.api.push((method.clone(),body.clone(),Instant::now()));
@@ -3064,4 +3067,40 @@ fn u108_registration_failure() {
     wait("queue progresses", 15, || try_query(&d, "SELECT count(*) FROM requests WHERE update_id=4 AND state='answered'") == Some(1));
     stop(c, d);
     }
+}
+
+// #120 A2 / §9: doctor must not hide a broken local voice installation behind healthy other setup checks.
+// Keep dependency output private and exercise the same decode/recognize path as admitted voice input (§12).
+#[test]
+fn doctor_voice_readiness() {
+    let (d, st) = tq_setup("doctor-voice", true);
+    let cfg = d.join("config.json");
+    let mut c: Value = serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
+    c["codex"] = json!(script(&d, "login", "echo 'Logged in using ChatGPT'"));
+    let ffmpeg = script(&d, "decode", r#"while [ "$1" != "-i" ]; do shift; done; input=$2; for a; do out=$a; done; cp "$input" "$out""#);
+    let recognizer = script(&d, "recognize", "echo '{\"text\":\"\"}'");
+    let model = d.join("model");
+    fs::create_dir(&model).unwrap();
+    for (mode, expected) in [(0,"voice not configured"),(1,"voice recognizer unavailable"),(2,"voice model unavailable"),
+        (3,"voice recognizer failed"),(4,"ok"),(5,"voice ffmpeg unavailable"),(6,"voice recognizer failed"),(7,"voice recognition timed out")] {
+        if mode > 0 { c["voice"] = json!({"ffmpeg":ffmpeg,"recognizer":recognizer,"model":model}); }
+        if mode == 1 { c["voice"]["recognizer"] = json!(d.join("absent")); }
+        if mode >= 3 {
+            for f in ["tokens.txt", "encoder.int8.onnx", "decoder.onnx", "joiner.onnx"] { fs::write(model.join(f), "invented model").unwrap(); }
+            script(&d, "recognize", if mode == 3 { "echo private-dependency-output; exit 1" } else { "echo '{\"text\":\"\"}'" });
+        }
+        if mode == 6 { script(&d, "recognize", "echo private-dependency-output"); }
+        if mode == 7 { script(&d, "recognize", "exec sleep 20"); }
+        if mode == 5 { c["voice"]["ffmpeg"] = json!(d.join("absent")); }
+        fs::write(&cfg, c.to_string()).unwrap();
+        let out = Command::new(env!("CARGO_BIN_EXE_pilotq")).env("PILOTQ_INSTALL", &d).args(["doctor","--json"]).output().unwrap();
+        let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(report["checks"]["voice"], expected, "mode {mode}: {report}");
+        assert_eq!(out.status.success(), mode == 4, "mode {mode}: {report}");
+        assert_eq!(report["ok"], mode == 4);
+        assert!(!d.join("journal.sqlite").exists(), "doctor never admits a request");
+        assert!(!String::from_utf8_lossy(&out.stdout).contains("private-dependency-output"));
+    }
+    assert_eq!(st.lock().unwrap().polls, 0, "doctor never polls Telegram updates");
+    fs::remove_dir_all(d).unwrap();
 }

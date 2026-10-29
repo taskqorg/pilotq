@@ -246,7 +246,7 @@ fn selftest(t: &Tool) -> Result<(), String> {
 fn doctor(t: &Tool) -> Value {
     use teloxide::prelude::*;
     use std::process::{Command, Stdio};
-    let mut checks = json!({"configuration": "failed", "telegram": "unknown", "codex": "unknown", "taskq": "unknown"});
+    let mut checks = json!({"configuration": "failed", "telegram": "unknown", "codex": "unknown", "taskq": "unknown", "voice": "unknown"});
     let Ok(Some(c)) = config(t) else { return json!({"ok": false, "checks": checks}); };
     checks["configuration"] = json!("ok");
     let telegram = tokio::runtime::Builder::new_current_thread().enable_all().build().ok().is_some_and(|rt| rt.block_on(async {
@@ -269,7 +269,9 @@ fn doctor(t: &Tool) -> Value {
     checks["codex"] = json!(if login { "ok" } else { "failed" });
     let board = c.taskq.as_ref().is_some_and(|tq| tq.board().is_ok());
     checks["taskq"] = json!(if board { "ok" } else { "failed" });
-    json!({"ok": telegram && login && board, "checks": checks})
+    let voice = voice::readiness(c.voice.as_ref());
+    checks["voice"] = json!(voice.as_ref().err().map(String::as_str).unwrap_or("ok"));
+    json!({"ok": telegram && login && board && voice.is_ok(), "checks": checks})
 }
 
 fn service_run(t: &Tool) -> ! {

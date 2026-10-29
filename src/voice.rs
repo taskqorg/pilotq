@@ -74,3 +74,37 @@ pub fn transcribe(v: &Voice, audio: &[u8], budget: Duration) -> Result<String, S
     let text = text.trim();
     if text.is_empty() { Err(fail("had no recognized speech")) } else { Ok(text.to_string()) }
 }
+
+/// §9 / #120: local setup probe; silence may return empty text but must decode and produce valid recognizer JSON.
+pub fn readiness(v: Option<&Voice>) -> Result<(), String> {
+    let v = v.ok_or("voice not configured")?;
+    let executable = |bin: &str| {
+        let usable = |p: PathBuf| {
+            let Ok(m) = std::fs::metadata(p) else { return false; };
+            #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; m.is_file() && m.permissions().mode() & 0o111 != 0 }
+            #[cfg(not(unix))] { m.is_file() }
+        };
+        if Path::new(bin).components().count() > 1 { usable(bin.into()) }
+        else { std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| usable(d.join(bin)))) }
+    };
+    if !executable(&v.ffmpeg) { return Err("voice ffmpeg unavailable".into()); }
+    if !executable(&v.recognizer) { return Err("voice recognizer unavailable".into()); }
+    for f in ["tokens.txt", "encoder.int8.onnx", "decoder.onnx", "joiner.onnx"] {
+        if !std::fs::metadata(v.model.join(f)).is_ok_and(|m| m.is_file() && m.len() > 0) {
+            return Err("voice model unavailable".into());
+        }
+    }
+    // One second of 16 kHz, mono, 16-bit PCM. No network, user recording or retained transcript.
+    let mut wav = Vec::with_capacity(32044);
+    wav.extend_from_slice(b"RIFF"); wav.extend_from_slice(&32036u32.to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt "); wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes()); wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&16000u32.to_le_bytes()); wav.extend_from_slice(&32000u32.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes()); wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data"); wav.extend_from_slice(&32000u32.to_le_bytes()); wav.resize(32044, 0);
+    match transcribe(v, &wav, Duration::from_secs(10)) {
+        Ok(_) => Ok(()),
+        Err(e) if e == "voice had no recognized speech" => Ok(()),
+        Err(e) => Err(e),
+    }
+}
