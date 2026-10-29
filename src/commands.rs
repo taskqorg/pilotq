@@ -157,9 +157,8 @@ fn execute_bounded(mut command: Command, end: Instant, active: impl Fn() -> bool
                     limited |= bytes.len()>left;
                     let output = if err { &mut stderr } else { &mut stdout };
                     output.extend_from_slice(&bytes[..bytes.len().min(left)]);
-                    if limited { break; }
                 },
-                Err(_) => { read_failed=true; break; },
+                Err(_) => { read_failed=true; },
             }
         }
         if read_failed { break "read_failed"; }
