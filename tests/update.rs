@@ -315,3 +315,36 @@ fn host_requirements_block_install_and_update() {
     }
     fs::remove_dir_all(d).unwrap();
 }
+
+// §9 / #135 A2: an installed start must refuse missing tools even in offline selftest mode.
+#[test]
+fn installed_start_refuses_missing_host_tool() {
+    let d = scratch("start-missing-tool");
+    let install = d.join("install");
+    let bin = d.join("bin");
+    fs::create_dir_all(&install).unwrap();
+    host_support::provision(&bin, &install.join("config.json"));
+    fs::remove_file(bin.join("codex")).unwrap();
+    let release = install.join(format!("releases/{}/pilotq", env!("CARGO_PKG_VERSION")));
+    fs::create_dir_all(release.parent().unwrap()).unwrap();
+    executable(&release, &fs::read(env!("CARGO_BIN_EXE_pilotq")).unwrap());
+    let mut child = Command::new(&release).args(["service", "run"])
+        .env("PILOTQ_INSTALL", &install).env("HOME", &d)
+        .env("PATH", &bin).env("PILOTQ_SELFTEST_OFFLINE", "1")
+        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while child.try_wait().unwrap().is_none() && std::time::Instant::now() < end {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let timed_out = child.try_wait().unwrap().is_none();
+    if timed_out { child.kill().unwrap(); }
+    let out = child.wait_with_output().unwrap();
+    assert!(!timed_out, "installed start did not refuse missing codex");
+    assert!(!out.status.success());
+    let error = String::from_utf8_lossy(&out.stderr);
+    for expected in ["Host requirements failed", "codex", "unavailable", "0.162.0"] {
+        assert!(error.contains(expected), "{error}");
+    }
+    assert!(!install.join("journal.sqlite").exists(), "refuse before starting accepted work");
+    fs::remove_dir_all(d).unwrap();
+}

@@ -358,7 +358,7 @@ Prepare version `0.2.12` for #127. After merge-result CI and review acceptance, 
 
 ### Host requirements (task #130)
 
-The supported managed host is Linux x86_64. The installation owner provisions these tools; PilotQ never runs a package manager, elevates privileges or changes a subscription login. Doctor probes the configured binaries and PATH used by the service. Install and manual/scheduled update checks refuse missing, unparseable or older versions, reporting the exact operator step. After remediation, rerun `pilotq doctor --json` and the original install/update command. Offline selftest remains independent of host setup.
+The supported managed host is Linux x86_64. The installation owner provisions these tools; PilotQ never runs a package manager, elevates privileges or changes a subscription login. Doctor probes the configured binaries and PATH used by the service. Installed-release startup, install and manual/scheduled update checks refuse missing, unparseable or older versions, reporting the exact operator step. After remediation, rerun `pilotq doctor --json` and the original install/update command. Offline selftest remains independent of host setup.
 
 | Host tool | Minimum | Required by / remediation |
 |---|---|---|

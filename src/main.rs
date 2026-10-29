@@ -292,6 +292,8 @@ fn service_run(t: &Tool) -> ! {
     let started = std::time::Instant::now();
     let release = t.release_exe(t.version);
     let installed = std::env::current_exe().and_then(std::fs::canonicalize).ok().is_some_and(|e| Some(e) == release.canonicalize().ok());
+    // §9 / #135: installed starts validate tools before touching accepted work.
+    if installed { host::gate(t).unwrap_or_else(|e| t.die(&e)); }
     // readiness order (§ 12): config and storage, then the poll lock, then polling
     let cfg = config(t).unwrap_or_else(|e| t.die(&e));
     std::fs::create_dir_all(&t.install).unwrap_or_else(|e| t.die(&e.to_string()));
