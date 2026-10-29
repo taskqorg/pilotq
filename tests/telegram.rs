@@ -851,14 +851,15 @@ fn service_messages_are_not_input() {
     created["update_id"] = json!(3);
     created["message"].as_object_mut().unwrap().remove("migrate_to_chat_id");
     created["message"]["group_chat_created"] = json!(true);
-    let mut voice = text(4, -100, Some(3), OWNER, "x");
-    voice["message"].as_object_mut().unwrap().remove("text");
-    voice["message"]["voice"] = json!({"file_id": "f", "file_unique_id": "u", "duration": 1, "mime_type":"audio/ogg"});
-    let (d, st) = setup("service", vec![topic, migrated, created, voice]);
+    // #89 made voice input; a video note stays unsupported media
+    let mut video = text(4, -100, Some(3), OWNER, "x");
+    video["message"].as_object_mut().unwrap().remove("text");
+    video["message"]["video_note"] = json!({"file_id": "f", "file_unique_id": "u", "length": 240, "duration": 1});
+    let (d, st) = setup("service", vec![topic, migrated, created, video]);
     let c = spawn(&d, None);
     wait("dispositions", 15, || try_query(&d, "SELECT count(*) FROM updates") == Some(4));
-    wait("voice outcome", 15, || sent_has(&st, "not supported yet"));
-    assert_eq!(query(&d, "SELECT count(*) FROM requests"), 1, "only the voice message is a request");
+    wait("video outcome", 15, || sent_has(&st, "not supported yet"));
+    assert_eq!(query(&d, "SELECT count(*) FROM requests"), 1, "only the video note is a request");
     assert_eq!(query(&d, "SELECT count(*) FROM updates WHERE disposition='unsupported' AND request_id IS NULL"), 3);
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(st.lock().unwrap().sent.len(), 2, "one retention notice and one unsupported reply; no reply to service messages: {:?}", texts(&st));
