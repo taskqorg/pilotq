@@ -92,3 +92,25 @@ For a failed test installation, stop it with `pilotq service stop`, verify the p
 Task #68 reply checks: an accepted text gets an 👀 reaction, with a text receipt only on reaction failure or a queue wait over 30 seconds. The retention notice appears once. Private answers stream a draft and arrive without quoting the input; groups and topics keep their reply and status correlation. Ask “which projects do you see” to inspect accessible registered projects. Rich-message rejection falls back to ordered HTML chunks, then plain text on entity errors. Draft previews do not establish final delivery. After merge, the PM updates FRA and runs A40; the owner verifies the DM flow (§9).
 
 For 0.2.4 acceptance, the PM updates FRA and runs A40 after merge and publication. The owner then checks rich layout, screenshot interpretation and action wording in chat. These checks remain separate from the deterministic fake-adapter suite.
+
+## Built-in controls (task #106)
+
+The command contract and permissions are in [§9](../pilotq.md#command-line).
+Send `/help` for the current list. `/version`, `/model`, `/doctor` and `/restart`
+are service controls; they do not ask Codex to explain or execute a command.
+`/model` offers catalogue buttons. `/model MODEL` accepts an exact catalogue
+name; `/model default` restores inheritance. The saved choice applies to the
+next manager run in this conversation, survives `/new` and service restart, and
+never changes TaskQ workers. A catalogue entry is not proof of account access.
+
+`/restart` requires the protected owner identity and an installed service. Keep
+its acknowledgement separate from its later healthy-start receipt. During the
+drain, active requests finish and other controls remain available; queued work
+and TaskQ subscriptions stay recorded. A failed drain resumes admission.
+`/skills` currently reports no enabled skills; `/skill NAME TEXT` returns an
+explicit refusal. Native skills cannot bypass the restricted tool boundary.
+
+The operator uses the same path with, for example,
+`pilotq ask '/model default' --json`. Setup diagnostics and model catalogue reads
+have absolute deadlines; dependency failures leave observations unknown and do
+not change the saved choice. Use the operator audit to investigate details.

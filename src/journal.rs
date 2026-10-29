@@ -53,7 +53,13 @@ fn session(chat: i64, topic: Option<i64>, sender: i64, shared: bool) -> String {
 /// Recovery control in a message (§ 2 Changing direction), optionally addressed as `/stop@bot`.
 fn control(text: Option<&str>) -> Option<&'static str> {
     let cmd = text?.split_whitespace().next()?.split('@').next()?;
-    ["/stop", "/status", "/new", "/audit"].into_iter().find(|c| *c == cmd)
+    if !cmd.starts_with('/') { return None; }
+    Some(match cmd {
+        "/stop"=>"/stop", "/status"=>"/status", "/new"=>"/new", "/audit"=>"/audit",
+        "/help"=>"/help", "/version"=>"/version", "/model"=>"/model", "/model-button"=>"/model-button",
+        "/doctor"=>"/doctor", "/restart"=>"/restart", "/skills"=>"/skills", "/skill"=>"/skill",
+        _=>"/unknown",
+    })
 }
 
 
@@ -334,6 +340,18 @@ fn ids(tx: &Connection, session: &str, state: &str) -> Result<Vec<String>, Strin
     q.query_map(params![session, state], |r| r.get(0)).and_then(Iterator::collect).map_err(|e| e.to_string())
 }
 
+/// #106: one durable terminal record; revocation suppresses pending control replies too (R10).
+fn finish_builtin(tx:&Connection,id:i64,text:&str,ok:bool,at:i64)->Result<(),String> {
+    let e=|e:rusqlite::Error|e.to_string();
+    let (sender,front,chat,topic,message):(i64,String,i64,Option<i64>,i64)=tx.query_row("SELECT sender,front,chat,topic,message FROM requests WHERE id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(e)?;
+    if !has(tx,sender,"chat")? { tx.execute("UPDATE requests SET state='cancelled',error='access revoked' WHERE id=?1",[id]).map_err(e)?; return Ok(()); }
+    let language:Option<String>=tx.query_row("SELECT language FROM requests WHERE id=?1",[id],|r|r.get(0)).map_err(e)?;
+    let reply=crate::builtins::localized(text,language.as_deref(),!ok);
+    let changed=tx.execute("UPDATE requests SET state=?2,reply=?3,error=?4 WHERE id=?1 AND state IN ('queued','waiting')",params![id,if ok {"answered"} else {"failed"},reply,if ok {None} else {Some(text)}]).map_err(e)?;
+    if changed>0 && front=="telegram" { outbox(tx,id,chat,topic,(chat!=sender).then_some(message),None,&reply,at)?; }
+    Ok(())
+}
+
 /// Answers `/stop`, `/status`, `/new` or `/audit` inside the admission transaction, without the model and scoped to one
 /// conversation (§ 12). Also returns a request that `/stop` cancelled.
 fn answer_control(tx: &Connection, session: &str, cmd: &str, request: i64, chat: i64, sender: i64, at: i64) -> Result<(String, Option<i64>), String> {
@@ -348,6 +366,14 @@ fn answer_control(tx: &Connection, session: &str, cmd: &str, request: i64, chat:
                 tx.execute("UPDATE conversations SET fence=fence+1 WHERE session=?1", [session]).map_err(e)?;
                 return Ok(("Stopped; queued follow-ups stay queued.".into(), Some(id)));
             }
+            "/version" => format!("PilotQ {}", env!("CARGO_PKG_VERSION")),
+            "/help" => crate::builtins::HELP.into(),
+            "/skills" | "/skill" => "No skills are enabled for PilotQ's restricted manager. /skill NAME TEXT is unavailable until a skill is approved.".into(),
+            "/unknown" => "Unknown command; use /help.".into(),
+            "/restart" if meta(tx,"owner")? != Some(sender) => "Only the configured owner can restart PilotQ.".into(),
+            "/restart" => "Restart requested; waiting for active requests to drain.".into(),
+            "/doctor" => "Checking setup.".into(),
+            "/model" | "/model-button" => "Checking model catalogue.".into(),
             // a group or topic would show one person's history to everyone in it
             "/audit" if chat != sender => "Use /audit in a direct message with PilotQ; it shows only your own requests.".into(),
             "/audit" => {
@@ -439,6 +465,8 @@ pub struct Run {
     pub fence: i64,
     pub thread: Option<String>,
     pub text: String,
+    pub model: Option<String>,
+    pub model_epoch: i64,
     pub images: Vec<(i64, PathBuf)>,
     pub image_gaps: Vec<i64>,
 }
@@ -457,7 +485,9 @@ fn claim(tx: &Connection, request: i64, at: i64) -> Result<Option<Run>, String> 
         .map_err(e)?;
     tx.execute("INSERT INTO runs(request_id, session, generation, fence, state, started_at) VALUES (?1,?2,?3,?4,'running',?5)", params![request, session, generation, fence, at])
         .map_err(e)?;
-    Ok(Some(Run { id: tx.last_insert_rowid(), request, session, generation, fence, thread, text, images: vec![], image_gaps: vec![] }))
+    let model = tx.query_row("SELECT CAST(value AS TEXT) FROM meta WHERE key=?1",[format!("model:{session}")],|r|r.get(0)).optional().map_err(e)?;
+    let model_epoch=meta(tx,&format!("model-epoch:{session}"))?.unwrap_or(0);
+    Ok(Some(Run { id: tx.last_insert_rowid(), request, session, generation, fence, thread, text, model, model_epoch, images: vec![], image_gaps: vec![] }))
 }
 
 /// Marks recognized speech in the request text the model and history see (#104).
@@ -766,6 +796,119 @@ impl Journal {
         Ok(json!({"since": since, "until": until, "tools": tools}))
     }
 
+    /// #106 / R13: operator controls use the same admission, grants and audit boundary.
+    pub fn builtin_cli(&mut self, sender:i64, text:&str, at:i64) -> Result<Option<i64>,String> {
+        let Some(cmd)=control(Some(text)) else { return Ok(None) };
+        if !has(&self.0,sender,"chat")? { return Err("chat grant required".into()); }
+        let tx=self.0.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+        let update:i64=tx.query_row("SELECT min(coalesce(min(update_id),0),0)-1 FROM requests",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+        let session=format!("cli:{sender}");
+        let deferred=matches!(cmd,"/model"|"/doctor"|"/restart") && (cmd!="/restart" || meta(&tx,"owner")?==Some(sender));
+        let failed=matches!(cmd,"/unknown"|"/skill"|"/restart") && !deferred;
+        let id=insert(&tx,update,"cli",sender,None,sender,None,0,if deferred {"builtin"} else {"control"},Some(text),if deferred {"queued"} else if failed {"failed"} else {"answered"},at,&session,None)?;
+        tx.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?1,coalesce((SELECT generation FROM conversations WHERE session=?2),0))",params![format!("builtin-generation:{id}"),session]).map_err(|e|e.to_string())?;
+        if !deferred {
+            let (text,_)=answer_control(&tx,&session,cmd,id,sender,sender,at)?;
+            tx.execute("UPDATE requests SET reply=?2,error=?3 WHERE id=?1",params![id,text,if failed {Some(&text)} else {None}]).map_err(|e|e.to_string())?;
+        }
+        tx.commit().map_err(|e|e.to_string())?;
+        self.trace(id,at);
+        Ok(Some(id))
+    }
+
+    pub fn builtin_take(&mut self,id:i64) -> Result<Option<crate::builtins::Request>,String> {
+        self.0.query_row("UPDATE requests SET state='waiting' WHERE id=?1 AND kind='builtin' AND state='queued' RETURNING id,session,sender,text",
+            [id],|r|Ok(crate::builtins::Request{id:r.get(0)?,session:r.get(1)?,sender:r.get(2)?,text:r.get(3)?})).optional().map_err(|e|e.to_string())
+    }
+
+    pub fn builtin_next(&mut self) -> Result<Option<crate::builtins::Request>,String> {
+        revalidate(&self.0)?;
+        self.0.query_row("UPDATE requests SET state='waiting' WHERE id=(SELECT min(id) FROM requests WHERE kind='builtin' AND state='queued') RETURNING id,session,sender,text",
+            [],|r|Ok(crate::builtins::Request{id:r.get(0)?,session:r.get(1)?,sender:r.get(2)?,text:r.get(3)?})).optional().map_err(|e|e.to_string())
+    }
+
+    pub fn builtin_allowed(&self, r:&crate::builtins::Request) -> Result<bool,String> {
+        has(&self.0,r.sender,"chat")
+    }
+
+    pub fn builtin_finish(&mut self, id:i64, text:&str, ok:bool, at:i64) -> Result<(),String> {
+        let tx=self.0.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+        finish_builtin(&tx,id,text,ok,at)?;
+        tx.commit().map_err(|e|e.to_string())?;
+        self.trace(id,at);
+        Ok(())
+    }
+
+    /// Atomic selection, audit reply and delivery: a crash cannot lose a committed choice receipt.
+    pub fn builtin_models(&mut self,r:&crate::builtins::Request,models:&[String],at:i64) -> Result<(),String> {
+        let tx=self.0.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+        let e=|e:rusqlite::Error|e.to_string();
+        if !has(&tx,r.sender,"chat")? { finish_builtin(&tx,r.id,"Access revoked.",false,at)?; return tx.commit().map_err(e); }
+        let generation:i64=tx.query_row("SELECT coalesce((SELECT generation FROM conversations WHERE session=?1),0)",[&r.session],|x|x.get(0)).map_err(e)?;
+        let saved=meta(&tx,&format!("builtin-generation:{}",r.id))?.unwrap_or(0);
+        let mut args=r.text.split_whitespace();
+        let command=args.next().unwrap_or("").split('@').next().unwrap_or("");
+        let arg=args.next();
+        let selected=if command=="/model-button" {
+            let (source,index)=arg.and_then(|s|s.split_once(':')).ok_or("Invalid model button")?;
+            let source=source.parse::<i64>().map_err(|_|"Invalid model button")?;
+            let index=index.parse::<usize>().map_err(|_|"Invalid model button")?;
+            let valid:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM requests q JOIN outbox o ON o.request_id=q.id WHERE q.id=?1 AND q.session=?2 AND q.sender=?3 AND o.sent_message=(SELECT message FROM requests WHERE id=?4) AND o.state='delivered' AND q.id=(SELECT max(x.id) FROM requests x JOIN meta m ON m.key='models:' || x.id WHERE x.session=?2))",
+                params![source,r.session,r.sender,r.id],|x|x.get(0)).map_err(e)?;
+            if !valid || meta(&tx,&format!("models-epoch:{source}"))?.unwrap_or(0)!=meta(&tx,&format!("model-epoch:{}",r.session))?.unwrap_or(0) || meta(&tx,&format!("builtin-generation:{source}"))?!=Some(generation) || meta(&tx,&format!("model-used:{source}"))?.is_some() { return Err("This model selector is stale or belongs to another person; use /model.".into()); }
+            let catalogue:String=tx.query_row("SELECT CAST(value AS TEXT) FROM meta WHERE key=?1",[format!("models:{source}")],|x|x.get(0)).map_err(e)?;
+            let names:Vec<String>=serde_json::from_str(&catalogue).map_err(|_|"Invalid model selector")?;
+            let name=names.get(index).ok_or("Invalid model button")?.clone();
+            tx.execute("INSERT INTO meta(key,value) VALUES (?1,?2)",params![format!("model-used:{source}"),r.id]).map_err(e)?;
+            Some(name)
+        } else { arg.map(str::to_string) };
+        if args.next().is_some() { return Err("Use /model, /model MODEL or /model default.".into()); }
+        if generation!=saved { return Err("Conversation was reset; use /model again.".into()); }
+        let key=format!("model:{}",r.session);
+        let before:Option<String>=tx.query_row("SELECT CAST(value AS TEXT) FROM meta WHERE key=?1",[&key],|x|x.get(0)).optional().map_err(e)?;
+        let text=if let Some(name)=selected {
+            if name!="default" && !models.contains(&name) { return Err("Model is not in the current Codex catalogue; choice unchanged.".into()); }
+            if name=="default" { tx.execute("DELETE FROM meta WHERE key=?1",[&key]).map_err(e)?; }
+            else { tx.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?1,?2)",params![key,name]).map_err(e)?; }
+            tx.execute("INSERT INTO meta(key,value) VALUES (?1,1) ON CONFLICT(key) DO UPDATE SET value=value+1",[format!("model-epoch:{}",r.session)]).map_err(e)?;
+            tx.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?1,1)",[format!("refresh:{}",r.session)]).map_err(e)?;
+            tx.execute("INSERT INTO audit_events(request_id,at,kind,item,result) VALUES (?1,?2,'model',?3,?4)",params![r.id,at,before,name]).map_err(e)?;
+            format!("Saved model: {name}. Applies to the next run in this conversation; active runs and TaskQ workers keep their policy.")
+        } else {
+            let mut choices=vec!["default".to_string()]; choices.extend_from_slice(models);
+            tx.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?1,?2)",params![format!("models:{}",r.id),serde_json::to_string(&choices).map_err(|e|e.to_string())?]).map_err(e)?;
+            tx.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?1,?2)",params![format!("models-epoch:{}",r.id),meta(&tx,&format!("model-epoch:{}",r.session))?.unwrap_or(0)]).map_err(e)?;
+            let actual:Option<String>=tx.query_row("SELECT u.model FROM runs u JOIN requests q ON q.id=u.request_id WHERE q.session=?1 AND u.model IS NOT NULL ORDER BY u.id DESC LIMIT 1",[&r.session],|x|x.get(0)).optional().map_err(e)?;
+            format!("Saved choice: {}. Last reported model: {}.\\nCodex catalogue (access is verified only by a completed turn):\\n{}\\nUse a button or /model MODEL. Next run only; TaskQ worker policy is unchanged.",before.as_deref().unwrap_or("default"),actual.as_deref().unwrap_or("unknown"),choices.join("\\n")).replace("\\n","\n")
+        };
+        finish_builtin(&tx,r.id,&text,true,at)?;
+        tx.commit().map_err(e)?; self.trace(r.id,at); Ok(())
+    }
+
+    pub fn builtin_recover(&mut self,_at:i64) -> Result<(),String> {
+        // Read-only controls and uncommitted local selections can retry. A dispatched restart never repeats.
+        self.0.execute("UPDATE requests SET state='queued' WHERE kind='builtin' AND state='waiting' AND id<>coalesce((SELECT value FROM meta WHERE key='command-restart'),0)",[]).map_err(|e|e.to_string())?;
+        Ok(())
+    }
+
+    pub fn builtin_restart(&self,id:i64) -> Result<(),String> {
+        let tx=self.0.unchecked_transaction().map_err(|e|e.to_string())?;
+        tx.execute("INSERT INTO meta(key,value) VALUES ('command-restart',?1)",[id]).map_err(|e|e.to_string())?;
+        tx.execute("INSERT OR REPLACE INTO meta(key,value) VALUES ('command-restart-pid',?1)",[std::process::id()]).map_err(|e|e.to_string())?;
+        tx.commit().map_err(|e|e.to_string())
+    }
+
+    pub fn builtin_restarted(&mut self,at:i64) -> Result<(),String> {
+        if meta(&self.0,"command-restart-pid")?==Some(std::process::id() as i64) {return Ok(());}
+        if let Some(id)=meta(&self.0,"command-restart")? {
+            let tx=self.0.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
+            finish_builtin(&tx,id,"PilotQ restarted and wrote healthy status. Earlier requests and TaskQ work remain recorded.",true,at)?;
+            tx.execute("DELETE FROM meta WHERE key='command-restart'",[]).map_err(|e|e.to_string())?;
+            tx.commit().map_err(|e|e.to_string())?; self.trace(id,at);
+        }
+        Ok(())
+    }
+
     /// Offset for the next getUpdates call; it confirms everything already committed.
     pub fn cursor(&self) -> Result<i64, String> {
         self.0.query_row("SELECT value FROM meta WHERE key='cursor'", [], |r| r.get(0)).optional().map(Option::unwrap_or_default).map_err(|e| e.to_string())
@@ -806,6 +949,11 @@ impl Journal {
                             .map_err(|e| e.to_string())?;
                         route >= ROUTE_BACKLOG || total >= TOTAL_BACKLOG
                     };
+                    // The independent read-control queue is bounded too; immediate recovery controls stay available.
+                    let builtin_busy=matches!(cmd,Some("/model"|"/model-button"|"/doctor"|"/restart")) && {
+                        let (route,total):(i64,i64)=tx.query_row("SELECT count(*) FILTER(WHERE chat=?1 AND topic IS ?2),count(*) FROM requests WHERE kind='builtin' AND state IN ('queued','waiting')",params![i.chat,i.topic],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|e.to_string())?;
+                        route>=ROUTE_BACKLOG || total>=TOTAL_BACKLOG
+                    };
                     // a reply to a relayed TaskQ question is an answer: checked and written by PilotQ, never by the model (§ 5)
                     let question: Option<i64> = match (cmd, i.reply_to) {
                         (None, Some(m)) if matches!(i.kind, "text" | "button") => tx
@@ -815,6 +963,10 @@ impl Journal {
                         _ => None,
                     };
                     let (kind, state) = match (cmd, i.kind) {
+                        (Some(_), _) if builtin_busy => ("control", "failed"),
+                        (Some("/model" | "/model-button" | "/doctor"), _) => ("builtin", "queued"),
+                        (Some("/restart"), _) if meta(&tx,"owner")? == Some(sender) => ("builtin", "queued"),
+                        (Some("/unknown" | "/skill" | "/restart"), _) => ("control", "failed"),
                         (Some(_), _) => ("control", "answered"),
                         (None, "text" | "image" | "voice" | "action") if busy => (i.kind, "failed"),
                         (None, "text" | "button") if question.is_some() => ("answer", "queued"),
@@ -822,6 +974,9 @@ impl Journal {
                         _ => (i.kind, "failed"),
                     };
                     let id = insert(&tx, *update, "telegram", i.chat, i.topic, sender, i.name.as_deref(), i.message, kind, i.text.as_deref(), state, at, &s, i.reply_to)?;
+                    if kind=="builtin" {
+                        tx.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?1,coalesce((SELECT generation FROM conversations WHERE session=?2),0))",params![format!("builtin-generation:{id}"),s]).map_err(|e|e.to_string())?;
+                    }
                     if let Some(callback) = &i.callback {
                         tx.execute("INSERT INTO meta(key,value) VALUES (?1,?2)", params![format!("callback:{id}"), callback.as_bytes()]).map_err(|e| e.to_string())?;
                     }
@@ -855,6 +1010,7 @@ impl Journal {
                     }
                     let first: bool = tx.query_row("SELECT NOT EXISTS (SELECT 1 FROM requests WHERE sender=?1 AND id<>?2)", [sender, id], |r| r.get(0)).map_err(|e| e.to_string())?;
                     let text = match cmd {
+                        Some(_) if builtin_busy => brief(i.language.as_deref(),"busy").into(),
                         Some(c) => {
                             let (text, stopped) = answer_control(&tx, &s, c, id, i.chat, sender, at)?;
                             ended.extend(stopped);
@@ -867,19 +1023,28 @@ impl Journal {
                         // §12: accepted text gets a reaction obligation below, without a text acknowledgement.
                         None => String::new(),
                     };
+                    let text=if matches!(cmd,Some("/help"|"/version"|"/model"|"/model-button"|"/doctor"|"/restart"|"/skills"|"/skill"|"/unknown")) {
+                        crate::builtins::localized(&text,i.language.as_deref(),state=="failed")
+                    } else {text};
                     // § 8: a person learns at admission that their requests are recorded, and for how long
                     let notice = format!(" Your requests are recorded ({RETENTION}); /audit in a direct message shows yours.");
                     if state != "queued" {
-                        let error = busy.then_some("busy: backlog full");
+                        let error = if busy {Some("busy: backlog full")} else if state=="failed" && cmd.is_some() {Some(text.as_str())} else {None};
                         tx.execute("UPDATE requests SET reply=?2, error=coalesce(?3, error) WHERE id=?1", params![id, text, error]).map_err(|e| e.to_string())?;
                         ended.push(id);
                     }
-                    if state == "queued" {
+                    if state == "queued" && kind != "builtin" {
                         outbox(&tx, id, i.chat, i.topic, Some(i.message), None, "Received.", at)?;
                         tx.execute("UPDATE outbox SET kind='reaction' WHERE id=?1", [tx.last_insert_rowid()]).map_err(|e| e.to_string())?;
                     }
                     if first {
                         outbox(&tx,id,i.chat,i.topic,None,None,notice.trim_start(),at)?;
+                    }
+                    if let Some(callback)=&i.callback {
+                        if cmd==Some("/model-button") {
+                            outbox(&tx,id,i.chat,i.topic,None,None,"Model selection received.",at)?;
+                            tx.execute("UPDATE outbox SET kind=?2 WHERE id=?1",params![tx.last_insert_rowid(),format!("toast:{callback}")]).map_err(|e|e.to_string())?;
+                        }
                     }
                     if !text.is_empty() {
                         outbox(&tx, id, i.chat, i.topic, (i.chat != sender).then_some(i.message), Some(&crate::telegram::html(&text)), &text, at)?;
@@ -924,7 +1089,7 @@ impl Journal {
         // Timers only wake this scan; the request and one-notice disposition are durable across restart.
         self.0.execute("INSERT INTO outbox(request_id,chat,topic,reply_to,text,next_at,kind)
             SELECT r.id,r.chat,r.topic,CASE WHEN r.chat<>r.sender THEN r.message END,'Queued behind ' || (SELECT count(*) FROM requests p WHERE p.session=r.session AND p.id<r.id AND p.state IN ('queued','running')) || '.',?1,'queued'
-            FROM requests r WHERE r.front='telegram' AND r.state='queued' AND r.received_at<?1-30
+            FROM requests r WHERE r.front='telegram' AND r.state='queued' AND r.kind<>'builtin' AND r.received_at<?1-30
             AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.request_id=r.id AND o.kind='queued')", [now]).map_err(|e|e.to_string())?;
         self.0.execute("UPDATE outbox SET state='superseded' WHERE kind='queued' AND state='pending' AND request_id IN (SELECT id FROM requests WHERE state<>'queued')", []).map_err(|e|e.to_string())?;
         let heads = "FROM outbox o WHERE state='pending' AND (o.kind='reaction' OR NOT EXISTS
@@ -1512,7 +1677,7 @@ impl Journal {
         close_drafts(&tx, &r.session, r.request, at)?;
         // a thread from before /new never attaches to the new conversation generation
         tx.execute("UPDATE conversations SET thread=coalesce(?3, thread) WHERE session=?1 AND generation=?2", params![r.session, r.generation, thread]).map_err(e)?;
-        if thread.is_some() {
+        if thread.is_some() && meta(&tx,&format!("model-epoch:{}",r.session))?.unwrap_or(0)==r.model_epoch {
             tx.execute("DELETE FROM meta WHERE key=?1", [format!("refresh:{}",r.session)]).map_err(e)?;
         }
         let dest: (String, i64, Option<i64>, i64) =
@@ -1752,6 +1917,13 @@ impl Journal {
             WHERE o.id=?1 AND c.used_request IS NULL AND q.state='answered' AND (o.kind='rich' OR (o.kind='rich_part' AND o.id=(SELECT max(id) FROM outbox WHERE request_id=o.request_id AND kind='rich_part')))",
             [delivery],|x|Ok((x.get(0)?,x.get(1)?,x.get(2)?,x.get(3)?))).optional().map_err(|e|e.to_string())?;
         let mut buttons=vec![];
+        let source:i64=self.0.query_row("SELECT request_id FROM outbox WHERE id=?1",[delivery],|r|r.get(0)).map_err(|e|e.to_string())?;
+        let models:Option<String>=self.0.query_row("SELECT CAST(value AS TEXT) FROM meta WHERE key=?1",[format!("models:{source}")],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
+        if let Some(models)=models {
+            for (i,model) in serde_json::from_str::<Vec<String>>(&models).map_err(|e|e.to_string())?.iter().enumerate() {
+                buttons.push((format!("model:{source}:{i}"),model.chars().take(64).collect()));
+            }
+        }
         if let Some((id,plan,options,language))=card {
             if plan.is_some() {
                 let ru=language.as_deref().unwrap_or("en").starts_with("ru");
@@ -3509,6 +3681,93 @@ mod tests {
         let change=j.ask(7,"also audio",16).unwrap();
         j.save_plan(&change,&json!([{"title":"Audio"}]),"pilotq","taskqorg/pilotq","",16).unwrap();
         assert_ne!(second,count(&j,"SELECT draft FROM plans ORDER BY id DESC LIMIT 1"));
+        drop(j);let _=std::fs::remove_dir_all(p);
+    }
+
+    // #106 / R10, R17, §12: replay FRA 37–41 while a chat run owns the conversation.
+    // Guards against forwarding deterministic controls to Codex or waiting behind the active run.
+    #[test]
+    fn u106_commands_bypass_active_chat() {
+        let (mut j,p)=journal("u106-replay");
+        j.admit(&[(1,msg(7,7,1))],0).unwrap();
+        let active=j.claim_next(4,0).unwrap().remove(0);
+        for (u,command) in [(37,"/version"),(38,"/model"),(39,"/doctor"),(40,"/help"),(41,"/restart")] {
+            let mut input=msg(7,7,u).unwrap(); input.text=Some(command.into());
+            j.admit(&[(u,Some(input))],1).unwrap();
+            let kind:String=j.0.query_row("SELECT kind FROM requests WHERE update_id=?1",[u],|r|r.get(0)).unwrap();
+            assert!(matches!(kind.as_str(),"control"|"builtin"),"{command} forwarded as {kind}");
+        }
+        assert_eq!(j.request(active.request).unwrap().0,"running");
+        assert_eq!(count(&j,"SELECT count(*) FROM runs"),1);
+        assert_eq!(count(&j,"SELECT count(*) FROM requests WHERE kind='text' AND state='queued'"),0);
+        for u in 100..100+ROUTE_BACKLOG+2 {
+            let mut input=msg(7,7,u).unwrap();input.text=Some("/doctor".into());
+            j.admit(&[(u,Some(input))],2).unwrap();
+        }
+        assert_eq!(count(&j,"SELECT count(*) FROM requests WHERE kind='builtin' AND state='queued'"),ROUTE_BACKLOG);
+        let mut status=msg(7,7,999).unwrap();status.text=Some("/status@pilotq".into());
+        j.admit(&[(999,Some(status))],3).unwrap();
+        assert_eq!(j.0.query_row("SELECT state FROM requests WHERE update_id=999",[],|r|r.get::<_,String>(0)).unwrap(),"answered");
+
+        drop(j); let _=std::fs::remove_dir_all(p);
+    }
+
+    // #106 / R9, R10, §4, §12: scope, stale buttons and revocation guard local model writes.
+    // Existing update_drain_timeout_preserves_running_work retains the active-work drain guard.
+    #[test]
+    fn u106_model_authority_and_recovery() {
+        let (mut j,p)=journal("u106-authority");
+        j.grant(7,8,&["chat".into()],0).unwrap();
+        j.set_route(7,-100,0,true,0).unwrap();
+        let send=|j:&mut Journal,u:i64,user:i64,text:&str| {
+            let mut input=msg(-100,user,u).unwrap(); input.text=Some(text.into());
+            j.admit(&[(u,Some(input))],u).unwrap();
+        };
+        let models=vec!["invented-a".into(),"invented-b".into()];
+        send(&mut j,1,7,"/model");
+        let selector=j.builtin_next().unwrap().unwrap();
+        j.builtin_models(&selector,&models,1).unwrap();
+        j.0.execute("UPDATE outbox SET state='delivered',sent_message=900+id",[]).unwrap();
+        let m:i64=j.0.query_row("SELECT max(sent_message) FROM outbox WHERE request_id=?1",[selector.id],|r|r.get(0)).unwrap();
+        let button=|j:&mut Journal,u:i64,user:i64| {
+            let mut i=msg(-100,user,m).unwrap();i.text=Some(format!("/model-button {}:2",selector.id));i.callback=Some(format!("invented-{u}"));
+            j.admit(&[(u,Some(i))],u).unwrap(); j.builtin_next().unwrap().unwrap()
+        };
+        let foreign=button(&mut j,2,8);
+        assert!(j.builtin_models(&foreign,&models,2).unwrap_err().contains("another person"));
+        j.builtin_finish(foreign.id,"Refused",false,2).unwrap();
+        let valid=button(&mut j,3,7);
+        j.builtin_models(&valid,&models,3).unwrap();
+        let replay=button(&mut j,4,7);
+        assert!(j.builtin_models(&replay,&models,4).is_err());
+        j.builtin_finish(replay.id,"Refused",false,4).unwrap();
+        send(&mut j,5,7,"/model invented-unavailable");
+        let unavailable=j.builtin_next().unwrap().unwrap();
+        assert!(j.builtin_models(&unavailable,&models,5).unwrap_err().contains("choice unchanged"));
+        j.builtin_finish(unavailable.id,"Refused",false,5).unwrap();
+        send(&mut j,6,7,"hello");
+        let active=j.claim_next(4,6).unwrap().remove(0);
+        assert_eq!(active.model.as_deref(),Some("invented-b"));
+        send(&mut j,7,7,"/model default");
+        let default=j.builtin_next().unwrap().unwrap();j.builtin_models(&default,&models,7).unwrap();
+        assert_eq!(active.model.as_deref(),Some("invented-b"),"active run keeps its claimed model");
+        j.finish(&active,Some("old-model-thread"),Some("invented-b"),&crate::manager::Outcome::Answered("done".into()),8).unwrap();
+        send(&mut j,8,7,"next");
+        let next=j.claim_next(4,8).unwrap().remove(0);
+        assert_eq!(next.model,None);
+        assert!(j.refresh_tools(&next).unwrap(),"old run cannot clear a pending model reset");
+        send(&mut j,9,7,"/model");
+        let reset=j.builtin_next().unwrap().unwrap();
+        send(&mut j,10,7,"/new");
+        assert!(j.builtin_models(&reset,&models,10).unwrap_err().contains("reset"));
+        j.builtin_finish(reset.id,"Refused",false,10).unwrap();
+        send(&mut j,11,8,"/model invented-a");
+        let revoked=j.builtin_next().unwrap().unwrap();
+        j.revoke(7,8,&[],12).unwrap();
+        j.builtin_models(&revoked,&models,12).unwrap();
+        assert_eq!(j.request(revoked.id).unwrap().0,"cancelled");
+        assert_eq!(count(&j,"SELECT count(*) FROM meta WHERE key LIKE 'model:%'"),0);
+        j.builtin_recover(13).unwrap();
         drop(j);let _=std::fs::remove_dir_all(p);
     }
 

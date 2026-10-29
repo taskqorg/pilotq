@@ -1,5 +1,6 @@
 //! PilotQ service and operator CLI on coreq (pilotq.md § 9).
 
+mod builtins;
 mod direct;
 mod journal;
 mod instructions;
@@ -120,6 +121,7 @@ fn healthy_start(t: &Tool, j: &mut journal::Journal, owner: Option<i64>, elapsed
         let rolled_back = rollback_notice(t, j, owner, at)?;
         j.restart_notice(owner, rolled_back, at)?;
     }
+    j.builtin_restarted(at)?;
     Ok(())
 }
 
@@ -288,6 +290,7 @@ fn service_run(t: &Tool) -> ! {
     }
     // § 12: reconcile runs a dead process left behind before anything new starts
     journal.reconcile(now() as i64).unwrap_or_else(|e| t.die(&e));
+    journal.builtin_recover(now() as i64).unwrap_or_else(|e| t.die(&e));
     // #81 U1: read the previous stop before this process clears the drain or records itself alive
     journal.service_started(now() as i64).unwrap_or_else(|e| t.die(&e));
     // F04: an effect written without a receipt is read back, never repeated
@@ -307,6 +310,8 @@ fn service_run(t: &Tool) -> ! {
             std::fs::TryLockError::WouldBlock => t.die("poll lock held: another pilotq service polls this bot"),
             std::fs::TryLockError::Error(e) => t.die(&format!("poll lock: {e}")),
         });
+        let (bj,bt)=(j.clone(),tool());
+        std::thread::spawn(move || builtins::serve(bt,bj,installed));
         let mut bot = teloxide::Bot::new(c.token);
         if let Some(u) = c.api_url {
             bot = bot.set_api_url(u);
@@ -376,6 +381,10 @@ fn ask(t: &Tool, text: &str) -> Result<Value, (Value, String)> {
     let mut j = journal::Journal::open(&t.install.join("journal.sqlite")).map_err(plain)?;
     j.bootstrap(cfg.owner, now() as i64).map_err(plain)?;
     initial_project(&j, &cfg).map_err(plain)?;
+    if let Some(id)=j.builtin_cli(cfg.owner,text,now() as i64).map_err(plain)? {
+        let v=builtins::cli(t,j,id,text).map_err(plain)?;
+        return if v["state"]=="answered" {Ok(v)} else {Err((v,"built-in command did not complete successfully".into()))};
+    }
     let r = j.ask(cfg.owner, text, now() as i64).map_err(plain)?;
     let j = Mutex::new(j);
     manager::run(&cfg.codex, &j, &r, || now() as i64, cfg.taskq.as_ref(), &cfg.direct).map_err(plain)?;
@@ -788,6 +797,32 @@ mod update_tests {
         assert!(j.ask(7, "allowed", 3).is_ok());
         drop(j);
         std::fs::remove_dir_all(&t.install).unwrap();
+    }
+
+    // #106 / §9, §12: a requested restart is never called complete by its old process or an unready replacement.
+    #[test]
+    fn u106_restart_receipt_requires_healthy_replacement() {
+        let mut t=tool();
+        t.install=std::env::temp_dir().join(format!("pilotq-command-restart-{}",std::process::id()));
+        std::fs::create_dir_all(t.release_exe(t.version).parent().unwrap()).unwrap();
+        let path=t.install.join("journal.sqlite");
+        let mut j=journal::Journal::open(&path).unwrap(); j.bootstrap(7,0).unwrap();
+        let id=j.builtin_cli(7,"/restart",0).unwrap().unwrap();
+        j.builtin_take(id).unwrap().unwrap(); j.builtin_restart(id).unwrap();
+        healthy_start(&t,&mut j,Some(7),Duration::from_secs(60),1).unwrap();
+        assert_eq!(j.request(id).unwrap().0,"waiting");
+        drop(j);
+        rusqlite::Connection::open(&path).unwrap().execute("UPDATE meta SET value=0 WHERE key='command-restart-pid'",[]).unwrap();
+        let mut j=journal::Journal::open(&path).unwrap(); j.builtin_recover(2).unwrap();
+        assert!(j.builtin_next().unwrap().is_none(),"a dispatched restart is never replayed");
+        healthy_start(&t,&mut j,Some(7),Duration::from_secs(59),59).unwrap();
+        assert_eq!(j.request(id).unwrap().0,"waiting");
+        healthy_start(&t,&mut j,Some(7),Duration::from_secs(60),60).unwrap();
+        assert_eq!(j.request(id).unwrap().0,"answered");
+        let reply=j.request(id).unwrap().1;
+        healthy_start(&t,&mut j,Some(7),Duration::from_secs(90),90).unwrap();
+        assert_eq!(j.request(id).unwrap().1,reply);
+        drop(j);std::fs::remove_dir_all(t.install).unwrap();
     }
 
     // R14 / §9: pause, the five-minute retry window, clock rollback and corrupt state must not dispatch a download.

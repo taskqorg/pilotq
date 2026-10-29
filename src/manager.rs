@@ -143,6 +143,37 @@ impl Codex {
         Ok(Proc { child, stdin, rx, last_err })
     }
 
+    /// #106: catalogue read only; it never creates a thread or starts inference (R9).
+    pub fn models(&self) -> Result<Vec<String>, String> {
+        let mut p=self.spawn().map_err(|_|"Codex catalogue unavailable")?;
+        let end=Instant::now()+Duration::from_secs(10);
+        p.send(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"pilotq","version":env!("CARGO_PKG_VERSION")}}}));
+        let mut models=vec![];
+        let mut page=2;
+        loop {
+            let left=end.checked_duration_since(Instant::now()).ok_or("Codex catalogue timed out")?;
+            let m=p.rx.recv_timeout(left).map_err(|_|"Codex catalogue unavailable")?;
+            if m["error"].is_object() { return Err("Codex catalogue refused".into()); }
+            if m["id"]==1 {
+                p.send(json!({"method":"initialized"}));
+                p.send(json!({"id":page,"method":"model/list","params":{"limit":100,"includeHidden":false}}));
+            } else if m["id"]==page {
+                let data=m["result"]["data"].as_array().ok_or("Invalid Codex catalogue")?;
+                for item in data {
+                    if item["hidden"]==true { continue; }
+                    let name=item["model"].as_str().filter(|s|!s.is_empty() && s.len()<=128 && s.bytes().all(|b|b.is_ascii_alphanumeric() || b"._:-".contains(&b))).ok_or("Invalid Codex model")?;
+                    if !models.iter().any(|s|s==name) { models.push(name.to_string()); }
+                }
+                if let Some(cursor)=m["result"]["nextCursor"].as_str() {
+                    if page>=5 { return Err("Codex catalogue exceeds limit".into()); }
+                    page+=1;
+                    p.send(json!({"id":page,"method":"model/list","params":{"limit":100,"includeHidden":false,"cursor":cursor}}));
+                } else { break; }
+            }
+        }
+        if models.is_empty() { Err("Codex catalogue is empty".into()) } else { Ok(models) }
+    }
+
     /// Runs one turn on `thread` (a new thread when None). `alive` reports whether the journal still holds this run's fence;
     /// `tool` persists a tool item's type, ID and, once completed, its status. `dynamic` offers PilotQ's own tools on a new thread
     /// (their specs and instructions); `call` answers one complete call of them. Returns the thread ID and model Codex used and the outcome.
@@ -150,6 +181,7 @@ impl Codex {
     pub fn turn(
         &self,
         thread: Option<&str>,
+        selected_model: Option<&str>,
         input: &Value,
         dynamic: Option<(&Value, &str)>,
         mut alive: impl FnMut() -> bool,
@@ -227,6 +259,7 @@ impl Codex {
                         input.as_array_mut().unwrap().insert(0, json!({"type": "text", "text": history.to_string()}));
                         thread = None;
                         let mut params = json!({"cwd": self.workspace, "approvalPolicy": "never", "sandbox": "read-only"});
+                        if let Some(model)=selected_model { params["model"]=json!(model); }
                         if let Some((tools, instructions)) = dynamic {
                             params["dynamicTools"] = tools.clone();
                             params["developerInstructions"] = json!(instructions);
@@ -248,6 +281,7 @@ impl Codex {
                     drop(starting.take());
                     p.send(json!({"method": "initialized"}));
                     let mut params = json!({"cwd": self.workspace, "approvalPolicy": "never", "sandbox": "read-only"});
+                    if let Some(model)=selected_model { params["model"]=json!(model); }
                     if let Some((tools, instructions)) = dynamic {
                         // Tools are fixed at thread creation; schema upgrades explicitly rebuild older catalogues from the journal.
                         params["dynamicTools"] = tools.clone();
@@ -264,7 +298,7 @@ impl Codex {
                     };
                     thread = Some(t.to_string());
                     model = m["result"]["model"].as_str().map(str::to_string);
-                    p.send(json!({"id": 3, "method": "turn/start", "params": {"threadId": t, "input": input}}));
+                    p.send(json!({"id": 3, "method": "turn/start", "params": {"threadId": t, "input": input, "model": selected_model}}));
                 }
                 (Some(3), _) => turn = m["result"]["turn"]["id"].as_str().map(str::to_string),
                 (_, phase @ ("item/started" | "item/completed")) if TOOLS.contains(&m["params"]["item"]["type"].as_str().unwrap_or("")) => {
@@ -378,6 +412,7 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
     };
     let (thread, model, outcome) = codex.turn(
         if refresh {None} else {r.thread.as_deref()},
+        r.model.as_deref(),
         &input,
         Some((&tools, &instructions)),
         || j.lock().unwrap().fenced(r).map(|f| !f).unwrap_or(true),
