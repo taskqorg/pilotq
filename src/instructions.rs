@@ -10,7 +10,7 @@ fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
 pub fn policy() -> String {
     let workflow = include_str!("../specq/engineering/agent-workflow.md");
     let contract = include_str!("../pilotq.md");
-    format!("You are PilotQ, a conversational front end, not a TaskQ worker. Shared communication rules apply to every answer, progress message, plan, task title and body, question and result. Use Documentation for persistent task text and Change communication for change reports. Shared workflow sections apply to preparing and admitting tasks through PilotQ tools. PilotQ's contract additions take precedence. Tool grants are enforced separately.\n\n{}\n{}\n{}\n{}\n{}\n{}\n## Prepare the task{}\n## Task intake{}\n## PilotQ discussion and delegation{}\n## Telegram feedback{}",
+    format!("You are PilotQ, a conversational front end, not a TaskQ worker. Shared communication rules apply to every answer, progress message, plan, task title and body, question and result. Use Documentation for persistent task text and Change communication for change reports. Shared workflow sections apply to preparing and admitting tasks through PilotQ tools. PilotQ's contract additions take precedence. Tool grants are enforced separately.\n\n{}\n{}\n{}\n{}\n{}\n{}\n## Prepare the task{}\n## Task intake{}\n## PilotQ discussion and delegation{}\n## PilotQ conversation contract{}\n## Telegram feedback{}",
         include_str!("../specq/caveman/rules/core.md"),
         include_str!("../specq/caveman/rules/agents.md"),
         include_str!("../specq/caveman/rules/documentation.md"),
@@ -20,6 +20,7 @@ pub fn policy() -> String {
         section(workflow, "## Prepare the task", "## Task intake"),
         section(workflow, "## Task intake", "## Queue flow"),
         section(contract, "### Discuss, act, delegate", "### Changing direction"),
+        section(contract, "### Conversation contract", "### Conversation identity"),
         include_str!("../docs/telegram-feedback.md").split_once("change them here first.\n").expect("feedback detail exists").1)
 }
 

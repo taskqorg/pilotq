@@ -38,7 +38,7 @@ fn input(kind: &UpdateKind) -> Option<Input> {
         let model_command = data.strip_prefix("model:").map(|s|format!("/model-button {s}"));
         let (kind,k) = if let Some(k)=model_command.as_deref() { ("text",k) }
             else if let Some(k)=data.strip_prefix("answer:") { ("button",k) }
-            else if data.starts_with("plan:") || data.starts_with("cancel:") || data.starts_with("choice:") { ("action",data) }
+            else if data.starts_with("plan:") || data.starts_with("cancel:") || data.starts_with("choice:") || data.starts_with("retry:") || data.starts_with("cancel_launch:") { ("action",data) }
             else { return None };
         return Some(Input { files: vec![], callback: Some(q.id.0.clone()),
             media_group: None,
@@ -514,7 +514,9 @@ async fn send(bot: &Bot, j: &Shared, d: &Delivery) -> Sent {
         if d.html.is_some() {
             r = r.parse_mode(ParseMode::Html);
         }
-        if matches!(d.kind.as_str(), "question_answered" | "choice_answered") { r = r.reply_markup(InlineKeyboardMarkup::new(Vec::<Vec<InlineKeyboardButton>>::new())); }
+        if !d.buttons.is_empty() {
+            r=r.reply_markup(InlineKeyboardMarkup::new(d.buttons.iter().map(|(data,label)|vec![InlineKeyboardButton::callback(label,data)])));
+        } else if matches!(d.kind.as_str(), "question_answered" | "choice_answered" | "plan_answered" | "plan_progress" | "plan_problem") { r = r.reply_markup(InlineKeyboardMarkup::new(Vec::<Vec<InlineKeyboardButton>>::new())); }
         match r.await {
             Ok(m) => return Sent::Ok(m.id.0 as i64),
             Err(RequestError::Api(ApiError::MessageNotModified)) => return Sent::Ok(m),
