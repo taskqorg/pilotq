@@ -1,0 +1,143 @@
+{
+  "owner_before": [
+    "Draft saved locally. Updated plan · cyprusbz. Nothing filed on the board.\n1. Reply improvements\n- acceptance one\n- acceptance two\n- acceptance three\n- scope one\n- scope two\n- scope three\nUse Run plan or ask to run this plan; Cancel closes the draft.\ngpt-6.1-sol · 🙂 5% · 🌗 25% ↻ 5d",
+    "This action is unavailable; use the current plan or question.\nLaunch is pending; PilotQ retries…\nPlan revision 1: ticket 1 is unsent (taskq add failed: Error: --host…)\nPlan revision 1: ticket 1 is unsent (taskq add failed: Error: --host…)\n(no held readback: {\"task\":540,\"op_id\":\"invented-operation\",\"outcome\":\"unknown\",\"reason\":\"create readback does not match the request\"})\ncreated issue conflicts with the immutable request"
+  ],
+  "plans": [
+    {
+      "language": "en",
+      "tickets": [
+        {
+          "title": "Clear replies",
+          "goal": "Simplify the conversation",
+          "done_when": "Every stage has a clear card",
+          "acceptance": [
+            "Keep original authorization",
+            "Preserve receipts"
+          ],
+          "scope": [
+            "No installation"
+          ]
+        }
+      ],
+      "snapshot": "**Clear replies**\nWe will: Simplify the conversation\nDone when: Every stage has a clear card"
+    },
+    {
+      "language": "ru",
+      "tickets": [
+        {
+          "title": "Понятные ответы",
+          "goal": "Упростим общение",
+          "done_when": "У каждого этапа понятная карточка",
+          "acceptance": [
+            "Сохраним права"
+          ],
+          "scope": [
+            "Без установки"
+          ]
+        }
+      ],
+      "snapshot": "**Понятные ответы**\nСделаем: Упростим общение\nГотово, когда: У каждого этапа понятная карточка"
+    }
+  ],
+  "stages": [
+    {
+      "state": "held",
+      "closed": false,
+      "en": "Created; not queued yet",
+      "ru": "Создана, ещё не в очереди"
+    },
+    {
+      "state": "ready",
+      "closed": false,
+      "en": "Queued for a worker",
+      "ru": "В очереди к исполнителю"
+    },
+    {
+      "state": "doing",
+      "closed": false,
+      "en": "Worker is working",
+      "ru": "Исполнитель работает"
+    },
+    {
+      "state": "ask",
+      "closed": false,
+      "en": "Waiting for your answer",
+      "ru": "Ожидает вашего ответа"
+    },
+    {
+      "state": "review",
+      "closed": false,
+      "en": "Result is being reviewed",
+      "ru": "Результат на проверке"
+    },
+    {
+      "state": "waiting",
+      "closed": false,
+      "en": "Waiting for dependent tasks",
+      "ru": "Ожидает зависимые задачи"
+    },
+    {
+      "state": "later",
+      "closed": false,
+      "en": "Parked",
+      "ru": "Отложена"
+    },
+    {
+      "state": "unknown",
+      "closed": false,
+      "en": "State unknown",
+      "ru": "Состояние неизвестно"
+    },
+    {
+      "state": "done",
+      "closed": true,
+      "en": "Task closed; see the result",
+      "ru": "Задача закрыта; результат по ссылке"
+    }
+  ],
+  "failure": {
+    "en": "Could not finish the action; its result is not confirmed yet.",
+    "ru": "Не удалось завершить действие; результат пока не подтверждён."
+  },
+  "cards": {
+    "cancelled": "**Clear replies**\nWe will: Simplify the conversation\nDone when: Every stage has a clear card\n\nPlan cancelled.",
+    "launched": "**Clear replies**\nWe will: Simplify the conversation\nDone when: Every stage has a clear card\n\nTasks submitted: - TaskQ · pilotq#19 · Clear replies: queued for a worker",
+    "failed": "**Clear replies**\nWe will: Simplify the conversation\nDone when: Every stage has a clear card\n\nCould not submit the whole plan.",
+    "question": "Choose\n\nWhich style?\n1. Compact\n2. Detailed",
+    "chosen": "Choose\n\nWhich style?\n1. Compact\n2. Detailed\n\nChosen by 7: 2. Detailed",
+    "progress": "**Clear replies**\nWe will: Simplify the conversation\nDone when: Every stage has a clear card\n\nCreating tasks · 3 s",
+    "problem": "**Clear replies**\nWe will: Simplify the conversation\nDone when: Every stage has a clear card\n\nCould not launch the plan. - TaskQ · pilotq#19 · Clear replies: created; not queued yet",
+    "launch_cancelled": "**Clear replies**\nWe will: Simplify the conversation\nDone when: Every stage has a clear card\n\nFurther launch steps cancelled; earlier effects are preserved."
+  },
+  "worker_question": {
+    "source": "Done: checked\nProblem: Choose retention\n1. Keep - + history; - disk space ★\n2. Drop - + disk space; - history\nTo answer: taskq answer 97.K",
+    "snapshot": "? [TaskQ · pilotq#97 · Ask layout](https://forge.invalid/task/97)\n✓ checked\n⚑ Choose retention\n1. Keep ★\n\\+ history; - disk space\n2. Drop\n\\+ disk space; - history"
+  },
+  "progress": [
+    {
+      "phase": "creating",
+      "seconds": 3,
+      "en": "Creating tasks · 3 s",
+      "ru": "Создаю задачи · 3 с"
+    },
+    {
+      "phase": "starting",
+      "seconds": 12,
+      "en": "Starting tasks · 12 s",
+      "ru": "Отправляю задачи в работу · 12 с"
+    },
+    {
+      "phase": "waiting",
+      "seconds": 65,
+      "en": "Waiting to continue · 65 s",
+      "ru": "Ожидаю продолжения · 65 с"
+    }
+  ],
+  "launch_status": {
+    "queued": "Queued for a worker · confirmed 0 s ago · TaskQ · pilotq#19 · First\nQueued for a worker · confirmed 0 s ago · TaskQ · pilotq#20 · Second",
+    "doing": "Worker is working · confirmed 0 s ago · TaskQ · pilotq#19 · First\nQueued for a worker · confirmed 3 s ago · TaskQ · pilotq#20 · Second",
+    "ask": "Worker is working · confirmed 2 s ago · TaskQ · pilotq#19 · First\nWaiting for your answer · confirmed 0 s ago · TaskQ · pilotq#20 · Second",
+    "closed": "Task closed; see the result · TaskQ · pilotq#19 · First\nWaiting for your answer · confirmed 2 s ago · TaskQ · pilotq#20 · Second"
+  }
+}

@@ -10,6 +10,7 @@ mod instructions;
 mod keys;
 mod manager;
 mod footer;
+mod conversation;
 mod taskq;
 mod telegram;
 mod voice;

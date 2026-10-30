@@ -1006,7 +1006,20 @@ for line in sys.stdin:
             while r.get("id") != 50 + i:
                 r = json.loads(sys.stdin.readline()); log.write(json.dumps(r) + "\n"); log.flush()
             res = r["result"]
-            outs.append(("ok: " if res["success"] else "refused: ") + res["contentItems"][0]["text"])
+            answer = res["contentItems"][0]["text"]
+            # #165: the fake manager summarizes structured successful reads like the
+            # instructed manager; raw payloads remain in its protocol log for assertions.
+            if res["success"] and name in ("project_list", "issue_read", "command_list", "command_run"):
+                value = json.loads(answer)
+                if name == "project_list":
+                    answer = "; ".join(p["name"] + (" (current)" if p["current"] else "") for p in value["projects"]) or "No accessible projects."
+                elif name == "issue_read":
+                    answer = value["title"] + " — " + value.get("body", "")
+                elif name == "command_list":
+                    answer = "Available commands: " + ", ".join(c["command"] for c in value["commands"])
+                else:
+                    answer = "%s (exit %s): %s%s" % (value["status"], value["exit_code"], value.get("stdout", ""), value.get("stderr", ""))
+            outs.append(("ok: " if res["success"] else "refused: ") + answer)
             if not spec.get("bare"):
                 send({"method": "item/completed", "params": {"threadId": th, "turnId": "u1", "item": dict(item, status="completed")}})
         time.sleep(spec.get("sleep", 0))
@@ -1109,11 +1122,11 @@ fn u06_plan_revisions_then_held_create_start_and_one_status_message() {
     }
     assert!(tq_calls(&d).is_empty(), "a plan-only request writes nothing to the board: {:?}", tq_calls(&d));
     push(&st, call(4, OWNER, None, OWNER, "task_run_plan", json!({"revision": 2})));
-    wait("revision 2 refused", 15, || sent_has(&st, "re: refused: revision 2 is not the latest plan revision (3)"));
+    wait("revision 2 refused", 15, || sent_has(&st, "Could not finish the action; its result is not confirmed yet."));
     assert!(tq_calls(&d).is_empty(), "an older revision files nothing");
 
     push(&st, call(5, OWNER, None, OWNER, "task_run_plan", json!({"revision": 3})));
-    wait("filed and started", 15, || sent_has(&st, "Plan sent to the board. Task states:\n- [TaskQ · pilotq#19 · Draft three](https://github.com/taskqorg/pilotq/issues/19): ready: queued for a worker"));
+    wait("filed and started", 15, || sent_has(&st, "Tasks submitted:") && sent_has(&st,"TaskQ · pilotq#19 · Draft three"));
     let calls = tq_calls(&d);
     assert_eq!((calls.len(), calls[0][0].as_str(), calls[0][1].as_str(), calls[1][0].as_str(), calls[1][1].as_str()), (2, "add", "Draft three", "start", "19"), "{calls:?}");
     let op = calls[0].iter().skip_while(|a| *a != "--op-id").nth(1).unwrap().clone();
@@ -1123,28 +1136,28 @@ fn u06_plan_revisions_then_held_create_start_and_one_status_message() {
     let log = fs::read_to_string(d.join("taskq.log")).unwrap();
     assert!(log.contains(&format!("\"root\": \"{}\"", d.join("root").display())) && log.contains("\"attempt\": null"), "{log}");
 
-    wait("status message", 15, || sent_has(&st, "\nready: waiting for a free worker."));
-    let status = sent(&st).into_iter().find(|s| s["text"].as_str().unwrap().contains("\nready")).unwrap();
+    wait("status message", 15, || sent_has(&st, "Queued for a worker"));
+    let status = sent(&st).into_iter().find(|s| s["text"].as_str().unwrap().contains("Queued for a worker")).unwrap();
     let id = status["id"].as_i64().unwrap();
     set_task(&d, 19, |t| t["state"] = json!("doing"));
-    wait("edit to doing", 15, || sent(&st).iter().any(|s| s["edit"] == true && s["message_id"] == id && s["text"].as_str().unwrap().contains("\ndoing")));
+    wait("edit to doing", 15, || sent(&st).iter().any(|s| s["edit"] == true && s["message_id"] == id && s["text"].as_str().unwrap().contains("Worker is working")));
     // F14: an observation older than the stored revision is ignored
     set_task(&d, 19, |t| {
         t["state"] = json!("ready");
         t["revision"] = json!(50);
     });
     std::thread::sleep(Duration::from_millis(2500));
-    assert!(!sent(&st).iter().any(|s| s["edit"] == true && s["text"].as_str().unwrap().contains("\nready")), "a stale projection overwrote a newer status");
+    assert!(!sent(&st).iter().any(|s| s["edit"] == true && s["text"].as_str().unwrap().contains("Queued for a worker")), "a stale projection overwrote a newer status");
     set_task(&d, 19, |t| t["state"] = json!("review"));
-    wait("edit to review", 15, || sent(&st).iter().any(|s| s["edit"] == true && s["message_id"] == id && s["text"].as_str().unwrap().contains("a reviewer checks it")));
+    wait("edit to review", 15, || sent(&st).iter().any(|s| s["edit"] == true && s["message_id"] == id && s["text"].as_str().unwrap().contains("Result is being reviewed")));
     set_task(&d, 19, |t| t["closed"] = json!(true));
-    wait("closing outcome", 15, || sent_has(&st, "Closed on the board"));
-    let fin = sent(&st).into_iter().find(|s| s["text"].as_str().unwrap().contains("Closed on the board")).unwrap();
-    assert!(fin.get("edit").is_none() && fin["id"] != id, "the outcome is its own message");
+    wait("closing outcome", 15, || sent_has(&st, "Task closed; see the result"));
+    let fin = sent(&st).into_iter().find(|s| s["text"].as_str().unwrap().contains("Task closed; see the result")).unwrap();
+    assert!(fin["edit"]==true && fin["id"]==id,"#165 the outcome edits the launch status card");
     std::thread::sleep(Duration::from_millis(2000));
     let all = sent(&st);
-    assert!(!all.iter().any(|s| s["edit"] == true && s["message_id"] == fin["id"]), "nothing edits the final outcome");
-    assert_eq!(all.iter().filter(|s| s.get("edit").is_none() && s["text"].as_str().unwrap().starts_with("<a href=\"https://github.com/taskqorg/pilotq/issues/19\">")).count(), 2, "one status message and one outcome: {all:?}");
+    assert_eq!(all.iter().filter(|s|s["text"].as_str().unwrap().contains("Task closed; see the result")).count(),1,"terminal outcome appears once");
+    assert_eq!(all.iter().filter(|s|s.get("edit").is_none() && s["text"].as_str().unwrap().starts_with("Queued for a worker")).count(),1,"one launch status card");
     assert!(!all.iter().any(|s| s["text"].as_str().unwrap().contains("stall") || s["text"].as_str().unwrap().contains("hung")));
     let audit = cli(&d, &["audit", "--request", "5", "--json"]);
     assert!(audit.status.success(), "audit failed: {:?}: {}", audit.status, String::from_utf8_lossy(&audit.stderr));
@@ -1162,9 +1175,9 @@ fn u15_network_loss_after_ticket_two_reconciles_the_same_ids() {
     fs::write(d.join("lose-add-2"), "").unwrap();
     let c = spawn(&d, None);
     push(&st, call(1, OWNER, None, OWNER, "task_plan", plan(&["One", "Two", "Three"])));
-    wait("plan", 15, || sent_has(&st, "Draft saved locally."));
+    wait("plan", 15, || sent_has(&st, "We will:"));
     push(&st, call(2, OWNER, None, OWNER, "task_run_plan", json!({"revision": 1})));
-    wait("unsent reply", 15, || sent_has(&st, "Launch is pending; PilotQ retries the same operations. On the board so far:\n- [TaskQ · pilotq#19 · One](https://github.com/taskqorg/pilotq/issues/19): held: filed, not started"));
+    wait("unsent reply", 15, || sent_has(&st, "Could not submit the whole plan."));
     assert!(query_text(&d, "SELECT reason FROM plan_runs").contains("connection reset by peer"), "the cause stays in the journal");
     let b = board(&d);
     assert_eq!((b["tasks"]["19"]["state"].as_str(), b["tasks"]["20"]["state"].as_str()), (Some("held"), Some("held")), "created tickets stay held");
@@ -1173,7 +1186,7 @@ fn u15_network_loss_after_ticket_two_reconciles_the_same_ids() {
 
     fs::remove_file(d.join("board-down")).unwrap();
     let c = spawn(&d, None);
-    wait("started after restart", 20, || sent_has(&st, "Plan revision 1: created on board; admitted to TaskQ"));
+    wait("started after restart", 20, || sent_has(&st, "Tasks submitted:"));
     let b = board(&d);
     assert_eq!(b["creates"], 3, "ticket two was found by its op ID, not created again");
     assert!(["19", "20", "21"].iter().all(|n| b["tasks"][n]["state"] == "ready"), "{b}");
@@ -1183,7 +1196,7 @@ fn u15_network_loss_after_ticket_two_reconciles_the_same_ids() {
     assert!(adds.iter().filter(|o| o.ends_with("-t2")).count() >= 2 && adds.iter().filter(|o| o.ends_with("-t1")).count() == 1, "{adds:?}");
     let first_start = calls.iter().position(|c| c[0] == "start").unwrap();
     assert!(calls[first_start..].iter().all(|c| c[0] == "start") && calls[first_start..].len() == 3, "start only after every create: {calls:?}");
-    assert!(sent_has(&st, "<a href=\"https://github.com/taskqorg/pilotq/issues/20\">TaskQ · pilotq#20 · Two</a>, <a href=\"https://github.com/taskqorg/pilotq/issues/21\">TaskQ · pilotq#21 · Three</a>"), "{:?}", texts(&st));
+    assert!(sent_has(&st,"TaskQ · pilotq#20 · Two") && sent_has(&st,"TaskQ · pilotq#21 · Three"),"{:?}",texts(&st));
     stop(c, d);
 }
 
@@ -1194,32 +1207,31 @@ fn a40_topic_state_notifications() {
     let (d, st) = tq_setup("a40-topic-states", true);
     let c = spawn(&d, None);
     push(&st, call(1, -100, Some(5), OWNER, "task_plan", plan(&["Docs"])));
-    wait("plan", 15, || sent_has(&st, "Draft saved locally."));
+    wait("plan", 15, || sent_has(&st, "We will:"));
     push(&st, call(2, -100, Some(5), OWNER, "task_run_plan", json!({"revision": 1})));
-    wait("ready", 15, || sent_has(&st, "\nready"));
+    wait("ready", 15, || sent_has(&st, "Queued for a worker"));
     drop(c);
     let c = spawn(&d, None);
-    for (state, label) in [("doing", "doing"), ("later", "parked"), ("ready", "ready"), ("ask", "⚑"), ("review", "review")] {
+    for (state, label) in [("doing", "Worker is working"), ("later", "Parked"), ("ready", "Queued for a worker"), ("ask", "Waiting for your answer"), ("review", "Result is being reviewed")] {
         let before = sent(&st).len();
         set_task(&d, 19, |t| {
             t["state"] = json!(state);
             if state == "ask" { t["card"] = json!("Done: draft\nProblem: choose\n1. yes\n2. no"); }
         });
-        wait(label, 15, || sent(&st).iter().skip(before).any(|m| m["text"].as_str().unwrap().contains(&format!("\n{label}"))));
+        wait(label, 15, || sent(&st).iter().skip(before).any(|m| m["text"].as_str().unwrap().contains(label)));
     }
     let mut b = board(&d);
     b["tasks"].as_object_mut().unwrap().remove("19");
     fs::write(d.join("taskq-state.json.t"), b.to_string()).unwrap();
     fs::rename(d.join("taskq-state.json.t"), d.join("taskq-state.json")).unwrap();
-    wait("closed", 15, || sent_has(&st, "Closed on the board"));
+    wait("closed", 15, || sent_has(&st, "Task closed; see the result"));
     wait("delivered", 15, || query(&d, "SELECT count(*) FROM outbox WHERE state NOT IN ('delivered','superseded')") == 0);
     assert_eq!(query(&d, "SELECT count(*) FROM outbox WHERE task=19 AND (chat != -100 OR topic IS NOT 5)"), 0);
     let messages = sent(&st);
     assert!(messages.iter().any(|m| m["edit"] == true), "exercise status edits");
     assert!(messages.iter().all(|m| m["chat_id"] == -100 && m["message_thread_id"] == 5), "{messages:#?}");
-    let terminal = messages.iter().find(|m| m["text"].as_str().unwrap().contains("Closed on the board")).unwrap();
-    assert!(terminal.get("edit").is_none());
-    assert!(!messages.iter().any(|m| m["edit"] == true && m["message_id"] == terminal["id"]));
+    let terminal = messages.iter().find(|m| m["text"].as_str().unwrap().contains("Task closed; see the result")).unwrap();
+    assert_eq!(terminal["edit"],true,"#165 terminal observation edits the same status card");
     stop(c, d);
 }
 
@@ -1241,9 +1253,9 @@ fn u07_question_relay_and_bound_answers() {
     assert!(st.lock().unwrap().actions.iter().all(|a| a["message_thread_id"] == 5), "typing only in the originating topic");
 
     push(&st, call(2, -100, topic, OWNER, "task_plan", plan(&["Docs"])));
-    wait("plan", 15, || sent_has(&st, "Draft saved locally."));
+    wait("plan", 15, || sent_has(&st, "We will:"));
     push(&st, call(3, -100, topic, OWNER, "task_run_plan", json!({"revision": 1})));
-    wait("started", 15, || sent_has(&st, "Plan sent to the board"));
+    wait("started", 15, || sent_has(&st, "Tasks submitted:"));
     set_task(&d, 19, |t| {
         t["state"] = json!("ask");
         t["card"] = json!("Done: drafted\nProblem: pick a wording\n1. short ★\n2. long");
@@ -1257,9 +1269,9 @@ fn u07_question_relay_and_bound_answers() {
     let q2 = question("tiny ★").unwrap();
 
     push(&st, reply(4, -100, topic, OWNER, q1["id"].as_i64().unwrap(), "short"));
-    wait("stale answer refused", 15, || sent_has(&st, "That question is no longer current; nothing was written. Task #19 now asks:\nDone: drafted twice"));
+    wait("stale answer refused", 15, || sent_has(&st, "Answer was not saved; check the current question and your access."));
     push(&st, reply(5, -100, topic, 8, q2["id"].as_i64().unwrap(), "2"));
-    wait("foreign answer refused", 15, || sent_has(&st, "Not written to task #19: 8 has no project:pilotq grant"));
+    wait("foreign answer refused", 15, || sent_has(&st, "Answer was not saved; check the current question and your access."));
     assert!(!tq_calls(&d).iter().any(|c| c[0] == "answer"), "a stale or foreign answer writes nothing");
 
     push(&st, reply(6, -100, topic, OWNER, q2["id"].as_i64().unwrap(), "2"));
@@ -1296,10 +1308,10 @@ fn u82_ask_buttons_and_labeled_links() {
     let topic = Some(5);
     let issue = "https://github.com/taskqorg/pilotq/issues/19";
     push(&st, call(1, -100, topic, OWNER, "task_plan", plan(&["Docs"])));
-    wait("plan", 15, || sent_has(&st, "Draft saved locally."));
+    wait("plan", 15, || sent_has(&st, "We will:"));
     push(&st, call(2, -100, topic, OWNER, "task_run_plan", json!({"revision": 1})));
-    wait("status", 15, || sent_has(&st, &format!("<a href=\"{issue}\">TaskQ · pilotq#19 · Docs</a>\nready: waiting for a free worker.")));
-    assert!(sent_has(&st, &format!("- [TaskQ · pilotq#19 · Docs]({issue}): ready: queued for a worker")), "{:?}", texts(&st));
+    wait("status", 15, || sent_has(&st, "Queued for a worker"));
+    assert!(sent_has(&st,"Tasks submitted:") && sent_has(&st,"TaskQ · pilotq#19 · Docs"),"{:?}",texts(&st));
     set_task(&d, 19, |t| {
         t["state"] = json!("ask");
         t["card"] = json!("Done: drafted\nProblem: pick a wording, see [the spec](https://github.com/taskqorg/pilotq/blob/main/pilotq.md)\n1. short - + quick; - less detail ★\n2. long - + detail; - slower\nTo answer: `taskq answer 19.K` or comment `K` or the option text");
@@ -1309,7 +1321,7 @@ fn u82_ask_buttons_and_labeled_links() {
     assert_eq!(q["text"], format!("? <a href=\"{issue}\">TaskQ · pilotq#19 · Docs</a>\n✓ drafted\n⚑ pick a wording, see <a href=\"https://github.com/taskqorg/pilotq/blob/main/pilotq.md\">the spec</a>\n1. short ★\n+ quick; - less detail\n2. long\n+ detail; - slower"));
     assert_eq!(q["reply_markup"]["inline_keyboard"], json!([[{"text": "1. short ★", "callback_data": "answer:1"}], [{"text": "2. long", "callback_data": "answer:2"}]]));
     push(&st, press(3, -100, topic, OWNER, q["id"].as_i64().unwrap(), "answer:2"));
-    wait("press answers", 15, || sent_has(&st, "Answered by") && sent_has(&st, "2. long") && sent_has(&st, "TaskQ: doing: a worker is on it."));
+    wait("press answers", 15, || sent_has(&st, "Answered by") && sent_has(&st, "2. long") && sent_has(&st,"Worker is working"));
     let answers: Vec<_> = tq_calls(&d).into_iter().filter(|c| c[0] == "answer").collect();
     assert_eq!((answers.len(), answers[0][1].as_str()), (1, "19.2"), "{answers:?}");
     push(&st, press(4, -100, topic, OWNER, q["id"].as_i64().unwrap(), "answer:1"));
@@ -1338,15 +1350,15 @@ fn u10_restart_new_status_pause_and_park() {
     assert!(cli(&d, &["users", "grant", "8", "chat"]).status.success());
     let c = spawn(&d, None);
     push(&st, call(1, OWNER, None, OWNER, "task_plan", plan(&["Docs"])));
-    wait("plan", 15, || sent_has(&st, "Draft saved locally."));
+    wait("plan", 15, || sent_has(&st, "We will:"));
     push(&st, call(2, OWNER, None, OWNER, "task_run_plan", json!({"revision": 1})));
-    wait("status", 15, || sent_has(&st, "\nready"));
+    wait("status", 15, || sent_has(&st, "Queued for a worker"));
     // Restart after the receipt commits; a lost send response may legitimately duplicate (§4).
     wait("status receipt", 15, || query(&d, "SELECT count(*) FROM outbox WHERE state NOT IN ('delivered','superseded')") == 0);
     drop(c);
     set_task(&d, 19, |t| t["state"] = json!("doing"));
     let c = spawn(&d, None);
-    wait("missed transition recovered", 15, || sent(&st).iter().any(|s| s["edit"] == true && s["text"].as_str().unwrap().contains("\ndoing")));
+    wait("missed transition recovered", 15, || sent(&st).iter().any(|s| s["edit"] == true && s["text"].as_str().unwrap().contains("Worker is working")));
     push(&st, text(3, OWNER, None, OWNER, "/new"));
     wait("new", 15, || sent_has(&st, "New conversation started"));
     push(&st, call(4, OWNER, None, OWNER, "task_status", json!({"task": "https://github.com/taskqorg/pilotq/issues/19"})));
@@ -1364,7 +1376,7 @@ fn u10_restart_new_status_pause_and_park() {
     st.lock().unwrap().edit_gone = true;
     push(&st, call(8, OWNER, None, OWNER, "task_park", json!({"task": "#19", "reason": "owner asked"})));
     wait("park", 15, || sent_has(&st, "re: ok: Task #19: later accepted; TaskQ readback later"));
-    wait("status parked", 15, || sent(&st).iter().any(|s| s.get("edit").is_none() && s["chat_id"] == OWNER && s["text"].as_str().unwrap().contains("\nparked")));
+    wait("status parked", 15, || sent(&st).iter().any(|s| s.get("edit").is_none() && s["chat_id"] == OWNER && s["text"].as_str().unwrap().contains("Parked")));
     let b = board(&d);
     assert_eq!((b["creates"].as_i64(), b["paused"].as_bool()), (Some(1), Some(true)), "status reads never create");
     assert_eq!(tq_calls(&d).iter().map(|c| c[0].as_str()).collect::<Vec<_>>(), ["add", "start", "service", "later"]);
@@ -1379,7 +1391,7 @@ fn f07_board_unavailable_or_no_create_claim() {
     let (d, st) = tq_setup("f07", false);
     let c = spawn(&d, None);
     push(&st, call(1, OWNER, None, OWNER, "task_plan", plan(&["Docs"])));
-    wait("plan", 15, || sent_has(&st, "Draft saved locally."));
+    wait("plan", 15, || sent_has(&st, "We will:"));
     push(&st, call(2, OWNER, None, OWNER, "task_run_plan", json!({"revision": 1})));
     wait("disabled", 15, || sent_has(&st, "re: refused: task creation is disabled: create_claim_issue is not configured"));
     push(&st, text(3, OWNER, None, OWNER, "hello"));
@@ -1389,10 +1401,10 @@ fn f07_board_unavailable_or_no_create_claim() {
     root(&d, true);
     fs::write(d.join("board-down"), "").unwrap();
     push(&st, call(4, OWNER, None, OWNER, "task_run_plan", json!({"revision": 1})));
-    wait("unsent", 15, || sent_has(&st, "ticket 1 is unsent (taskq status failed: Error: board unreachable: connection refused)"));
+    wait("unsent", 15, || sent_has(&st, "Could not submit the whole plan."));
     wait("taskq health", 15, || try_query(&d, "SELECT count(*) FROM plan_runs WHERE state='creating' AND reason LIKE '%board unreachable%'") == Some(1));
     fs::remove_file(d.join("board-down")).unwrap();
-    wait("scan files it", 15, || sent_has(&st, "Plan revision 1: created on board; admitted to TaskQ"));
+    wait("scan files it", 15, || sent_has(&st, "Tasks submitted:"));
     assert_eq!(board(&d)["creates"], 1);
     stop(c, d);
 }
@@ -1516,12 +1528,12 @@ fn project_list_is_scoped_and_marks_current() {
     push(&st,call(2,8,None,8,"project_list",json!({})));
     wait("list",15,||query(&d,"SELECT count(*) FROM requests WHERE state='answered'")==2);
     let answer=query_text(&d,"SELECT reply FROM requests WHERE id=2");
-    assert!(answer.contains("other") && answer.contains("true") && !answer.contains("pilotq"),"{answer}");
+    assert!(answer.contains("other") && answer.contains("(current)") && !answer.contains("pilotq"),"{answer}");
     assert!(gh_calls(&d).is_empty(),"no key or GitHub call");
     ok(cli(&d,&["users","revoke","8","project:other"]));
     push(&st,call(3,8,None,8,"project_list",json!({})));
     wait("empty list after revoke",15,||query(&d,"SELECT count(*) FROM requests WHERE state='answered'")==3);
-    assert!(query_text(&d,"SELECT reply FROM requests WHERE id=3").contains("[]"));
+    assert!(query_text(&d,"SELECT reply FROM requests WHERE id=3").contains("No accessible projects."));
     stop(c,d);
 }
 
@@ -1539,7 +1551,7 @@ fn u03_u21_key_backed_read_and_no_value_anywhere() {
     ok(cli(&d, &["users", "grant", "8", "chat", "project:pilotq"]));
     let c = spawn(&d, None);
     push(&st, call(1, OWNER, None, OWNER, "issue_read", json!({"project": "pilotq", "issue": "3"})));
-    wait("read", 15, || sent_has(&st, "re: ok: {\"number\":3,\"url\":\"https://github.com/taskqorg/pilotq/issues/3\",\"title\":\"Issue 3 of taskqorg/pilotq\""));
+    wait("read", 15, || sent_has(&st, "re: ok: Issue 3 of taskqorg/pilotq"));
     assert!(tq_calls(&d).contains(&vec!["issue".into(), "3".into(), "--json".into()]), "read through taskq issue");
     push(&st, call(2, 8, None, 8, "issue_read", json!({"project": "pilotq", "issue": "3"})));
     wait("no key", 15, || sent_has(&st, "re: refused: no key granted to 8, this route or project pilotq for issue_read; keys you may use for it: none. Nothing was done"));
@@ -1589,11 +1601,11 @@ fn u04_f04_owner_comment_and_label_once_and_crash_readback() {
     // the write lands but its receipt is lost; the crash leaves it pending, and startup retries the same op id once
     fs::write(d.join("lose-issue"),"").unwrap();
     push(&st,call(5,OWNER,None,OWNER,"issue_comment",json!({"project":"pilotq","issue":"5","body":"again"})));
-    wait("unconfirmed",15,||sent_has(&st,"is unconfirmed"));
+    wait("unconfirmed",15,||sent_has(&st,"not confirmed"));
     assert_eq!(query(&d,"SELECT count(*) FROM effects WHERE state='pending'"),1);
     drop(c);
     let c=spawn(&d,None);
-    wait("readback",15,||sent_has(&st,"After restart, TaskQ confirmed the comment on taskqorg/pilotq#5 once"));
+    wait("readback",15,||sent_has(&st,"The earlier change is confirmed."));
     let w=writes();
     assert_eq!((w.len(),&w[2][5]),(4,&w[3][5]),"the retry reuses the op id");
     assert_eq!(board(&d)["issues"]["taskqorg/pilotq:5"]["comments"].as_array().unwrap().iter().filter(|c| c["body"]=="again").count(),1,"nothing added twice");
@@ -1617,7 +1629,12 @@ fn u09_f09_f10_switch_ambiguity_redirect_and_revoke() {
 
     let switch = json!({"calls": [["project_use", {"project": "other"}], ["issue_read", {"issue": "3"}]]});
     push(&st, text(2, OWNER, None, OWNER, &format!("Project: other\nmulti {switch}")));
-    wait("switched", 15, || sent_has(&st, "re: ok: This conversation now uses project other (taskqorg/other). | ok: {\"number\":3,\"url\":\"https://github.com/taskqorg/other/issues/3\""));
+    // #165 A3 keeps a readable result, not the old raw issue JSON. Retain
+    // project switching and the following read's exact board/issue protection.
+    wait("switched", 15, || try_query(&d,"SELECT count(*) FROM requests WHERE update_id=2 AND state='answered'")==Some(1));
+    let switched=query_text(&d,"SELECT reply FROM requests WHERE update_id=2");
+    assert!(switched.starts_with("re: ok: This conversation now uses project other (taskqorg/other). | ok: Issue 3 of taskqorg/other"),"{switched}");
+    assert!(!switched.contains("{\""));
     assert_eq!(query_text(&d, "SELECT project FROM conversations WHERE session='dm:7'"), "other");
 
     // the calls name pilotq, the person's message does not; the quoted message does
@@ -1649,7 +1666,7 @@ fn u11_l05_budget_and_deadline_keep_evidence() {
     let c = spawn(&d, None);
     let six: Vec<Value> = (1..=6).map(|_| json!(["project_list", {}])).collect();
     push(&st, text(1, OWNER, None, OWNER, &format!("multi {}", json!({"calls": six}))));
-    wait("budget", 15, || sent_has(&st, "| refused: This request reached its budget of 5 tool calls; this call was refused."));
+    wait("budget", 15, || sent_has(&st, "Could not finish the action; its result is not confirmed yet."));
     assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='direct'"),5);
     drop(c);
 
@@ -1658,7 +1675,7 @@ fn u11_l05_budget_and_deadline_keep_evidence() {
     let mut u = text(2, OWNER, None, OWNER, &format!("multi {}", json!({"calls": [["project_list", {}]], "sleep": 8})));
     u["message"]["from"]["language_code"] = json!("ru");
     push(&st, u);
-    wait("deadline", 20, || sent_has(&st, "Результат действия неизвестен; автоматического повтора не будет; сохранено: project_list: read accessible registered projects; попросите запланировать остальное."));
+    wait("deadline", 20, || sent_has(&st, "Результат действия неизвестен; автоматического повтора не будет."));
     assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE id=2 AND state='uncertain'"), 1);
     let diagnostic = query_text(&d, "SELECT error FROM requests WHERE id=2");
     // §7: context preparation consumes the same deadline, so Codex gets only the remaining budget.
@@ -1683,9 +1700,8 @@ fn a2_budget_holds_across_a_retry() {
     drop(c);
     assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='direct'"), 4);
     let c = spawn(&d, None);
-    wait("retry answered", 15, || sent_has(&st, "re: ok: {"));
-    let r = texts(&st).into_iter().find(|t| t.starts_with("re: ok: {")).unwrap();
-    assert_eq!(r.matches("refused: This request reached its budget of 5 tool calls; this call was refused.").count(), 3, "{r}");
+    wait("retry answered",15,||sent_has(&st,"Could not finish the action; its result is not confirmed yet."));
+    assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='reply_diagnostic'"),1,"#165 raw budget refusals remain in audit");
     assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='direct'"), 5, "five reads in total across both runs");
     assert_eq!(query(&d, "SELECT count(*) FROM runs WHERE request_id=1"), 2, "the request was retried");
     assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE request_id=1 AND kind='call'"), 5, "a refused call records nothing");
@@ -1805,8 +1821,7 @@ fn a8_live_board_run() {
     assert!(issue.contains("taskq: hold") && issue.contains("taskq: start"), "held, then started: {issue}");
     say(&format!("filed and started #{n}"));
 
-    let status = |s: &str| format!("\n{s}.");
-    let doing = status("doing: a worker is on it");
+    let doing = "Worker is working";
     let exact = |t: &str| sent(&st).iter().any(|s| s["text"].as_str().is_some_and(|s| s.contains(&url) && s.contains(t)));
     wait("doing", 1800, || exact(&doing));
     // a PilotQ restart while the worker runs: TaskQ keeps the task; the scan keeps reporting it
@@ -1814,7 +1829,7 @@ fn a8_live_board_run() {
     c.wait().unwrap();
     say("PilotQ killed while doing; restarting");
     c = spawn(&d, None);
-    let closed = "Closed on the board; verdict and evidence are on the issue.".to_string();
+    let closed = "Task closed; see the result".to_string();
     let end = Instant::now() + Duration::from_secs(7200);
     while !exact(&closed) {
         assert!(Instant::now() < end, "timed out waiting for the reviewer outcome: {:?}", texts(&st));
@@ -1831,17 +1846,15 @@ fn a8_live_board_run() {
     say("reviewer outcome reached");
     std::thread::sleep(Duration::from_secs(20));
 
-    // recorded messages: one status message edited in place, the outcome its own message, nothing after it, all in the DM
+    // #165: one status card includes closure; preserve route and terminal fencing.
     let all = sent(&st);
-    let task_msgs: Vec<&Value> = all.iter().filter(|s| s["text"].as_str().unwrap().starts_with(&format!("<a href=\"{url}\">"))).collect();
-    let news: Vec<&&Value> = task_msgs.iter().filter(|s| s.get("edit").is_none() && !s["text"].as_str().unwrap().contains("\n⚑")).collect();
-    assert_eq!(news.len(), 2, "one status message and one outcome: {task_msgs:?}");
-    assert!(news[0]["text"].as_str().unwrap().starts_with(&format!("<a href=\"{url}\">")) && news[1]["text"].as_str().unwrap().contains(&closed));
-    let edits = task_msgs.iter().filter(|s| s["edit"] == true);
-    assert!(edits.clone().all(|s| s["message_id"] == news[0]["id"]), "every update edits the status message");
-    assert!(edits.clone().any(|s| s["text"].as_str().unwrap().contains(&doing)) && edits.clone().any(|s| s["text"].as_str().unwrap().contains(&status("review: the worker handed in a result; a reviewer checks it"))));
-    assert!(task_msgs.iter().all(|s| s["chat_id"] == OWNER), "task messages stay in the originating route");
-    assert!(!all.iter().any(|s| s["edit"] == true && s["message_id"] == news[1]["id"]), "nothing edits the outcome");
+    let status_id=query(&d,"SELECT sent_message FROM outbox WHERE request_id=5 AND kind='status' AND state='delivered' ORDER BY id LIMIT 1");
+    assert_eq!(query(&d,"SELECT count(DISTINCT sent_message) FROM outbox WHERE request_id=5 AND kind='status' AND state='delivered'"),1);
+    let status_edits:Vec<_>=all.iter().filter(|m|m["id"]==status_id).collect();
+    assert!(status_edits.iter().any(|m|m["text"].as_str().unwrap().contains(doing)));
+    assert!(status_edits.iter().any(|m|m["text"].as_str().unwrap().contains("Result is being reviewed")));
+    assert!(status_edits.last().unwrap()["text"].as_str().unwrap().contains(&closed),"closure cannot be overwritten");
+    assert!(status_edits.iter().all(|m|m["chat_id"]==OWNER),"status stays in originating route");
     assert!(!all.iter().any(|s| { let t = s["text"].as_str().unwrap(); t.contains("stall") || t.contains("hung") }));
     for (id, chat, topic) in [(1, 8, None), (2, -100, Some(5)), (3, -100, Some(5))] {
         let r = query_text(&d, &format!("SELECT reply FROM requests WHERE id={id}"));
@@ -2295,11 +2308,11 @@ fn c06_resume_failure_rebuilds_without_replaying_effects() {
     wait("rebuilt answer", 20, || try_query(&d, "SELECT count(*) FROM requests WHERE state='answered'") == Some(2));
     push(&st, text(3, OWNER, None, OWNER, "follow up without tools"));
     wait("replacement resumed", 15, || try_query(&d, "SELECT count(*) FROM requests WHERE state='answered'") == Some(3));
-    wait("notice delivered", 10, || sent_has(&st, "rebuilding from recorded"));
+    wait("notice delivered", 10, || sent_has(&st, "Restoring the conversation"));
     assert_eq!(tq_calls(&d).len(), calls, "recovery never calls GitHub");
     assert_eq!(query(&d, "SELECT count(*) FROM task_effects"), 1);
     assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE kind='rebuild'"), 1);
-    assert_eq!(texts(&st).iter().filter(|t| t.contains("rebuilding from recorded")).count(), 1);
+    assert_eq!(texts(&st).iter().filter(|t| t.contains("Restoring the conversation")).count(), 1);
     assert!(!texts(&st).join(" ").contains("/private/native"));
     let log = fs::read_to_string(d.join("codex.log")).unwrap();
     let turns: Vec<Value> = log.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter(|v| v["method"] == "turn/start").collect();
@@ -2352,7 +2365,7 @@ fn c_live_context_runs_c06() {
         assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE kind='rebuild'"), 1);
         assert_eq!(query(&d, "SELECT count(*) FROM effects"), 1);
         assert_eq!(comments(), before + 1);
-        wait("recovery notice", 15, || texts(&st).iter().filter(|t| t.contains("rebuilding from recorded")).count() == 1);
+        wait("recovery notice", 15, || texts(&st).iter().filter(|t| t.contains("Restoring the conversation")).count() == 1);
         assert!(!texts(&st).join(" ").contains(d.to_str().unwrap()));
         let log = stderr_of(svc);
         assert!(!log.contains(&token) && files_with(&d, &token, &["keys.json"]).is_empty());
@@ -2381,9 +2394,9 @@ fn u39_registered_boards_steer_requeue_and_stale_answer() {
     assert!(tq_calls(&d).is_empty() && tq_calls(&second).is_empty());
     let mut p = plan(&["Other docs"]); p["project"] = json!("other");
     push(&st, call(2, OWNER, None, OWNER, "task_plan", p));
-    wait("other plan", 15, || sent_has(&st, "Draft saved locally."));
+    wait("other plan", 15, || sent_has(&st, "We will:"));
     push(&st, call(3, OWNER, None, OWNER, "task_run_plan", json!({"revision":1})));
-    wait("other start", 15, || sent_has(&st, "(https://github.com/taskqorg/other/issues/19)"));
+    wait("other start", 15, || sent_has(&st, "Tasks submitted:") && sent_has(&st,"TaskQ · other#19 · Other docs"));
     wait("other held start", 15, || board(&second)["tasks"]["19"]["state"] == "ready");
     set_task(&second, 19, |t| t["state"] = json!("doing"));
     push(&st, call(4, OWNER, None, OWNER, "task_steer", json!({"project":"other", "task":"19", "text":"Keep the scope; $(false) is literal."})));
@@ -2409,9 +2422,9 @@ fn u39_registered_boards_steer_requeue_and_stale_answer() {
     push(&st, call(10, OWNER, None, OWNER, "project_use", json!({"project":"pilotq"})));
     wait("switched", 15, || sent_has(&st, "This conversation now uses project pilotq"));
     push(&st, reply(11, OWNER, None, OWNER, q, "1"));
-    wait("stale other answer", 15, || sent_has(&st, "That question is no longer current; nothing was written"));
+    wait("stale other answer", 15, || sent_has(&st, "Answer was not saved; check the current question and your access."));
     assert_eq!(query(&d, "SELECT count(*) FROM tasks WHERE number=19"), 2);
-    assert_eq!(query(&d, "SELECT count(DISTINCT sent_message) FROM outbox WHERE task=19 AND kind='status' AND state='delivered'"), 2, "each board edits its own status message");
+    assert_eq!(query(&d, "SELECT count(DISTINCT sent_message) FROM outbox WHERE kind='status' AND state='delivered'"), 2, "each board edits its own status message");
     assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE kind='task' AND target LIKE 'taskqorg/other %' AND result LIKE '%accepted%'"), 2);
     assert_eq!(query(&d, "SELECT count(*) FROM task_effects WHERE receipt IS NOT NULL"), 2);
     assert_eq!(board(&d)["tasks"]["19"]["state"], "ready");
@@ -2422,12 +2435,12 @@ fn u39_registered_boards_steer_requeue_and_stale_answer() {
     assert!(tq_calls(&d).iter().all(|a| a[0] != "answer"));
     fs::write(second.join("lose-control"), "").unwrap();
     push(&st, call(12, OWNER, None, OWNER, "task_requeue", json!({"project":"other", "task":"19", "reason":"Reconcile this once."})));
-    wait("uncertain control", 15, || sent_has(&st, "is uncertain (taskq requeue failed"));
+    wait("uncertain control", 15, || sent_has(&st, "Could not finish the action; its result is not confirmed yet."));
     let revision = board(&second)["tasks"]["19"]["revision"].clone();
     drop(c);
     fs::remove_file(second.join("board-down")).unwrap();
     let c = spawn(&d, None);
-    wait("control reconciled", 15, || sent_has(&st, "reconciled: &quot;accepted&quot; &quot;ready&quot;"));
+    wait("control reconciled", 15, || sent_has(&st, "Change confirmed."));
     assert_eq!(board(&second)["tasks"]["19"]["revision"], revision, "reconciliation returns the first receipt without another effect");
     let writes = tq_calls(&second);
     assert_eq!(writes.len(), 6);
@@ -2607,8 +2620,8 @@ fn u95_cases(live: bool) {
         eprintln!("u95 {} case {id}: {reply}", if live {"live"} else {"fake"});
         reply
     };
-    let reply = send(1, "In English, use task_plan to save one pilotq task titled Tester guide. Goal: clarify the tester guide wording. Acceptance: guide describes the setup checks. Show the saved revision and next step; do not run it.", "task_plan", plan(&["Tester guide"]));
-    assert!(reply.to_lowercase().contains("sav") && reply.contains('1'), "plan identifies local save/revision: {reply}");
+    let reply = send(1, "In English, use task_plan to save one pilotq task titled Tester guide. Goal: clarify the tester guide wording. Acceptance: guide describes the setup checks. Show the task and result; do not run it.", "task_plan", plan(&["Tester guide"]));
+    assert!(reply.contains("We will:") && reply.contains("Done when:") && !reply.contains("revision"),"#165 plan shows only task and result: {reply}");
     assert_eq!(query(&d, "SELECT count(*) FROM plan_runs"), 0, "planning creates no board work");
     send(2, "Run saved plan revision 1 now with task_run_plan. Reply briefly in English with the verified task link and distinguish queued admission from worker execution.", "task_run_plan", json!({"revision":1}));
     assert_eq!(query(&d, "SELECT count(*) FROM plan_runs WHERE state='started'"), 1);
@@ -2659,9 +2672,9 @@ fn u94_answer_elsewhere_closes_question() {
     let (d, st) = tq_setup("u94", true);
     let c = spawn(&d, None);
     push(&st, call(1, -100, Some(5), OWNER, "task_plan", plan(&["Docs"])));
-    wait("plan", 15, || sent_has(&st, "Draft saved locally."));
+    wait("plan", 15, || sent_has(&st, "We will:"));
     push(&st, call(2, -100, Some(5), OWNER, "task_run_plan", json!({"revision":1})));
-    wait("started", 15, || sent_has(&st, "Plan sent to the board"));
+    wait("started", 15, || sent_has(&st, "Tasks submitted:"));
     set_task(&d, 19, |t| { t["state"]=json!("ask"); t["card"]=json!("Done: drafted\nProblem: pick\n1. short ★\n2. long"); });
     wait("question", 15, || sent_has(&st, "\n⚑"));
     let q = sent(&st).into_iter().find(|m| m["text"].as_str().unwrap().contains("\n⚑")).unwrap();
@@ -2722,9 +2735,9 @@ fn u93_draft_buttons_through_service() {
         let data=latest["reply_markup"]["inline_keyboard"][0][0]["callback_data"].as_str().unwrap();
         let message=latest["id"].as_i64().unwrap();
         push(&st,press(5,OWNER,None,OWNER,message,data));
-        wait("button admits displayed draft",15,||sent_has(&st,"Plan sent to the board"));
+        wait("button admits displayed draft",15,||sent_has(&st,"Tasks submitted:"));
         // §12/#91: admission has no worker evidence; preserve truthful queue text and saved title.
-        let reply=sent(&st).into_iter().find(|m|m["text"].as_str().is_some_and(|t|t.contains("Plan sent to the board"))).unwrap();
+        let reply=sent(&st).into_iter().find(|m|m["text"].as_str().is_some_and(|t|t.contains("Tasks submitted:"))).unwrap();
         let text=reply["text"].as_str().unwrap();
         assert!(text.contains("queued for a worker") && !text.contains("started") && text.contains("TaskQ · pilotq#19 · Reply improvements"),"admission must not claim execution and must name the saved task: {text}");
         let calls=tq_calls(&d);
@@ -2749,6 +2762,52 @@ fn u93_draft_buttons_through_service() {
         stop(c,d);
     }
 }
+// #165 continuation: slow launch liveness edits the plan; give-up, Retry and
+// Cancel share that display. The fake board proves same-operation recovery only.
+#[test]
+fn u165_launch_liveness_problem_controls() {
+    let (d,st)=tq_setup("u165-liveness",true);
+    let bin=d.join("fake-taskq");
+    let code=fs::read_to_string(&bin).unwrap().replace("if cmd == \"add\":",r#"if cmd == "add":
+    if os.path.exists(os.path.join(d, "reject-launch")):
+        out(receipt(19, "rejected", "invented op_id JSON CLI error"))
+"#);
+    fs::write(&bin,code).unwrap();
+    fs::write(d.join("reject-launch"),"").unwrap();fs::write(d.join("slow-writes"),"3").unwrap();
+    let c=spawn(&d,None);
+    push(&st,call(1,OWNER,None,OWNER,"task_plan",plan(&["Clear launch"])));
+    let display=||sent(&st).into_iter().find(|m|m["text"].as_str().is_some_and(|t|t.contains("Clear launch")) && m["reply_markup"]["inline_keyboard"][0][0]["callback_data"].as_str().is_some_and(|s|s.starts_with("plan:")));
+    wait("plan display",15,||display().is_some());let source=display().unwrap()["id"].as_i64().unwrap();
+    push(&st,call(2,OWNER,None,OWNER,"task_run_plan",json!({})));
+    wait("elapsed creating line",15,||sent(&st).iter().any(|m|m["id"]==source && m["edit"]==true && m["text"].as_str().is_some_and(|t|t.contains("Creating tasks ·"))));
+    wait("problem receipt",15,||query(&d,"SELECT count(*) FROM outbox WHERE kind='plan_problem' AND state='delivered'")==1);
+    let problem=sent(&st).into_iter().rev().find(|m|m["reply_markup"]["inline_keyboard"][0][0]["callback_data"].as_str().is_some_and(|s|s.starts_with("retry:"))).unwrap();
+    assert_eq!(problem["id"],source);assert!(problem["text"].as_str().unwrap().contains("Could not launch the plan."));
+    let retry=problem["reply_markup"]["inline_keyboard"][0][0]["callback_data"].as_str().unwrap().to_string();
+    fs::remove_file(d.join("reject-launch")).unwrap();fs::remove_file(d.join("slow-writes")).unwrap();
+    push(&st,press(3,OWNER,None,OWNER,source,&retry));
+    wait("same launch resumed",15,||board(&d)["tasks"]["19"]["state"]=="ready" && sent_has(&st,"Tasks submitted:"));
+    assert_eq!(query(&d,"SELECT count(*) FROM plan_runs"),1);
+    assert_eq!(query(&d,"SELECT count(*) FROM tool_sizes WHERE request_id=(SELECT id FROM requests WHERE update_id=3)"),0,"Retry starts no model turn");
+    let calls=tq_calls(&d);let adds:Vec<_>=calls.iter().filter(|a|a[0]=="add").collect();
+    assert_eq!(adds.len(),2);let op=|a:&Vec<String>|a[a.iter().position(|x|x=="--op-id").unwrap()+1].clone();assert_eq!(op(adds[0]),op(adds[1]));
+    assert_eq!(board(&d)["creates"],1);
+    push(&st,call(4,OWNER,None,OWNER,"task_plan",plan(&["Cancel remaining launch"])));
+    wait("next draft",15,||sent_has(&st,"Cancel remaining launch"));
+    fs::write(d.join("reject-launch"),"").unwrap();push(&st,call(5,OWNER,None,OWNER,"task_run_plan",json!({})));
+    wait("second problem",15,||query(&d,"SELECT count(*) FROM outbox WHERE kind='plan_problem' AND state='delivered'")==2);
+    let problem=sent(&st).into_iter().rev().find(|m|m["reply_markup"]["inline_keyboard"][1][0]["callback_data"].as_str().is_some_and(|s|s.starts_with("cancel_launch:"))).unwrap();
+    let cancel=problem["reply_markup"]["inline_keyboard"][1][0]["callback_data"].as_str().unwrap().to_string();
+    let message=problem["id"].as_i64().unwrap();let before=tq_calls(&d);
+    push(&st,press(6,OWNER,None,OWNER,message,&cancel));
+    wait("cancel remaining launch",15,||sent(&st).iter().any(|m|m["id"]==message && m["text"].as_str().is_some_and(|t|t.contains("Further launch steps cancelled"))));
+    assert_eq!(tq_calls(&d),before);assert_eq!(board(&d)["tasks"]["19"]["state"],"ready");
+    push(&st,press(7,OWNER,None,OWNER,message,&cancel));
+    wait("stale problem toast",15,||st.lock().unwrap().api.iter().any(|(method,b,_)|method=="answercallbackquery" && b["text"]=="This button is no longer available."));
+    assert!(!texts(&st).iter().any(|t|t.contains("invented op_id") || t.contains("Plan revision") || t.contains("JSON CLI")));
+    stop(c,d);
+}
+
 // #110 / §5, R11: replays the FRA shape of requests 29-35. One ask and five follow-ups revised one unnumbered draft (FRA made
 // plans 3-6); earlier displays lose their buttons. A text launch of three tickets whose board writes outlast the model deadline
 // (FRA request 35 ended "Codex did not finish within 60 s") is filed and started by the service, and its reply lists each
@@ -2773,7 +2832,7 @@ fn u110_one_draft_launch_states_and_cancel() {
     assert_eq!(query(&d, "SELECT count(DISTINCT draft) FROM plans"), 1, "follow-ups revise one draft");
     for m in &displays {
         let t = m["text"].as_str().unwrap();
-        assert!(t.contains("Updated plan") && (0..10).all(|n| !t.contains(&format!("Draft {n}"))), "no numbered plan: {t}");
+        assert!(t.contains("We will:") && (0..10).all(|n| !t.contains(&format!("Draft {n}"))), "no numbered plan: {t}");
         assert_eq!(m["reply_markup"]["inline_keyboard"][1][0]["text"], "Cancel");
     }
     let closed = |id: &Value| st.lock().unwrap().api.iter().any(|(m, b, _)| m == "editmessagereplymarkup" && b["message_id"] == *id);
@@ -2785,9 +2844,9 @@ fn u110_one_draft_launch_states_and_cancel() {
     wait("text launch reply", 30, || try_query(&d, "SELECT count(*) FROM requests WHERE update_id=35 AND state<>'queued' AND state<>'running'") == Some(1));
     assert_eq!(query_text(&d, "SELECT state FROM requests WHERE update_id=35"), "answered", "{:?}", texts(&st));
     let reply = query_text(&d, "SELECT reply FROM requests WHERE update_id=35");
-    assert!(reply.starts_with("Plan sent to the board. Task states:"), "{reply}");
+    assert!(reply.starts_with("Tasks submitted:"), "{reply}");
     for (n, title) in titles.iter().enumerate() {
-        assert!(reply.contains(&format!("[TaskQ · pilotq#{} · {title}](https://github.com/taskqorg/pilotq/issues/{}): ready: queued for a worker", 19 + n, 19 + n)), "{reply}");
+        assert!(reply.contains(&format!("[TaskQ · pilotq#{} · {title}](https://github.com/taskqorg/pilotq/issues/{}): queued for a worker", 19 + n, 19 + n)), "{reply}");
     }
     assert!(!reply.contains("doing") && !reply.contains("in work") && !reply.contains("did not finish"), "{reply}");
     assert!(!texts(&st).iter().any(|t| t.contains("did not finish")));
@@ -2802,7 +2861,7 @@ fn u110_one_draft_launch_states_and_cancel() {
     assert_eq!(query(&d, "SELECT count(DISTINCT draft) FROM plans"), 2);
     let images = shown().unwrap();
     push(&st, press(37, OWNER, None, OWNER, images["id"].as_i64().unwrap(), images["reply_markup"]["inline_keyboard"][1][0]["callback_data"].as_str().unwrap()));
-    wait("cancelled", 15, || sent_has(&st, "Draft cancelled; nothing was filed on the board."));
+    wait("cancelled", 15, || sent_has(&st, "Plan cancelled."));
     wait("cancelled draft closes", 15, || closed(&images["id"]));
     push(&st, call(38, OWNER, None, OWNER, "task_run_plan", json!({})));
     wait("cancelled launch refused", 15, || sent_has(&st, "re: refused: this draft was cancelled"));
@@ -2974,7 +3033,7 @@ fn u108_semantic_answer_receipt() {
     let (d, st) = tq_setup("u108-semantic", true);
     let c = spawn(&d, None);
     push(&st, call(1, -100, Some(5), OWNER, "task_plan", plan(&["First", "Second"])));
-    wait("plan", 15, || sent_has(&st, "Draft saved locally."));
+    wait("plan", 15, || sent_has(&st, "We will:"));
     push(&st, call(2, -100, Some(5), OWNER, "task_run_plan", json!({"revision":1})));
     wait("admitted", 15, || board(&d)["tasks"]["20"]["state"] == "ready");
     for n in [19,20] {
@@ -3013,7 +3072,7 @@ fn u108_answer_uncertain_restart() {
     let (d, st)=tq_setup(&format!("u108-uncertain-{mode}"),true);
     let c=spawn(&d,None);
     push(&st,call(1,OWNER,None,OWNER,"task_plan",plan(&["Docs"])));
-    wait("plan",15,||sent_has(&st,"Draft saved locally."));
+    wait("plan",15,||sent_has(&st,"We will:"));
     push(&st,call(2,OWNER,None,OWNER,"task_run_plan",json!({"revision":1})));
     wait("admitted",15,||board(&d)["tasks"]["19"]["state"]=="ready");
     set_task(&d,19,|t| {t["state"]=json!("ask");t["card"]=json!("Done: draft\nProblem: pick\n1. short ★\n2. long");});
@@ -3030,7 +3089,7 @@ fn u108_answer_uncertain_restart() {
         _=>call(4,OWNER,None,OWNER,"task_answer",json!({"task":"19","revision":revision,"text":"long"})),
     };
     push(&st,input);
-    wait("uncertain",15,||sent_has(&st,"is uncertain") || sent_has(&st,"unconfirmed"));
+    wait("uncertain",15,||sent_has(&st,"not confirmed") || st.lock().unwrap().api.iter().any(|(method,b,_)|method=="answercallbackquery" && b["text"].as_str().is_some_and(|text|text.contains("not confirmed"))));
     assert_eq!(query(&d,"SELECT count(*) FROM task_effects WHERE receipt IS NULL"),1);
     drop(c);
     fs::remove_file(d.join("board-down")).unwrap();
@@ -3055,7 +3114,7 @@ fn u108_registration_failure() {
     let (d, st) = tq_setup(&format!("u108-refusal-{failure}"), true);
     let c = spawn(&d, None);
     push(&st, call(1, OWNER, None, OWNER, "task_plan", plan(&["Docs"])));
-    wait("plan", 15, || sent_has(&st, "Draft saved locally."));
+    wait("plan", 15, || sent_has(&st, "We will:"));
     push(&st, call(2, OWNER, None, OWNER, "task_run_plan", json!({"revision":1})));
     wait("admitted", 15, || board(&d)["tasks"]["19"]["state"] == "ready");
     set_task(&d, 19, |t| { t["state"] = json!("ask"); t["card"] = json!("Done: draft\nProblem: pick\n1. short ★\n2. long"); });
@@ -3189,11 +3248,11 @@ fn u106_telegram_controls_and_models() {
     stop(c,d);
 }
 
-// #119 / §2, §4, §12: observations must reach the durable final reply in each route
-// and fallback. Protects against an absent footer, leaked account metadata, invented
+// #165 / §2, §4, §12: observations belong to /status, never the answer.
+// Keep route/fallback retries, no account metadata leaks, unavailable data and no invented
 // zeroes, cross-turn context and optional quota failure killing a good answer.
 #[test]
-fn u119_status_footer_delivery() {
+fn u165_status_observations_without_reply_footer() {
     for mode in ["rich", "html", "plain"] {
       for (route,chat,topic) in [("dm",OWNER,None),("group",-100,None),("topic",-100,Some(5))] {
         let (d,st)=setup(&format!("u119-{mode}-{route}"),vec![]);
@@ -3219,9 +3278,9 @@ fn u119_status_footer_delivery() {
         push(&st,text(2,chat,topic,OWNER,"measured answer"));
         wait("measured answer",15,||sent_has(&st,"re: measured answer"));
         let answer=texts(&st).into_iter().find(|s|s.contains("re: measured answer")).unwrap();
-        assert!(answer.contains("gpt-test · 😣 80% · 🌖 75% ↻ 3h"),"{mode}: {answer}");
-        assert!(answer.contains("\n\u{a0}\ngpt-test"),"#141 exactly one visible empty line: {mode}/{route}: {answer}");
-        assert_eq!(answer.matches("\n\u{a0}\n").count(),1,"#141 no accumulated spacers: {answer}");
+        assert!(!answer.contains("gpt-test") && !answer.contains("80%") && !answer.contains("75%"),"#165 no reply footer: {answer}");
+        push(&st,text(3,chat,topic,OWNER,"/status"));
+        wait("measured status",15,||sent_has(&st,"gpt-test · 😣 80% · 🌖 75% ↻ 3h"));
         {
             let f=st.lock().unwrap();
             let attempts: Vec<_>=f.api.iter().filter(|(m,v,_)| {
@@ -3230,7 +3289,7 @@ fn u119_status_footer_delivery() {
             }).collect();
             assert_eq!(attempts.len(),2,"rate-limited final retried once");
             assert_eq!(attempts[0].1,attempts[1].1,"retry preserves exact payload");
-            if mode=="rich" { assert!(attempts[0].1["rich_message"]["markdown"].as_str().unwrap().contains("  \n\u{a0}  \ngpt-test"),"two hard breaks, not a collapsed paragraph boundary"); }
+
         }
         let delivered=sent(&st).into_iter().find(|v|v["text"].as_str().is_some_and(|t|t.contains("re: measured answer"))).unwrap();
         if mode=="plain" { assert!(delivered.get("parse_mode").is_none()); }
@@ -3244,14 +3303,16 @@ fn u119_status_footer_delivery() {
             assert!(body.contains("\n- **Status**: queued\n- [Task](https://example.invalid/task)"), "{body}");
         }
 
-        push(&st,text(3,chat,topic,OWNER,"missing metrics"));
+        push(&st,text(4,chat,topic,OWNER,"missing metrics"));
         wait("missing metrics reply",15,||sent_has(&st,"re: missing metrics"));
         let answer=texts(&st).into_iter().find(|s|s.contains("re: missing metrics")).unwrap();
-        assert!(answer.contains("? context unavailable · ? unavailable"),"{answer}");
-        push(&st,text(4,chat,topic,OWNER,"/new"));
+        assert!(!answer.contains("? context unavailable"),"{answer}");
+        push(&st,text(5,chat,topic,OWNER,"/status"));
+        wait("unavailable status",15,||sent_has(&st,"? context unavailable · ? unavailable"));
+        push(&st,text(6,chat,topic,OWNER,"/new"));
         wait("reset model announcement",10,||sent_has(&st,"New conversation started. Model: default (Codex configuration)."));
         assert_eq!(query(&d,"SELECT count(*) FROM runs"),2,"/new is deterministic");
-        assert_eq!(query(&d,"SELECT count(*) FROM requests WHERE reply LIKE '%😣 80% · 🌖 75% ↻ 3h%'"),1,"persist before sending");
+        assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='runtime_status' AND result LIKE '%😣 80% · 🌖 75% ↻ 3h%'"),1,"measurements persisted separately");
         assert!(!texts(&st).join("\n").contains("invented-secret-plan"));
         stop(c,d);
       }
@@ -3314,7 +3375,7 @@ if paths:
     fs::write(d.join("fake-taskq"),fake).unwrap();
     let c=spawn(&d,None);
     push(&st,call(1,OWNER,None,OWNER,"task_plan",plan(&["File evidence"])));
-    wait("plan",15,||sent_has(&st,"Draft saved locally."));
+    wait("plan",15,||sent_has(&st,"We will:"));
     push(&st,call(2,OWNER,None,OWNER,"task_run_plan",json!({"revision":1})));
     wait("task",15,||board(&d)["tasks"]["19"]["state"]=="ready");
     set_task(&d,19,|t|{t["state"]=json!("ask");t["card"]=json!("Done: ready\nProblem: send the evidence\n1. Continue ★\n2. Stop");});
@@ -3326,7 +3387,7 @@ if paths:
     photo["message"].as_object_mut().unwrap().remove("text");
     photo["message"]["photo"]=json!([{"file_id":"invented-photo","file_unique_id":"invented-id","file_size":68,"width":1,"height":1}]);
     push(&st,photo);
-    wait("unknown receipt",15,||query(&d,"SELECT count(*) FROM task_effects WHERE receipt IS NULL")==1 && sent_has(&st,"is uncertain"));
+    wait("unknown receipt",15,||query(&d,"SELECT count(*) FROM task_effects WHERE receipt IS NULL")==1 && sent_has(&st,"not confirmed"));
     assert_eq!(query(&d,"SELECT count(*) FROM requests WHERE update_id=3 AND kind='answer'"),1);
     drop(c);
     fs::remove_file(d.join("board-down")).unwrap();

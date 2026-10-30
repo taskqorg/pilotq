@@ -56,7 +56,7 @@ pub(super) fn pause_tool_status(d: &Path, id: i64) -> String {
 }
 
 fn request_delivered(d: &Path, update: i64) -> bool {
-    try_query(d, &format!("SELECT count(*) FROM requests q WHERE update_id={update} AND state IN ('answered','failed','uncertain') AND EXISTS (SELECT 1 FROM outbox o WHERE o.request_id=q.id AND (o.kind IN ('rich','rich_part') OR (o.kind='reply' AND o.text=q.reply)) AND o.state='delivered') AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.request_id=q.id AND o.kind IN ('rich','rich_part') AND o.state NOT IN ('delivered','superseded'))")) == Some(1)
+    try_query(d, &format!("SELECT count(*) FROM requests q WHERE update_id={update} AND state IN ('answered','failed','uncertain') AND EXISTS (SELECT 1 FROM outbox o WHERE o.request_id=q.id AND (o.kind IN ('rich','rich_part','plan_answered','plan_problem') OR (o.kind='reply' AND o.text=q.reply)) AND o.state='delivered') AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.request_id=q.id AND o.kind IN ('rich','rich_part','plan_answered','plan_problem') AND o.state NOT IN ('delivered','superseded'))")) == Some(1)
 }
 
 // §4 / A40: final delivery must not be confused with a privacy notice or a partial fallback.
@@ -82,6 +82,12 @@ fn a40_final_reply_delivery() {
     assert!(request_delivered(&d, 1), "complete HTML/plain fallback");
     c.execute_batch("DELETE FROM outbox; INSERT INTO outbox VALUES(1,'reply','delivered','Final answer');").unwrap();
     assert!(request_delivered(&d, 1), "plain final reply");
+    c.execute_batch("DELETE FROM outbox; INSERT INTO outbox VALUES(1,'plan_progress','delivered','Creating tasks');").unwrap();
+    assert!(!request_delivered(&d, 1), "#165 progress is not a launch receipt");
+    c.execute_batch("INSERT INTO outbox VALUES(1,'plan_answered','pending','Tasks submitted');").unwrap();
+    assert!(!request_delivered(&d, 1), "#165 pending source-card edit is not delivered");
+    c.execute("UPDATE outbox SET state='delivered' WHERE kind='plan_answered'", []).unwrap();
+    assert!(request_delivered(&d, 1), "#165 source-card receipt is final delivery");
     c.execute("UPDATE requests SET state='running'", []).unwrap();
     assert!(!request_delivered(&d, 1), "delivery cannot replace terminal state");
     drop(c);
@@ -507,13 +513,13 @@ fn a40_live_management() {
             assert_eq!(folded["attempt"],h.data["fixture_attempt"]);
             let candidate = h.data["candidate"].as_str().unwrap().to_string();
             h.event(&format!("taskq: result {candidate} attempt {attempt}\nChanged: Scripted A40 fixture reached result; no code changed or published.\nChecks: Synthetic management lifecycle only.\nOpen: none"), "review");
-            h.wait("review delivery",60,|| sent(&h.st).iter().any(|s|s["text"].as_str().is_some_and(|t|t.starts_with(&format!("Task #{} review:",h.task)))));
+            h.wait("review delivery",60,|| sent(&h.st).iter().any(|s|s["text"].as_str().is_some_and(|t|t.contains("Result is being reviewed") && t.contains(h.data["task_url"].as_str().unwrap()))));
             let host = h.data["isolated_host"].as_str().unwrap();
             let reviewer = h.event(&format!("taskq: spawn reviewer codex:a40-scripted-review {host}\nA40 synthetic reviewer; no process is launched."), "review");
             h.event(&format!("taskq: close attempt {reviewer}\nChanged: Scripted A40 reviewer outcome; no code review or publication claimed.\nChecks: Management notification fixture.\nOpen: none"), "closed");
             h.github("PATCH", &format!("repos/taskqorg/pilotq/issues/{}",h.task), json!({"state":"closed","state_reason":"completed"}));
-            h.wait("reviewer outcome",7200,|| sent(&h.st).iter().any(|s| s["text"].as_str().is_some_and(|t|t.starts_with(&format!("Task #{} is closed on the board",h.task)))));
-            assert!(sent(&h.st).iter().any(|s|s["text"].as_str().is_some_and(|t|t.starts_with(&format!("Task #{} review:",h.task)))));
+            h.wait("reviewer outcome",7200,|| sent(&h.st).iter().any(|s| s["text"].as_str().is_some_and(|t|t.contains("Task closed; see the result") && t.contains(h.data["task_url"].as_str().unwrap()))));
+            assert!(sent(&h.st).iter().any(|s|s["text"].as_str().is_some_and(|t|t.contains("Result is being reviewed") && t.contains(h.data["task_url"].as_str().unwrap()))));
             let issue = gh_json(&format!("repos/taskqorg/pilotq/issues/{}",h.task));
             assert_eq!((&issue["state"],&issue["state_reason"]),(&json!("closed"),&json!("completed")));
             let inbox = h.taskq(&["inbox".into(),h.task.to_string()]).unwrap();
@@ -538,9 +544,13 @@ fn a40_live_management() {
             assert!(request_delivered(&h.d, update), "audit requires final delivery, not a privacy notice");
             let messages = sent(&h.st);
             assert!(messages.iter().all(|m|m["chat_id"] == CHAT && m["message_thread_id"] == 5));
-            let terminal = messages.iter().find(|m|m["text"].as_str().is_some_and(|t|t.starts_with(&format!("Task #{} is closed on the board",h.task)))).unwrap();
-            assert!(terminal.get("edit").is_none());
-            assert!(!messages.iter().any(|m|m["edit"] == true && m["message_id"] == terminal["id"]));
+            let terminal = messages.iter().find(|m|m["text"].as_str().is_some_and(|t|t.contains("Task closed; see the result") && t.contains(h.data["task_url"].as_str().unwrap()))).unwrap();
+            assert_eq!(terminal["edit"],true,"#165 closure edits the launch status card");
+            let status = query(&h.d,&format!("SELECT sent_message FROM outbox WHERE request_id={} AND kind='status' AND state='delivered' ORDER BY id LIMIT 1",h.run_request));
+            assert_eq!(terminal["id"],status);
+            assert_eq!(query(&h.d,&format!("SELECT count(DISTINCT sent_message) FROM outbox WHERE request_id={} AND kind='status' AND state='delivered'",h.run_request)),1);
+            let latest=messages.iter().rev().find(|m|m["id"]==status).unwrap();
+            assert!(latest["text"].as_str().unwrap().contains("Task closed; see the result"),"terminal outcome cannot be overwritten");
             h.data["audit"] = audit;
             json!({"trace":format!("pilotq.request.{}",h.run_request),"all_messages_in_originating_topic":true})
         });

@@ -560,7 +560,7 @@ The run exercises queue pause on the selected host/project and restores it with 
 | A40.09 restart | Kill and restart PilotQ while TaskQ is doing; subscription and task identity survive, with no duplicate creation |
 | A40.10 question/foreign | A required worker question reaches the original topic; person 8's reply is refused and writes no answer |
 | A40.11 answer/stale | Owner replies to the current question; board records the answer; replying again to the old message is refused without a second answer |
-| A40.12 reviewer | Observe scripted reviewer state and the separate closing outcome; fixture board issue is closed completed with explicitly synthetic result evidence |
+| A40.12 reviewer | Observe review and closure on the same launch status card (#165); fixture board issue is closed completed with explicitly synthetic result evidence |
 | A40.13 audit/delivery | Audit joins author, route, request trace, tools and task; CoreQ trace exists; recorded sends remain in the original route |
 | A40.14 cleanup | Stop the test PilotQ, remove copied credentials, leave every created task closed or parked and restore admission if paused by this run |
 
@@ -719,6 +719,8 @@ Review regression (#94): the post-answer snapshot returns to the older attempt r
 
 ### U93: one draft and explicit action buttons
 
+Historical evidence below describes #93. Task #165 supersedes its verbose plan rendering; current checks retain the same authorization and recovery boundaries with three-line task summaries.
+
 Owner decision: [§5 Plan discussion and action buttons](../pilotq.md#plan-discussion-and-action-buttons), task #93 option 1. The previous adapter instructed the manager to present every saved revision as a new plan revision and offered no launch button. `u93_draft_display` reproduces the display defect on the unchanged implementation: a saved scope could end with only `Saved.`. The same check passes with the saved title, goal, acceptance, scope and launch affordance rendered from the journal.
 
 The executable checks retain these protections:
@@ -815,6 +817,8 @@ an authorized test installation; no deployment or production cutover is implied.
 
 ## Status footer (#119)
 
+Historical placement and evidence: #165 moves these observations to `/status` and removes reply footers. The current delivery check is `u165_status_observations_without_reply_footer`; indicator validation remains under `u119`.
+
 The owner selected the reply footer for DMs, groups and topics; see
 [research and placement review](status-line-research.md) and contract §12.
 `cargo test --locked u119` protects indicator thresholds, reset rounding,
@@ -851,8 +855,8 @@ Retained checks:
   refuses every command except `status --json`.
 - `related_context_is_durable_and_scoped`: earlier own inputs survive restart;
   other authors, private routes and reset generations cannot select a project.
-- `u119_status_footer_delivery`: exactly one empty line through rich DM, HTML
-  group and plain topic delivery, including model text with trailing newlines.
+- `u165_status_observations_without_reply_footer`: no footer through rich, HTML
+  and plain delivery in each route; measured or unavailable observations appear only in `/status`.
 
 A8 remains a post-release live FRA check. In the owner DM/topic, ask “What is
 the task status for Pilot Q?”, then “Make a task so this works”; verify fresh
@@ -874,7 +878,7 @@ Retained check: `numbered_answer_selects_project` failed before the fix at the
 answer step. It covers a bare “1” with no open question (refused), earlier own
 mentions of `pilotq` and `tight` (question, no draft), the answer “1” (draft on
 `pilotq`) and a later bare number after the question closed (refused).
-Record the exact running build and Telegram screenshots showing footer spacing.
+Record the exact running build and Telegram screenshots showing project selection and the current #165 cards.
 Local adapters do not qualify this live appearance or model interpretation.
 
 ## Approved installed commands (#126)
@@ -938,3 +942,20 @@ R15 and §5 own the grants and limits. Deterministic component traces use invent
 | Admin160-05 | Crash after local-root write, topic creation response loss, or known topic ID before route binding | Partial root remains visible; unknown topic creation is never replayed. A saved ID completes only local binding after current grant/registry checks. Grant receipt failure rolls back the entire change. |
 | Admin160-06 | Forum bot has or lacks `can_manage_topics` | Permitted topic gets the selected route policy and registered project default; new conversation resolves that project without gaining access. Missing permission receives a plain refusal. |
 | Admin160-07 | Model substitutes unrequested grant types or shared mode; quoted/negated shared wording; recovery holds a saved topic ID | Refuse before mutation/API; no grant intent is stored. Recovery cannot bind shared visibility without caller consent. Explicit own grant names and English/Russian shared-topic requests remain accepted. |
+
+### Conversation contract (#165)
+
+The [Conversation contract](../pilotq.md#conversation-contract) and [stage table](conversation-flow.md) own presentation. These cases amend the #72/#91/#93/#110 plan/status assertions and #119/#124 footer assertions; they retain authorization, immutable scope, grant, duplicate, receipt, route and recovery protection.
+
+| Case | Input / condition | Expected observation |
+|---|---|---|
+| Chat165-01 | Save or revise an English/Russian draft with several acceptance/scope items | Each task shows title, one action line and one result line; full worker body stays saved. No local-save, board, revision or launch-instruction prose. |
+| Chat165-02 | Runtime reports model/context/quota; later data is unavailable, model changes or conversation resets | Answer has no footer; `/status` shows only the current conversation generation/model epoch's observation with its age or unavailable. |
+| Chat165-03 | Launch, Cancel or choose; repeat, foreign or reset callback | Edit the source display, remove buttons and append one factual outcome; stale controls receive a toast and write nothing. |
+| Chat165-04 | Multiple tasks in one launch transition through queue, work, question and closure | One launch status card is edited; questions retain complete answer cards and accepted-actor edits. Closure never invents publication or deployment evidence. |
+| Chat165-05 | Slow launch, dependency outage, terminal failure and restart | Phase/elapsed line edits the source card; coalesce and rate-limit edits. One failure and one verified resolution; details remain in audit. Give-up shows Retry/Cancel. Retry preserves operations and prior effects; Cancel stops only remaining launch steps. |
+| Chat165-06 | Render all cards, stages and the owner's two before-case transcriptions | Fixture snapshots match; no operation ID, JSON, internal revision or English CLI error reaches the rendered cards. |
+
+`conversation` component filters cover snapshots, durable edits, grouped task states, progress and problem controls. The Telegram `u165_` filters cover the service/adapters, `/status`, elapsed-time edits and Retry/Cancel; updated existing route/recovery filters keep their authority and receipt assertions. These are local/CI checks, not live appearance qualification.
+
+A7 remains a PM check after merge/release on PDS 18: record exact source/binary identity, then compare a plan, launch, cancel, complete worker question and failure/recovery to the fixture cards using an existing authorized test route/project. Verify same-message edits, button removal, stale toast, elapsed-time liveness and Retry/Cancel. Attach screenshots and receipt evidence under §9/§12. Workers do not install or replace the running service.
