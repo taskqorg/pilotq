@@ -1065,7 +1065,7 @@ fn tq_setup(tag: &str, claim: bool) -> (PathBuf, State) {
     let out=cli(&d,&["projects","list","--json"]);assert!(out.status.success());
     let db=rusqlite::Connection::open(d.join("journal.sqlite")).unwrap();
     let record=json!({"board":"taskqorg/pilotq","root":d.join("root"),"pending":false,"ready":true,"epoch":1,
-        "report":{"ready":true,"gaps":[],"source":"invented completed-onboarding fixture"}});
+        "report":{"ready":true,"gaps":[],"source":"invented completed-onboarding fixture","issue_read_key_checked":true}});
     db.execute("INSERT OR REPLACE INTO meta(key,value) VALUES ('onboarding:pilotq',?1)",[record.to_string()]).unwrap();
     (d, st)
 }
@@ -3521,6 +3521,9 @@ while [ "$1" != -i ]; do shift; done; input=$2; for a; do out=$a; done; cp "$inp
     fs::write(d.join("root/taskq.json"),json!({"repo":"invented/cyprusbz-board","create_claim_issue":20}).to_string()).unwrap();
     let db=rusqlite::Connection::open(d.join("journal.sqlite")).unwrap();
     db.execute("DELETE FROM projects",[]).unwrap();db.execute("DELETE FROM meta WHERE key LIKE 'onboarding:%'",[]).unwrap();drop(db);
+    // Invented key: the reported live gap was a tool key granted to pilotq alone.
+    ok(cli_in(&d,&["keys","add","pilotq-github","invented issue access","issue_read","--json"],"invented-issue-key-value\n"));
+    ok(cli(&d,&["keys","grant","pilotq-github","project:pilotq","--json"]));
     let mut svc=json!({"schema":"taskq.service/1","service":{"version":"4.6.47","state":"running","fresh":true,"instance":"invented","started":"invented"},
         "projects":[{"root":d.join("root"),"status":{"complete":true,"capacity":{"limits":{"codex":4},"gate":"open"},
         "access":[{"runtime":"codex","grant":"none (taskq.json is a request)","effective":"legacy","refused":"no operator grant"}]}}]});
@@ -3531,6 +3534,8 @@ while [ "$1" != -i ]; do shift; done; input=$2; for a; do out=$a; done; cp "$inp
     assert!(!out.status.success(),"a missing grant must fail the setup command while preserving registration");
     assert_eq!(v["onboarding"]["ready"],false);
     assert!(v["onboarding"]["gaps"].as_array().unwrap().iter().any(|g|g["check"]=="codex_grant" && g["fix"].as_str().unwrap().contains("service permissions --runtime codex --mode workspace --scope project")),"{v}");
+    assert!(v["onboarding"]["gaps"].as_array().unwrap().iter().any(|g|g["check"]=="issue_read_key" && g["fix"].as_str().unwrap().contains("pilotq keys grant pilotq-github project:cyprusbz-board")),"{v}");
+    assert!(!v.to_string().contains("invented-issue-key-value"));
     assert_eq!(query(&d,"SELECT count(*) FROM projects WHERE name='cyprusbz-board'"),1);
     let process=spawn(&d,None);
     wait("onboarding card",15,|| sent_has(&st,"cyprusbz-board: not ready"));
@@ -3542,6 +3547,7 @@ while [ "$1" != -i ]; do shift; done; input=$2; for a; do out=$a; done; cp "$inp
     // Only the owner supplies the grant externally; PilotQ never calls the grant command.
     svc["projects"][0]["status"]["access"][0]=json!({"runtime":"codex","grant":"workspace (project) rev 1 by invented","effective":"workspace","refused":null});
     fs::write(d.join("setup-service.json"),svc.to_string()).unwrap();
+    ok(cli(&d,&["keys","grant","pilotq-github","project:cyprusbz-board","--json"]));
     push(&st,press(91,OWNER,None,OWNER,message,&callback));
     wait("setup passed",20,||sent(&st).iter().any(|m|m["edit"]==true && m["message_id"]==message && m["text"].as_str().is_some_and(|s|s.contains("cyprusbz-board: setup passed"))));
     assert_eq!(query(&d,"SELECT count(*) FROM meta WHERE key='onboarding:cyprusbz-board' AND json_extract(value,'$.ready')=1"),1);

@@ -978,5 +978,13 @@ Owner-required cases under [§5](../pilotq.md#project-onboarding-task-168):
   no check or mutation and receive only a toast. Lost/deleted cards can be replaced
   only in the original owner DM. Failed delivery stays in the existing outbox.
 
+- **O168-5:** with `pilotq-github` permitting `issue_read` but granted to `pilotq`
+  alone, report a key gap for each of `cyprusbz`, `tight` and `agentq`, with the
+  exact `pilotq keys grant pilotq-github project:NAME` fix. Grant one externally
+  and Recheck; only that project clears. Preserve existing owner-wide and route
+  grant semantics, never expose values or update last use, and keep unreadable
+  stores unknown. Existing onboarding reports without this check are rechecked
+  at service startup.
+
 Local regression: `cargo test --locked onboarding_168`. This covers the CLI and a
 simulated Bot API; a live owner Telegram run remains separate target evidence.

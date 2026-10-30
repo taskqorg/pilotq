@@ -105,6 +105,23 @@ fn report(tq:&Taskq,board:&str,doctor:&Value,status:&Value,service:&Value,at:i64
     json!({"ready":gaps.is_empty(),"gaps":gaps,"checked_at":at,"source":"taskq service status --json (setup-check fallback)","service_identity":if service["schema"]=="taskq.service/1" {json!([service["service"]["instance"],service["service"]["started"],service["service"]["version"]])} else {Value::Null}})
 }
 
+/// Inspect grants through the metadata-only key API: no take(), credential injection or last-use write.
+fn issue_key_step(keys:&crate::keys::Keys,project:&str,owner:i64)->Option<String> {
+    let entries=match keys.list() {
+        Ok(v)=>v,
+        Err(_)=>return Some("Owner: repair the protected keys.json permissions/content, then run pilotq keys list and Recheck".into()),
+    };
+    let candidates:Vec<_>=entries.as_array().into_iter().flatten().filter(|k|
+        k["tools"].as_array().is_some_and(|t|t.contains(&json!("issue_read")))
+        && k["name"].as_str().is_some_and(|n|!n.is_empty() && n.len()<=32 && n.bytes().all(|c|c.is_ascii_lowercase() || c.is_ascii_digit() || b"-_".contains(&c)))).collect();
+    let holds=|k:&Value,field:&str,value:Value|k[field].as_array().is_some_and(|a|a.contains(&value));
+    let allows=|k:&Value,route:&str|holds(k,"projects",json!(project)) || holds(k,"users",json!(owner)) || holds(k,"routes",json!(route));
+    if candidates.iter().any(|k|allows(k,"cli")) && candidates.iter().any(|k|allows(k,&owner.to_string())) {return None;}
+    if candidates.is_empty() {return Some(format!("Owner: provision an approved issue_read key through pilotq keys add (value via protected stdin), then grant it to project:{project}; pilotq keys list shows key names"));}
+    let commands=candidates.iter().filter_map(|k|k["name"].as_str()).map(|name|format!("pilotq keys grant {name} project:{project}")).collect::<Vec<_>>().join(" OR ");
+    Some(format!("Owner: choose the approved issue_read key and run {commands}, then Recheck"))
+}
+
 fn probe(bin:&Path,root:&str,args:&[&str],end:Instant,active:impl Fn()->bool)->Value {
     let o=crate::commands::execute_bounded(crate::commands::command(bin,root,args),end,active,512*1024);
     if o["status"]!="success" {return Value::Null;}
@@ -139,7 +156,12 @@ pub fn check(t:&coreq::Tool,j:&Shared,project:&str)->Result<Value,String> {
     let fallback=Taskq{bot:None,bin:config.taskq.as_ref().map(|q|q.bin.clone()).unwrap_or_default(),root:root.clone().into(),poll:Duration::from_secs(15)};
     let status=probe(&fallback.bin,&root,&["status","--json"],end.min(Instant::now()+Duration::from_secs(10)),&active);
     let service=probe(&fallback.bin,&root,&["service","status","--json"],end.min(Instant::now()+Duration::from_secs(10)),&active);
-    let result=report(&fallback,&board,&doctor,&status,&service,crate::now() as i64);
+    let mut result=report(&fallback,&board,&doctor,&status,&service,crate::now() as i64);
+    if let Some(step)=issue_key_step(&config.direct.keys,project,config.owner) {
+        result["gaps"].as_array_mut().unwrap().push(json!({"check":"issue_read_key","fix":step,"owner_only":true}));
+        result["ready"]=json!(false);
+    }
+    result["issue_read_key_checked"]=json!(true);
     if !active() {return Err("Onboarding changed or owner access was revoked; Recheck required".into());}
     let j=j.lock().unwrap();
     apply(&j,project,&epoch,&result)?;
@@ -247,7 +269,7 @@ pub fn control(t:&coreq::Tool,j:&Shared,r:&crate::builtins::Request)->Result<(),
 
 /// Startup queues old registrations before new manager claims; no root discovery.
 pub fn startup(j:&Journal)->Result<(),String> {
-    for (project,..) in j.projects()? { if saved(j,&project)?.is_none() {queue(j,&project)?;} }
+    for (project,..) in j.projects()? { if saved(j,&project)?.is_none_or(|v|v["report"]["issue_read_key_checked"]!=true) {queue(j,&project)?;} }
     Ok(())
 }
 
@@ -324,6 +346,38 @@ mod tests {
         }
         let _=std::fs::remove_dir_all(dir);
     }
+    // #168 continuation / §8: project-only issue key grants do not cover other registered projects.
+    #[test]
+    fn onboarding_168_issue_key_project_grants() {
+        let (_,dir,_)=setup("issue-key");let keys=crate::keys::Keys(dir.join("keys.json"));
+        assert!(issue_key_step(&keys,"cyprusbz",7).unwrap().contains("provision an approved issue_read key"));
+        // Invented credential; metadata inspection must never return or consume it.
+        keys.add("pilotq-github","invented",&["issue_read".into()],"invented-issue-key-value").unwrap();
+        keys.grant("pilotq-github",&["project:pilotq".into()]).unwrap();
+        let before=keys.list().unwrap();
+        for project in ["cyprusbz","tight","agentq"] {
+            let fix=issue_key_step(&keys,project,7).unwrap();
+            assert!(fix.contains(&format!("pilotq keys grant pilotq-github project:{project}")),"{fix}");
+            assert!(!fix.contains("invented-issue-key-value"));
+        }
+        assert!(issue_key_step(&keys,"pilotq",7).is_none());
+        assert_eq!(keys.list().unwrap(),before,"setup never changes grants or last_use");
+        keys.grant("pilotq-github",&["project:cyprusbz".into()]).unwrap();
+        assert!(issue_key_step(&keys,"cyprusbz",7).is_none());
+        assert!(issue_key_step(&keys,"tight",7).is_some());
+        keys.grant("pilotq-github",&["7".into()]).unwrap();
+        assert!(issue_key_step(&keys,"tight",7).is_none(),"existing user-wide grants retain §8 semantics");
+        keys.revoke("pilotq-github",&["7".into()]).unwrap();
+        keys.grant("pilotq-github",&["route:cli".into()]).unwrap();
+        assert!(issue_key_step(&keys,"tight",7).is_some(),"CLI-only access does not qualify the owner DM");
+        keys.grant("pilotq-github",&["route:7".into()]).unwrap();
+        assert!(issue_key_step(&keys,"tight",7).is_none());
+        std::fs::write(&keys.0,"malformed invented-issue-key-value").unwrap();
+        let unknown=issue_key_step(&keys,"tight",7).unwrap();
+        assert!(unknown.contains("repair the protected keys.json") && !unknown.contains("invented-issue-key-value"));
+        let _=std::fs::remove_dir_all(dir);
+    }
+
     fn press(message:i64,sender:i64,source:i64,epoch:i64)->Input {
         Input{files:vec![],callback:Some(format!("invented-{sender}-{message}")),media_group:None,quote:None,image:None,voice:None,language:None,chat:7,topic:None,sender:Some(sender),name:Some("Invented".into()),message,kind:"text",text:Some(format!("/onboard-button {source}:{epoch}")),reply_to:Some(message)}
     }

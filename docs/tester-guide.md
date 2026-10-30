@@ -222,6 +222,10 @@ Recheck button. Follow the displayed owner steps outside PilotQ, then tap Rechec
 the same card shows the new findings. Host installation, credentials, capacity and
 worker grants remain owner operations. For example, four Codex slots without a
 Codex grant must show the project-scoped grant command, not a ready result.
+Onboarding also checks `issue_read` key metadata: a key granted only to `pilotq`
+does not cover another project. Run the displayed
+`pilotq keys grant KEY project:NAME` command with the approved key name, then
+Recheck. Key values stay in the protected store; this check never updates last use.
 
 Use `/onboard NAME` in Telegram, or `pilotq ask '/onboard NAME'`, to recheck a
 registered project. Only the protected owner may write `/onboard NAME override` to
