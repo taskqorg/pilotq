@@ -33,7 +33,7 @@ chmod +x "$work/bin/curl"
 # Invented oldest-supported host tools keep updater verification independent of
 # runner provisioning. These fixtures never start a service or call a real tool.
 python3 - "$work" <<'PYFIXTURE'
-import hashlib, json, pathlib, shlex, sys
+import json, pathlib, shlex, sys
 work = pathlib.Path(sys.argv[1])
 bin = work / 'bin'
 for name, args, reply in [
@@ -52,8 +52,7 @@ for name, args, reply in [
         tool.write_text(tool.read_text().replace('#!/bin/sh\n', '#!/bin/sh\n[ \"$#\" != 0 ] || { echo invented-host; exit 0; }\n'))
     tool.chmod(0o700)
     if name == 'taskq':
-        tool.with_name(tool.name + '.pilotq-version.json').write_text(json.dumps({
-            'version': '4.6.44', 'sha256': hashlib.sha256(tool.read_bytes()).hexdigest()}))
+        tool.write_text(tool.read_text().replace('#!/bin/sh\n', '#!/bin/sh\n[ "$*" != --version ] || { echo 4.6.46; exit 0; }\n'))
 install = work / 'install'
 install.mkdir()
 config = install / 'config.json'

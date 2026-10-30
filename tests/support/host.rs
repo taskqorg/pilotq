@@ -26,9 +26,8 @@ pub fn provision(d:&Path,config:&Path) {
         let p=d.join("taskq");script(&p,"echo '{\"service\":{\"version\":\"4.6.40\"}}'");c["taskq"]=json!({"bin":p,"root":d});
     } else { wrap(Path::new(c["taskq"]["bin"].as_str().unwrap()),"service",r#"{"service":{"version":"4.6.40"}}"#); }
     let taskq=Path::new(c["taskq"]["bin"].as_str().unwrap());
-    let sum=std::process::Command::new("sh").args(["-c","sha256sum \"$1\" 2>/dev/null || shasum -a 256 \"$1\"","receipt",taskq.to_str().unwrap()]).output().unwrap();
-    let digest=String::from_utf8(sum.stdout).unwrap().split_whitespace().next().unwrap().to_string();
-    fs::write(format!("{}.pilotq-version.json",taskq.display()),json!({"version":"4.6.44","sha256":digest}).to_string()).unwrap();
+    let body=fs::read_to_string(taskq).unwrap().replacen("#!/bin/sh\n","#!/bin/sh\nif [ \"$*\" = --version ]; then echo 4.6.46; exit 0; fi\n",1);
+    fs::write(taskq,body).unwrap();
     if c["voice"]["model"].is_null() { c["voice"]["model"]=json!(d); }
     fs::write(config,c.to_string()).unwrap();fs::set_permissions(config,fs::Permissions::from_mode(0o600)).unwrap();
 }

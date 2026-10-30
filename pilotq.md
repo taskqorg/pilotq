@@ -375,17 +375,17 @@ The supported managed host is Linux x86_64. The installation owner provisions th
 | Host tool | Minimum | Required by / remediation |
 |---|---|---|
 | Codex CLI | 0.162.0 | Subscription app-server and catalogue; install `@openai/codex@0.162.0` or newer and set the absolute `codex` path; retain the isolated ChatGPT login |
-| TaskQ CLI | 4.6.44 | Task #145 file handoff, operation receipts and task #151 `taskq issue`; update the CLI to 4.6.44 or newer; doctor checks its checksum-bound release receipt |
+| TaskQ CLI | 4.6.46 | Task #145 file handoff, operation receipts and task #151 `taskq issue`; update the CLI to 4.6.46 or newer; doctor reads `taskq --version` |
 | TaskQ service | 4.6.40 | Board commands; doctor checks the service version from `service status --json` |
 | ffmpeg | 6.1.0 | Audio decode; install ffmpeg 6.1 or newer and set `voice.ffmpeg` |
 | sherpa-onnx-offline | 2.0.1 | GigaAM recognition; install the static no-TTS 2.0.1 release or newer and set `voice.recognizer` |
 | curl | 7.68.0 | CoreQ release download; install curl 7.68 or newer on service PATH |
 | systemctl (systemd) | 245 | CoreQ Linux user service; provision systemd 245 or newer with a working user service manager |
 | kill (procps-ng) | 3.3.17 | Process-group cleanup on PATH and `/bin/kill`; install procps-ng 3.3.17 or newer on service PATH |
-| `commands.json` executables | Each entry declares `minimum_version` | Approved installed reads (§5); provision a checksum-bound release receipt beside each executable; an absent minimum or receipt fails doctor |
+| `commands.json` executables | Each entry declares `minimum_version` | Approved installed reads (§5); doctor runs the executable with `--version`; an absent minimum or unavailable version fails doctor |
 | hostname | 3.23 | Telemetry host identity; install hostname 3.23 or newer on service PATH |
 
-TaskQ 4.6.44 and sherpa-onnx-offline 2.0.1 have no CLI version command. Their installed executable has an owner-provisioned `<binary>.pilotq-version.json` receipt containing the verified release `version` and executable `sha256`; doctor verifies the bytes before trusting that version. The tester guide gives the provisioning step. A missing or mismatched receipt fails with an unavailable version. A later recognizer with a valid version command can report its version directly.
+**Owner, task #154:** TaskQ CLI 4.6.46 or newer reports its binary version through `taskq --version`, without board or network access. Doctor uses that command for `taskq.bin` and `--version` for approved command executables; TaskQ needs no receipt. Receipts remain only for tools without a version command: sherpa-onnx-offline 2.0.1 has no CLI version command. Its installed executable has an owner-provisioned `<binary>.pilotq-version.json` receipt containing the verified release `version` and executable `sha256`; doctor verifies the bytes before trusting that version. The tester guide gives the provisioning step. A missing or mismatched receipt fails with an unavailable version. A later recognizer with a valid version command can report its version directly.
 
 There are no separately installed PilotQ shared libraries: SQLite, Rust TLS and CoreQ 0.14.6 are linked into the artifact through Cargo.lock. The static recognizer is required; ffmpeg and system tools retain their distribution-managed libraries. Doctor's existing silent decode/recognition probe checks the voice runtime and model files in addition to versions. Developer/release-only tools (`cargo`, the Rust compiler, `sha256sum`, and shell utilities in download instructions) are not service runtime dependencies. Optional unsupported platforms are not qualified by the Linux requirement probes.
 
