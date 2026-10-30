@@ -34,22 +34,45 @@ fn run(c: &mut Command, out: &Path, until: Instant) -> Result<(), &'static str> 
     }
 }
 
-/// The transcript of one recording, or a short `voice …` reason; nothing here sees a token or URL.
-pub fn transcribe(v: &Voice, audio: &[u8], budget: Duration) -> Result<String, String> {
+/// A private directory holding `input` with these bytes.
+fn workdir(bytes: &[u8]) -> Result<(Dir, PathBuf), &'static str> {
     use std::io::Write;
-    let fail = |e: &str| format!("voice {e}");
-    let until = Instant::now() + budget;
-    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|_| fail("storage unavailable"))?.as_nanos();
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|_| "storage unavailable")?.as_nanos();
     let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)] { use std::os::unix::fs::DirBuilderExt; builder.mode(0o700); }
     let dir = std::env::temp_dir().join(format!("pilotq-voice-{}-{nonce}", std::process::id()));
-    builder.create(&dir).map_err(|_| fail("storage unavailable"))?;
+    builder.create(&dir).map_err(|_| "storage unavailable")?;
     let dir = Dir(dir);
-    let (input, wav, out) = (dir.0.join("input"), dir.0.join("audio.wav"), dir.0.join("out.json"));
+    let input = dir.0.join("input");
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)] { use std::os::unix::fs::OpenOptionsExt; options.mode(0o600); }
-    options.open(&input).and_then(|mut f| f.write_all(audio)).map_err(|_| fail("storage unavailable"))?;
+    options.open(&input).and_then(|mut f| f.write_all(bytes)).map_err(|_| "storage unavailable")?;
+    Ok((dir, input))
+}
+
+/// Frames of a video every 15 s, at most `FRAMES`, as JPEG bytes (#186).
+pub const FRAMES: usize = 4;
+pub fn frames(v: &Voice, video: &[u8], budget: Duration) -> Result<Vec<Vec<u8>>, String> {
+    // Only real video containers reach ffmpeg: a playlist or concat file could make it read other local files or URLs.
+    let container = video.get(4..8) == Some(b"ftyp") || video.starts_with(b"\x1a\x45\xdf\xa3")
+        || (video.starts_with(b"RIFF") && video.get(8..12) == Some(b"AVI "));
+    if !container { return Err("the video container is not MP4, MOV, WebM, MKV or AVI".into()); }
+    let until = Instant::now() + budget;
+    let (dir, input) = workdir(video).map_err(str::to_string)?;
+    run(Command::new(&v.ffmpeg).args(["-nostdin", "-loglevel", "error", "-protocol_whitelist", "file", "-i"]).arg(&input)
+        .args(["-vf", "fps=1/15,scale='min(1280,iw)':-2", "-frames:v", &FRAMES.to_string(), "-q:v", "4"]).arg(dir.0.join("frame%d.jpg")), &dir.0.join("out"), until)
+        .map_err(|e| if e == "failed" { "the video could not be decoded".to_string() } else { format!("video {e}") })?;
+    let frames: Vec<Vec<u8>> = (1..=FRAMES).map_while(|k| std::fs::read(dir.0.join(format!("frame{k}.jpg"))).ok()).collect();
+    if frames.is_empty() { Err("the video has no picture frames".into()) } else { Ok(frames) }
+}
+
+/// The transcript of one recording, or a short `voice …` reason; nothing here sees a token or URL.
+pub fn transcribe(v: &Voice, audio: &[u8], budget: Duration) -> Result<String, String> {
+    let fail = |e: &str| format!("voice {e}");
+    let until = Instant::now() + budget;
+    let (dir, input) = workdir(audio).map_err(fail)?;
+    let (wav, out) = (dir.0.join("audio.wav"), dir.0.join("out.json"));
     // One second past the cap tells a too-long recording from one exactly at it.
     run(Command::new(&v.ffmpeg).args(["-nostdin", "-loglevel", "error", "-i"]).arg(&input)
         .args(["-t", &(SECONDS + 1).to_string(), "-ac", "1", "-ar", "16000", "-f", "wav"]).arg(&wav), &out, until)
@@ -99,5 +122,27 @@ pub fn readiness(v: Option<&Voice>) -> Result<(), String> {
         Ok(_) => Ok(()),
         Err(e) if e == "voice had no recognized speech" => Ok(()),
         Err(e) => Err(e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // #186 A3: a 62 s video yields four JPEG frames, one every 15 s. Needs ffmpeg on PATH, which CI lacks:
+    // `cargo test --bin pilotq -- --ignored video_frames`.
+    #[test]
+    #[ignore]
+    fn video_frames() {
+        let dir = std::env::temp_dir().join(format!("pilotq-video-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("v.mp4");
+        let made = std::process::Command::new("ffmpeg").args(["-nostdin", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=duration=62:size=320x240:rate=5", "-pix_fmt", "yuv420p"]).arg(&path).status().unwrap();
+        assert!(made.success());
+        let v = super::Voice { ffmpeg: "ffmpeg".into(), recognizer: "none".into(), model: dir.clone(), threads: 1 };
+        let frames = super::frames(&v, &std::fs::read(&path).unwrap(), std::time::Duration::from_secs(30)).unwrap();
+        assert_eq!(frames.len(), super::FRAMES);
+        assert!(frames.iter().all(|f| f.starts_with(b"\xff\xd8\xff")));
+        assert!(super::frames(&v, b"#EXTM3U\nfile:///etc/passwd", std::time::Duration::from_secs(10)).unwrap_err().contains("container"));
+        assert!(super::frames(&v, b"\0\0\0\x18ftypmp42 broken", std::time::Duration::from_secs(10)).unwrap_err().contains("could not be decoded"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

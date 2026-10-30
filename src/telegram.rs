@@ -76,7 +76,15 @@ fn input(kind: &UpdateKind) -> Option<Input> {
     let voice = m.voice().map(|v| (&v.file, v.duration.seconds()))
         .or_else(|| m.audio().map(|a| (&a.file, a.duration.seconds())))
         .or_else(|| audio_document.filter(|_|m.reply_to_message().is_none()).map(|d| (&d.file, 0)));
-    Some(Input { files: image.map(|f|json!({"id":f.id.0,"name":document.and_then(|d|d.file_name.clone()).unwrap_or_else(||"photo.jpg".into())})).or_else(||m.document().map(|d|json!({"id":d.file.id.0,"name":d.file_name.as_deref().unwrap_or("document")}))).into_iter().collect(), callback: None,
+    // #186: a video, round video note or GIF animation is a document the turn reads as frames and speech.
+    let video = m.video().map(|v| (&v.file, v.file_name.clone().unwrap_or_else(|| "video.mp4".into())))
+        .or_else(|| m.video_note().map(|v| (&v.file, "video_note.mp4".into())))
+        .or_else(|| m.animation().map(|a| (&a.file, a.file_name.clone().unwrap_or_else(|| "animation.mp4".into()))))
+        .or_else(|| m.document().filter(|d| d.mime_type.as_ref().is_some_and(|m| m.type_() == "video")).map(|d| (&d.file, d.file_name.clone().unwrap_or_else(|| "video.mp4".into()))));
+    let file = video.as_ref().map(|(f, _)| *f).or_else(|| m.document().map(|d| &d.file));
+    Some(Input { files: image.map(|f|json!({"id":f.id.0,"name":document.and_then(|d|d.file_name.clone()).unwrap_or_else(||"photo.jpg".into())}))
+        .or_else(||video.as_ref().map(|(f,name)|json!({"id":f.id.0,"name":name,"media":"video"})))
+        .or_else(||m.document().map(|d|json!({"id":d.file.id.0,"name":d.file_name.as_deref().unwrap_or("document")}))).into_iter().collect(), callback: None,
         media_group: m.media_group_id().map(|id|id.0.clone()),
         quote: m.reply_to_message().map(|r| json!({"message":r.id.0,"author":r.from.as_ref().map(|u|u.id.0),
             "text":r.text().or_else(||r.caption()), "has_image":r.photo().is_some() || r.document().is_some(),
@@ -91,7 +99,7 @@ fn input(kind: &UpdateKind) -> Option<Input> {
         message: m.id.0 as i64,
         kind: if m.text().is_some() { "text" } else if let Some(f) = image { if f.size > IMAGE_LIMIT as u32 { "image_limit" } else { "image" } }
             else if let Some((f, seconds)) = voice { if f.size > IMAGE_LIMIT as u32 || seconds > crate::voice::SECONDS { "voice_limit" } else { "voice" } }
-            else if let Some(d)=m.document() { if d.file.size > IMAGE_LIMIT as u32 { "image_limit" } else { "document" } } else { "other" },
+            else if let Some(f)=file { if f.size > IMAGE_LIMIT as u32 { "file_limit" } else { "document" } } else { "other" },
         text: m.text().or_else(|| m.caption()).map(str::to_string),
         reply_to: m.reply_to_message().map(|r| r.id.0 as i64),
     })
@@ -132,8 +140,12 @@ pub async fn download(bot: &Bot, file: &str, budget: Duration) -> Result<Vec<u8>
 }
 
 pub async fn download_image(bot: &Bot, file: &str, budget: Duration) -> Result<ImageFile, String> {
+    store_image(&download(bot, file, budget).await.map_err(|e| format!("image {e}"))?)
+}
+
+/// Keeps verified PNG/JPEG/GIF/WebP bytes in a private file for one model turn.
+pub fn store_image(bytes: &[u8]) -> Result<ImageFile, String> {
     use std::io::Write;
-    let bytes = download(bot, file, budget).await.map_err(|e| format!("image {e}"))?;
     let store = || {
         let extension = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") { "png" }
             else if bytes.starts_with(b"\xff\xd8\xff") { "jpg" }
@@ -149,7 +161,7 @@ pub async fn download_image(bot: &Bot, file: &str, budget: Duration) -> Result<I
         let mut options=std::fs::OpenOptions::new(); options.write(true).create_new(true);
         #[cfg(unix)] { use std::os::unix::fs::OpenOptionsExt; options.mode(0o600); }
         let mut output=options.open(&image.path).map_err(|_| "image storage unavailable")?;
-        output.write_all(&bytes).map_err(|_| "image storage unavailable")?;
+        output.write_all(bytes).map_err(|_| "image storage unavailable")?;
         Ok(image)
     };
     store().map_err(str::to_string)
@@ -661,6 +673,24 @@ mod tests {
                 assert!(i.files[0]["id"].as_str().unwrap().starts_with("invented-"));
                 assert_eq!(i.reply_to,Some(1));assert_eq!(i.text.as_deref(),caption);
             }
+        }
+    }
+
+    // #186 A3: videos and video notes are documents read as video; any file over 20 MiB is refused as a file, not an image.
+    #[test]
+    fn videos_and_large_files_ingress() {
+        for (media,kind,video) in [
+            (json!({"video":{"file_id":"invented-video","file_unique_id":"invented-id","file_size":8,"width":2,"height":2,"duration":62,"mime_type":"video/mp4"}}),"document",true),
+            (json!({"video_note":{"file_id":"invented-note","file_unique_id":"invented-id","file_size":8,"length":2,"duration":5}}),"document",true),
+            (json!({"document":{"file_id":"invented-doc","file_unique_id":"invented-id","file_size":8,"file_name":"clip.mov","mime_type":"video/quicktime"}}),"document",true),
+            (json!({"video":{"file_id":"invented-video","file_unique_id":"invented-id","file_size":21_000_000,"width":2,"height":2,"duration":62,"mime_type":"video/mp4"}}),"file_limit",true),
+            (json!({"document":{"file_id":"invented-doc","file_unique_id":"invented-id","file_size":21_400_000,"file_name":"big.rar"}}),"file_limit",false)] {
+            let mut m=json!({"message_id":1,"date":0,"chat":{"id":7,"type":"private","first_name":"A"},"from":{"id":7,"is_bot":false,"first_name":"A"}});
+            m.as_object_mut().unwrap().extend(media.as_object().unwrap().clone());
+            let msg: teloxide::types::Message=serde_json::from_value(m).unwrap();
+            let i=super::input(&teloxide::types::UpdateKind::Message(msg)).unwrap();
+            assert_eq!(i.kind,kind,"{media}");
+            assert_eq!(i.files[0]["media"]=="video",video,"{media}");
         }
     }
 

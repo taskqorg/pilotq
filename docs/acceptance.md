@@ -994,3 +994,20 @@ simulated Bot API; a live owner Telegram run remains separate target evidence.
 Under R8, R13 and §5, `src/fixtures/status-170.json` is a synthetic fixture for the owner’s cyprusbz#540 case: closed, diagnosis accepted, report `docs/research/540.md`, fix #541 doing. `status_research_170` retains the report and trusted verdict, separates proposed references from observed task existence, and checks English/Russian diagnosis and investigation mapping through saved plans and `add --type research` arguments. Untrusted close comments and missing snapshots remain unknown. `gitlab_registry_status_and_urls` checks the CLI dispatch boundary, including an absent open-board task, issue readback and mismatched issue refusal.
 
 These deterministic checks do not qualify live model wording or Telegram. Per the owner’s #170 answer, the PM runs the #540 status question on PDS 18 after release and posts the actual reply text on #170 (A4).
+
+### Chat files (#186)
+
+Owner live test 2026-10-31 in a direct chat: a 310 KB PDF and a 15 MB ZIP were answered with a description of an earlier header screenshot plus "content unavailable"; a 20.4 MiB RAR got "The image is too large"; a 1:02 video got "format is not supported yet"; every refusal was English although the owner wrote Russian.
+
+Root cause, from the code path these requests took: a document message carried no readable content into its turn, while every turn attached all images of the recent window as unlabeled `localImage` items. The only picture in the PDF and ZIP turns was the earlier screenshot, so the model described it as the attachment. Ingress classified any oversized document as `image_limit` and every video as `other`. Refusals followed only the Telegram client label. The worker had no access to the PDS 18 audit, so the request audit IDs are not recorded here; A5 records them.
+
+| Case | Input | Expected observation | Check |
+|---|---|---|---|
+| Files186-01 | Russian text, a photo, then a text document and a RAR document from an English-labelled client | The document turn carries `[File NAME, attached to this message …]` with the content or the exact reason, `current_message_files` lists only that document, and the earlier photo is labeled as an earlier message; `file_read` audit rows record the outcome | `telegram_documents_are_read_in_their_turn` |
+| Files186-02 | Same chat, an uncaptioned 21.4 MB RAR | One Russian file-limit line, no download, no word "image" | `telegram_documents_are_read_in_their_turn` |
+| Files186-03 | PDF, stored ZIP, UTF-8 text, RAR, binary, damaged PDF | PDF text with page count, ZIP listing, text, or the exact reason | `documents_become_text_or_a_reason` |
+| Files186-04 | Video, video note, video document, oversized video and document | Video kinds read as video; files over 20 MiB are `file_limit` | `videos_and_large_files_ingress` |
+| Files186-05 | 62 s generated video through real ffmpeg | Four JPEG frames; garbage input names the decode failure | `video_frames` (ignored in CI: needs ffmpeg) |
+| Files186-06 | Every image turn of #72 | The current image is labeled as this message's, earlier images as earlier | `telegram_images_reach_same_session` |
+
+On the base commit `telegram_documents_are_read_in_their_turn` failed at its first document assertion: the text document's turn input was empty text. These checks qualify the adapters, not model reading quality. A5 is a post-release PM check on PDS 18: an authorized tester sends a PDF, a ZIP, a file over 20 MiB and a video in a Russian chat; record the replies and request audit IDs. Production cutover is not authorized.

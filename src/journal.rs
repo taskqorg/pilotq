@@ -65,12 +65,33 @@ fn control(text: Option<&str>) -> Option<&'static str> {
 }
 
 
-/// Short transport outcomes; detailed reasons stay in the audit. Telegram's language label is a display hint only.
+/// #186: replies follow the language the person writes in: this message's text, else the conversation's latest own text.
+/// Russian text means Russian; other text keeps Telegram's client label. A refusal for an uncaptioned file in a Russian chat
+/// is Russian whatever the client label says.
+// ponytail: Cyrillic is the only detected script; a language detector only if a third chat language appears.
+fn chat_language(tx: &Connection, session: &str, text: Option<&str>, label: Option<&str>) -> Result<Option<String>, String> {
+    // Some(true): Russian text; Some(false): other letters; None: no words to judge
+    fn russian(t: &str) -> Option<bool> {
+        if t.starts_with('/') { None }
+        else if t.chars().any(|c| ('\u{400}'..='\u{4ff}').contains(&c)) { Some(true) }
+        else if t.chars().any(char::is_alphabetic) { Some(false) } else { None }
+    }
+    let mut seen = text.and_then(russian);
+    if seen.is_none() {
+        let mut q = tx.prepare("SELECT text FROM requests WHERE session=?1 AND text IS NOT NULL AND kind IN ('text','image','document','voice','answer') ORDER BY id DESC LIMIT 12").map_err(|e| e.to_string())?;
+        let texts: Vec<String> = q.query_map([session], |r| r.get(0)).and_then(Iterator::collect).map_err(|e| e.to_string())?;
+        seen = texts.iter().find_map(|t| russian(t));
+    }
+    Ok(if seen == Some(true) { Some("ru".into()) } else { label.map(str::to_string) })
+}
+
+/// Short transport outcomes; detailed reasons stay in the audit.
 fn brief(language: Option<&str>, reason: &str) -> &'static str {
     match (language.unwrap_or("en").split('-').next().unwrap_or("en"), reason) {
         ("ru", "busy") => "Сейчас очередь заполнена; отправьте запрос позже.",
-        ("ru", "unsupported") => "Отправьте текст, изображение или голосовое сообщение; этот формат пока не поддерживается.",
+        ("ru", "unsupported") => "Отправьте текст, изображение, файл, видео или голосовое сообщение; этот формат пока не поддерживается.",
         ("ru", "image_limit") => "Изображение слишком большое; отправьте файл до 20 МиБ.",
+        ("ru", "file_limit") => "Файл больше 20 МиБ: Telegram не отдаёт боту такие файлы. Сожмите его или пришлите частями.",
         ("ru", "image_failed") => "Не удалось прочитать изображение; отправьте его ещё раз.",
         ("ru", "voice_limit") => "Голосовое сообщение слишком большое; отправьте запись до 5 минут и 20 МиБ.",
         ("ru", "voice_failed") => "Не удалось распознать голосовое сообщение; отправьте его ещё раз или текстом.",
@@ -78,8 +99,9 @@ fn brief(language: Option<&str>, reason: &str) -> &'static str {
         ("ru", "uncertain") => "Результат действия неизвестен; автоматического повтора не будет.",
         ("ru", _) => "Не удалось завершить запрос; попробуйте ещё раз или проверьте /status.",
         (_, "busy") => "PilotQ is busy; send it again later.",
-        (_, "unsupported") => "Send text, an image or a voice message; this format is not supported yet.",
+        (_, "unsupported") => "Send text, an image, a file, a video or a voice message; this format is not supported yet.",
         (_, "image_limit") => "The image is too large; send a file up to 20 MiB.",
+        (_, "file_limit") => "The file is larger than 20 MiB, which Telegram does not hand to bots; compress it or send it in parts.",
         (_, "image_failed") => "The image could not be read; send it again.",
         (_, "voice_limit") => "The voice message is too large; send a recording up to 5 minutes and 20 MiB.",
         (_, "voice_failed") => "The voice message could not be recognized; send it again or as text.",
@@ -539,6 +561,8 @@ pub struct Run {
     pub model_epoch: i64,
     pub images: Vec<(i64, PathBuf)>,
     pub image_gaps: Vec<i64>,
+    /// #186: readable notes of this message's files, a separate model input never checked as the person's own words.
+    pub files: Vec<String>,
 }
 
 /// Claims one queued request: the request turns running, the conversation's fence advances, and the run row records both.
@@ -557,7 +581,7 @@ fn claim(tx: &Connection, request: i64, at: i64) -> Result<Option<Run>, String> 
         .map_err(e)?;
     let model = tx.query_row("SELECT CAST(value AS TEXT) FROM meta WHERE key=?1",[format!("model:{session}")],|r|r.get(0)).optional().map_err(e)?;
     let model_epoch=meta(tx,&format!("model-epoch:{session}"))?.unwrap_or(0);
-    Ok(Some(Run { id: tx.last_insert_rowid(), request, session, generation, fence, thread, text, model, model_epoch, images: vec![], image_gaps: vec![] }))
+    Ok(Some(Run { id: tx.last_insert_rowid(), request, session, generation, fence, thread, text, model, model_epoch, images: vec![], image_gaps: vec![], files: vec![] }))
 }
 
 /// Marks recognized speech in the request text the model and history see (#104).
@@ -1018,6 +1042,7 @@ impl Journal {
                         .map_err(|e| e.to_string())?
                         .unwrap_or(false);
                     let s = session(i.chat, i.topic, sender, shared);
+                    let language = chat_language(&tx, &s, i.text.as_deref(), i.language.as_deref())?;
                     let cmd = if i.kind == "text" { control(i.text.as_deref()) } else { None };
                     // controls bypass the backlog: they are answered here, never queued (§ 12)
                     let busy = cmd.is_none() && matches!(i.kind, "text" | "image" | "document" | "voice" | "action") && {
@@ -1061,7 +1086,7 @@ impl Journal {
                     if let Some(callback) = &i.callback {
                         tx.execute("INSERT INTO meta(key,value) VALUES (?1,?2)", params![format!("callback:{id}"), callback.as_bytes()]).map_err(|e| e.to_string())?;
                     }
-                    tx.execute("UPDATE requests SET image=?2,language=?3 WHERE id=?1", params![id,i.image,i.language]).map_err(|e|e.to_string())?;
+                    tx.execute("UPDATE requests SET image=?2,language=?3 WHERE id=?1", params![id,i.image,language]).map_err(|e|e.to_string())?;
                     let choice = if i.kind=="text" && cmd.is_none() && question.is_none() && !busy { text_choice(&tx,i,sender,&s)? } else { None };
                     let action = if i.kind=="action" { Some(i) } else { choice.as_ref() };
                     let action_error = if let Some(action)=action.filter(|_|!busy) {
@@ -1069,7 +1094,7 @@ impl Journal {
                             Ok(()) => None,
                             Err(error) => {
                                 tx.execute("UPDATE requests SET state='failed',error=?2 WHERE id=?1", params![id,error]).map_err(|e|e.to_string())?;
-                                Some(if error.starts_with("Already saved") || error.starts_with("Уже сохранено") { error.clone() } else if i.language.as_deref().unwrap_or("en").starts_with("ru") {
+                                Some(if error.starts_with("Already saved") || error.starts_with("Уже сохранено") { error.clone() } else if language.as_deref().unwrap_or("en").starts_with("ru") {
                                     "Эта кнопка больше недоступна.".to_string()
                                 } else { "This button is no longer available.".to_string() })
                             }
@@ -1094,7 +1119,7 @@ impl Journal {
                     }
                     let first: bool = tx.query_row("SELECT NOT EXISTS (SELECT 1 FROM requests WHERE sender=?1 AND id<>?2)", [sender, id], |r| r.get(0)).map_err(|e| e.to_string())?;
                     let text = match cmd {
-                        Some(_) if builtin_busy => brief(i.language.as_deref(),"busy").into(),
+                        Some(_) if builtin_busy => brief(language.as_deref(),"busy").into(),
                         Some(c) => {
                             let (text, stopped) = answer_control(&tx, &s, c, id, i.chat, sender, at)?;
                             ended.extend(stopped);
@@ -1102,13 +1127,13 @@ impl Journal {
                         }
                         // § 1: unsupported input is detected and gets an explicit outcome, never silence
                         None if action_error.is_some() => action_error.unwrap(),
-                        None if busy => brief(i.language.as_deref(), "busy").into(),
-                        None if state == "failed" => brief(i.language.as_deref(), match i.kind { "image_limit" | "voice_limit" => i.kind, _ => "unsupported" }).into(),
+                        None if busy => brief(language.as_deref(), "busy").into(),
+                        None if state == "failed" => brief(language.as_deref(), match i.kind { "image_limit" | "voice_limit" | "file_limit" => i.kind, _ => "unsupported" }).into(),
                         // §12: accepted text gets a reaction obligation below, without a text acknowledgement.
                         None => String::new(),
                     };
                     let text=if matches!(cmd,Some("/help"|"/version"|"/model"|"/model-button"|"/doctor"|"/onboard"|"/onboard-button"|"/release"|"/release-confirm"|"/restart"|"/skills"|"/skill"|"/unknown")) {
-                        crate::builtins::localized(&text,i.language.as_deref(),state=="failed")
+                        crate::builtins::localized(&text,language.as_deref(),state=="failed")
                     } else {text};
                     // § 8: a person learns at admission that their requests are recorded, and for how long
                     let notice = format!(" Your requests are recorded ({RETENTION}); /audit in a direct message shows yours.");
@@ -2029,6 +2054,17 @@ impl Journal {
     pub fn reply_files(&self, request: i64) -> Result<Vec<Value>,String> {
         let raw:Option<String>=self.0.query_row("SELECT item FROM audit_events WHERE request_id=?1 AND kind='reply_files' ORDER BY id LIMIT 1",[request],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
         raw.map(|s|serde_json::from_str(&s).map_err(|e|e.to_string())).unwrap_or(Ok(vec![]))
+    }
+
+    /// #186: files a claimed document request carries for its model turn; an image request's file is read as an image.
+    pub fn documents(&self, request: i64) -> Result<Vec<Value>,String> {
+        let document:bool=self.0.query_row("SELECT kind='document' FROM requests WHERE id=?1",[request],|r|r.get(0)).map_err(|e|e.to_string())?;
+        if document { self.reply_files(request) } else { Ok(vec![]) }
+    }
+
+    /// #186: what reading one attached file gave the turn; the content itself is never retained.
+    pub fn file_read(&self, r: &Run, name: &str, result: &str, at: i64) -> Result<(),String> {
+        self.0.execute("INSERT INTO audit_events(request_id,at,kind,target,result) VALUES (?1,?2,'file_read',?3,?4)",params![r.request,at,name,result]).map(drop).map_err(|e|e.to_string())
     }
 
     /// Only this caller's admitted input from this generation can supply files.
@@ -3534,7 +3570,7 @@ mod tests {
             .unwrap();
         assert_eq!(j.grants(8).unwrap(), ["chat"], "a claim in text grants nothing");
         assert_eq!(j.request(2).unwrap().0, "failed");
-        assert!(j.request(2).unwrap().1.unwrap().contains("Send text, an image or a voice message"), "unsupported media gets an explicit outcome");
+        assert!(j.request(2).unwrap().1.unwrap().contains("Send text, an image, a file, a video or a voice message"), "unsupported media gets an explicit outcome");
         drop(j);
         let _ = std::fs::remove_dir_all(p);
     }

@@ -28,7 +28,9 @@ PilotQ is the conversational front end for work on a shared server: it answers i
 
 **Proposed scope:** one Linux host, one Telegram bot, one manager runtime, existing TaskQ boards and explicitly registered project roots. The input choices below are mandatory within that scope.
 
-Accept text, replies, task links, inline decisions, photos and image documents with captions retained. Recognize voice notes, audio files and audio documents locally as Russian speech. Photos and arbitrary documents may be TaskQ reply attachments through answer, steer and owner requeue; other documents and video receive one short unsupported-input line.
+Accept text, replies, task links, inline decisions, photos and image documents with captions retained. Recognize voice notes, audio files and audio documents locally as Russian speech. Photos and arbitrary documents may be TaskQ reply attachments through answer, steer and owner requeue.
+
+Other documents up to 20 MiB reach the turn as PDF text, ZIP listing or plain text, else the exact reason; videos and video notes as frames plus recognized speech. Larger files get one short file-limit line; other input one unsupported-input line, both in the chat's language.
 
 Recurring execution stays with the existing scheduler or TaskQ. PilotQ's local inbox schedules only conversation handling and delivery. Detailed media, retention and admission protections are in §§2, 5, 7 and 12.
 
