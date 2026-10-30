@@ -3385,5 +3385,35 @@ if paths:
     push(&st,u);
     wait("owner-only file requeue",15,||sent_has(&st,"Only the installation owner may requeue with files"));
     assert_eq!(tq_calls(&d).iter().filter(|a|a[0]=="requeue").count(),before);
+    // §2/§5: destination clarification must retain the earlier caller-owned file.
+    fs::remove_file(d.join("refuse-files")).unwrap();
+    let mut missing=vec![];
+    for (id,tool,cmd) in [(8,"task_steer","steer"),(10,"task_requeue","requeue")] {
+        set_task(&d,19,|t|t["state"]=json!("doing"));
+        let before=tq_calls(&d).iter().filter(|a|a[0]==cmd).count();
+        let mut u=text(id,OWNER,None,OWNER,"");
+        u["message"].as_object_mut().unwrap().remove("text");
+        u["message"]["document"]=json!({"file_id":"invented-document","file_unique_id":"invented-id","file_size":68,"file_name":"clarified.bin"});
+        push(&st,u);
+        wait("file awaits destination",15,||query(&d,&format!("SELECT count(*) FROM requests WHERE update_id={id} AND state='answered'"))==1);
+        assert_eq!(tq_calls(&d).iter().filter(|a|a[0]==cmd).count(),before,"no guessed destination write");
+        let source=query(&d,&format!("SELECT id FROM requests WHERE update_id={id}"));
+        push(&st,call(id+1,OWNER,None,OWNER,tool,json!({"project":"pilotq","task":"19","source_request":source})));
+        wait("clarified reply handled",15,||query(&d,&format!("SELECT count(*) FROM requests WHERE update_id={} AND state='answered'",id+1))==1);
+        let calls=tq_calls(&d);
+        let writes:Vec<_>=calls.iter().filter(|a|a[0]==cmd).collect();
+        if writes.len()!=before+1 {missing.push(tool);} else {
+            assert!(writes.last().unwrap().contains(&"--file".into()));
+        }
+    }
+    assert!(missing.is_empty(),"clarification lost the earlier file for {missing:?}");
+    let foreign=query(&d,"SELECT id FROM requests WHERE update_id=7");
+    for (id,tool,cmd) in [(12,"task_steer","steer"),(13,"task_requeue","requeue")] {
+        let before=tq_calls(&d).iter().filter(|a|a[0]==cmd).count();
+        push(&st,call(id,OWNER,None,OWNER,tool,json!({"project":"pilotq","task":"19","source_request":foreign})));
+        wait("foreign file source refused",15,||query(&d,&format!("SELECT count(*) FROM requests WHERE update_id={id} AND state='answered'"))==1);
+        assert!(sent_has(&st,"files must come from your own input in this conversation generation"));
+        assert_eq!(tq_calls(&d).iter().filter(|a|a[0]==cmd).count(),before,"another person's files never authorize dispatch");
+    }
     stop(c,d);
 }

@@ -2636,6 +2636,10 @@ mod tests {
         let j=Journal::open(&p.join("journal.sqlite")).unwrap();
         assert_eq!(j.reply_files(r.request).unwrap().len(),1,"identity survives restart");
         assert!(j.reply_file_source(&r,Some(99)).is_err());
+        let mut other_generation=r.clone();other_generation.generation+=1;
+        assert!(j.reply_file_source(&other_generation,Some(r.request)).is_err(),"clarification cannot import files across reset");
+        let mut other_route=r.clone();other_route.session="invented-other-route".into();
+        assert!(j.reply_file_source(&other_route,Some(r.request)).is_err(),"clarification cannot import files from another route");
         drop(j);std::fs::remove_dir_all(p).unwrap();
     }
 
