@@ -1677,12 +1677,7 @@ impl Journal {
         if context.to_string().len() > 100_000 {
             return Err("recovery context exceeds budget".into());
         }
-        let notified: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM audit_events WHERE kind='rebuild' AND target=?1 AND request_id IN (SELECT id FROM requests WHERE session=?2))", params![r.thread,r.session], |x| x.get(0)).map_err(e)?;
         tx.execute("INSERT INTO audit_events(request_id,run_id,at,kind,target,result) VALUES (?1,?2,?3,'rebuild',?4,'native session unavailable; journal context prepared')", params![r.request,r.id,at,r.thread]).map_err(e)?;
-        let (front, chat, topic, message): (String,i64,Option<i64>,i64) = tx.query_row("SELECT front,chat,topic,message FROM requests WHERE id=?1", [r.request], |x| Ok((x.get(0)?,x.get(1)?,x.get(2)?,x.get(3)?))).map_err(e)?;
-        if front == "telegram" && !notified {
-            outbox(&tx,r.request,chat,topic,(chat != self.sender(r.request)?).then_some(message),None,"Restoring the conversation; completed actions are preserved.",at)?;
-        }
         drop(q);
         tx.commit().map_err(e)?;
         Ok(context)
@@ -3781,7 +3776,7 @@ mod tests {
     }
 
     // #119 / §4: private topics keep their destination without quoting user input,
-    // including recovery notices; group topics retain reply correlation.
+    // #179 A5 keeps recovery progress in audit; group topics retain final reply correlation.
     #[test]
     fn u119_private_topic_replies() {
         for chat in [7, -100] {
@@ -3792,7 +3787,8 @@ mod tests {
             j.finish(&r, None, None, &crate::manager::Outcome::Answered("answer".into()), 3).unwrap();
             let mut q = j.0.prepare("SELECT topic,reply_to FROM outbox WHERE text LIKE 'Restoring the conversation%' OR kind='rich'").unwrap();
             let rows: Vec<(Option<i64>, Option<i64>)> = q.query_map([], |x| Ok((x.get(0)?, x.get(1)?))).unwrap().map(Result::unwrap).collect();
-            assert_eq!(rows.len(), 2);
+            assert_eq!(rows.len(), 1, "#179 A5: recovery progress must not create a chat message");
+            assert_eq!(count(&j,"SELECT count(*) FROM audit_events WHERE kind='rebuild'"),1);
             for (topic, reply) in rows {
                 assert_eq!(topic, Some(5));
                 assert_eq!(reply, (chat != 7).then_some(1), "§4: private topic must not quote input");

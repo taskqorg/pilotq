@@ -47,6 +47,11 @@ pub fn configure(j:&Journal,user:i64,p:&str,mut c:Value)->Result<Value,String> {
     if !c["git"].as_str().is_some_and(|s|Path::new(s).is_absolute()) {return Err("Absolute Git executable required".into());}
     for key in ["dry_run","release","pipeline","preflight","backup"] {argv(&c[key])?;}
     for key in ["release","pipeline"] {if !argv(&c[key])?.contains(&"{sha}".into()) {return Err(format!("{key} requires a separate {{sha}} argument"));}}
+    if !c["delivery_status"].is_null() {
+        if !argv(&c["delivery_status"] )?.contains(&"{sha}".into()) {return Err("delivery_status requires a separate {sha} argument".into());}
+        let bin=argv(&c["delivery_status"])?[0].clone();
+        if c["requirements"][&bin].as_str().and_then(crate::host::version).is_none() {return Err("Delivery executable requires a minimum version".into());}
+    }
     for key in ["main_ref","live_ref"] {let s=c[key].as_str().ok_or("main_ref/live_ref required")?;if !s.starts_with("refs/") || s.chars().any(char::is_whitespace) {return Err("Use explicit refs/... references".into());}}
     if !c["migration_paths"].as_array().is_some_and(|a|!a.is_empty() && a.iter().all(|s|s.as_str().is_some_and(|s|!s.is_empty() && !s.starts_with('/') && !s.contains("..")))) {return Err("Explicit relative migration_paths required".into());}
     for bin in std::iter::once(c["git"].as_str().unwrap().to_string()).chain(["dry_run","release","pipeline","preflight","backup"].into_iter().map(|k|argv(&c[k]).unwrap()[0].clone())) {
@@ -101,6 +106,7 @@ fn git_until(c:&Value,args:&[&str],end:Instant)->Result<String,String> {
 }
 fn resolve(c:&Value,reference:&str)->Result<String,String> {resolve_until(c,reference,Instant::now()+Duration::from_secs(5))}
 fn resolve_until(c:&Value,reference:&str,end:Instant)->Result<String,String> {let s=git_until(c,&["rev-parse","--verify",&format!("{reference}^{{commit}}")],end)?;if !sha(&s) {return Err("Commit identity unavailable".into());}Ok(s)}
+#[cfg(test)]
 fn ancestor(c:&Value,a:&str,b:&str)->Result<bool,String> {ancestor_until(c,a,b,Instant::now()+Duration::from_secs(5))}
 fn ancestor_until(c:&Value,a:&str,b:&str,end:Instant)->Result<bool,String> {
     if !sha(a)||!sha(b) {return Err("Merged/deployed SHA unavailable".into());}
@@ -109,11 +115,13 @@ fn ancestor_until(c:&Value,a:&str,b:&str,end:Instant)->Result<bool,String> {
     let out=crate::commands::execute_bounded(crate::commands::command(c["git"].as_str().ok_or("Git unavailable")?,c["root"].as_str().ok_or("Root unavailable")?,&["merge-base","--is-ancestor",a,b]),end,||true,1024);
     match (out["status"].as_str(),out["exit_code"].as_i64()) {(Some("success"),Some(0))=>Ok(true),(Some("exit_nonzero"),Some(1))=>Ok(false),_=>Err("DEV ancestry unknown".into())}
 }
-fn health(c:&Value)->Result<Value,String> {
+fn health_until(c:&Value,end:Instant)->Result<Value,String> {
+    let remaining=end.saturating_duration_since(Instant::now()).min(Duration::from_secs(10));
+    if remaining.is_zero() {return Err("DEV health deadline exhausted".into());}
     let url=c["dev_health_url"].as_str().ok_or("DEV URL missing")?.to_string();
     std::thread::spawn(move || {
         tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|_|"DEV runtime unavailable")?.block_on(async {
-            let client=reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(10)).build().map_err(|_|"DEV client unavailable")?;
+            let client=reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(remaining).build().map_err(|_|"DEV client unavailable")?;
             let mut response=client.get(url).send().await.map_err(|_|"DEV health read failed")?.error_for_status().map_err(|_|"DEV health status failed")?;
             let mut bytes=Vec::new();while let Some(chunk)=response.chunk().await.map_err(|_|"DEV health read failed")? {if bytes.len()+chunk.len()>65536 {return Err("DEV health too large");}bytes.extend_from_slice(&chunk);}
             let v:Value=serde_json::from_slice(&bytes).map_err(|_|"DEV health unreadable")?;
@@ -121,41 +129,115 @@ fn health(c:&Value)->Result<Value,String> {
         })
     }).join().map_err(|_|"DEV health unavailable")?.map_err(String::from)
 }
-fn dev_read(j:&Journal,p:&str,c:&Value,merged:Option<&str>,h:&Value)->Result<Value,String> {
-    let a=merged.ok_or("Merged SHA unavailable")?;let b=h["sha"].as_str().ok_or("DEV SHA unavailable")?;
-    let included=ancestor(c,a,b)?;
-    if !included {return Ok(json!({"state":"not yet on DEV","sha":b,"serves_target_exactly":a==b,"observed_at":crate::now()}));}
-    let key=format!("dev-first:{p}:{a}");
-    let first=get(j,&key)?.unwrap_or(json!(crate::now()));put(j,&key,&first)?;
-    let time=h["deployed_at"].as_str().or_else(||h["started_at"].as_str()).filter(|s|!s.is_empty() && s.len()<100);
-    Ok(json!({"state":match time {Some(t)=>format!("on DEV since {t}"),None=>format!("on DEV since {} (first observed)",first)},"sha":b,"serves_target_exactly":a==b,"observed_at":crate::now()}))
+// #179 / §5: pipeline evidence is independent of historical worker closing notes.
+fn delivery_config(c:Result<Value,String>,issue:&Value,end:Instant)->Value {
+    let merged=merged_sha(issue);
+    let mut stage=if issue["state"].as_str().is_some_and(|s|s.eq_ignore_ascii_case("closed")) {"closed"} else {"open"};
+    if merged.is_some() {stage="merged";}
+    let result=(|| -> Result<Value,String> {
+        let c=c?;
+        let target=merged.as_deref().ok_or("TaskQ merge identity unavailable")?;
+        let output=run(&c,"delivery_status",target,end,||true);
+        if output["status"]!="success" {return Err("Delivery adapter failed or unavailable".into());}
+        let report:Value=serde_json::from_str(output["stdout"].as_str().unwrap_or("")).map_err(|_|"Delivery adapter JSON unreadable")?;
+        delivery_report(&c,target,report,end)
+    })();
+    match result {
+        Ok(mut v)=>{if v["live_includes"]==true {stage="on LIVE";} else if v["first_main"]["deploy"]["state"]=="success" {
+            stage=if v["first_main"]["smoke"].as_array().unwrap().last().is_some_and(|s|s["state"]=="success") {"DEV smoke"} else {"on DEV"};
+        } v["stage"]=json!(stage);v},
+        Err(e)=>json!({"stage":stage,"pipeline":"unknown","reason":e}),
+    }
 }
-pub fn dev(j:&Journal,p:&str,merged:Option<&str>)->Value {
-    let result=(||{let c=config(j,p)?;let h=health(&c)?;dev_read(j,p,&c,merged,&h)})();
-    result.unwrap_or_else(|e:String|json!({"state":"unknown","reason":e,"observed_at":crate::now()}))
+fn delivery_report(c:&Value,target:&str,report:Value,end:Instant)->Result<Value,String> {
+    fn job(v:&Value)->Result<(),String> {
+        if !matches!(v["state"].as_str(),Some("success"|"failed"|"running"|"pending"|"canceled"|"skipped")) {return Err("Delivery adapter job state missing or invalid".into());}
+        let u=url::Url::parse(v["url"].as_str().unwrap_or("")).map_err(|_|"Delivery adapter job link missing or invalid")?;
+        if u.scheme()!="https" || u.host_str().is_none() || !u.username().is_empty() || u.password().is_some() {return Err("Delivery adapter job link invalid".into());} Ok(())
+    }
+    if report["sha"]!=target || !report["merged_at"].as_str().is_some_and(|s|!s.is_empty() && s.len()<100) {return Err("Delivery adapter merge identity/time missing or mismatched".into());}
+    let first=&report["first_main"];job(first)?;job(&first["deploy"])?;
+    if !ancestor_until(c,target,first["sha"].as_str().unwrap_or(""),end)? {return Err("First main pipeline excludes merge".into());}
+    let smoke=first["smoke"].as_array().filter(|s|!s.is_empty()).ok_or("Delivery adapter smoke attempts missing")?;
+    for attempt in smoke {job(attempt)?;if attempt["state"]=="failed" && !attempt["first_failing_check"].as_str().is_some_and(|s|!s.is_empty() && s.len()<=1000) {return Err("Delivery adapter first failing check missing".into());}}
+    let later=&report["later_main"];
+    if !report.as_object().is_some_and(|o|o.contains_key("later_main")) {return Err("Delivery adapter later main evidence missing".into());}
+    if !later.is_null() {job(later)?;if !ancestor_until(c,target,later["sha"].as_str().unwrap_or(""),end)? {return Err("Later main pipeline excludes merge".into());}}
+    let mut result=report;
+    let live=(|| -> Result<(String,bool),String> {
+        let live=resolve_until(c,c["live_ref"].as_str().ok_or("LIVE ref missing")?,end)?;
+        let included=ancestor_until(c,target,&live,end)?;Ok((live,included))
+    })();
+    match live {Ok((live,included))=>{result["live_includes"]=json!(included);result["live_sha"]=json!(live);},Err(e)=>{result["live_includes"]=Value::Null;result["live_reason"]=json!(e);}}
+    Ok(result)
+}
+pub fn delivery_text(v:&Value)->String {
+    let mut text=format!("Delivery stage: {}.",v["stage"].as_str().unwrap_or("unknown"));
+    if let Some(reason)=v["reason"].as_str() {return format!("{text} Pipeline unknown: {reason}.");}
+    text+=&format!("\nMerged at {}.",v["merged_at"].as_str().unwrap_or("unknown"));
+    let first=&v["first_main"];
+    text+=&format!("\nFirst containing main pipeline: {} ({}).",first["state"].as_str().unwrap_or("unknown"),first["url"].as_str().unwrap_or(""));
+    text+=&format!("\nDEV deploy: {} ({}).",first["deploy"]["state"].as_str().unwrap_or("unknown"),first["deploy"]["url"].as_str().unwrap_or(""));
+    for (i,job) in first["smoke"].as_array().into_iter().flatten().enumerate() {
+        text+=&format!("\nDEV smoke attempt {}: {} ({})",i+1,job["state"].as_str().unwrap_or("unknown"),job["url"].as_str().unwrap_or(""));
+        if let Some(check)=job["first_failing_check"].as_str().filter(|_|job["state"]=="failed") {text+=&format!("; first failing check: {check}");}text.push('.');
+    }
+    let later=&v["later_main"];
+    if later.is_null() {text+="\nNo later containing main pipeline observed.";} else {
+        text+=&format!("\nLater containing main pipeline: {} ({}).",later["state"].as_str().unwrap_or("unknown"),later["url"].as_str().unwrap_or(""));
+    }
+    text+=match v["live_includes"].as_bool() {Some(true)=>"\nLIVE contains the merge.",Some(false)=>"\nLIVE is behind the merge.",None=>"\nLIVE inclusion unknown."};
+    if let Some(reason)=v["live_reason"].as_str() {text+=&format!(" {reason}");}text
 }
 fn project_numbers(j:&Journal,p:&str,tasks:&Value)->Result<std::collections::BTreeSet<i64>,String> {
     let mut numbers=std::collections::BTreeSet::new();for t in tasks.as_array().ok_or("Task list unavailable")? {if let Some(n)=t["n"].as_i64(){numbers.insert(n);}}
     let mut q=j.0.prepare("SELECT number FROM tasks WHERE project=?1 ORDER BY observed DESC LIMIT 12").map_err(err)?;
     let cached=q.query_map([p],|r|r.get::<_,i64>(0)).and_then(Iterator::collect::<Result<Vec<_>,_>>).map_err(err)?;numbers.extend(cached);Ok(numbers)
 }
-pub fn project_status_dev(tq:&Taskq,j:&std::sync::Mutex<Journal>,p:&str,tasks:&Value)->Value {
+// Snapshot protected configuration under the mutex; all network/process reads run unlocked.
+pub fn delivery(j:&std::sync::Mutex<Journal>,p:&str,issue:&Value,end:Instant)->Value {
+    let c=config(&j.lock().unwrap(),p);
+    delivery_config(c,issue,end)
+}
+fn dev_observe(j:&std::sync::Mutex<Journal>,p:&str,c:&Value,merged:Option<&str>,h:&Value,end:Instant)->Result<Value,String> {
+    let a=merged.ok_or("Merged SHA unavailable")?;
+    let b=h["sha"].as_str().ok_or("DEV SHA unavailable")?;
+    let included=ancestor_until(c,a,b,end)?;
+    if !included {return Ok(json!({"state":"not yet on DEV","sha":b,"serves_target_exactly":a==b,"observed_at":crate::now()}));}
+    let j=j.lock().unwrap();
+    if config(&j,p)?!=*c {return Err("Release configuration changed during observation".into());}
+    let key=format!("dev-first:{p}:{a}");
+    let first=get(&j,&key)?.unwrap_or(json!(crate::now()));put(&j,&key,&first)?;
+    let time=h["deployed_at"].as_str().or_else(||h["started_at"].as_str()).filter(|s|!s.is_empty() && s.len()<100);
+    Ok(json!({"state":match time {Some(t)=>format!("on DEV since {t}"),None=>format!("on DEV since {} (first observed)",first)},"sha":b,"serves_target_exactly":a==b,"observed_at":crate::now()}))
+}
+pub fn task_observations(j:&std::sync::Mutex<Journal>,p:&str,issue:&Value,end:Instant)->(Value,Value) {
+    std::thread::scope(|scope| {
+        let pipeline=scope.spawn(||delivery(j,p,issue,end));
+        let dev=task_dev(j,p,issue,end);
+        (dev,pipeline.join().unwrap_or_else(|_|json!({"stage":"unknown","reason":"Delivery reader failed"})))
+    })
+}
+pub fn task_dev(j:&std::sync::Mutex<Journal>,p:&str,issue:&Value,end:Instant)->Value {
+    let result=(|| {let c=config(&j.lock().unwrap(),p)?;let h=health_until(&c,end)?;
+        dev_observe(j,p,&c,merged_sha(issue).as_deref(),&h,end)})();
+    result.unwrap_or_else(|e:String|json!({"state":"unknown","reason":e,"observed_at":crate::now()}))
+}
+pub fn project_status_dev(tq:&Taskq,j:&std::sync::Mutex<Journal>,p:&str,tasks:&Value,end:Instant)->Value {
     let result=(|| -> Result<Value,String> {
-        let (board,numbers)={let j=j.lock().unwrap();config(&j,p)?;let (board,_)=binding(&j,p)?;
-            let numbers=project_numbers(&j,p,tasks)?;(board,numbers)};
+        let (c,board,numbers)={let j=j.lock().unwrap();let c=config(&j,p)?;let (board,_)=binding(&j,p)?;
+            (c,board,project_numbers(&j,p,tasks)?)};
         if numbers.len()>20 {return Err("Too many tasks for a bounded DEV observation".into());}
-        let end=Instant::now()+Duration::from_secs(15);let mut projected=vec![];
+        let h=health_until(&c,end)?;
+        let main=resolve_until(&c,c["main_ref"].as_str().ok_or("Main ref missing")?,end)?;
+        let main=dev_observe(j,p,&c,Some(&main),&h,end)?;
+        let mut projected=vec![];
         for n in numbers {let issue=read(tq,&board,&["issue",&n.to_string(),"--json"],end);
             let merged=issue.ok().filter(|i|i["number"]==n).as_ref().and_then(merged_sha);
-            projected.push(json!({"n":n,"merged_sha":merged}));}
-        Ok(project_dev(&j.lock().unwrap(),p,&json!(projected)))
+            let dev=dev_observe(j,p,&c,merged.as_deref(),&h,end).unwrap_or_else(|e|json!({"state":"unknown","reason":e}));
+            projected.push(json!({"task":n,"dev":dev}));}
+        Ok(json!({"main":main,"tasks":projected}))
     })();result.unwrap_or_else(|e|json!({"state":"unknown","reason":e}))
-}
-pub fn project_dev(j:&Journal,p:&str,tasks:&Value)->Value {
-    let result=(|| {let c=config(j,p)?;let h=health(&c)?;let main=resolve(&c,c["main_ref"].as_str().ok_or("Main ref missing")?)?;
-        let list=tasks.as_array().ok_or("Task list unavailable")?.iter().map(|t|json!({"task":t["n"],"dev":dev_read(j,p,&c,t["merged_sha"].as_str(),&h).unwrap_or_else(|e|json!({"state":"unknown","reason":e}))})).collect::<Vec<_>>();
-        Ok(json!({"main":dev_read(j,p,&c,Some(&main),&h)?,"tasks":list}))})();
-    result.unwrap_or_else(|e:String|json!({"state":"unknown","reason":e}))
 }
 fn repository_origin(raw:&str)->String {
     let s=raw.trim().trim_end_matches('/').trim_end_matches(".git");
@@ -261,7 +343,7 @@ fn preview_for(tq:&Taskq,j:&std::sync::Mutex<Journal>,id:i64,session:&str,genera
         }
     }
     if Instant::now()>=end {return Err("Preview deadline reached".into());}
-    let observed=dev(&j.lock().unwrap(),p,Some(&target));
+    let observed=task_dev(j,p,&json!({"merged_sha":target}),end);
     if observed["state"]=="unknown" {return Err("DEV state unknown; preview refused".into());}
     let text=format!("Release {p}\nTarget SHA: {target}\nCommits since LIVE: {count}\nAuthors:\n{authors}\nTasks: {}\nMigrations: {}\nDEV: {} (serves target exactly: {})",if links.is_empty(){"none reported by TaskQ".into()}else{links.join("\n")},if migrations {"yes"}else{"no"},observed["state"].as_str().unwrap_or("unknown"),observed["serves_target_exactly"]);
     if text.len()>3500 {return Err("Release preview too large; narrow the candidate".into());}
@@ -416,6 +498,78 @@ mod tests {
         let tq=Taskq{bot:None,bin:probe,root:dir.clone(),poll:Duration::from_secs(1)};
         Fixture{dir,j:Arc::new(Mutex::new(j)),tq,c,a,b,r}
     }
+    // #179 A2–A6 / R8: adapter facts outrank close notes; retain failed attempts and later recovery.
+    #[test]
+    fn delivery_trace_179() {
+        let f=fixture("delivery179");
+        let job=|state:&str,id:&str|json!({"state":state,"url":format!("https://example.invalid/jobs/{id}")});
+        let mut failed=job("failed","smoke1");failed["first_failing_check"]=json!("homepage returns 503");
+        let mut retry=job("failed","smoke2");retry["first_failing_check"]=json!("login returns 500");
+        let report=json!({"sha":f.b,"merged_at":"2026-10-30T16:10:00Z","first_main":{"sha":f.b,"state":"failed","url":"https://example.invalid/pipelines/1","deploy":job("success","web_dev"),"smoke":[failed,retry]},"later_main":{"sha":f.b,"state":"success","url":"https://example.invalid/pipelines/2"}});
+        let script=f.dir.join("runner");
+        std::fs::write(&script,format!("#!/bin/sh\ncat <<'JSON'\n{report}\nJSON\n")).unwrap();
+        let mut c=f.c.clone();c["delivery_status"]=json!([script,"{sha}"]);
+        let j=f.j.lock().unwrap();configure(&j,7,"sample",c).unwrap();
+        let issue=json!({"state":"closed","merged_sha":f.b,"body":"deployed after-check unknown; CI passed"});
+        let got=delivery_config(config(&j,"sample"),&issue,Instant::now()+Duration::from_secs(10));
+        assert_eq!(got["stage"],"on DEV");
+        assert_eq!(got["merged_at"],"2026-10-30T16:10:00Z");
+        assert_eq!(got["first_main"],report["first_main"]);
+        assert_eq!(got["later_main"],report["later_main"]);
+        assert_eq!(got["live_includes"],false);
+        assert!(!got.to_string().contains("after-check"));
+        let reply=delivery_text(&got);
+        for fact in ["smoke1","smoke2","web_dev","2026-10-30T16:10:00Z","homepage returns 503","login returns 500","LIVE is behind"] {assert_eq!(reply.matches(fact).count(),1,"{reply}");}
+        assert!(reply.contains("Later containing main pipeline: success"));
+        assert!(reply.contains("First containing main pipeline: failed"));
+        let slow_git=f.dir.join("slow-git");
+        std::fs::write(&slow_git,"#!/bin/sh\nsleep 0.15\nexec /usr/bin/git \"$@\"\n").unwrap();
+        std::fs::set_permissions(&slow_git,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut slow=f.c.clone();slow["git"]=json!(slow_git);
+        let start=Instant::now();
+        assert!(delivery_report(&slow,&f.b,report.clone(),start+Duration::from_millis(200)).is_err());
+        assert!(start.elapsed()<Duration::from_millis(600),"Git reads renewed the shared deadline");
+        let mut bad=report.clone();bad["sha"]=json!(f.a);
+        assert!(delivery_report(&f.c,&f.b,bad,Instant::now()+Duration::from_secs(10)).is_err());
+        let mut bad=report.clone();bad["first_main"]["smoke"][0]["first_failing_check"]=Value::Null;
+        assert!(delivery_report(&f.c,&f.b,bad,Instant::now()+Duration::from_secs(10)).is_err());
+        let mut missing_live=f.c.clone();missing_live["live_ref"]=json!("refs/heads/missing");
+        let partial=delivery_report(&missing_live,&f.b,report.clone(),Instant::now()+Duration::from_secs(10)).unwrap();
+        assert_eq!(partial["first_main"],report["first_main"]);assert!(partial["live_includes"].is_null());
+        assert!(partial["live_reason"].as_str().unwrap().contains("Git read failed"));
+        let mut green=report.clone();green["first_main"]["smoke"][1]["state"]=json!("success");
+        std::fs::write(&script,format!("#!/bin/sh\ncat <<'JSON'\n{green}\nJSON\n")).unwrap();
+        assert_eq!(delivery_config(config(&j,"sample"),&issue,Instant::now()+Duration::from_secs(10))["stage"],"DEV smoke");
+        let status=std::process::Command::new("/usr/bin/git").current_dir(&f.dir).args(["update-ref","refs/heads/live",&f.b]).status().unwrap();assert!(status.success());
+        assert_eq!(delivery_config(config(&j,"sample"),&issue,Instant::now()+Duration::from_secs(10))["stage"],"on LIVE");
+        std::fs::write(&script,"#!/bin/sh\nexit 1\n").unwrap();
+        let got=delivery_config(config(&j,"sample"),&issue,Instant::now()+Duration::from_secs(10));assert_eq!(got["pipeline"],"unknown");assert_eq!(got["reason"],"Delivery adapter failed or unavailable");
+    }
+    // §5/§7/§12: a slow pipeline cannot hold controls or renew Git read budgets.
+    #[test]
+    fn delivery_slow_adapter_179() {
+        let f=fixture("slow179");
+        let script=f.dir.join("runner");
+        std::fs::write(&script,"#!/bin/sh\ntouch entered\nsleep 5\n").unwrap();
+        let mut c=f.c.clone();c["delivery_status"]=json!([script,"{sha}"]);
+        let c=configure(&f.j.lock().unwrap(),7,"sample",c).unwrap();
+        let journal=f.j.clone();let issue=json!({"state":"closed","merged_sha":f.b});
+        let start=Instant::now();let end=start+Duration::from_millis(400);
+        let worker=std::thread::spawn(move ||delivery(&journal,"sample",&issue,end));
+        while !f.dir.join("entered").exists() && Instant::now()<end {std::thread::yield_now();}
+        assert!(f.dir.join("entered").exists(),"adapter did not start");
+        let control=f.j.try_lock().expect("slow adapter blocked recovery controls");
+        assert_eq!(control.owner().unwrap(),Some(7));drop(control);
+        assert_eq!(worker.join().unwrap()["pipeline"],"unknown");
+        assert!(start.elapsed()<Duration::from_secs(2),"adapter renewed deadline");
+        let end=Instant::now()+Duration::from_secs(1);
+        let h=json!({"sha":f.b,"deployed_at":"2026-10-30T16:10:00Z"});
+        assert_eq!(dev_observe(&f.j,"sample",&c,Some(&f.b),&h,end).unwrap()["state"],"on DEV since 2026-10-30T16:10:00Z");
+        let h=json!({"sha":f.b});
+        let first=dev_observe(&f.j,"sample",&c,Some(&f.b),&h,end).unwrap();
+        assert!(first["state"].as_str().unwrap().ends_with("(first observed)"));
+        assert_eq!(dev_observe(&f.j,"sample",&c,Some(&f.b),&h,end).unwrap()["state"],first["state"]);
+    }
     fn save_preview(f:&Fixture)->i64 {
         let id=f.r.request;let j=f.j.lock().unwrap();
         j.0.execute("UPDATE requests SET front='telegram',message=99,state='waiting',text='/release-confirm 1' WHERE id=?1",[id]).unwrap();
@@ -435,7 +589,7 @@ mod tests {
     #[test]
     fn dev_ancestry_and_trusted_merge_174() {
         let f=fixture("ancestry");assert!(ancestor(&f.c,&f.a,&f.b).unwrap());assert!(!ancestor(&f.c,&f.b,&f.a).unwrap());assert!(ancestor(&f.c,&"a".repeat(40),&f.b).is_err());
-        let j=f.j.lock().unwrap();let observed=dev_read(&j,"sample",&f.c,Some(&f.a),&json!({"sha":f.b,"deployed_at":"2026-10-30T10:00:00Z"})).unwrap();assert_eq!(observed["state"],"on DEV since 2026-10-30T10:00:00Z");assert_eq!(dev_read(&j,"sample",&f.c,Some(&f.b),&json!({"sha":f.a})).unwrap()["state"],"not yet on DEV");assert!(dev_read(&j,"sample",&f.c,None,&json!({"sha":f.b})).is_err());
+        let end=Instant::now()+Duration::from_secs(10);let observed=dev_observe(&f.j,"sample",&f.c,Some(&f.a),&json!({"sha":f.b,"deployed_at":"2026-10-30T10:00:00Z"}),end).unwrap();assert_eq!(observed["state"],"on DEV since 2026-10-30T10:00:00Z");assert_eq!(dev_observe(&f.j,"sample",&f.c,Some(&f.b),&json!({"sha":f.a}),end).unwrap()["state"],"not yet on DEV");assert!(dev_observe(&f.j,"sample",&f.c,None,&json!({"sha":f.b}),end).is_err());
         let body=format!("taskq: close\nChanged: sample\n\ndelivery auto-merge r0: merged #1 as {}; merge-result CI green",f.b);
         assert_eq!(merged_sha(&json!({"comments":[{"trusted":true,"body":body}]})),Some(f.b.clone()));assert_eq!(merged_sha(&json!({"comments":[{"trusted":false,"body":body}]})),None);
     }
