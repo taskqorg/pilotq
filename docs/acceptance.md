@@ -924,3 +924,16 @@ deployment is part of #126.
 ### Telegram reply files (#145)
 
 Under [§5](../pilotq.md#5-taskq-integration), photos and documents with optional captions reach TaskQ answer, steer and owner requeue as readable files. Local `reply_files` checks protect identity/caption admission, duplicate and ignored updates, source isolation, bounded HTTP downloads, readable CLI files, original revision and same-operation retry. Existing question/grant/fence checks continue to apply. A refusal or uncertain write retains the reply and explains its reason and fix. The PM executes the [A2 live recipe](reply-files-145.md) after release on PDS 18, recording exact client/TaskQ revisions, a photo, a 20 MB document, mixed text/files and verified worker copies. A2 is not qualified by fake transport or CI.
+
+### Administration by request (#160)
+
+R15 and §5 own the grants and limits. Deterministic component traces use invented identities, a fake TaskQ executable and a local Bot API HTTP server; they do not qualify a live installation.
+
+| Case | Initial conditions and input | Expected observation |
+|---|---|---|
+| Admin160-01 | `projects` administrator requests registration of an existing repository | Safe local root and matching `taskq.json`; complete matching TaskQ readback precedes registry commit. Result names board/root and missing filing prerequisites. |
+| Admin160-02 | `users` administrator grants/revokes an exact route-seen ID, including a verified reply sender | Atomic before/after grant audit and receipt; unseen IDs and names refused. |
+| Admin160-03 | Caller lacks required grant or one of `users` and project access | No external call or mutation. Group-admin badge is insufficient. |
+| Admin160-04 | Duplicate update or repeated tool call, followed by a later grant correction | One request/operation; original receipt returned without reapplying corrected grants or creating another topic. Changed arguments refused. |
+| Admin160-05 | Crash after local-root write, topic creation response loss, or known topic ID before route binding | Partial root remains visible; unknown topic creation is never replayed. A saved ID completes only local binding after current grant/registry checks. Grant receipt failure rolls back the entire change. |
+| Admin160-06 | Forum bot has or lacks `can_manage_topics` | Permitted topic gets the selected route policy and registered project default; new conversation resolves that project without gaining access. Missing permission receives a plain refusal. |

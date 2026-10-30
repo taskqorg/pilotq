@@ -101,7 +101,7 @@ pub fn call(d: &Direct, j: &Mutex<Journal>, r: &Run, name: &str, args: &Value, d
     }
 }
 
-fn command(bin: impl AsRef<std::ffi::OsStr>, cwd: &str, argv: &[&str]) -> Command {
+pub(crate) fn command(bin: impl AsRef<std::ffi::OsStr>, cwd: &str, argv: &[&str]) -> Command {
     let mut command = Command::new(bin);
     command.args(argv).current_dir(cwd).env_clear()
         .env("PATH","/usr/bin:/bin").env("TASKQ_ROOT",cwd).env("LANG","C.UTF-8")
@@ -116,7 +116,7 @@ fn execute(command: Command, end: Instant, active: impl Fn() -> bool) -> Value {
     execute_bounded(command,end,active,CAP)
 }
 
-fn execute_bounded(mut command: Command, end: Instant, active: impl Fn() -> bool, cap: usize) -> Value {
+pub(crate) fn execute_bounded(mut command: Command, end: Instant, active: impl Fn() -> bool, cap: usize) -> Value {
     if !active() { return json!({"status":"cancelled","exit_code":null}); }
     if Instant::now() >= end { return json!({"status":"timeout","exit_code":null}); }
     let diagnostic=format!("{:?} {:?}",command.get_program(),command.get_args().collect::<Vec<_>>());

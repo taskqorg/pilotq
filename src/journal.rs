@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 /// Schema this binary writes; a newer journal is refused rather than guessed (F08).
-const SCHEMA: i64 = 11;
+const SCHEMA: i64 = 12;
 /// Model attempts per request across restarts (§ 7 dependency retry).
 const RUNS: i64 = 3;
 /// Delivery attempts per episode, persisted across restart (§ 7).
@@ -31,7 +31,7 @@ const DAY_CAP: i64 = 10;
 /// An undrained gap above this is reported as downtime, a shorter one as an unplanned restart.
 const DOWNTIME: i64 = 300;
 
-fn valid_grant(g: &str) -> bool {
+pub(crate) fn valid_grant(g: &str) -> bool {
     GRANTS.contains(&g) || g.strip_prefix("project:").is_some_and(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)))
 }
 
@@ -641,7 +641,7 @@ pub enum Sent {
 }
 
 /// The journal connection, the CoreQ telemetry store path beside it and that store, opened on first use.
-pub struct Journal(Connection, PathBuf, std::sync::OnceLock<Result<Store, String>>);
+pub struct Journal(pub(crate) Connection, PathBuf, std::sync::OnceLock<Result<Store, String>>);
 
 impl Journal {
     pub fn open(path: &Path) -> Result<Journal, String> {
@@ -771,6 +771,14 @@ impl Journal {
                     plan_id INTEGER, question TEXT, options TEXT, used_request INTEGER);
                 INSERT OR IGNORE INTO meta(key,value) SELECT 'refresh:' || session,1 FROM conversations WHERE thread IS NOT NULL;
                 PRAGMA user_version=11; COMMIT;")?;
+        }
+        if version < 12 {
+            up("BEGIN IMMEDIATE;
+                CREATE TABLE IF NOT EXISTS admin_ops(request INTEGER NOT NULL, tool TEXT NOT NULL, args TEXT NOT NULL,
+                    external TEXT, receipt TEXT, PRIMARY KEY(request,tool));
+                CREATE TABLE IF NOT EXISTS route_projects(chat INTEGER NOT NULL, topic INTEGER NOT NULL, project TEXT NOT NULL,
+                    PRIMARY KEY(chat,topic));
+                PRAGMA user_version=12; COMMIT;")?;
         }
         // TaskQ op IDs are permanent board claims; a random installation ID keeps a fresh journal from reusing another's
         let salt = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as i64) ^ ((std::process::id() as i64) << 40);
@@ -1199,27 +1207,32 @@ impl Journal {
     /// Applies one grant change and logs actor, target and before/after in the same transaction. `actor` None is protected config.
     fn change(&mut self, actor: Option<i64>, target: i64, at: i64, f: impl FnOnce(&mut std::collections::BTreeSet<String>)) -> Result<Vec<String>, String> {
         let tx = self.0.transaction().map_err(|e| e.to_string())?;
+        let after = Self::change_in(&tx, actor, target, at, f)?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(after)
+    }
+
+    pub(crate) fn change_in(c: &Connection, actor: Option<i64>, target: i64, at: i64, f: impl FnOnce(&mut std::collections::BTreeSet<String>)) -> Result<Vec<String>, String> {
         if let Some(a) = actor
-            && !has(&tx, a, "users")?
+            && !has(c, a, "users")?
         {
             return Err(format!("{a} has no users grant"));
         }
-        let before = grants_of(&tx, target)?;
+        let before = grants_of(c, target)?;
         let mut after: std::collections::BTreeSet<String> = before.iter().cloned().collect();
         f(&mut after);
         let after: Vec<String> = after.into_iter().collect();
         if after != before {
-            tx.execute("DELETE FROM grants WHERE user=?1", [target]).map_err(|e| e.to_string())?;
+            c.execute("DELETE FROM grants WHERE user=?1", [target]).map_err(|e| e.to_string())?;
             for g in &after {
-                tx.execute("INSERT INTO grants(user, name) VALUES (?1,?2)", params![target, g]).map_err(|e| e.to_string())?;
+                c.execute("INSERT INTO grants(user, name) VALUES (?1,?2)", params![target, g]).map_err(|e| e.to_string())?;
             }
-            tx.execute(
+            c.execute(
                 "INSERT INTO grant_log(at, actor, target, before, after) VALUES (?1,?2,?3,?4,?5)",
                 params![at, actor, target, before.join(","), after.join(",")],
             )
             .map_err(|e| e.to_string())?;
         }
-        tx.commit().map_err(|e| e.to_string())?;
         Ok(after)
     }
 
@@ -2514,7 +2527,7 @@ impl Journal {
 
     /// The conversation's current project, set only by an explicit switch.
     pub fn current_project(&self, session: &str) -> Result<Option<String>, String> {
-        self.0.query_row("SELECT project FROM conversations WHERE session=?1", [session], |r| r.get(0)).optional().map(Option::flatten).map_err(|e| e.to_string())
+        self.0.query_row("SELECT coalesce(project,(SELECT p.project FROM route_projects p JOIN requests q ON q.chat=p.chat AND coalesce(q.topic,0)=p.topic WHERE q.session=?1 ORDER BY q.id DESC LIMIT 1)) FROM conversations WHERE session=?1", [session], |r| r.get(0)).optional().map(Option::flatten).map_err(|e| e.to_string())
     }
 
     /// Switches the run's conversation to `project` while its fence holds, with who switched and when (§ 6). `/new` keeps it.
