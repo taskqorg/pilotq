@@ -487,7 +487,7 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
                     _ if crate::admin::NAMES.contains(&name) => crate::admin::call(d,j,r,name,args,command_deadline,tq),
                     _ if crate::commands::NAMES.contains(&name) => crate::commands::call(d,j,r,name,args,command_deadline,tq),
                     _ if direct::NAMES.contains(&name) => direct::call(d, j, r, name, args, tq),
-                    Some(tq) => crate::taskq::call(tq, j, r, name, args),
+                    Some(tq) => crate::taskq::call_until(tq, j, r, name, args,command_deadline),
                     None => (false, "TaskQ is not configured".into()),
                 };
                 // no key value reaches the model, whichever tool printed it (§ 8)
