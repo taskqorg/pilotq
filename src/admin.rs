@@ -27,6 +27,9 @@ fn authorize(j: &Journal, r: &Run, tool: &str, args: &Value) -> Result<i64,Strin
     let grant = if tool == "project_register" { "projects" } else { "users" };
     if j.fenced(r)? || !j.has(user,"chat")? || !j.has(user,grant)? { return Err(format!("Administration refused: current chat and {grant} grants required, and run must be active.")); }
     if tool == "topic_open" {
+        if args["shared"] == true && !shared_requested(&r.text) {
+            return Err("Shared mode requires an explicit shared topic or shared conversation request; clarify the session policy. No topic created.".into());
+        }
         let project = args["project"].as_str().ok_or("project required")?;
         if !(j.has(user,"projects")? || j.has(user,&format!("project:{project}"))?) { return Err("Project access required; no topic created.".into()); }
         if crate::direct::context_project(j,r,user)?.or(j.current_project(&r.session)?).as_deref() != Some(project) {
@@ -70,6 +73,13 @@ fn route(j: &Journal, r: &Run, args: &Value) -> Result<(i64,i64),String> {
 fn own_word(text: &str, word: &str) -> bool {
     crate::direct::own_text(text).split_whitespace().any(|w|w.trim_matches([',',';','(',')'])==word)
 }
+// Visibility changes need positive caller wording, never a model-selected boolean.
+fn shared_requested(text: &str) -> bool {
+    let own=crate::direct::own_text(text).to_lowercase();
+    let words:Vec<_>=own.split(|c:char|!c.is_alphanumeric() && c!='\'').filter(|w|!w.is_empty()).collect();
+    if words.iter().any(|w|["not","no","never","don't","dont","не","нет","без"].contains(w)) { return false; }
+    words.windows(2).any(|w|matches!((w[0],w[1]),("shared","topic"|"conversation")|("общую","тему")|("общий","разговор")))
+}
 fn seen(j: &Journal, _r: &Run, target: i64, chat: i64, topic: i64) -> Result<bool,String> {
     // A quote is trusted Telegram envelope metadata, never the quoted text or a forwarded author.
     j.0.query_row("SELECT EXISTS(SELECT 1 FROM requests WHERE chat=?1 AND coalesce(topic,0)=?2 AND sender=?3 AND front='telegram') OR EXISTS(
@@ -87,6 +97,9 @@ fn user_change(j: &mut Journal, r: &Run, tool: &str, args: &Value) -> Result<Val
     if !quoted && !own_word(&r.text,&target.to_string()) { return Err("Name the exact Telegram ID in your own message; names do not authorize grants.".into()); }
     let names=args["grants"].as_array().filter(|a|!a.is_empty()).ok_or("Name at least one grant")?;
     let names:Vec<String>=names.iter().map(|n|n.as_str().filter(|g|crate::journal::valid_grant(g)).map(str::to_string).ok_or("Invalid grant name")).collect::<Result<_,_>>()?;
+    if names.iter().any(|name|!own_word(&r.text,name)) {
+        return Err("Name each exact grant in your own request; model arguments cannot authorize additional rights.".into());
+    }
     let before=j.grants(target)?;
     let tx=j.0.unchecked_transaction().map_err(err)?;
     start(j,r,tool,args)?;
@@ -241,6 +254,8 @@ fn bind_topic(j: &mut Journal, request: i64, e: &Value) -> Result<Value,String> 
     if !j.projects()?.iter().any(|p|p.0==project && e["repo"]==p.1 && e["root"]==p.2) { return Err("Topic exists but registered project changed; binding blocked".into()); }
     let (chat,topic)=(e["chat"].as_i64().ok_or("Saved chat missing")?,e["topic"].as_i64().ok_or("Saved topic missing")?);
     let shared=e["shared"]==true;
+    let text:String=j.0.query_row("SELECT text FROM requests WHERE id=?1",[request],|r|r.get(0)).map_err(err)?;
+    if shared && !shared_requested(&text) { return Err("Topic exists but shared conversation was not explicitly authorized; local binding blocked".into()); }
     let root=j.projects()?.into_iter().find(|p|p.0==project).ok_or("Registered project missing")?.2;
     let config:Value=std::fs::read_to_string(Path::new(&root).join("taskq.json")).ok().and_then(|s|serde_json::from_str(&s).ok()).ok_or("Topic exists but project configuration is unavailable")?;
     if config["repo"]!=e["repo"] { return Err("Topic exists but project board changed; binding blocked".into()); }
@@ -381,6 +396,41 @@ mod tests {
         drop(m);let _=std::fs::remove_dir_all(dir);
     }
 
+    // R10/§8: model arguments cannot expand the rights or conversation visibility requested by the caller.
+    #[test]
+    fn admin_160_caller_scope() {
+        let (mut j,dir,_)=setup();j.grant(7,8,&["chat".into()],0).unwrap();
+        let r=run(&mut j,8,1,"hello");finish(&mut j,&r);
+        for (message,text,tool) in [(2,"grant 8 chat","user_grant"),(3,"revoke 8 chat","user_revoke"),(4,"grant 8 chat\n> users","user_grant")] {
+            let r=run(&mut j,7,message,text);
+            assert!(user_change(&mut j,&r,tool,&json!({"user":8,"grants":["users"]})).is_err(),"unrequested users right must be refused");
+            assert_eq!(j.grants(8).unwrap(),vec!["chat".to_string()]);
+            assert_eq!(j.0.query_row("SELECT count(*) FROM admin_ops WHERE request=?1",[r.request],|r|r.get::<_,i64>(0)).unwrap(),0);
+            finish(&mut j,&r);
+        }
+        let _=std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn admin_160_caller_shared_scope() {
+        let (mut j,dir,_)=setup();registered(&j,&dir);
+        for (message,text) in [(5,"open topic demo"),(6,"open topic demo\n> shared topic"),(7,"open topic demo, not a shared topic")] {
+            let r=run(&mut j,7,message,text);
+            assert!(authorize(&j,&r,"topic_open",&json!({"project":"demo","name":"Demo","shared":true})).is_err(),"shared mode requires caller consent before Bot API");
+            let binding=j.projects().unwrap().pop().unwrap();
+            let external=json!({"chat":-100,"topic":42,"project":"demo","repo":binding.1,"root":binding.2,"shared":true});
+            assert!(bind_topic(&mut j,r.request,&external).is_err(),"saved topic ID cannot expand authorized visibility during recovery");
+            assert!(!j.routes().unwrap().iter().any(|route|route.topic==42));
+            finish(&mut j,&r);
+        }
+        for (message,text) in [(8,"open shared topic demo"),(9,"открой общую тему demo")] {
+            let r=run(&mut j,7,message,text);
+            assert!(authorize(&j,&r,"topic_open",&json!({"project":"demo","name":"Demo","shared":true})).is_ok());
+            finish(&mut j,&r);
+        }
+        let _=std::fs::remove_dir_all(dir);
+    }
+
     // §4: injected receipt-write interruption rolls back grant, grant log and intent together.
     #[test]
     fn admin_160_grant_atomicity() {
@@ -443,16 +493,18 @@ mod tests {
     // R15/§4: real HTTP boundary with invented Bot API fixtures; one effect, correct default, no uncertain replay.
     #[test]
     fn admin_160_topic_trace() {
-        for mode in ["allow","missing_permission","lost_response"] {
+        for mode in ["allow","allow_shared","missing_permission","lost_response"] {
             let (mut j,dir,d)=setup();registered(&j,&dir);
-            let r=run(&mut j,7,1,"open a topic for demo");let m=Mutex::new(j);
+            let r=run(&mut j,7,1,if mode=="allow_shared" {"open shared topic demo"} else {"open a topic for demo"});let m=Mutex::new(j);
             let mut replies=vec![Some(json!({"id":123})),Some(json!({"is_forum":true,"type":"supergroup"})),Some(json!({"status":"administrator","can_manage_topics":mode!="missing_permission"}))];
             if mode!="missing_permission" { replies.push(if mode=="lost_response" {None} else {Some(json!({"message_thread_id":42}))}); }
-            let (bot,server)=fake_bot(replies);let t=tq(Some(bot));let args=json!({"project":"demo","name":"Demo"});
+            let (bot,server)=fake_bot(replies);let t=tq(Some(bot));let args=json!({"project":"demo","name":"Demo","shared":mode=="allow_shared"});
             let (ok,out)=call(&d,&m,&r,"topic_open",&args,end(),Some(&t));let calls=server.join().unwrap();
-            assert_eq!(ok,mode=="allow","{out}");
+            assert_eq!(ok,matches!(mode,"allow"|"allow_shared"),"{out}");
             assert_eq!(calls.iter().filter(|c|c.contains("createForumTopic")).count(),usize::from(mode!="missing_permission"));
-            if mode=="allow" {
+            if matches!(mode,"allow"|"allow_shared") {
+                let result:Value=serde_json::from_str(&out).unwrap();
+                assert_eq!(result["session"],if mode=="allow_shared" {"shared"} else {"isolated"});
                 assert_eq!(call(&d,&m,&r,"topic_open",&args,end(),Some(&t)),(ok,out));
                 finish(&mut m.lock().unwrap(),&r);
                 let mut message=input(7,2,"hello");message.topic=Some(42);m.lock().unwrap().admit(&[(2,Some(message))],2).unwrap();
