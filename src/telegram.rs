@@ -36,6 +36,7 @@ fn input(kind: &UpdateKind) -> Option<Input> {
         let m = q.message.as_ref()?.regular_message()?;
         let data = q.data.as_deref()?;
         let model_command = data.strip_prefix("model:").map(|s|format!("/model-button {s}"))
+            .or_else(||data.strip_prefix("release:").map(|s|format!("/release-confirm {s}")))
             .or_else(||data.strip_prefix("onboard:").map(|s|format!("/onboard-button {s}")));
         let (kind,k) = if let Some(k)=model_command.as_deref() { ("text",k) }
             else if let Some(k)=data.strip_prefix("answer:") { ("button",k) }
@@ -517,7 +518,7 @@ async fn send(bot: &Bot, j: &Shared, d: &Delivery) -> Sent {
         }
         if !d.buttons.is_empty() {
             r=r.reply_markup(InlineKeyboardMarkup::new(d.buttons.iter().map(|(data,label)|vec![InlineKeyboardButton::callback(label,data)])));
-        } else if matches!(d.kind.as_str(), "question_answered" | "choice_answered" | "plan_answered" | "plan_progress" | "plan_problem" | "onboarding") { r = r.reply_markup(InlineKeyboardMarkup::new(Vec::<Vec<InlineKeyboardButton>>::new())); }
+        } else if matches!(d.kind.as_str(), "question_answered" | "choice_answered" | "plan_answered" | "plan_progress" | "plan_problem" | "onboarding" | "release_result") { r = r.reply_markup(InlineKeyboardMarkup::new(Vec::<Vec<InlineKeyboardButton>>::new())); }
         match r.await {
             Ok(m) => return Sent::Ok(m.id.0 as i64),
             Err(RequestError::Api(ApiError::MessageNotModified)) => return Sent::Ok(m),

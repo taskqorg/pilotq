@@ -4,7 +4,7 @@ use coreq::Tool;
 use serde_json::Value;
 use std::time::{Duration, Instant};
 
-pub const HELP:&str="/help — available controls\n/version — running PilotQ version\n/status — observed health and this conversation\n/model — Codex catalogue and model buttons\n/model MODEL — save for the next run in this conversation\n/model default — inherit Codex configuration\n/doctor — bounded read-only setup checks\n/onboard NAME — owner project setup and Recheck\n/stop — fence this conversation's manager run\n/new — reset conversation; keep task links and model choice\n/audit — your history, in DM only\n/restart — owner-only service drain and restart\n/skills — enabled skills (currently none)\n/skill NAME TEXT — unavailable until a skill is approved\nTaskQ workers keep TaskQ's model and resource policy.";
+pub const HELP:&str="/help — available controls\n/version — running PilotQ version\n/status — observed health and this conversation\n/model — Codex catalogue and model buttons\n/model MODEL — save for the next run in this conversation\n/model default — inherit Codex configuration\n/doctor — bounded read-only setup checks\n/release NAME — owner LIVE preview\n/onboard NAME — owner project setup and Recheck\n/stop — fence this conversation's manager run\n/new — reset conversation; keep task links and model choice\n/audit — your history, in DM only\n/restart — owner-only service drain and restart\n/skills — enabled skills (currently none)\n/skill NAME TEXT — unavailable until a skill is approved\nTaskQ workers keep TaskQ's model and resource policy.";
 
 pub struct Request { pub id:i64, pub session:String, pub sender:i64, pub text:String }
 
@@ -46,6 +46,7 @@ pub fn execute(t:&Tool,j:&Shared,r:&Request,installed:bool) -> Result<(),String>
     let cmd=r.text.split_whitespace().next().unwrap_or("").split('@').next().unwrap_or("");
     let result=(|| {
         match cmd {
+            "/release"|"/release-confirm"=>return crate::release::control(t,j,r).map(|s|Some(format!("Release: {s}"))).map_err(|s|format!("Release: {s}")),
             "/onboard"|"/onboard-button"=> {
                 crate::onboarding::control(t,j,r)?;
                 return Ok(None);
@@ -94,7 +95,7 @@ pub fn serve(t:Tool,j:Shared,installed:bool) {
     loop {
         let request=j.lock().unwrap().builtin_next();
         match request {
-            Ok(Some(r)) if r.text.split_whitespace().next().unwrap_or("").split('@').next()==Some("/restart")=> {
+            Ok(Some(r)) if matches!(r.text.split_whitespace().next().unwrap_or("").split('@').next(),Some("/restart"|"/release-confirm"))=> {
                 // The drain may wait for an active chat; other controls must remain available.
                 let j=j.clone();
                 std::thread::spawn(move || { if let Err(error)=execute(&crate::tool(),&j,&r,installed) { eprintln!("builtin: {error}"); } });
@@ -114,7 +115,7 @@ pub fn cli(t:&Tool,j:Journal,id:i64,text:&str)->Result<Value,String> {
         let request=j.lock().unwrap().builtin_take(id)?;
         if let Some(r)=request { execute(t,&j,&r,false)?; }
     }
-    let end=Instant::now()+Duration::from_secs(if restart {140} else if text.starts_with("/onboard") {65} else {25});
+    let end=Instant::now()+Duration::from_secs(if restart {140} else if text.starts_with("/release-confirm") {910} else if text.starts_with("/release") {65} else if text.starts_with("/onboard") {65} else {25});
     loop {
         let (state,reply,error)=j.lock().unwrap().request(id)?;
         if !matches!(state.as_str(),"queued"|"waiting") || Instant::now()>=end {
@@ -151,6 +152,9 @@ mod tests {
 /// Command failures follow the person's language; detailed dependency errors stay in the request audit (§12).
 pub fn localized(text:&str,language:Option<&str>,failed:bool)->String {
     if !language.unwrap_or("en").starts_with("ru") || text.chars().any(|c| matches!(c,'А'..='я'|'ё'|'Ё')) { return text.into(); }
+    if let Some(reason)=text.strip_prefix("Release: ") {
+        return format!("Выпуск: {}",reason.replace("Release blocked by ","мешает выполняемая работа: ").replace("task #","задача #").replace("attempt ","попытка ").replace("release verified","выпуск проверен").replace("release outcome uncertain; no automatic retry","результат выпуска неизвестен; автоматического повтора не будет"));
+    }
     match text {
         "Unknown command; use /help."=>"Неизвестная команда; используйте /help.".into(),
         "Invalid command arguments; use /help."=>"Неверные аргументы команды; используйте /help.".into(),

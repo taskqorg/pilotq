@@ -48,6 +48,7 @@ pub fn tools() -> Value {
             json!({"type":"object","properties":{"project":{"type":"string"},"task":task,"revision":{"type":"integer"},"text":{"type":"string"},"source_request":{"type":"integer","description":"Internal input ID containing the person's exact answer; omit for current input"}},"required":["task","revision"]})),
         tool("discussion_answer", "Save the person's own free-text answer to the current discussion card from journal context. Clarify ambiguity first. Never launches tasks.",
             json!({"type":"object","properties":{"card":{"type":"integer"},"text":{"type":"string"},"source_request":{"type":"integer"}},"required":["card","text"]})),
+        tool("project_release_preview", "Preview a registered project LIVE release for the protected owner with a separate release grant. Never executes a release. A separate Release button is mandatory; do not repeat the preview card in final prose.", json!({"type":"object","properties":{"project":{"type":"string"}},"required":["project"]})),
         tool("project_status", "Read the resolved project’s open tasks with state, runtime, session and read time. Use for project task status; do not ask for task numbers.", json!({"type":"object","properties":{"project":{"type":"string"}}})),
         tool("task_status", "Read one registered task's current state from the board. Never creates anything.", json!({"type": "object", "properties": {"project": {"type": "string"}, "task": task}, "required": ["task"]})),
         tool("task_park", "Park one registered task (TaskQ later) with the person's reason.",
@@ -435,7 +436,7 @@ fn dispatch(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Value) -
     let (project, board, n) = {
         let j = j.lock().unwrap();
         let mut target = args.clone();
-        target["issue"] = args.get("task").cloned().unwrap_or(if matches!(name,"task_plan" | "task_run_plan" | "project_status") { json!("1") } else { Value::Null });
+        target["issue"] = args.get("task").cloned().unwrap_or(if matches!(name,"task_plan" | "task_run_plan" | "project_status" | "project_release_preview") { json!("1") } else { Value::Null });
         if let Some(target) = &link_target {
             target.clone()
         } else if let Some((_, project, _, _)) = &saved {
@@ -457,6 +458,7 @@ fn dispatch(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Value) -
     }
     let create = tq.check(&board)?;
     match name {
+        "project_release_preview" => crate::release::preview(tq,j,r,&project),
         "task_plan" => {
             allowed(&j.lock().unwrap(), sender, &project, false)?;
             let t = tickets(args)?;
@@ -515,7 +517,7 @@ fn dispatch(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Value) -
             let s = tq.snapshot_for(&board)?;
             if !s["tasks"].is_array() { return Err("board snapshot has no task list; status unknown".into()); }
             j.lock().unwrap().task_event(r.request,&format!("{board} project status"),"read",now())?;
-            Ok(json!({"project":project,"board":board,"read_at":now(),"observed":s["observed"],"source":s["board"],"tasks":s["tasks"]}).to_string())
+            Ok(json!({"project":project,"board":board,"read_at":now(),"observed":s["observed"],"source":s["board"],"tasks":s["tasks"],"dev":crate::release::project_status_dev(tq,j,&project,&s["tasks"])}).to_string())
         }
         "task_status" => {
             allowed(&j.lock().unwrap(), sender, &project, false)?;
@@ -533,20 +535,24 @@ fn dispatch(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Value) -
                     if let Ok(inbox)=tq.inbox(n) {
                         text += &format!("\nTaskQ progress and accepted answers (source data): {inbox}");
                     }
-                    match tq.issue(n) {
+                    let issue=tq.issue(n);
+                    match &issue {
                         Ok(issue) => {
                             let open = tq.snapshot_for(&board);
                             text += &format!("\n{}",task_issue_status(&issue,open.as_ref().ok(),n));
                         }
                         Err(_) => text += "\nIssue state and closing evidence unavailable.",
                     }
+                    text += &format!("\nDEV: {}",crate::release::dev(&j.lock().unwrap(),&project,issue.ok().as_ref().and_then(crate::release::merged_sha).as_deref()));
                     text
                 }
                 None => {
                     let issue = tq.issue(n)?;
                     j.lock().unwrap().remember_task_url(&project,n,issue["url"].as_str(),now())?;
                     let open = tq.snapshot_for(&board);
-                    task_issue_status(&issue, open.as_ref().ok(), n)
+                    let mut result:Value=serde_json::from_str(&task_issue_status(&issue, open.as_ref().ok(), n)).map_err(|_|"Task state unreadable")?;
+                    result["dev"]=crate::release::dev(&j.lock().unwrap(),&project,crate::release::merged_sha(&issue).as_deref());
+                    result.to_string()
                 },
             };
             j.lock().unwrap().task_event(r.request, &format!("{board} status #{n}"), "read", now())?;

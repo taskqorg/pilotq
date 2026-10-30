@@ -2451,6 +2451,9 @@ fn u39_registered_boards_steer_requeue_and_stale_answer() {
     set_task(&second, 19, |t| { t["state"]=json!("ask"); t["card"]=json!("Second board question?"); });
     wait("other question", 15, || sent_has(&st, "Second board question?"));
     let q = sent(&st).into_iter().find(|s| s["text"].as_str().is_some_and(|s| s.starts_with("? ") && s.contains("Second board question?"))).unwrap()["id"].as_i64().unwrap();
+    // §4 / U39: the mock sees the send before PilotQ commits its receipt.
+    // Restart only after delivery is durable, so this checks a stale question rather than a lost send response.
+    wait("other question receipt", 15, || try_query(&d, &format!("SELECT count(*) FROM outbox WHERE project='other' AND kind='question' AND state='delivered' AND sent_message={q}")) == Some(1));
     drop(c);
     // Advance only the other board while PilotQ is down; the fresh check must reject the old reply.
     set_task(&second, 19, |t| t["card"]=json!("New second-board question?"));

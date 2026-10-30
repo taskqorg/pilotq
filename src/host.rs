@@ -24,7 +24,7 @@ pub fn output_with_budget(c: &mut Command, budget: Duration) -> Result<std::proc
     result
 }
 
-fn version(raw: &str) -> Option<Vec<u64>> {
+pub(crate) fn version(raw: &str) -> Option<Vec<u64>> {
     let v = raw.trim().trim_start_matches('v');
     if v.is_empty() || !v.bytes().all(|b|b.is_ascii_digit() || b == b'.') { return None; }
     let mut nums = v.split('.').map(str::parse).collect::<Result<Vec<u64>,_>>().ok()?;
@@ -32,7 +32,7 @@ fn version(raw: &str) -> Option<Vec<u64>> {
     nums.resize(3,0); Some(nums)
 }
 
-fn probe(name: &str, bin: Option<&str>, args: &[&str], minimum: &str, prefix: &str, fix: &str) -> Value {
+pub(crate) fn probe(name: &str, bin: Option<&str>, args: &[&str], minimum: &str, prefix: &str, fix: &str) -> Value {
     let recorded = if name == "sherpa-onnx-offline" { bin.and_then(recorded_version) } else { None };
     let found = recorded.or_else(|| bin.and_then(|bin|output(Command::new(bin).args(args)).ok()).and_then(|o| {
         let text = String::from_utf8_lossy(&o.stdout).to_string()+&String::from_utf8_lossy(&o.stderr);
@@ -98,6 +98,7 @@ pub fn report(c: Option<&crate::Config>) -> Value {
         },
         Err(e) => checks.push(json!({"tool":"installed_commands","found":null,"minimum":null,"outcome":"failed","fix":e})),
     }
+    checks.extend(crate::release::host_checks(&crate::tool().install.join("journal.sqlite")));
     json!(checks)
 }
 
