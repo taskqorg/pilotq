@@ -8,6 +8,7 @@ mod direct;
 mod asana;
 mod commands;
 mod journal;
+mod files;
 mod instructions;
 mod keys;
 mod manager;
