@@ -32,7 +32,7 @@ const DAY_CAP: i64 = 10;
 const DOWNTIME: i64 = 300;
 
 pub(crate) fn valid_grant(g: &str) -> bool {
-    GRANTS.contains(&g) || g.strip_prefix("project:").is_some_and(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)))
+    GRANTS.contains(&g) || g.strip_prefix("release:").is_some_and(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))) || g.strip_prefix("project:").is_some_and(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)))
 }
 
 pub(crate) fn has(c: &Connection, user: i64, grant: &str) -> Result<bool, String> {
@@ -57,6 +57,7 @@ fn control(text: Option<&str>) -> Option<&'static str> {
     Some(match cmd {
         "/stop"=>"/stop", "/status"=>"/status", "/new"=>"/new", "/audit"=>"/audit",
         "/help"=>"/help", "/version"=>"/version", "/model"=>"/model", "/model-button"=>"/model-button",
+        "/release"=>"/release", "/release-confirm"=>"/release-confirm",
         "/onboard"=>"/onboard", "/onboard-button"=>"/onboard-button",
         "/doctor"=>"/doctor", "/restart"=>"/restart", "/skills"=>"/skills", "/skill"=>"/skill",
         _=>"/unknown",
@@ -399,11 +400,11 @@ fn finish_builtin(tx:&Connection,id:i64,text:&str,ok:bool,at:i64)->Result<(),Str
     let changed=tx.execute("UPDATE requests SET state=?2,reply=?3,error=?4 WHERE id=?1 AND state IN ('queued','waiting')",params![id,if ok {"answered"} else {"failed"},reply,if ok {None} else {Some(text)}]).map_err(e)?;
     if changed>0 && front=="telegram" {
         let input:String=tx.query_row("SELECT coalesce(text,'') FROM requests WHERE id=?1",[id],|r|r.get(0)).map_err(e)?;
-        let onboarding=input.split_whitespace().next().is_some_and(|c|matches!(c.split('@').next(),Some("/onboard"|"/onboard-button")));
+        let onboarding=input.split_whitespace().next().is_some_and(|c|matches!(c.split('@').next(),Some("/onboard"|"/onboard-button"|"/release"|"/release-confirm")));
         let callback:Option<Vec<u8>>=tx.query_row("SELECT value FROM meta WHERE key=?1",[format!("callback:{id}")],|r|r.get(0)).optional().map_err(e)?;
         if onboarding && callback.is_some() {
             let callback=String::from_utf8(callback.unwrap()).map_err(|_|"Invalid callback identity")?;
-            let toast=if ok {"Setup updated."} else {text};
+            let toast=if ok && input.starts_with("/release") {"Release request processed."} else if ok {"Setup updated."} else {text};
             let acknowledged:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM outbox WHERE request_id=?1 AND kind LIKE 'toast:%')",[id],|r|r.get(0)).map_err(e)?;
             if !acknowledged {
                 outbox(tx,id,chat,topic,None,None,toast,at)?;
@@ -436,7 +437,7 @@ fn answer_control(tx: &Connection, session: &str, cmd: &str, request: i64, chat:
             "/unknown" => "Unknown command; use /help.".into(),
             "/restart" if meta(tx,"owner")? != Some(sender) => "Only the configured owner can restart PilotQ.".into(),
             "/restart" => "Restart requested; waiting for active requests to drain.".into(),
-            "/doctor" | "/onboard" | "/onboard-button" => "Checking setup.".into(),
+            "/doctor" | "/onboard" | "/onboard-button" | "/release" | "/release-confirm" => "Checking setup.".into(),
             "/model" | "/model-button" => "Checking model catalogue.".into(),
             // a group or topic would show one person's history to everyone in it
             "/audit" if chat != sender => "Use /audit in a direct message with PilotQ; it shows only your own requests.".into(),
@@ -883,7 +884,7 @@ impl Journal {
         let tx=self.0.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
         let update:i64=tx.query_row("SELECT min(coalesce(min(update_id),0),0)-1 FROM requests",[],|r|r.get(0)).map_err(|e|e.to_string())?;
         let session=format!("cli:{sender}");
-        let deferred=matches!(cmd,"/model"|"/doctor"|"/onboard"|"/onboard-button"|"/restart") && (cmd!="/restart" || meta(&tx,"owner")?==Some(sender));
+        let deferred=matches!(cmd,"/model"|"/doctor"|"/onboard"|"/onboard-button"|"/release"|"/release-confirm"|"/restart") && (cmd!="/restart" || meta(&tx,"owner")?==Some(sender));
         let failed=matches!(cmd,"/unknown"|"/skill"|"/restart") && !deferred;
         let id=insert(&tx,update,"cli",sender,None,sender,None,0,if deferred {"builtin"} else {"control"},Some(text),if deferred {"queued"} else if failed {"failed"} else {"answered"},at,&session,None)?;
         tx.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?1,coalesce((SELECT generation FROM conversations WHERE session=?2),0))",params![format!("builtin-generation:{id}"),session]).map_err(|e|e.to_string())?;
@@ -1030,7 +1031,7 @@ impl Journal {
                         route >= ROUTE_BACKLOG || total >= TOTAL_BACKLOG
                     };
                     // The independent read-control queue is bounded too; immediate recovery controls stay available.
-                    let builtin_busy=matches!(cmd,Some("/model"|"/model-button"|"/doctor"|"/onboard"|"/onboard-button"|"/restart")) && {
+                    let builtin_busy=matches!(cmd,Some("/model"|"/model-button"|"/doctor"|"/onboard"|"/onboard-button"|"/release"|"/release-confirm"|"/restart")) && {
                         let (route,total):(i64,i64)=tx.query_row("SELECT count(*) FILTER(WHERE chat=?1 AND topic IS ?2),count(*) FROM requests WHERE kind='builtin' AND state IN ('queued','waiting')",params![i.chat,i.topic],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|e.to_string())?;
                         route>=ROUTE_BACKLOG || total>=TOTAL_BACKLOG
                     };
@@ -1044,7 +1045,7 @@ impl Journal {
                     };
                     let (kind, state) = match (cmd, i.kind) {
                         (Some(_), _) if builtin_busy => ("control", "failed"),
-                        (Some("/model" | "/model-button" | "/doctor" | "/onboard" | "/onboard-button"), _) => ("builtin", "queued"),
+                        (Some("/model" | "/model-button" | "/doctor" | "/onboard" | "/onboard-button" | "/release" | "/release-confirm"), _) => ("builtin", "queued"),
                         (Some("/restart"), _) if meta(&tx,"owner")? == Some(sender) => ("builtin", "queued"),
                         (Some("/unknown" | "/skill" | "/restart"), _) => ("control", "failed"),
                         (Some(_), _) => ("control", "answered"),
@@ -1106,7 +1107,7 @@ impl Journal {
                         // §12: accepted text gets a reaction obligation below, without a text acknowledgement.
                         None => String::new(),
                     };
-                    let text=if matches!(cmd,Some("/help"|"/version"|"/model"|"/model-button"|"/doctor"|"/onboard"|"/onboard-button"|"/restart"|"/skills"|"/skill"|"/unknown")) {
+                    let text=if matches!(cmd,Some("/help"|"/version"|"/model"|"/model-button"|"/doctor"|"/onboard"|"/onboard-button"|"/release"|"/release-confirm"|"/restart"|"/skills"|"/skill"|"/unknown")) {
                         crate::builtins::localized(&text,i.language.as_deref(),state=="failed")
                     } else {text};
                     // § 8: a person learns at admission that their requests are recorded, and for how long
@@ -1130,7 +1131,7 @@ impl Journal {
                             tx.execute("UPDATE outbox SET kind=?2 WHERE id=?1",params![tx.last_insert_rowid(),format!("toast:{callback}")]).map_err(|e|e.to_string())?;
                         }
                     }
-                    if !text.is_empty() && !(i.kind=="action" && i.callback.is_some()) && (builtin_busy || !matches!(cmd,Some("/onboard"|"/onboard-button"))) {
+                    if !text.is_empty() && !(i.kind=="action" && i.callback.is_some()) && (builtin_busy || !matches!(cmd,Some("/onboard"|"/onboard-button"|"/release"|"/release-confirm"))) {
                         outbox(&tx, id, i.chat, i.topic, (i.chat != sender).then_some(i.message), Some(&crate::telegram::html(&text)), &text, at)?;
                     }
                     admitted += 1;
@@ -1187,6 +1188,7 @@ impl Journal {
                 &format!(
                     "SELECT id, chat, topic, reply_to, html, text, attempts, CASE WHEN kind='status' THEN (SELECT s.sent_message FROM outbox s WHERE s.request_id=o.request_id AND s.chat=o.chat AND s.topic IS o.topic
                         AND s.kind='status' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
+                        WHEN kind='release_result' THEN (SELECT s.sent_message FROM outbox s WHERE s.request_id=o.revision AND s.kind='release_preview' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
                         WHEN kind='onboarding' THEN (SELECT s.sent_message FROM outbox s WHERE s.request_id=o.request_id AND s.kind='onboarding' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
                         WHEN kind='choice_answered' THEN o.reply_to
                         WHEN kind='question_answered' THEN (SELECT s.sent_message FROM outbox s WHERE s.task=o.task AND s.project=o.project AND s.chat=o.chat AND s.topic IS o.topic
@@ -1268,6 +1270,7 @@ impl Journal {
         if let Some(g) = names.iter().find(|g| !valid_grant(g)) {
             return Err(format!("unknown grant {g}; use {} or project:NAME", GRANTS.join(", ")));
         }
+        if names.iter().any(|g|g.starts_with("release:")) && (self.owner()?!=Some(actor) || actor!=target) {return Err("Only the protected owner can grant their release capability".into());}
         self.change(Some(actor), target, at, |g| g.extend(names.iter().cloned()))
     }
 
@@ -2106,6 +2109,8 @@ impl Journal {
 
     /// Durable source of buttons, shared by rich delivery and the last HTML/plain fallback part.
     pub fn card_buttons(&self, delivery: i64) -> Result<Vec<(String,String)>,String> {
+        let release=crate::release::buttons(self,delivery)?;
+        if !release.is_empty() {return Ok(release);}
         let onboarding=crate::onboarding::buttons(self,delivery)?;
         if !onboarding.is_empty() {return Ok(onboarding); }
         let card: Option<(i64,Option<i64>,Option<String>,Option<String>)> = self.0.query_row(

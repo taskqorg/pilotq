@@ -234,3 +234,36 @@ its own grants, admission and claim prerequisites. Rechecking clears the overrid
 A pending or failed setup does not start the first task. Existing workers continue.
 New TaskQ projects require explicit PilotQ registration before onboarding; there
 is no directory discovery.
+
+### Registered DEV/LIVE releases (#174)
+
+Only the installation owner provisions a release capability. Register the actual release checkout first; a second checkout (for example Tight's cs checkout) is a blocker source, never a fallback release directory. The contract in [§5](../pilotq.md#dev-visibility-and-owner-release-task-174) owns authority and recovery.
+
+Save an owner-vetted JSON configuration to a protected file, then run `pilotq projects release NAME FILE --json` and `pilotq users grant OWNER_ID release:NAME --json` (replace uppercase placeholders). Configuration is stored against the registered root/board; chat cannot edit commands or provision this grant. An invented configuration shape follows; replace paths, refs, URL, migration prefixes and minimum versions with verified project values:
+
+```json
+{
+  "host": "invented-local-host",
+  "git": "/usr/bin/git",
+  "dev_health_url": "https://dev.example.invalid/__health",
+  "main_ref": "refs/remotes/origin/main",
+  "live_ref": "refs/remotes/origin/live",
+  "dry_run": ["/usr/bin/npm", "run", "release", "--", "--dry-run"],
+  "release": ["/usr/bin/npm", "run", "release", "--", "{sha}"],
+  "pipeline": ["/opt/example/pipeline-read", "{sha}"],
+  "migration_paths": ["migrations/"],
+  "preflight": ["/usr/bin/npm", "run", "db:promotion:preflight"],
+  "backup": ["/usr/bin/npm", "run", "db:live:backup"],
+  "requirements": {
+    "/usr/bin/git": "2.25.0",
+    "/usr/bin/npm": "10.0.0",
+    "/opt/example/pipeline-read": "1.0.0"
+  }
+}
+```
+
+The pipeline read command must return the §5 JSON report bound to its SHA argument, with release, smoke and backmerge states, HTTPS detail links and the actual LIVE SHA. It must support `--version`. Commands run with cleared inherited credentials, fixed system PATH and the installation owner's HOME; use the tools' protected stores. Never put tokens in configuration arguments. Doctor checks every registered executable's declared minimum version. Refresh the declared refs through the project's approved workflow before previewing; PilotQ never fetches or changes a checkout to guess a target.
+
+Use `/release NAME` or ask for a project release preview. CLI `pilotq ask '/release NAME'` delivers the button to the owner's Telegram DM. Review the pinned SHA, authors, tasks, migrations and DEV observation, then press Release. Text does not confirm. Migration releases run preflight and backup first. A prerequisite failure stops the remaining stages. The final card names verified stage links and LIVE SHA, or explicitly reports unknown/uncertain evidence. Do not retry an uncertain release; inspect the project's pipeline and actual LIVE state before deciding on new work.
+
+Local tests use temporary Git repositories and invented scripts only. PM acceptance remains the next owner-requested cs release on PDS 18; local success does not prove that release or deployment.

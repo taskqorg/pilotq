@@ -1,6 +1,7 @@
 //! PilotQ service and operator CLI on coreq (pilotq.md § 9).
 
 mod admin;
+mod release;
 mod onboarding;
 mod builtins;
 mod direct;
@@ -24,7 +25,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const USAGE: &str = "usage: pilotq service install|run|stop|status | status [--json] | update [--check|--pause|--resume] | selftest | doctor [--json] | version | ask TEXT [--json]
   users list | users show ID | users grant ID GRANT.. | users revoke ID [GRANT..] | users remember ID KEY VALUE [--private] | users forget ID KEY
-  routes list | routes set CHAT[:TOPIC] shared|isolated | projects list | projects add NAME ROOT
+  routes list | routes set CHAT[:TOPIC] shared|isolated | projects list | projects add NAME ROOT | projects release NAME FILE
   keys list | keys add NAME PURPOSE TOOL.. (value on stdin) | keys grant NAME ID|route:CHAT[:TOPIC]|project:NAME.. | keys revoke NAME [WHO..]
   (users, routes, projects and keys accept --json)
   audit [--user ID] [--route cli|CHAT[:TOPIC]] [--project P] [--since UNIX_SECONDS] [--request ID] [--json]
@@ -50,7 +51,7 @@ fn drain(t: &Tool, grace: Duration) -> Result<Option<String>, String> {
     j.planned_stop(true, now() as i64)?;
     let end = std::time::Instant::now() + grace;
     loop {
-        let n = j.running()?;
+        let n = j.running()? + release::active(&j)?;
         if n == 0 {
             return Ok(Some("drain: ok".into()));
         }
@@ -316,6 +317,7 @@ fn service_run(t: &Tool) -> ! {
         eprintln!("effects: {e}");
     }
     // a drain left by an update applies to the process it restarted, not to this one
+    release::recover(&journal).unwrap_or_else(|e| t.die(&e));
     onboarding::startup(&journal).unwrap_or_else(|e| t.die(&e));
     journal.draining(false).unwrap_or_else(|e| t.die(&e));
     let _ = std::fs::remove_file(t.install.join(DRAIN));
@@ -495,6 +497,12 @@ fn admin(t: &Tool, a: &[&str]) -> Result<Value, String> {
             user(&j, id(u)?)?
         }
         ["projects", "list"] => j.projects()?.into_iter().map(|(name, repo, root, by, at)| json!({"name": name, "repo": repo, "root": root, "by": by, "at": at})).collect(),
+        ["projects", "release", name, file] => {
+            let bytes=std::fs::read(file).map_err(|_|"Release configuration file unreadable")?;
+            if bytes.len()>65536 {return Err("Release configuration too large".into());}
+            let value=serde_json::from_slice(&bytes).map_err(|_|"Release configuration invalid")?;
+            return release::configure(&j,me,name,value);
+        }
         ["projects", "add", name, root] => {
             // § 5 Project registration: the root's taskq.json names the repository; a fresh TaskQ read must show the same board
             let tq = cfg.taskq.as_ref().ok_or("projects add needs taskq.bin in config.json to read the board back")?;

@@ -96,6 +96,7 @@ fn user_change(j: &mut Journal, r: &Run, tool: &str, args: &Value) -> Result<Val
     let quoted: bool=j.0.query_row("SELECT EXISTS(SELECT 1 FROM audit_events WHERE request_id=?1 AND kind='quote' AND json_extract(item,'$.author')=?2)",params![r.request,target],|x|x.get(0)).map_err(err)?;
     if !quoted && !own_word(&r.text,&target.to_string()) { return Err("Name the exact Telegram ID in your own message; names do not authorize grants.".into()); }
     let names=args["grants"].as_array().filter(|a|!a.is_empty()).ok_or("Name at least one grant")?;
+    if names.iter().any(|n|n.as_str().is_some_and(|s|s.starts_with("release:"))) {return Err("Release grants are protected CLI only".into());}
     let names:Vec<String>=names.iter().map(|n|n.as_str().filter(|g|crate::journal::valid_grant(g)).map(str::to_string).ok_or("Invalid grant name")).collect::<Result<_,_>>()?;
     if names.iter().any(|name|!own_word(&r.text,name)) {
         return Err("Name each exact grant in your own request; model arguments cannot authorize additional rights.".into());
