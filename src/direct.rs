@@ -102,10 +102,24 @@ pub(crate) fn context_project(j: &Journal, r: &Run, user: i64) -> Result<Option<
         match matches.as_slice() {
             [] => Ok(None),
             [one] => Ok(Some(one.clone())),
-            many => Err(format!("Which project: {}? Nothing was done.", many.join(", "))),
+            many => {
+                j.project_question(r,many)?;
+                Err(format!("Which project: {}? Nothing was done.", many.join(", ")))
+            }
         }
     };
     if let Some(p) = select(&[r.text.clone()])? { return Ok(Some(p)); }
+    // #157: a bare number answers PilotQ's own question from this person's previous request, numbered as its reply listed them.
+    if let Ok(k) = own_text(&r.text).trim().trim_end_matches(['.',')']).parse::<usize>()
+        && let Some((options, reply)) = j.open_project_question(r)? {
+        let reply = reply.to_lowercase();
+        // ponytail: order by first substring hit; word positions if one project name contains another
+        let mut shown: Vec<(usize,String)> = options.iter().filter(|p| projects.iter().any(|x| x.0 == **p) && named(&reply,p))
+            .filter_map(|p| reply.find(&p.to_lowercase()).map(|at| (at,p.clone()))).collect();
+        shown.sort();
+        // every option must have been shown, or the person's number may not mean what we think
+        if shown.len() == options.len() && let Some((_, p)) = k.checked_sub(1).and_then(|i| shown.get(i)) { return Ok(Some(p.clone())); }
+    }
     select(&j.own_project_inputs(r)?)
 }
 
