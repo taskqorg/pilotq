@@ -2344,11 +2344,10 @@ fn c06_resume_failure_rebuilds_without_replaying_effects() {
     wait("rebuilt answer", 20, || try_query(&d, "SELECT count(*) FROM requests WHERE front='telegram' AND state='answered'") == Some(2));
     push(&st, text(3, OWNER, None, OWNER, "follow up without tools"));
     wait("replacement resumed", 15, || try_query(&d, "SELECT count(*) FROM requests WHERE front='telegram' AND state='answered'") == Some(3));
-    wait("notice delivered", 10, || sent_has(&st, "Restoring the conversation"));
     assert_eq!(tq_calls(&d).len(), calls, "recovery never calls GitHub");
     assert_eq!(query(&d, "SELECT count(*) FROM task_effects"), 1);
     assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE kind='rebuild'"), 1);
-    assert_eq!(texts(&st).iter().filter(|t| t.contains("Restoring the conversation")).count(), 1);
+    assert_eq!(texts(&st).iter().filter(|t| t.contains("Restoring the conversation")).count(), 0, "#179 A5: internal recovery progress stays in audit");
     assert!(!texts(&st).join(" ").contains("/private/native"));
     let log = fs::read_to_string(d.join("codex.log")).unwrap();
     let turns: Vec<Value> = log.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter(|v| v["method"] == "turn/start").collect();
@@ -2401,11 +2400,11 @@ fn c_live_context_runs_c06() {
         assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE kind='rebuild'"), 1);
         assert_eq!(query(&d, "SELECT count(*) FROM effects"), 1);
         assert_eq!(comments(), before + 1);
-        wait("recovery notice", 15, || texts(&st).iter().filter(|t| t.contains("Restoring the conversation")).count() == 1);
+        assert!(!texts(&st).iter().any(|t| t.contains("Restoring the conversation")), "#179 A5");
         assert!(!texts(&st).join(" ").contains(d.to_str().unwrap()));
         let log = stderr_of(svc);
         assert!(!log.contains(&token) && files_with(&d, &token, &["keys.json"]).is_empty());
-        eprintln!("c-live {}", json!({"case":"C06", "rep":rep, "pass":true, "agentq":"off", "comments_added":1, "effects":1, "rebuilds":1, "notice":1, "reply":recovered, "usage":codex_usage(&d)}));
+        eprintln!("c-live {}", json!({"case":"C06", "rep":rep, "pass":true, "agentq":"off", "comments_added":1, "effects":1, "rebuilds":1, "notice":0, "reply":recovered, "usage":codex_usage(&d)}));
         drop(_login);
         fs::remove_dir_all(d).unwrap();
     }

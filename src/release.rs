@@ -47,6 +47,11 @@ pub fn configure(j:&Journal,user:i64,p:&str,mut c:Value)->Result<Value,String> {
     if !c["git"].as_str().is_some_and(|s|Path::new(s).is_absolute()) {return Err("Absolute Git executable required".into());}
     for key in ["dry_run","release","pipeline","preflight","backup"] {argv(&c[key])?;}
     for key in ["release","pipeline"] {if !argv(&c[key])?.contains(&"{sha}".into()) {return Err(format!("{key} requires a separate {{sha}} argument"));}}
+    if !c["delivery_status"].is_null() {
+        if !argv(&c["delivery_status"] )?.contains(&"{sha}".into()) {return Err("delivery_status requires a separate {sha} argument".into());}
+        let bin=argv(&c["delivery_status"])?[0].clone();
+        if c["requirements"][&bin].as_str().and_then(crate::host::version).is_none() {return Err("Delivery executable requires a minimum version".into());}
+    }
     for key in ["main_ref","live_ref"] {let s=c[key].as_str().ok_or("main_ref/live_ref required")?;if !s.starts_with("refs/") || s.chars().any(char::is_whitespace) {return Err("Use explicit refs/... references".into());}}
     if !c["migration_paths"].as_array().is_some_and(|a|!a.is_empty() && a.iter().all(|s|s.as_str().is_some_and(|s|!s.is_empty() && !s.starts_with('/') && !s.contains("..")))) {return Err("Explicit relative migration_paths required".into());}
     for bin in std::iter::once(c["git"].as_str().unwrap().to_string()).chain(["dry_run","release","pipeline","preflight","backup"].into_iter().map(|k|argv(&c[k]).unwrap()[0].clone())) {
@@ -133,6 +138,66 @@ fn dev_read(j:&Journal,p:&str,c:&Value,merged:Option<&str>,h:&Value)->Result<Val
 pub fn dev(j:&Journal,p:&str,merged:Option<&str>)->Value {
     let result=(||{let c=config(j,p)?;let h=health(&c)?;dev_read(j,p,&c,merged,&h)})();
     result.unwrap_or_else(|e:String|json!({"state":"unknown","reason":e,"observed_at":crate::now()}))
+}
+// #179 / §5: pipeline evidence is independent of historical worker closing notes.
+pub fn delivery(j:&Journal,p:&str,issue:&Value)->Value {
+    let merged=merged_sha(issue);
+    let mut stage=if issue["state"].as_str().is_some_and(|s|s.eq_ignore_ascii_case("closed")) {"closed"} else {"open"};
+    if merged.is_some() {stage="merged";}
+    let result=(|| -> Result<Value,String> {
+        let c=config(j,p)?;
+        let target=merged.as_deref().ok_or("TaskQ merge identity unavailable")?;
+        let output=run(&c,"delivery_status",target,Instant::now()+Duration::from_secs(10),||true);
+        if output["status"]!="success" {return Err("Delivery adapter failed or unavailable".into());}
+        let report:Value=serde_json::from_str(output["stdout"].as_str().unwrap_or("")).map_err(|_|"Delivery adapter JSON unreadable")?;
+        delivery_report(&c,target,report)
+    })();
+    match result {
+        Ok(mut v)=>{if v["live_includes"]==true {stage="on LIVE";} else if v["first_main"]["deploy"]["state"]=="success" {
+            stage=if v["first_main"]["smoke"].as_array().unwrap().last().is_some_and(|s|s["state"]=="success") {"DEV smoke"} else {"on DEV"};
+        } v["stage"]=json!(stage);v},
+        Err(e)=>json!({"stage":stage,"pipeline":"unknown","reason":e}),
+    }
+}
+fn delivery_report(c:&Value,target:&str,report:Value)->Result<Value,String> {
+    fn job(v:&Value)->Result<(),String> {
+        if !matches!(v["state"].as_str(),Some("success"|"failed"|"running"|"pending"|"canceled"|"skipped")) {return Err("Delivery adapter job state missing or invalid".into());}
+        let u=url::Url::parse(v["url"].as_str().unwrap_or("")).map_err(|_|"Delivery adapter job link missing or invalid")?;
+        if u.scheme()!="https" || u.host_str().is_none() || !u.username().is_empty() || u.password().is_some() {return Err("Delivery adapter job link invalid".into());} Ok(())
+    }
+    if report["sha"]!=target || !report["merged_at"].as_str().is_some_and(|s|!s.is_empty() && s.len()<100) {return Err("Delivery adapter merge identity/time missing or mismatched".into());}
+    let first=&report["first_main"];job(first)?;job(&first["deploy"])?;
+    if !ancestor(c,target,first["sha"].as_str().unwrap_or(""))? {return Err("First main pipeline excludes merge".into());}
+    let smoke=first["smoke"].as_array().filter(|s|!s.is_empty()).ok_or("Delivery adapter smoke attempts missing")?;
+    for attempt in smoke {job(attempt)?;if attempt["state"]=="failed" && !attempt["first_failing_check"].as_str().is_some_and(|s|!s.is_empty() && s.len()<=1000) {return Err("Delivery adapter first failing check missing".into());}}
+    let later=&report["later_main"];
+    if !report.as_object().is_some_and(|o|o.contains_key("later_main")) {return Err("Delivery adapter later main evidence missing".into());}
+    if !later.is_null() {job(later)?;if !ancestor(c,target,later["sha"].as_str().unwrap_or(""))? {return Err("Later main pipeline excludes merge".into());}}
+    let mut result=report;
+    let live=(|| -> Result<(String,bool),String> {
+        let live=resolve(c,c["live_ref"].as_str().ok_or("LIVE ref missing")?)?;
+        let included=ancestor(c,target,&live)?;Ok((live,included))
+    })();
+    match live {Ok((live,included))=>{result["live_includes"]=json!(included);result["live_sha"]=json!(live);},Err(e)=>{result["live_includes"]=Value::Null;result["live_reason"]=json!(e);}}
+    Ok(result)
+}
+pub fn delivery_text(v:&Value)->String {
+    let mut text=format!("Delivery stage: {}.",v["stage"].as_str().unwrap_or("unknown"));
+    if let Some(reason)=v["reason"].as_str() {return format!("{text} Pipeline unknown: {reason}.");}
+    text+=&format!("\nMerged at {}.",v["merged_at"].as_str().unwrap_or("unknown"));
+    let first=&v["first_main"];
+    text+=&format!("\nFirst containing main pipeline: {} ({}).",first["state"].as_str().unwrap_or("unknown"),first["url"].as_str().unwrap_or(""));
+    text+=&format!("\nDEV deploy: {} ({}).",first["deploy"]["state"].as_str().unwrap_or("unknown"),first["deploy"]["url"].as_str().unwrap_or(""));
+    for (i,job) in first["smoke"].as_array().into_iter().flatten().enumerate() {
+        text+=&format!("\nDEV smoke attempt {}: {} ({})",i+1,job["state"].as_str().unwrap_or("unknown"),job["url"].as_str().unwrap_or(""));
+        if let Some(check)=job["first_failing_check"].as_str().filter(|_|job["state"]=="failed") {text+=&format!("; first failing check: {check}");}text.push('.');
+    }
+    let later=&v["later_main"];
+    if later.is_null() {text+="\nNo later containing main pipeline observed.";} else {
+        text+=&format!("\nLater containing main pipeline: {} ({}).",later["state"].as_str().unwrap_or("unknown"),later["url"].as_str().unwrap_or(""));
+    }
+    text+=match v["live_includes"].as_bool() {Some(true)=>"\nLIVE contains the merge.",Some(false)=>"\nLIVE is behind the merge.",None=>"\nLIVE inclusion unknown."};
+    if let Some(reason)=v["live_reason"].as_str() {text+=&format!(" {reason}");}text
 }
 fn project_numbers(j:&Journal,p:&str,tasks:&Value)->Result<std::collections::BTreeSet<i64>,String> {
     let mut numbers=std::collections::BTreeSet::new();for t in tasks.as_array().ok_or("Task list unavailable")? {if let Some(n)=t["n"].as_i64(){numbers.insert(n);}}
@@ -415,6 +480,46 @@ mod tests {
         let c=configure(&j,7,"sample",c).unwrap();
         let tq=Taskq{bot:None,bin:probe,root:dir.clone(),poll:Duration::from_secs(1)};
         Fixture{dir,j:Arc::new(Mutex::new(j)),tq,c,a,b,r}
+    }
+    // #179 A2–A6 / R8: adapter facts outrank close notes; retain failed attempts and later recovery.
+    #[test]
+    fn delivery_trace_179() {
+        let f=fixture("delivery179");
+        let job=|state:&str,id:&str|json!({"state":state,"url":format!("https://example.invalid/jobs/{id}")});
+        let mut failed=job("failed","smoke1");failed["first_failing_check"]=json!("homepage returns 503");
+        let mut retry=job("failed","smoke2");retry["first_failing_check"]=json!("login returns 500");
+        let report=json!({"sha":f.b,"merged_at":"2026-10-30T16:10:00Z","first_main":{"sha":f.b,"state":"failed","url":"https://example.invalid/pipelines/1","deploy":job("success","web_dev"),"smoke":[failed,retry]},"later_main":{"sha":f.b,"state":"success","url":"https://example.invalid/pipelines/2"}});
+        let script=f.dir.join("runner");
+        std::fs::write(&script,format!("#!/bin/sh\ncat <<'JSON'\n{report}\nJSON\n")).unwrap();
+        let mut c=f.c.clone();c["delivery_status"]=json!([script,"{sha}"]);
+        let j=f.j.lock().unwrap();configure(&j,7,"sample",c).unwrap();
+        let issue=json!({"state":"closed","merged_sha":f.b,"body":"deployed after-check unknown; CI passed"});
+        let got=delivery(&j,"sample",&issue);
+        assert_eq!(got["stage"],"on DEV");
+        assert_eq!(got["merged_at"],"2026-10-30T16:10:00Z");
+        assert_eq!(got["first_main"],report["first_main"]);
+        assert_eq!(got["later_main"],report["later_main"]);
+        assert_eq!(got["live_includes"],false);
+        assert!(!got.to_string().contains("after-check"));
+        let reply=delivery_text(&got);
+        for fact in ["smoke1","smoke2","web_dev","2026-10-30T16:10:00Z","homepage returns 503","login returns 500","LIVE is behind"] {assert_eq!(reply.matches(fact).count(),1,"{reply}");}
+        assert!(reply.contains("Later containing main pipeline: success"));
+        assert!(reply.contains("First containing main pipeline: failed"));
+        let mut bad=report.clone();bad["sha"]=json!(f.a);
+        assert!(delivery_report(&f.c,&f.b,bad).is_err());
+        let mut bad=report.clone();bad["first_main"]["smoke"][0]["first_failing_check"]=Value::Null;
+        assert!(delivery_report(&f.c,&f.b,bad).is_err());
+        let mut missing_live=f.c.clone();missing_live["live_ref"]=json!("refs/heads/missing");
+        let partial=delivery_report(&missing_live,&f.b,report.clone()).unwrap();
+        assert_eq!(partial["first_main"],report["first_main"]);assert!(partial["live_includes"].is_null());
+        assert!(partial["live_reason"].as_str().unwrap().contains("Git read failed"));
+        let mut green=report.clone();green["first_main"]["smoke"][1]["state"]=json!("success");
+        std::fs::write(&script,format!("#!/bin/sh\ncat <<'JSON'\n{green}\nJSON\n")).unwrap();
+        assert_eq!(delivery(&j,"sample",&issue)["stage"],"DEV smoke");
+        let status=std::process::Command::new("/usr/bin/git").current_dir(&f.dir).args(["update-ref","refs/heads/live",&f.b]).status().unwrap();assert!(status.success());
+        assert_eq!(delivery(&j,"sample",&issue)["stage"],"on LIVE");
+        std::fs::write(&script,"#!/bin/sh\nexit 1\n").unwrap();
+        let got=delivery(&j,"sample",&issue);assert_eq!(got["pipeline"],"unknown");assert_eq!(got["reason"],"Delivery adapter failed or unavailable");
     }
     fn save_preview(f:&Fixture)->i64 {
         let id=f.r.request;let j=f.j.lock().unwrap();
