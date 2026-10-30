@@ -909,9 +909,13 @@ cmd, op = a[0], opt("--op-id")
 if op in st["ops"]:
     print(json.dumps(st["ops"][op])); sys.exit(0)
 if cmd == "status":
-    tasks = [dict(t, n=int(n), url="https://github.com/taskqorg/pilotq/issues/" + n) for n, t in st["tasks"].items() if not t.get("closed")]
     repo = json.load(open(os.path.join(os.environ["TASKQ_ROOT"], "taskq.json")))["repo"]
+    tasks = [dict(t, n=int(n), url="https://github.com/" + repo + "/issues/" + n) for n, t in st["tasks"].items() if not t.get("closed")]
     print(json.dumps({"schema": 1, "source": "board", "observed": 1, "complete": True, "reason": None, "board": {"repo": repo}, "tasks": tasks})); sys.exit(0)
+if cmd == "inbox":
+    n=int(a[1]); path=os.path.join(d,"inbox.json")
+    v=json.load(open(path)) if os.path.exists(path) else {"schema":1,"task":n,"answers":[]}
+    print(json.dumps(v)); sys.exit(0)
 if cmd == "add":
     st["creates"] += 1; n = st["next"]; st["next"] += 1
     st["tasks"][str(n)] = {"title": a[1], "state": "held", "revision": bump(), "card": None, "args": a}
@@ -1051,11 +1055,12 @@ fn set_task(d: &Path, n: i64, f: impl FnOnce(&mut Value)) {
 fn tq_calls(d: &Path) -> Vec<Vec<String>> {
     let log = fs::read_to_string(d.join("taskq.log")).unwrap_or_default();
     let v = log.lines().map(|l| serde_json::from_str::<Value>(l).unwrap());
-    v.filter(|v| v["args"][0] != "status").map(|v| v["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap().to_string()).collect()).collect()
+    v.filter(|v| v["args"][0] != "status" && v["args"][0] != "inbox").map(|v| v["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap().to_string()).collect()).collect()
 }
 
 fn call(id: i64, chat: i64, topic: Option<i64>, sender: i64, tool: &str, args: Value) -> Value {
-    let own = args["project"].as_str().map(|p|format!("Project: {p}\n")).unwrap_or_default();
+    let own = args["project"].as_str().or_else(||args["task"].as_str().filter(|s|s.starts_with("https://")))
+        .map(|p|format!("Project: {p}\n")).unwrap_or_default();
     text(id, chat, topic, sender, &format!("{own}call {tool} {args}"))
 }
 
@@ -1096,7 +1101,7 @@ fn u06_plan_revisions_then_held_create_start_and_one_status_message() {
     assert!(tq_calls(&d).is_empty(), "an older revision files nothing");
 
     push(&st, call(5, OWNER, None, OWNER, "task_run_plan", json!({"revision": 3})));
-    wait("filed and started", 15, || sent_has(&st, "Plan sent to the board. Task states:\n- [GitHub · pilotq#19 · Draft three](https://github.com/taskqorg/pilotq/issues/19): ready: queued for a worker"));
+    wait("filed and started", 15, || sent_has(&st, "Plan sent to the board. Task states:\n- [TaskQ · pilotq#19 · Draft three](https://github.com/taskqorg/pilotq/issues/19): ready: queued for a worker"));
     let calls = tq_calls(&d);
     assert_eq!((calls.len(), calls[0][0].as_str(), calls[0][1].as_str(), calls[1][0].as_str(), calls[1][1].as_str()), (2, "add", "Draft three", "start", "19"), "{calls:?}");
     let op = calls[0].iter().skip_while(|a| *a != "--op-id").nth(1).unwrap().clone();
@@ -1147,7 +1152,7 @@ fn u15_network_loss_after_ticket_two_reconciles_the_same_ids() {
     push(&st, call(1, OWNER, None, OWNER, "task_plan", plan(&["One", "Two", "Three"])));
     wait("plan", 15, || sent_has(&st, "Draft saved locally."));
     push(&st, call(2, OWNER, None, OWNER, "task_run_plan", json!({"revision": 1})));
-    wait("unsent reply", 15, || sent_has(&st, "Launch is pending; PilotQ retries the same operations. On the board so far:\n- [GitHub · pilotq#19 · One](https://github.com/taskqorg/pilotq/issues/19): held: filed, not started"));
+    wait("unsent reply", 15, || sent_has(&st, "Launch is pending; PilotQ retries the same operations. On the board so far:\n- [TaskQ · pilotq#19 · One](https://github.com/taskqorg/pilotq/issues/19): held: filed, not started"));
     assert!(query_text(&d, "SELECT reason FROM plan_runs").contains("connection reset by peer"), "the cause stays in the journal");
     let b = board(&d);
     assert_eq!((b["tasks"]["19"]["state"].as_str(), b["tasks"]["20"]["state"].as_str()), (Some("held"), Some("held")), "created tickets stay held");
@@ -1166,7 +1171,7 @@ fn u15_network_loss_after_ticket_two_reconciles_the_same_ids() {
     assert!(adds.iter().filter(|o| o.ends_with("-t2")).count() >= 2 && adds.iter().filter(|o| o.ends_with("-t1")).count() == 1, "{adds:?}");
     let first_start = calls.iter().position(|c| c[0] == "start").unwrap();
     assert!(calls[first_start..].iter().all(|c| c[0] == "start") && calls[first_start..].len() == 3, "start only after every create: {calls:?}");
-    assert!(sent_has(&st, "<a href=\"https://github.com/taskqorg/pilotq/issues/20\">GitHub · pilotq#20 · Two</a>, <a href=\"https://github.com/taskqorg/pilotq/issues/21\">GitHub · pilotq#21 · Three</a>"), "{:?}", texts(&st));
+    assert!(sent_has(&st, "<a href=\"https://github.com/taskqorg/pilotq/issues/20\">TaskQ · pilotq#20 · Two</a>, <a href=\"https://github.com/taskqorg/pilotq/issues/21\">TaskQ · pilotq#21 · Three</a>"), "{:?}", texts(&st));
     stop(c, d);
 }
 
@@ -1281,15 +1286,15 @@ fn u82_ask_buttons_and_labeled_links() {
     push(&st, call(1, -100, topic, OWNER, "task_plan", plan(&["Docs"])));
     wait("plan", 15, || sent_has(&st, "Draft saved locally."));
     push(&st, call(2, -100, topic, OWNER, "task_run_plan", json!({"revision": 1})));
-    wait("status", 15, || sent_has(&st, &format!("<a href=\"{issue}\">GitHub · pilotq#19 · Docs</a>\nready: waiting for a free worker.")));
-    assert!(sent_has(&st, &format!("- [GitHub · pilotq#19 · Docs]({issue}): ready: queued for a worker")), "{:?}", texts(&st));
+    wait("status", 15, || sent_has(&st, &format!("<a href=\"{issue}\">TaskQ · pilotq#19 · Docs</a>\nready: waiting for a free worker.")));
+    assert!(sent_has(&st, &format!("- [TaskQ · pilotq#19 · Docs]({issue}): ready: queued for a worker")), "{:?}", texts(&st));
     set_task(&d, 19, |t| {
         t["state"] = json!("ask");
         t["card"] = json!("Done: drafted\nProblem: pick a wording, see [the spec](https://github.com/taskqorg/pilotq/blob/main/pilotq.md)\n1. short - + quick; - less detail ★\n2. long - + detail; - slower\nTo answer: `taskq answer 19.K` or comment `K` or the option text");
     });
     wait("question", 15, || sent_has(&st, "\n⚑"));
     let q = sent(&st).into_iter().find(|s| s["text"].as_str().unwrap().contains("\n⚑")).unwrap();
-    assert_eq!(q["text"], format!("? <a href=\"{issue}\">GitHub · pilotq#19 · Docs</a>\n✓ drafted\n⚑ pick a wording, see <a href=\"https://github.com/taskqorg/pilotq/blob/main/pilotq.md\">the spec</a>\n1. short ★\n+ quick; - less detail\n2. long\n+ detail; - slower"));
+    assert_eq!(q["text"], format!("? <a href=\"{issue}\">TaskQ · pilotq#19 · Docs</a>\n✓ drafted\n⚑ pick a wording, see <a href=\"https://github.com/taskqorg/pilotq/blob/main/pilotq.md\">the spec</a>\n1. short ★\n+ quick; - less detail\n2. long\n+ detail; - slower"));
     assert_eq!(q["reply_markup"]["inline_keyboard"], json!([[{"text": "1. short ★", "callback_data": "answer:1"}], [{"text": "2. long", "callback_data": "answer:2"}]]));
     push(&st, press(3, -100, topic, OWNER, q["id"].as_i64().unwrap(), "answer:2"));
     wait("press answers", 15, || sent_has(&st, "Answered by") && sent_has(&st, "2. long") && sent_has(&st, "TaskQ: doing: a worker is on it."));
@@ -1335,7 +1340,7 @@ fn u10_restart_new_status_pause_and_park() {
     push(&st, call(4, OWNER, None, OWNER, "task_status", json!({"task": "https://github.com/taskqorg/pilotq/issues/19"})));
     wait("status by URL", 15, || sent_has(&st, "re: ok: Task #19 doing: a worker is on it"));
     push(&st, call(5, OWNER, None, OWNER, "task_status", json!({"task": "https://github.com/taskqorg/other/issues/19"})));
-    wait("other board refused", 15, || sent_has(&st, "re: refused: taskqorg/other is not a registered project; nothing was done"));
+    wait("other board refused", 15, || sent_has(&st, "re: refused: task URL does not identify one accessible TaskQ task"));
     push(&st, call(6, 8, None, 8, "task_park", json!({"task": "19", "reason": "x"})));
     wait("ungranted park refused", 15, || sent_has(&st, "re: refused: 8 has no registered project to read; nothing was done"));
     push(&st, call(7, OWNER, None, OWNER, "queue_pause", json!({})));
@@ -1463,9 +1468,7 @@ fn gh_calls(d: &Path) -> Vec<Value> {
     fs::read_to_string(d.join("gh.log")).unwrap_or_default().lines().map(|l| serde_json::from_str(l).unwrap()).collect()
 }
 
-fn gh_state(d: &Path) -> Value {
-    serde_json::from_str(&fs::read_to_string(d.join("gh-state.json")).unwrap_or("{}".into())).unwrap()
-}
+
 
 /// Files under `d`, at any depth (journal, WAL, telemetry, Codex sessions), that contain `needle`, except those named in `skip`.
 fn files_with(d: &Path, needle: &str, skip: &[&str]) -> Vec<String> {
@@ -1525,19 +1528,12 @@ fn u03_u21_key_backed_read_and_no_value_anywhere() {
     ok(cli(&d, &["users", "grant", "8", "chat", "project:pilotq"]));
     let c = spawn(&d, None);
     push(&st, call(1, OWNER, None, OWNER, "issue_read", json!({"project": "pilotq", "issue": "3"})));
-    wait("read", 15, || sent_has(&st, "re: ok: taskqorg/pilotq#3 (open): Issue 3 of taskqorg/pilotq"));
-    let r = texts(&st).into_iter().find(|t| t.starts_with("re: ok: taskqorg/pilotq#3")).unwrap();
-    assert!(r.contains("Source time: updated 2026-10-20T10:00:00Z on GitHub; read at Unix time"), "{r}");
-    assert!(r.contains("token [key github]"), "the echoed value is scrubbed: {r}");
+    wait("unsupported",15,||sent_has(&st,"TaskQ CLI has no supported direct issue"));
     push(&st, call(2, 8, None, 8, "issue_read", json!({"project": "pilotq", "issue": "3"})));
     wait("no key", 15, || sent_has(&st, "re: refused: no key granted to 8, this route or project pilotq for issue_read; keys you may use for it: none. Nothing was done"));
-    let calls = gh_calls(&d);
-    assert_eq!(calls.len(), 1, "the refused read never ran: {calls:?}");
-    assert_eq!((calls[0]["token"].as_str(), &calls[0]["github_token"], &calls[0]["args"]), (Some("ok"), &Value::Null, &json!(["api", "repos/taskqorg/pilotq/issues/3"])));
+    assert!(gh_calls(&d).is_empty(),"no forge bypass for a supported grant");
     let k = ok(cli(&d, &["keys", "list", "--json"]));
     assert!(k[0]["last_use"].as_i64().is_some() && k[0]["users"] == json!([OWNER]), "{k}");
-    let a = ok(cli(&d, &["audit", "--request", "1", "--json"]));
-    assert_eq!((a[0]["direct"][0]["target"].as_str(), a[0]["direct"][0]["item"].as_str(), a[0]["where"]["project"].as_str()), (Some("issue_read taskqorg/pilotq#3"), Some("github"), Some("pilotq")));
     let log = stderr_of(c);
 
     // the value stays only in keys.json and the fake's own reference copy
@@ -1551,7 +1547,7 @@ fn u03_u21_key_backed_read_and_no_value_anywhere() {
         leaks.push("Telegram".into());
     }
     assert!(leaks.is_empty(), "the key value leaked into {leaks:?}");
-    assert!(fs::read_to_string(d.join("codex.log")).unwrap().contains("[key github]"), "the model saw the scrubbed form only");
+    assert!(!fs::read_to_string(d.join("codex.log")).unwrap().contains(TOKEN));
     assert!(ok(cli(&d, &["keys", "revoke", "github", "--json"]))["removed"] == true);
     assert_eq!(ok(cli(&d, &["keys", "list", "--json"])), json!([]));
     fs::remove_dir_all(d).unwrap();
@@ -1562,49 +1558,18 @@ fn u03_u21_key_backed_read_and_no_value_anywhere() {
 // at startup and found once; a crash before the write reads back absent. Neither is repeated, and the route is told.
 #[test]
 fn u04_f04_owner_comment_and_label_once_and_crash_readback() {
-    let (d, st) = direct_setup("u04");
-    ok(cli(&d, &["users", "grant", "8", "chat", "projects", "taskq", "users", "audit", "queue"]));
-    ok(cli(&d, &["keys", "grant", "github", "8"]));
-    let posts = |d: &Path| gh_calls(d).iter().filter(|c| c["args"].as_array().unwrap().contains(&json!("POST"))).count();
-    let comments = |d: &Path| gh_state(d)["taskqorg/pilotq"]["5"]["comments"].as_array().map_or(0, Vec::len);
-    let c = spawn(&d, None);
-    push(&st, call(1, OWNER, None, OWNER, "issue_comment", json!({"project": "pilotq", "issue": "5", "body": "Owner note."})));
-    wait("comment", 15, || sent_has(&st, "re: ok: Comment written once on taskqorg/pilotq#5 and read back: [GitHub · pilotq#5](https://github.com/taskqorg/pilotq/issues/5#issuecomment-500). Operation pilotq-"));
-    push(&st, call(2, OWNER, None, OWNER, "issue_label", json!({"project": "pilotq", "issue": "#5", "label": "pilotq-live"})));
-    wait("label", 15, || sent_has(&st, "re: ok: Label written once on taskqorg/pilotq#5 and read back: label pilotq-live on taskqorg/pilotq#5."));
-    push(&st, call(3, 8, None, 8, "issue_comment", json!({"project": "pilotq", "issue": "5", "body": "Not the owner."})));
-    wait("non-owner", 15, || sent_has(&st, "re: refused: only the owner may comment on or label board issues; 8 is not the owner. Nothing was written"));
-    push(&st, call(4, OWNER, None, OWNER, "issue_label", json!({"project": "other", "issue": "5", "label": "x"})));
-    wait("read-only", 15, || sent_has(&st, "re: refused: taskqorg/other is read-only for PilotQ"));
-    let b = gh_state(&d);
-    let body = b["taskqorg/pilotq"]["5"]["comments"][0]["body"].as_str().unwrap();
-    assert!(body.starts_with("Owner note.\n\n<!-- pilotq-") && body.ends_with("-r1-e1 -->"), "the comment carries its operation ID: {body}");
-    assert_eq!((comments(&d), &b["taskqorg/pilotq"]["5"]["labels"], posts(&d)), (1, &json!(["pilotq-live"]), 2));
-    assert_eq!(query(&d, "SELECT count(*) FROM effects WHERE state='done' AND receipt IS NOT NULL"), 2);
-    drop(c);
-
-    // F04: killed after the write, before the receipt
-    let c = spawn(&d, Some("after-effect"));
-    push(&st, call(5, OWNER, None, OWNER, "issue_comment", json!({"project": "pilotq", "issue": "5", "body": "After the crash."})));
-    killed(c);
-    assert_eq!((comments(&d), query(&d, "SELECT count(*) FROM effects WHERE state='intent'")), (2, 1));
-    let c = spawn(&d, None);
-    wait("found on readback", 15, || sent_has(&st, "After a restart, the comment on taskqorg/pilotq#5 was found written once (<a href=\"https://github.com/taskqorg/pilotq/issues/5#issuecomment-501\">GitHub · pilotq#5</a>); it is not repeated."));
-    assert_eq!((comments(&d), posts(&d)), (2, 3), "not repeated");
-    drop(c);
-
-    // F04: killed before the write
-    let c = spawn(&d, Some("before-effect"));
-    push(&st, call(6, OWNER, None, OWNER, "issue_comment", json!({"project": "pilotq", "issue": "5", "body": "Before the crash."})));
-    killed(c);
-    let c = spawn(&d, None);
-    wait("absent on readback", 15, || sent_has(&st, "After a restart, the comment on taskqorg/pilotq#5 was not written (readback); it is not repeated automatically."));
-    assert_eq!((comments(&d), posts(&d)), (2, 3), "nothing written, nothing repeated");
-    assert_eq!(query(&d, "SELECT count(*) FROM effects WHERE state='done'"), 3);
-    assert_eq!(query(&d, "SELECT count(*) FROM effects WHERE state='absent'"), 1);
-    let a = ok(cli(&d, &["audit", "--request", "5", "--json"]));
-    assert!(a[0]["direct"][0]["result"].as_str().unwrap().starts_with("done: https://github.com/taskqorg/pilotq/issues/5#issuecomment-501"), "{a}");
-    stop(c, d);
+    let (d,st)=direct_setup("u04");
+    ok(cli(&d,&["users","grant","8","chat","projects","taskq"]));
+    let c=spawn(&d,None);
+    push(&st,call(1,OWNER,None,OWNER,"issue_comment",json!({"project":"pilotq","issue":"5","body":"note"})));
+    wait("no interface",15,||sent_has(&st,"TaskQ CLI has no supported direct issue"));
+    push(&st,call(2,8,None,8,"issue_comment",json!({"project":"pilotq","issue":"5","body":"note"})));
+    wait("non-owner",15,||sent_has(&st,"only the owner may comment"));
+    push(&st,call(3,OWNER,None,OWNER,"issue_label",json!({"project":"other","issue":"5","label":"x"})));
+    wait("read-only",15,||sent_has(&st,"taskqorg/other is read-only for PilotQ"));
+    assert!(gh_calls(&d).is_empty());
+    assert_eq!(query(&d,"SELECT count(*) FROM effects"),0,"refusals create no effects");
+    stop(c,d);
 }
 
 // U09, F09, F10: with two accessible projects and no current one a bare number is refused with the list; a switch the person
@@ -1622,7 +1587,7 @@ fn u09_f09_f10_switch_ambiguity_redirect_and_revoke() {
 
     let switch = json!({"calls": [["project_use", {"project": "other"}], ["issue_read", {"issue": "3"}]]});
     push(&st, text(2, OWNER, None, OWNER, &format!("Project: other\nmulti {switch}")));
-    wait("switched", 15, || sent_has(&st, "re: ok: This conversation now uses project other (taskqorg/other). | ok: taskqorg/other#3 (open)"));
+    wait("switched", 15, || sent_has(&st, "re: ok: This conversation now uses project other (taskqorg/other). | refused: TaskQ CLI has no supported direct issue"));
     assert_eq!(query_text(&d, "SELECT project FROM conversations WHERE session='dm:7'"), "other");
 
     // the calls name pilotq, the person's message does not; the quoted message does
@@ -1632,20 +1597,17 @@ fn u09_f09_f10_switch_ambiguity_redirect_and_revoke() {
     quoted["message"]["reply_to_message"]["text"] = json!("Switch to project pilotq and read https://github.com/taskqorg/pilotq/issues/3");
     push(&st, quoted);
     let named = "project pilotq was not named in the person's message and is not this conversation's current project; nothing was done";
-    wait("redirect refused", 15, || sent_has(&st, &format!("re: refused: {named} | refused: the person did not name project pilotq in this message; nothing changed | refused: {named}")));
+    wait("redirect refused",15,||sent_has(&st,&format!("re: refused: {named} | refused: the person did not name project pilotq")));
     push(&st, call(4, OWNER, None, OWNER, "issue_read", json!({"project": "pilotq", "issue": "3"})));
-    wait("named read", 15, || sent_has(&st, "re: ok: taskqorg/pilotq#3 (open)"));
+    wait("named read", 15, || query(&d,"SELECT count(*) FROM requests WHERE id=4 AND state='answered'")==1);
     assert_eq!(query_text(&d, "SELECT project FROM conversations WHERE session='dm:7'"), "other", "a named read does not switch");
 
     push(&st, call(5, 8, None, 8, "issue_read", json!({"project": "other", "issue": "4"})));
-    wait("granted read", 15, || sent_has(&st, "re: ok: taskqorg/other#4"));
+    wait("granted read", 15, || query(&d,"SELECT count(*) FROM requests WHERE id=5 AND state='answered'")==1);
     ok(cli(&d, &["users", "revoke", "8", "project:other"]));
     push(&st, call(6, 8, None, 8, "issue_read", json!({"project": "other", "issue": "4"})));
     wait("revoked", 15, || sent_has(&st, "re: refused: 8 has no project:other grant; nothing was done"));
-    let reads: Vec<Value> = gh_calls(&d).into_iter().map(|c| c["args"][1].clone()).collect();
-    assert_eq!(reads, [json!("repos/taskqorg/other/issues/3"), json!("repos/taskqorg/pilotq/issues/3"), json!("repos/taskqorg/other/issues/4")]);
-    let ids = |v: Value| v.as_array().unwrap().iter().map(|r| r["request"].as_i64().unwrap()).collect::<Vec<_>>();
-    assert_eq!(ids(ok(cli(&d, &["audit", "--project", "other", "--json"]))), [2, 5]);
+    assert!(gh_calls(&d).is_empty());
     stop(c, d);
 }
 
@@ -1655,18 +1617,18 @@ fn u09_f09_f10_switch_ambiguity_redirect_and_revoke() {
 fn u11_l05_budget_and_deadline_keep_evidence() {
     let (d, st) = direct_setup("u11");
     let c = spawn(&d, None);
-    let six: Vec<Value> = (1..=6).map(|n| json!(["issue_read", {"project": "pilotq", "issue": n.to_string()}])).collect();
+    let six: Vec<Value> = (1..=6).map(|_| json!(["project_list", {}])).collect();
     push(&st, text(1, OWNER, None, OWNER, &format!("multi {}", json!({"calls": six}))));
     wait("budget", 15, || sent_has(&st, "| refused: This request reached its budget of 5 tool calls; this call was refused."));
-    assert_eq!(gh_calls(&d).len(), 5);
+    assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='direct'"),5);
     drop(c);
 
     limits(&d, &d.join("fake-codex"), json!({"first_event": 10, "silent": 10, "deadline": 4}));
     let c = spawn(&d, None);
-    let mut u = text(2, OWNER, None, OWNER, &format!("multi {}", json!({"calls": [["issue_read", {"project": "pilotq", "issue": "7"}]], "sleep": 8})));
+    let mut u = text(2, OWNER, None, OWNER, &format!("multi {}", json!({"calls": [["project_list", {}]], "sleep": 8})));
     u["message"]["from"]["language_code"] = json!("ru");
     push(&st, u);
-    wait("deadline", 20, || sent_has(&st, "Результат действия неизвестен; автоматического повтора не будет; сохранено: issue_read taskqorg/pilotq#7: updated 2026-10-20T10:00:00Z; попросите запланировать остальное."));
+    wait("deadline", 20, || sent_has(&st, "Результат действия неизвестен; автоматического повтора не будет; сохранено: project_list: read accessible registered projects; попросите запланировать остальное."));
     assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE id=2 AND state='uncertain'"), 1);
     let diagnostic = query_text(&d, "SELECT error FROM requests WHERE id=2");
     // §7: context preparation consumes the same deadline, so Codex gets only the remaining budget.
@@ -1684,17 +1646,17 @@ fn u11_l05_budget_and_deadline_keep_evidence() {
 fn a2_budget_holds_across_a_retry() {
     let (d, st) = direct_setup("a2");
     let c = spawn(&d, None);
-    let four: Vec<Value> = (1..=4).map(|n| json!(["issue_read", {"project": "pilotq", "issue": n.to_string()}])).collect();
+    let four: Vec<Value> = (1..=4).map(|_| json!(["project_list", {}])).collect();
     push(&st, text(1, OWNER, None, OWNER, &format!("multi {}", json!({"calls": four, "bare": true, "sleep_once": 30}))));
     // the fake marks the first run once its four calls are answered and it starts to sleep
     wait("first run's reads", 15, || d.join("slept").exists());
     drop(c);
-    assert_eq!(gh_calls(&d).len(), 4);
+    assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='direct'"), 4);
     let c = spawn(&d, None);
-    wait("retry answered", 15, || sent_has(&st, "re: ok: taskqorg/pilotq#1 (open)"));
-    let r = texts(&st).into_iter().find(|t| t.starts_with("re: ok: taskqorg/pilotq#1")).unwrap();
+    wait("retry answered", 15, || sent_has(&st, "re: ok: {"));
+    let r = texts(&st).into_iter().find(|t| t.starts_with("re: ok: {")).unwrap();
     assert_eq!(r.matches("refused: This request reached its budget of 5 tool calls; this call was refused.").count(), 3, "{r}");
-    assert_eq!(gh_calls(&d).len(), 5, "five reads in total across both runs");
+    assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='direct'"), 5, "five reads in total across both runs");
     assert_eq!(query(&d, "SELECT count(*) FROM runs WHERE request_id=1"), 2, "the request was retried");
     assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE request_id=1 AND kind='call'"), 5, "a refused call records nothing");
     stop(c, d);
@@ -1712,7 +1674,7 @@ fn a1_key_grants_by_route_and_project() {
     assert_eq!(k["projects"], json!(["other"]), "{k}");
     let c = spawn(&d, None);
     push(&st, call(1, 8, None, 8, "issue_read", json!({"project": "other", "issue": "4"})));
-    wait("project grant", 15, || sent_has(&st, "re: ok: taskqorg/other#4"));
+    wait("project grant", 15, || query(&d,"SELECT count(*) FROM requests WHERE id=1 AND state='answered'")==1);
     push(&st, call(2, 8, None, 8, "issue_read", json!({"project": "pilotq", "issue": "3"})));
     wait("other project", 15, || sent_has(&st, "re: refused: no key granted to 8, this route or project pilotq for issue_read; keys you may use for it: none."));
     ok(cli(&d, &["keys", "revoke", "ro", "project:other"]));
@@ -1721,15 +1683,14 @@ fn a1_key_grants_by_route_and_project() {
 
     ok(cli(&d, &["keys", "grant", "ro", "route:-100:5"]));
     push(&st, call(4, -100, Some(5), 8, "issue_read", json!({"project": "pilotq", "issue": "3"})));
-    wait("route grant", 15, || sent_has(&st, "re: ok: taskqorg/pilotq#3"));
+    wait("route grant", 15, || query(&d,"SELECT count(*) FROM requests WHERE id=4 AND state='answered'")==1);
     push(&st, call(5, 8, None, 8, "issue_read", json!({"project": "pilotq", "issue": "3"})));
     wait("other route", 15, || texts(&st).iter().filter(|t| t.starts_with("re: refused: no key granted to 8, this route or project pilotq")).count() == 2);
     ok(cli(&d, &["keys", "revoke", "ro", "route:-100:5"]));
     push(&st, call(6, -100, Some(5), 8, "issue_read", json!({"project": "pilotq", "issue": "3"})));
     wait("route revoked", 15, || texts(&st).iter().filter(|t| t.starts_with("re: refused: no key granted to 8, this route or project pilotq")).count() == 3);
-    let reads: Vec<Value> = gh_calls(&d).into_iter().map(|c| c["args"][1].clone()).collect();
-    assert_eq!(reads, [json!("repos/taskqorg/other/issues/4"), json!("repos/taskqorg/pilotq/issues/3")], "refused calls run nothing");
-    stop(c, d);
+    assert!(gh_calls(&d).is_empty(),"direct tools never bypass TaskQ");
+    stop(c,d);
 }
 
 /// Removes the live run's copied credentials when the test ends, passed or failed; the rest of a failed run stays for inspection.
@@ -2293,19 +2254,20 @@ fn c_live_context_runs_c07() {
 #[test]
 fn c06_resume_failure_rebuilds_without_replaying_effects() {
     let (d, st) = direct_setup("c06-rebuild");
+    fs::write(d.join("taskq-state.json"),json!({"tasks":{"19":{"title":"Docs","state":"doing","revision":100,"card":null}},"ops":{},"next":20,"rev":100,"creates":0}).to_string()).unwrap();
     let c = spawn(&d, None);
-    push(&st, call(1, OWNER, None, OWNER, "issue_comment", json!({"project": "pilotq", "issue": "3", "body": "remember this receipt"})));
-    wait("effect completed", 20, || try_query(&d, "SELECT count(*) FROM effects WHERE state='done'") == Some(1));
+    push(&st, call(1, OWNER, None, OWNER, "task_steer", json!({"project": "pilotq", "task": "19", "text": "remember this receipt"})));
+    wait("effect completed", 20, || try_query(&d, "SELECT count(*) FROM task_effects WHERE receipt IS NOT NULL") == Some(1));
     wait("first answered", 10, || try_query(&d, "SELECT count(*) FROM requests WHERE state='answered'") == Some(1));
-    let calls = gh_calls(&d).len();
+    let calls = tq_calls(&d).len();
     fs::write(d.join("damaged"), "").unwrap();
     push(&st, text(2, OWNER, None, OWNER, "recall earlier result without tools"));
     wait("rebuilt answer", 20, || try_query(&d, "SELECT count(*) FROM requests WHERE state='answered'") == Some(2));
     push(&st, text(3, OWNER, None, OWNER, "follow up without tools"));
     wait("replacement resumed", 15, || try_query(&d, "SELECT count(*) FROM requests WHERE state='answered'") == Some(3));
     wait("notice delivered", 10, || sent_has(&st, "rebuilding from recorded"));
-    assert_eq!(gh_calls(&d).len(), calls, "recovery never calls GitHub");
-    assert_eq!(query(&d, "SELECT count(*) FROM effects"), 1);
+    assert_eq!(tq_calls(&d).len(), calls, "recovery never calls GitHub");
+    assert_eq!(query(&d, "SELECT count(*) FROM task_effects"), 1);
     assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE kind='rebuild'"), 1);
     assert_eq!(texts(&st).iter().filter(|t| t.contains("rebuilding from recorded")).count(), 1);
     assert!(!texts(&st).join(" ").contains("/private/native"));
@@ -2313,7 +2275,7 @@ fn c06_resume_failure_rebuilds_without_replaying_effects() {
     let turns: Vec<Value> = log.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter(|v| v["method"] == "turn/start").collect();
     let recovered: Value = serde_json::from_str(turns[1]["params"]["input"][0]["text"].as_str().unwrap()).unwrap();
     assert!(recovered["recent"].to_string().contains("remember this receipt"));
-    assert!(recovered["receipts"].to_string().contains("issue_comment"), "{recovered}");
+    assert!(recovered["receipts"].to_string().contains("steer"), "{recovered}");
     assert_eq!(query_text(&d, "SELECT thread FROM conversations WHERE session='dm:7'"), "th-2");
     stop(c, d);
 }
@@ -2596,9 +2558,9 @@ fn u95_cases(live: bool) {
             if name == 'task_plan':
                 text = 'Saved locally only: plan revision 1.\nReview the tester guide wording; ask me to run revision 1.'
             elif name == 'task_run_plan':
-                text = 'Queued for a worker: [GitHub · pilotq#19 · Tester guide](https://github.com/taskqorg/pilotq/issues/19).\nWait for the worker result.'
+                text = 'Queued for a worker: [TaskQ · pilotq#19 · Tester guide](https://github.com/taskqorg/pilotq/issues/19).\nWait for the worker result.'
             else:
-                text = 'The task is queued for a worker.\n[GitHub · pilotq#19 · Tester guide](https://github.com/taskqorg/pilotq/issues/19)'
+                text = 'The task is queued for a worker.\n[TaskQ · pilotq#19 · Tester guide](https://github.com/taskqorg/pilotq/issues/19)'
         else:
             text = 'Привет! Готов обсудить задачу.'"#);
         fs::write(d.join("fake-codex"), fake).unwrap();
@@ -2674,11 +2636,10 @@ fn u94_answer_elsewhere_closes_question() {
     wait("question", 15, || sent_has(&st, "\n⚑"));
     let q = sent(&st).into_iter().find(|m| m["text"].as_str().unwrap().contains("\n⚑")).unwrap();
     let rev = board(&d)["tasks"]["19"]["revision"].as_i64().unwrap();
-    let entry = |id, body: &str, trust, edited| json!({"id":id,"body":body,"author_association":trust,"created_at":"invented-time","updated_at":if edited {"edited-time"} else {"invented-time"},"user":{"login":"alex"}});
-    fs::write(d.join("comments.json"), json!([entry(rev,"taskq: ask attempt 1\nProblem: pick\n1. short ★\n2. long","MEMBER",false),
-        entry(rev+1,"taskq: answer\nwrong","NONE",false), entry(rev+2,"taskq: answer\nchanged","MEMBER",true),
-        entry(rev+3,"taskq: answer 1 attempt 99\nop-id: invented-wrong\nrevision: 103","MEMBER",false),
-        entry(rev+4,"taskq: answer 2\nop-id: invented-answer\nrevision: 103","MEMBER",false)]).to_string()).unwrap();
+    fs::write(d.join("inbox.json"),json!({"schema":1,"task":19,"answers":[
+        {"by":"alex","at":20,"revision":rev,"text":"long","late":false},
+        {"by":"other","at":21,"revision":rev+4,"text":"wrong question","late":true}
+    ]}).to_string()).unwrap();
     set_task(&d, 19, |t| { t["state"]=json!("doing"); t["card"]=Value::Null; t["revision"]=json!(1); });
     wait("answered question edited", 15, || sent(&st).iter().any(|m| m["edit"]==true && m["id"]==q["id"] && m["text"].as_str().unwrap().contains("Answered by alex: long")));
     let edit=sent(&st).into_iter().find(|m|m["edit"]==true && m["id"]==q["id"]).unwrap();
@@ -2735,7 +2696,7 @@ fn u93_draft_buttons_through_service() {
         // §12/#91: admission has no worker evidence; preserve truthful queue text and saved title.
         let reply=sent(&st).into_iter().find(|m|m["text"].as_str().is_some_and(|t|t.contains("Plan sent to the board"))).unwrap();
         let text=reply["text"].as_str().unwrap();
-        assert!(text.contains("queued for a worker") && !text.contains("started") && text.contains("GitHub · pilotq#19 · Reply improvements"),"admission must not claim execution and must name the saved task: {text}");
+        assert!(text.contains("queued for a worker") && !text.contains("started") && text.contains("TaskQ · pilotq#19 · Reply improvements"),"admission must not claim execution and must name the saved task: {text}");
         let calls=tq_calls(&d);
         assert_eq!(calls.len(),2,"one add and one start: {calls:?}");
         assert_eq!(calls[0][1],"Reply improvements");
@@ -2796,7 +2757,7 @@ fn u110_one_draft_launch_states_and_cancel() {
     let reply = query_text(&d, "SELECT reply FROM requests WHERE update_id=35");
     assert!(reply.starts_with("Plan sent to the board. Task states:"), "{reply}");
     for (n, title) in titles.iter().enumerate() {
-        assert!(reply.contains(&format!("[GitHub · pilotq#{} · {title}](https://github.com/taskqorg/pilotq/issues/{}): ready: queued for a worker", 19 + n, 19 + n)), "{reply}");
+        assert!(reply.contains(&format!("[TaskQ · pilotq#{} · {title}](https://github.com/taskqorg/pilotq/issues/{}): ready: queued for a worker", 19 + n, 19 + n)), "{reply}");
     }
     assert!(!reply.contains("doing") && !reply.contains("in work") && !reply.contains("did not finish"), "{reply}");
     assert!(!texts(&st).iter().any(|t| t.contains("did not finish")));
@@ -3098,7 +3059,7 @@ fn doctor_voice_readiness() {
     c["codex"] = json!(script(&d, "login", "echo 'Logged in using ChatGPT'"));
     let ffmpeg = script(&d, "decode", r#"while [ "$1" != "-i" ]; do shift; done; input=$2; for a; do out=$a; done; cp "$input" "$out""#);
     let recognizer = script(&d, "recognize", "echo '{\"text\":\"\"}'");
-    // #127 / §9: keep the voice check independent of host gh/authentication.
+    // #144 / §9: an unusable gh cannot affect CLI-only doctor.
     let gh_ok = r#"if [ "$1" = --version ]; then echo 'gh version 2.45.0 (invented)'; else echo '[]'; fi"#;
     script(&d, "gh", gh_ok);
     let gh_path = format!("{}:{}",d.display(),std::env::var("PATH").unwrap_or_default());
@@ -3125,20 +3086,8 @@ fn doctor_voice_readiness() {
         assert_eq!(out.status.success(), mode == 4, "mode {mode}: {report}");
         assert_eq!(report["ok"], mode == 4);
         if mode == 3 { assert!(String::from_utf8_lossy(&out.stderr).contains("private-dependency-output")); }
-        if mode == 4 {
-            assert_eq!(report["gh"]["path"], json!(d.join("gh")));
-            assert_eq!(report["gh"]["version"], "gh version 2.45.0 (invented)");
-            for body in ["echo invented-api-failure >&2; exit 1", "echo '{malformed'", "echo '{}'"] {
-                script(&d,"gh",body);
-                let failed = Command::new(env!("CARGO_BIN_EXE_pilotq")).env("PILOTQ_INSTALL",&d).env("PATH",&gh_path)
-                    .args(["doctor","--json"]).output().unwrap();
-                let report: Value = serde_json::from_slice(&failed.stdout).unwrap();
-                assert!(!failed.status.success());
-                assert_eq!(report["checks"]["board_answers"], "failed");
-                assert!(!String::from_utf8_lossy(&failed.stdout).contains("invented-api-failure"));
-            }
-            script(&d,"gh",gh_ok);
-        }
+        assert!(report.get("gh").is_none());
+        assert!(report["checks"].get("board_answers").is_none());
         for p in [std::path::PathBuf::from(c["codex"].as_str().unwrap()),ffmpeg.clone(),recognizer.clone()] {
             fs::rename(p.with_extension("real"),p).unwrap();
         }

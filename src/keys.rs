@@ -155,11 +155,6 @@ impl Keys {
         })
     }
 
-    /// The value of a stored key, for the restart readback of an effect it already authorized.
-    pub fn value(&self, name: &str) -> Result<String, String> {
-        self.load()?.get(name).and_then(|k| k["value"].as_str()).map(str::to_string).ok_or(format!("key {name} is gone"))
-    }
-
     /// Replaces every stored value in `text` with `[key NAME]`. An unreadable store withholds the text instead (§ 8: tool output
     /// is scrubbed before the model or Telegram sees it).
     pub fn scrub(&self, text: &str) -> String {

@@ -252,10 +252,10 @@ fn doctor_missing_configuration_is_not_healthy() {
 fn doctor_host_requirements_old_and_missing() {
     use std::os::unix::fs::PermissionsExt;
     let d = scratch("host-requirements");
-    let gh = d.join("gh");
+    let gh = d.join("curl");
     for (body, found, outcome) in [
-        ("echo 'gh version 2.44.0 (invented)'", Some("2.44.0"), "failed"),
-        ("echo 'gh version 2.45.0 (invented)'", Some("2.45.0"), "ok"),
+        ("echo 'curl 7.67.0 (invented)'", Some("7.67.0"), "failed"),
+        ("echo 'curl 7.68.0 (invented)'", Some("7.68.0"), "ok"),
         ("echo invented-tool-error >&2; exit 1", None, "failed"),
     ] {
         fs::write(&gh, format!("#!/bin/sh\n{body}\n")).unwrap();
@@ -263,11 +263,11 @@ fn doctor_host_requirements_old_and_missing() {
         let out=Command::new(env!("CARGO_BIN_EXE_pilotq")).env("PILOTQ_INSTALL",&d).env("PATH",&d)
             .args(["doctor","--json"]).output().unwrap();
         let report:Value=serde_json::from_slice(&out.stdout).unwrap();
-        let check=report["requirements"].as_array().expect("doctor must declare host requirements").iter().find(|c|c["tool"]=="gh").unwrap();
+        let check=report["requirements"].as_array().expect("doctor must declare host requirements").iter().find(|c|c["tool"]=="curl").unwrap();
         assert_eq!(check["found"], serde_json::json!(found));
-        assert_eq!(check["minimum"],"2.45.0");
+        assert_eq!(check["minimum"],"7.68.0");
         assert_eq!(check["outcome"],outcome);
-        assert!(check["fix"].as_str().unwrap().contains("Install gh"));
+        assert!(check["fix"].as_str().unwrap().contains("Install curl"));
         assert!(!out.status.success(),"missing configuration cannot pass");
         if found.is_none() { assert!(String::from_utf8_lossy(&out.stderr).contains("invented-tool-error")); }
         assert_eq!(report["checks"]["host_tools"],"failed");
@@ -302,13 +302,13 @@ fn host_requirements_block_install_and_update() {
     let install=d.join("install");
     fs::create_dir_all(&install).unwrap();
     host_support::provision(&bin,&install.join("config.json"));
-    executable(&bin.join("gh"),b"#!/bin/sh\necho 'gh version 2.44.0 (invented)'\n");
+    executable(&bin.join("curl"),b"#!/bin/sh\necho 'curl 7.67.0 (invented)'\n");
     fs::write(install.join("current"),"0.0.1").unwrap();
     for args in [vec!["service","install"],vec!["update","--check"],vec!["update"]] {
         let out=command(&d).args(args).output().unwrap();
         assert!(!out.status.success());
         let error=String::from_utf8_lossy(&out.stderr);
-        for expected in ["gh","2.44.0","2.45.0","Install gh"] { assert!(error.contains(expected),"{error}"); }
+        for expected in ["curl","7.67.0","7.68.0","Install curl"] { assert!(error.contains(expected),"{error}"); }
         assert_eq!(fs::read_to_string(install.join("current")).unwrap(),"0.0.1");
         assert!(!install.join("drain").exists());
         assert!(!install.join("pilotq").exists());

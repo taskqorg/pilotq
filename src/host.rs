@@ -66,8 +66,6 @@ pub fn report(c: Option<&crate::Config>) -> Value {
         probe("codex",c.map(|c|c.codex.bin.as_str()),&["--version"],"0.162.0","codex-cli ","Install @openai/codex@0.162.0 or newer; set config.json codex to its absolute path"),
         probe("taskq",c.and_then(|c|c.taskq.as_ref()).and_then(|t|t.bin.to_str()),&["service","status","--json"],"4.6.43","","Update TaskQ CLI to 4.6.43 or newer; set taskq.bin and create its verified .pilotq-version.json receipt (tester guide)"),
         probe("taskq_service",c.and_then(|c|c.taskq.as_ref()).and_then(|t|t.bin.to_str()),&["service","status","--json"],"4.6.40","","Update the existing TaskQ service to 4.6.40 or newer"),
-        probe("gh","gh".into(),&["--version"],"2.45.0","gh version ","Install gh 2.45.0 or newer on the service PATH"),
-        probe("direct_gh",c.map(|c|c.direct.gh.as_str()),&["--version"],"2.45.0","gh version ","Install gh 2.45.0 or newer; set config.json gh"),
         probe("ffmpeg",voice.map(|v|v.ffmpeg.as_str()),&["-version"],"6.1.0","ffmpeg version ","Install ffmpeg 6.1 or newer; set voice.ffmpeg"),
         probe("sherpa-onnx-offline",voice.map(|v|v.recognizer.as_str()),&["--version"],"2.0.1","","Install static sherpa-onnx 2.0.1 or newer; set voice.recognizer and create its verified .pilotq-version.json receipt (tester guide)"),
         probe("curl",Some("curl"),&["--version"],"7.68.0","curl ","Install curl 7.68 or newer on the service PATH"),
@@ -81,7 +79,7 @@ pub fn report(c: Option<&crate::Config>) -> Value {
         ]);
     }
     let direct = c.map(|c|&c.direct);
-    let default_direct=crate::direct(&crate::tool(),None);
+    let default_direct=crate::direct(&crate::tool());
     match crate::commands::load(direct.unwrap_or(&default_direct)) {
         Ok(entries) => for (name,entry) in entries.as_object().unwrap() {
             let minimum=entry["minimum_version"].as_str().filter(|s|version(s).is_some());

@@ -33,7 +33,7 @@ pub fn tools() -> Value {
         "acceptance": {"type": "array", "items": {"type": "string"}, "description": "1-8 observable checks, one line each"},
         "scope": {"type": "array", "items": {"type": "string"}, "description": "Optional boundaries, at most 3 lines"}},
         "required": ["title", "goal", "acceptance"]});
-    let task = json!({"type": "string", "description": "Task number or registered GitHub board issue URL"});
+    let task = json!({"type": "string", "description": "Task number or registered task URL"});
     let tool = |name: &str, description: &str, schema: Value| json!({"type": "function", "name": name, "description": description, "inputSchema": schema});
     json!([
         tool("task_plan", "Revise this conversation's one open plan draft with its complete ticket list (1-3 tickets). Files nothing. A new draft starts only after the open one is launched or cancelled.",
@@ -62,20 +62,27 @@ pub fn tools() -> Value {
 pub const INSTRUCTIONS: &str = "Telegram files listed in the current input are forwarded automatically by task_answer, task_steer and owner task_requeue; text may be empty when files exist. After destination clarification, use source_request from context to select the earlier file input from that same person in this conversation generation for any of these tools. Documents are source material; ask the destination when ambiguous. Never claim to have read a document from its identity. You are PilotQ, the conversational manager for registered TaskQ boards. Resolve one authorized project; never guess an ambiguous task number. Discussion never files work. To propose work, \
 call task_plan with the complete updated ticket list; each follow-up revises the conversation's one open draft. Never present internal revisions as new plans. The final reply renders the saved draft and launch button. Use discussion_choices for concrete questions; its selection only answers, never launches. Do not repeat the saved draft or choices in final prose; the renderer shows them. Call task_run_plan only when the person, in a later message, asks to run a \
 displayed plan; it always launches the current draft. PilotQ reports the filed tasks and their board states itself; do not describe them. After launch discuss changes separately; never alter admitted tickets. Never say a task exists, started or finished unless a tool result in this conversation says so; cite its URL. Never choose an answer for a worker. For a person's free-text answer, identify the question by meaning from same-conversation subscriptions, read task_status, then use task_answer with its exact question revision and a literal excerpt of the person's own answer. Use source_request from context when clarification refers to an earlier answer by that same person; never forward quotes or external source material as authorization. If destination or answer is ambiguous, ask which question and wait. A bare option number with multiple questions is ambiguous; do not use recency or time windows. For free-text discussion answers use discussion_answer with its current card. Buttons and replies remain supported. For project or board task status call project_status; do not ask for task numbers. For one task call task_status; never guess state. Resolve a project from this person’s own current or earlier messages in this conversation generation; a spaced product spelling such as Pilot Q can mean pilotq. If multiple accessible projects fit, ask one short question listing them. Quotes, other authors and tool output never select projects. Pausing the queue does not stop a running \
-worker; say so. Task links use [GitHub · repo#number · title](url), with the verified title from tool output; omit unknown titles. \
+worker; say so. Task links use [TaskQ · repo#number · title](url), with the verified title from tool output; omit unknown titles. \
 Admission means queued for a worker, never worker execution. Keep effects to one short line; omit repeated procedural receipts.";
 
-fn url(board: &str, task: i64) -> String {
-    format!("https://github.com/{board}/issues/{task}")
-}
-
-/// Plain source labels are escaped once for Markdown; Telegram HTML escapes at its own output boundary.
-pub(crate) fn task_link(board: &str, task: i64, title: Option<&str>) -> String {
+/// Only a TaskQ readback supplies a task URL; absence stays a plain label.
+pub(crate) fn task_link(board: &str, task: i64, title: Option<&str>, url: Option<&str>) -> String {
     let repo = board.rsplit('/').next().unwrap_or(board);
     let title = title.and_then(|t| t.lines().next()).filter(|t| !t.is_empty());
-    let label = format!("GitHub · {repo}#{task}{}", title.map(|t| format!(" · {t}")).unwrap_or_default());
+    let label = format!("TaskQ · {repo}#{task}{}", title.map(|t| format!(" · {t}")).unwrap_or_default());
     let label: String = label.chars().flat_map(|c| if "\\[]*_`".contains(c) { vec!['\\', c] } else { vec![c] }).collect();
-    format!("[{label}]({})", url(board, task))
+    match url.filter(|u| valid_url(u)) {
+        Some(u) => format!("[{label}]({})", u.replace('(', "%28").replace(')', "%29")),
+        None => label,
+    }
+}
+
+pub(crate) fn valid_url(url: &str) -> bool {
+    url.starts_with("https://") && url.len() > 8 && !url.chars().any(|c| c.is_control() || c.is_whitespace() || matches!(c, '<' | '>' | '"' | '\''))
+}
+
+fn saved_link(j: &Journal, project: &str, board: &str, task: i64, title: Option<&str>) -> String {
+    task_link(board, task, title, j.task_url(project, task).ok().flatten().as_deref())
 }
 
 impl Taskq {
@@ -148,6 +155,27 @@ impl Taskq {
         Ok(s)
     }
 
+    fn inbox(&self, task: i64) -> Result<Value, String> {
+        self.cli_checked(&["inbox".into(), task.to_string(), "--json".into()], |out| {
+            let v: Value = serde_json::from_str(out).map_err(|e|format!("taskq inbox invalid JSON: {e}"))?;
+            if v["schema"] != 1 || v["task"] != task || !v["answers"].is_array() {
+                return Err("taskq inbox lacks canonical answer evidence".into());
+            }
+            Ok(v)
+        })
+    }
+
+    fn task_snapshot(&self, board: &str, task: i64) -> Result<Value, String> {
+        self.cli_checked(&["status".into(), "--task".into(), task.to_string(), "--json".into()], |out| {
+            let v: Value=serde_json::from_str(out).map_err(|e|format!("taskq status invalid JSON: {e}"))?;
+            if v["complete"] != true || v["board"]["repo"] != board || !v["tasks"].is_array() {
+                return Err("taskq task snapshot incomplete or board mismatch".into());
+            }
+            self.check(board)?;
+            Ok(v)
+        })
+    }
+
     fn registered(&self, j: &Journal, project: &str) -> Result<(Self, String), String> {
         let (_, board, root, ..) = j.projects()?.into_iter().find(|p| p.0 == project).ok_or(format!("{project} is not a registered project; nothing was done"))?;
         let tq = Self { bot: self.bot.clone(), bin: self.bin.clone(), root: root.into(), poll: self.poll };
@@ -157,155 +185,21 @@ impl Taskq {
 }
 
 
-/// Transitional #94 board read, until TaskQ #1785 publishes canonical accepted-answer snapshot fields.
-/// Use the same GitHub trust/edit rules as TaskQ; a missing or unreadable receipt remains unknown.
-fn board_answers(tq: &Taskq, board: &str, task: i64) -> Option<Value> {
-    let endpoint = format!("repos/{board}/issues/{task}/comments?per_page=100");
-    match gh_comments(tq, &["api", "--paginate", &endpoint]) {
-        Ok(pages) => Some(pages),
-        Err(error) => { log_answer_read(&error); None }
-    }
-}
-
-fn log_answer_read(error: &str) {
-    let mut safe = crate::keys::Keys(crate::tool().install.join("keys.json")).scrub(error);
-    for name in ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"] {
-        if let Ok(secret) = std::env::var(name) {
-            if !secret.is_empty() { safe = safe.replace(&secret, "[credential]"); }
-        }
-    }
-    eprintln!("board answers: {safe}");
-}
-
-/// gh 2.45 emits consecutive JSON arrays with --paginate; parse every page, never a partial read.
-fn gh_comments(tq: &Taskq, args: &[&str]) -> Result<Value, String> {
-    let (output, stderr) = gh_output(&tq.root, args)?;
-    let pages = serde_json::Deserializer::from_slice(&output).into_iter::<Value>()
-        .collect::<Result<Vec<_>,_>>().map_err(|e| format!("gh {args:?}: invalid JSON: {e}; stderr: {}", String::from_utf8_lossy(&stderr)))?;
-    if pages.is_empty() || pages.iter().any(|p| !p.is_array()) {
-        return Err(format!("gh {args:?}: expected comment arrays; stderr: {}", String::from_utf8_lossy(&stderr)));
-    }
-    Ok(Value::Array(pages))
-}
-
-/// Bound both doctor and the periodic reader, draining pipes concurrently to avoid pipe deadlock.
-fn gh_output(root: &std::path::Path, args: &[&str]) -> Result<(Vec<u8>, Vec<u8>), String> {
-    use std::io::Read;
-    let mut cmd = Command::new("gh");
-    cmd.args(args).current_dir(root).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
-    let mut child = cmd.spawn().map_err(|e| format!("gh {args:?}: {e}"))?;
-    let mut stdout = child.stdout.take().unwrap();
-    let mut stderr = child.stderr.take().unwrap();
-    let out = std::thread::spawn(move || { let mut b=Vec::new(); stdout.read_to_end(&mut b).map(|_|b) });
-    let err = std::thread::spawn(move || { let mut b=Vec::new(); stderr.read_to_end(&mut b).map(|_|b) });
-    let until = std::time::Instant::now() + Duration::from_secs(10);
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
-            Ok(None) if std::time::Instant::now() < until => std::thread::sleep(Duration::from_millis(25)),
-            _ => break None,
-        }
-    };
-    #[cfg(unix)]
-    let _ = crate::host::output(Command::new("kill").args(["-KILL", "--", &format!("-{}", child.id())]));
-    let _ = child.kill(); let _ = child.wait();
-    let stdout = out.join().map_err(|_|format!("gh {args:?}: stdout reader failed"))?
-        .map_err(|e|format!("gh {args:?}: {e}"))?;
-    let stderr = err.join().map_err(|_|format!("gh {args:?}: stderr reader failed"))?
-        .map_err(|e|format!("gh {args:?}: {e}"))?;
-    if !status.is_some_and(|s|s.success()) {
-        return Err(format!("gh {args:?}: {}: stderr: {}",status.map(|s|s.to_string()).unwrap_or("timed out".into()),String::from_utf8_lossy(&stderr)));
-    }
-    Ok((stdout, stderr))
-}
-
-/// §9 / #127: operator metadata only; Telegram's doctor projection exposes check outcomes.
-pub fn answer_readiness(tq: &Taskq, board: Option<&str>) -> (bool, Value) {
-    let path = std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p)
-        .map(|p|p.join("gh")).find(|p| {
-            #[cfg(unix)]
-            { use std::os::unix::fs::PermissionsExt; p.metadata().is_ok_and(|m|m.is_file() && m.permissions().mode() & 0o111 != 0) }
-            #[cfg(not(unix))]
-            { p.is_file() }
-        }));
-    let version_output = gh_output(&tq.root, &["--version"]);
-    if let Err(error) = &version_output { log_answer_read(error); }
-    let version = version_output.ok().and_then(|(b,_)|String::from_utf8(b).ok())
-        .and_then(|s|s.lines().next().filter(|l|l.starts_with("gh version ")).map(str::to_string));
-    // One page is enough to qualify API access and parsing, without scanning all historical comments.
-    let read = board.ok_or_else(|| "registered board unavailable".to_string())
-        .and_then(|board|gh_comments(tq, &["api", &format!("repos/{board}/issues/comments?per_page=1")]));
-    if let Err(error) = &read { log_answer_read(error); }
-    (path.is_some() && version.is_some() && read.is_ok(), json!({"path":path,"version":version}))
-}
-
-// TaskQ §2: fields exist only with op-id; revision is a writer readback fence,
-// not a fold predicate. A raced writer marks its entry edited, which we exclude.
-fn answer_fields(body: &str) -> (&str, Option<&str>) {
-    let text = body.trim_end();
-    let (rest, last) = text.rsplit_once('\n').unwrap_or(("", text));
-    let (rest, last) = if last.trim().strip_prefix("revision: ").is_some_and(|r| r.trim().parse::<u64>().is_ok()) {
-        rest.trim_end().rsplit_once('\n').unwrap_or(("", rest.trim_end()))
-    } else { (rest, last) };
-    match last.trim().strip_prefix("op-id: ") {
-        Some(op) => (rest.trim_end(), Some(op.trim())),
-        None => (body, None),
-    }
-}
-
-fn answer_entry(pages: &Value, task: i64, revision: i64) -> Option<String> {
-    let mut entries: Vec<&Value> = pages.as_array()?.iter().filter_map(Value::as_array).flatten().filter(|c|
-        matches!(c["author_association"].as_str(), Some("OWNER" | "MEMBER" | "COLLABORATOR")) && c["created_at"] == c["updated_at"]
-    ).collect();
-    entries.sort_by_key(|c|c["id"].as_i64().unwrap_or(0));
-    let mut ops = std::collections::HashSet::new();
-    entries.retain(|c| {
-        let Some(body) = c["body"].as_str() else { return false };
-        // Bare option comments carry no transport fields (§2).
-        if !body.starts_with("taskq:") && !body.starts_with("taskq answer ") { return true; }
-        answer_fields(body).1.is_none_or(|op| ops.insert(op))
-    });
-    let start = entries.iter().position(|c|c["id"] == revision)?;
-    let question = entries[start]["body"].as_str()?;
-    let header = question.lines().next()?;
-    if header.split_whitespace().take(2).collect::<Vec<_>>() != ["taskq:","ask"] { return None; }
-    let attempt = |h: &str| h.split_once(" attempt ").map(|(_,a)|a.to_string());
-    for c in entries.into_iter().skip(start+1) {
-        let body = c["body"].as_str()?;
-        let head = body.lines().next().unwrap_or("");
-        if let Some(a) = attempt(head) { if Some(a) != attempt(header) { continue; } }
-        if ["ask", "requeue", "later", "failed", "result", "close", "gone", "spawn"].iter().any(|kind| {
-            head.strip_prefix("taskq: ").is_some_and(|h| h.split_whitespace().next() == Some(kind))
-        }) { break; }
-        let token = head.strip_prefix("taskq: answer").filter(|tail|tail.is_empty() || tail.starts_with(' '));
-        if token.is_none() && head.starts_with("taskq: ") { continue; }
-        let choice = |k: &str| question.lines().find_map(|line| line.strip_prefix(&format!("{k}. ")).map(|s|s.trim_end_matches('★').trim().to_string()));
-        let text = if let Some(tail) = token {
-            let text = answer_fields(body).0.split_once('\n').map(|(_,t)|t).unwrap_or("").trim().to_string();
-            if !text.trim().is_empty() { text } else { choice(tail.split_whitespace().next().unwrap_or(""))? }
-        } else {
-            let input = body.trim();
-            let pick = input.strip_prefix(&format!("taskq answer {task}.")).or_else(||input.strip_prefix("taskq answer "));
-            let value = pick.unwrap_or(input);
-            let matched = (1..=4).find_map(|k| {
-                let option = choice(&k.to_string())?;
-                let plain = value.strip_prefix(&format!("{k}. ")).unwrap_or(value);
-                (value == k.to_string() || plain.eq_ignore_ascii_case(&option)).then_some(option)
-            });
-            let Some(text) = matched else { continue }; text
-        };
-        let actor = c["user"]["login"].as_str()?;
-        return Some(format!("Answered by {actor}: {text}"));
-    }
-    None
+/// TaskQ owns trust, option expansion and question/attempt matching (§5 / #144).
+fn answer_entry(inbox: &Value, task: i64, revision: i64) -> Option<String> {
+    if inbox["schema"] != 1 || inbox["task"] != task { return None; }
+    let answer = inbox["answers"].as_array()?.iter().find(|a| a["revision"] == revision && a["late"] != true)?;
+    let actor = answer["by"].as_str().filter(|s| !s.is_empty())?;
+    answer["at"].as_i64()?;
+    let text = answer["text"].as_str().filter(|s| !s.is_empty())?;
+    Some(format!("Answered by {actor}: {text}"))
 }
 
 fn reconcile_questions(tq: &Taskq, j: &Mutex<Journal>, project: &str, board: &str, task: i64) {
     let questions = j.lock().unwrap().open_questions(project,task).unwrap_or_default();
     if questions.is_empty() { return; }
-    let Some(pages) = board_answers(tq,board,task) else { return };
+    let _ = board;
+    let Ok(pages) = tq.inbox(task) else { return };
     for revision in questions {
         if let Some(answer) = answer_entry(&pages,task,revision) {
             if let Err(e) = j.lock().unwrap().answer_question(project,task,revision,&answer,now()) { eprintln!("question receipt: {e}"); }
@@ -318,8 +212,8 @@ fn find(s: &Value, task: i64) -> Option<&Value> {
 }
 
 // Task messages render as Telegram HTML with a labeled link, never a bare URL (#82).
-fn status_text(board: &str, task: i64, state: &str, title: Option<&str>) -> String {
-    format!("{}\n{}.", task_link(board, task, title), describe(state))
+fn status_text(board: &str, task: i64, state: &str, title: Option<&str>, url: Option<&str>) -> String {
+    format!("{}\n{}.", task_link(board, task, title, url), describe(state))
 }
 
 /// The card without its CLI `To answer:` line: in Telegram an option button or a reply answers (#82).
@@ -327,7 +221,7 @@ fn card(c: &str) -> String {
     c.lines().filter(|l| !l.starts_with("To answer")).collect::<Vec<_>>().join("\n")
 }
 
-fn question_text(board: &str, task: i64, c: &str, title: Option<&str>) -> String {
+fn question_text(board: &str, task: i64, c: &str, title: Option<&str>, url: Option<&str>) -> String {
     let body = card(c).lines().map(|line| {
         if let Some(text) = line.strip_prefix("Done: ") { return format!("✓ {text}"); }
         if let Some(text) = line.strip_prefix("Problem: ") { return format!("⚑ {text}"); }
@@ -343,7 +237,7 @@ fn question_text(board: &str, task: i64, c: &str, title: Option<&str>) -> String
         }
         line.to_string()
     }).collect::<Vec<_>>().join("\n");
-    format!("? {}\n{body}", task_link(board, task, title))
+    format!("? {}\n{body}", task_link(board, task, title, url))
 }
 
 fn now() -> i64 {
@@ -422,11 +316,41 @@ fn dispatch(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Value) -
     let saved = if name == "task_run_plan" {
         Some(j.lock().unwrap().plan_target(&r.session, args["revision"].as_i64())?)
     } else { None };
+    // Resolve new task URLs by exact fresh CLI readback, never by forge-specific path parsing.
+    let link_target = if let Some(url)=args["task"].as_str().filter(|s|s.starts_with("https://")) {
+        let (cached,projects,own)={
+            let guard=j.lock().unwrap();
+            let projects=guard.projects()?.into_iter().filter(|p| allowed(&guard,sender,&p.0,false).is_ok()
+                && args["project"].as_str().is_none_or(|name|name==p.0)).collect::<Vec<_>>();
+            let mut own=guard.own_project_inputs(r)?;own.push(r.text.clone());
+            (guard.url_target(url)?,projects,own)
+        };
+        if cached.is_some() { None } else {
+            if !own.iter().any(|text|crate::direct::own_url(text,url)) {return Err("task URL was not named by this person; nothing was done".into());}
+            let mut matches=Vec::new();
+            let mut unavailable=false;
+            for (project,board,root, ..) in projects {
+                let bound=Taskq {bot:tq.bot.clone(),bin:tq.bin.clone(),root:root.into(),poll:tq.poll};
+                match bound.snapshot_for(&board) {
+                    Ok(snapshot)=>for task in snapshot["tasks"].as_array().into_iter().flatten() {
+                        if task["url"]==url {
+                            if let Some(n)=task["n"].as_i64().filter(|n|*n>0) { matches.push((project.clone(),board.clone(),n)); }
+                        }
+                    },
+                    Err(_)=>unavailable=true,
+                }
+            }
+            if matches.len()!=1 {return Err(if unavailable {"task URL could not be verified: a registered board is unavailable"} else {"task URL does not identify one accessible TaskQ task"}.into());}
+            matches.pop()
+        }
+    } else { None };
     let (project, board, n) = {
         let j = j.lock().unwrap();
         let mut target = args.clone();
         target["issue"] = args.get("task").cloned().unwrap_or(if matches!(name,"task_plan" | "task_run_plan" | "project_status") { json!("1") } else { Value::Null });
-        if let Some((_, project, _, _)) = &saved {
+        if let Some(target) = &link_target {
+            target.clone()
+        } else if let Some((_, project, _, _)) = &saved {
             if args["project"].as_str().is_some_and(|p| p != project) { return Err("saved plan cannot be retargeted; nothing was filed".into()); }
             allowed(&j, sender, project, true)?;
             (project.clone(), saved.as_ref().unwrap().2.clone(), 0)
@@ -482,7 +406,7 @@ fn dispatch(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Value) -
             let snapshot=tq.snapshot_for(&board)?;
             let task=find(&snapshot,n).ok_or("task is not open; nothing was saved; check task status")?;
             if task["state"]!="ask" || task["revision"]!=revision {
-                return Err(format!("Question changed; nothing was saved. Read task_status and answer its current question. {}",task_link(&board,n,task["title"].as_str())));
+                return Err(format!("Question changed; nothing was saved. Read task_status and answer its current question. {}",task_link(&board,n,task["title"].as_str(),task["url"].as_str())));
             }
             if !j.lock().unwrap().open_questions(&project,n)?.contains(&revision) {
                 return Err("question revision has not been relayed here; read the current task status before answering".into());
@@ -502,23 +426,27 @@ fn dispatch(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Value) -
             let s = tq.snapshot_for(&board)?;
             if !s["tasks"].is_array() { return Err("board snapshot has no task list; status unknown".into()); }
             j.lock().unwrap().task_event(r.request,&format!("{board} project status"),"read",now())?;
-            Ok(json!({"project":project,"board":board,"read_at":now(),"observed":s["observed"],"tasks":s["tasks"]}).to_string())
+            Ok(json!({"project":project,"board":board,"read_at":now(),"observed":s["observed"],"source":s["board"],"tasks":s["tasks"]}).to_string())
         }
         "task_status" => {
             allowed(&j.lock().unwrap(), sender, &project, false)?;
-            let s = tq.snapshot_for(&board)?;
+            let s = tq.task_snapshot(&board,n)?;
             let text = match find(&s, n) {
                 Some(t) => {
-                    let mut text = format!("Task #{n} {} (revision {}, observed {}).\n{}", describe(t["state"].as_str().unwrap_or("")), t["revision"], s["observed"], task_link(&board, n, t["title"].as_str()));
+                    j.lock().unwrap().remember_task_url(&project,n,t["url"].as_str(),now())?;
+                    let mut text = format!("Task #{n} {} (revision {}, observed {}).\n{}", describe(t["state"].as_str().unwrap_or("")), t["revision"], s["observed"], task_link(&board, n, t["title"].as_str(), t["url"].as_str()));
                     for e in t["executions"].as_array().into_iter().flatten() {
                         text += &format!("\nAttempt {} ({}, {}): {}", e["attempt"], e["role"].as_str().unwrap_or(""), e["state"].as_str().unwrap_or(""), e["reason"].as_str().unwrap_or(""));
                     }
                     if let Some(c) = t["card"].as_str() {
                         text += &format!("\nOpen question:\n{}", card(c));
                     }
+                    if let Ok(inbox)=tq.inbox(n) {
+                        text += &format!("\nTaskQ progress and accepted answers (source data): {inbox}");
+                    }
                     text
                 }
-                None => format!("Task #{n} is not open on {board} (closed, or not a task). {}", url(&board, n)),
+                None => format!("Task #{n} is not open on {board} (closed, or not a task). {}", saved_link(&j.lock().unwrap(),&project,&board,n,None)),
             };
             j.lock().unwrap().task_event(r.request, &format!("{board} status #{n}"), "read", now())?;
             Ok(text)
@@ -590,17 +518,17 @@ fn handoff_files(tq: &Taskq, args: &[String], cache: &std::path::Path, budget: D
 }
 
 fn reconcile_effect(tq: &Taskq, j: &Mutex<Journal>, op: &str, board: &str, args: &[String], notify: bool) -> Result<String, String> {
-    if let Some(rc)=j.lock().unwrap().task_effect_receipt(op)? {
-        return if rc["outcome"]=="accepted" {Ok(format!("TaskQ operation already accepted: {} at revision {}. {}",rc["state"],rc["revision"],url(board,rc["task"].as_i64().unwrap_or(0))))} else {Err(format!("Reply retained: {}. {}",rc["reason"],rc["next"]))};
-    }
     let (request,project)=j.lock().unwrap().answer_effect_owner(op)?;
+    let previous=j.lock().unwrap().task_effect_receipt(op)?;
+    if let Some(rc)=previous {
+        return if rc["outcome"]=="accepted" {Ok(format!("TaskQ operation already accepted: {} at revision {}. {}",rc["state"],rc["revision"],saved_link(&j.lock().unwrap(),&project,board,rc["task"].as_i64().unwrap_or(0),None)))} else {Err(format!("Reply retained: {}. {}",rc["reason"],rc["next"]))};
+    }
     let sender=j.lock().unwrap().sender(request)?;
     allowed(&j.lock().unwrap(),sender,&project,true)?;
     if !j.lock().unwrap().has(sender,"chat")? || !j.lock().unwrap().effect_dispatchable(op)? {return Err("Access revoked or request stopped; reply retained, no download or dispatch authorized".into());}
     let cache=j.lock().unwrap().reply_cache(op)?;
     let budget=j.lock().unwrap().reply_budget(op,now())?;
     let argv=handoff_files(tq,args,&cache,budget).map_err(|e|format!("Reply retained; not dispatched: {e}. Restore download access or resend a file below 20 MiB; check task status before a new reply."))?;
-    let (request,project)=j.lock().unwrap().answer_effect_owner(op)?;
     let sender=j.lock().unwrap().sender(request)?;
     allowed(&j.lock().unwrap(),sender,&project,true)?;
     if !j.lock().unwrap().effect_dispatchable(op)? {return Err("Request stopped; reply retained, no dispatch authorized".into());}
@@ -635,18 +563,18 @@ fn reconcile_effect(tq: &Taskq, j: &Mutex<Journal>, op: &str, board: &str, args:
         let state=j.lock().unwrap().answer_state(request,rc["state"].as_str().unwrap_or("unknown"))?;
         let title=j.lock().unwrap().task_title(&project,n)?;
         let message=match receipt {
-            Some(receipt)=>format!("{receipt}\nTaskQ: {state}. {}",task_link(board,n,title.as_deref())),
-            None=>format!("Answer not saved: {}: {}. {}. Reply retained; check task status before answering again. {}",rc["outcome"],rc["reason"].as_str().unwrap_or("no reason given"),rc["next"].as_str().unwrap_or("Resolve the refusal before retrying"),task_link(board,n,None)),
+            Some(receipt)=>format!("{receipt}\nTaskQ: {state}. {}",saved_link(&j.lock().unwrap(),&project,board,n,title.as_deref())),
+            None=>format!("Answer not saved: {}: {}. {}. Reply retained; check task status before answering again. {}",rc["outcome"],rc["reason"].as_str().unwrap_or("no reason given"),rc["next"].as_str().unwrap_or("Resolve the refusal before retrying"),saved_link(&j.lock().unwrap(),&project,board,n,None)),
         };
         j.lock().unwrap().task_receipt(op,&rc,notify.then_some(message.as_str()),now())?;
         if rc["outcome"]=="accepted" { let _=std::fs::remove_dir_all(&cache); }
         return if saved { Ok(message) } else { Err(message) };
     }
-    let message = format!("TaskQ effect {op} reconciled: {} {} at revision {}. {}", rc["outcome"], rc["state"], rc["revision"], url(board, n));
+    let message = format!("TaskQ effect {op} reconciled: {} {} at revision {}. {}", rc["outcome"], rc["state"], rc["revision"], saved_link(&j.lock().unwrap(),&project,board,n,None));
     j.lock().unwrap().task_receipt(op, &rc, notify.then_some(message.as_str()), now())?;
     if rc["outcome"]=="accepted" { let _=std::fs::remove_dir_all(&cache); }
-    if rc["outcome"] != "accepted" { return Err(format!("Task #{n} {}: {}. {}. Reply retained. {}", rc["outcome"], rc["reason"].as_str().unwrap_or("no reason given"), rc["next"].as_str().unwrap_or("Resolve the refusal and check task status before retrying"), url(board,n))); }
-    Ok(format!("Task #{n}: {} accepted; TaskQ readback {} at revision {}. Worker termination is not implied. {}", args[0], rc["state"].as_str().unwrap_or("unknown"), rc["revision"], url(board,n)))
+    if rc["outcome"] != "accepted" { return Err(format!("Task #{n} {}: {}. {}. Reply retained. {}", rc["outcome"], rc["reason"].as_str().unwrap_or("no reason given"), rc["next"].as_str().unwrap_or("Resolve the refusal and check task status before retrying"), saved_link(&j.lock().unwrap(),&project,board,n,None))); }
+    Ok(format!("Task #{n}: {} accepted; TaskQ readback {} at revision {}. Worker termination is not implied. {}", args[0], rc["state"].as_str().unwrap_or("unknown"), rc["revision"], saved_link(&j.lock().unwrap(),&project,board,n,None)))
 }
 
 fn recover_effects(tq: &Taskq, j: &Mutex<Journal>) -> bool {
@@ -700,7 +628,7 @@ pub fn submit(tq: &Taskq, j: &Mutex<Journal>, id: i64, notify: bool) -> String {
     if let Err(e) = ok {
         return end(&run, "failed", Some(&e), format!("Plan revision {} was not filed: {e}.", run.revision));
     }
-    let filed = |run: &PlanRun| run.tickets.iter().filter_map(|t| t.task.map(|n| task_link(&board, n, t.plan["title"].as_str()))).collect::<Vec<_>>().join(", ");
+    let filed = |run: &PlanRun| run.tickets.iter().filter_map(|t| t.task.map(|n| saved_link(&j.lock().unwrap(),&run.project,&board,n,t.plan["title"].as_str()))).collect::<Vec<_>>().join(", ");
     let mut run = run;
     if let Err(e) = tq.snapshot_for(&board) {
         return end(&run, "creating", Some(&e), format!("Plan revision {}: ticket 1 is unsent ({e}). Filed so far (held, not started): {}. PilotQ retries with the same operation IDs.", run.revision, or_none(filed(&run))));
@@ -731,6 +659,11 @@ pub fn submit(tq: &Taskq, j: &Mutex<Journal>, id: i64, notify: bool) -> String {
                 let r = j.lock().unwrap().filed(&run, t.idx, n, rev, now());
                 if let Err(e) = r {
                     return end(&run, "creating", Some(&e), format!("Task #{n} is held but PilotQ could not record it: {e}"));
+                }
+                if let Ok(snapshot)=tq.snapshot_for(&board) {
+                    if let Some(task)=find(&snapshot,n) {
+                        let _=j.lock().unwrap().remember_task_url(&run.project,n,task["url"].as_str(),now());
+                    }
                 }
                 run.tickets[i].task = Some(n);
             }
@@ -891,9 +824,11 @@ fn scan(tq: &Taskq, j: &Mutex<Journal>) -> bool {
                 let (state, card) = (t["state"].as_str().unwrap_or(""), t["card"].as_str());
                 let saved = j.task_title(&project, n).ok().flatten();
                 let title = t["title"].as_str().or(saved.as_deref());
-                j.observe(&project, n, state, t["revision"].as_i64().unwrap_or(0), card, &status_text(&board, n, state, title), card.map(|c| question_text(&board, n, c, title)).as_deref(), now())
+                let _=j.remember_task_url(&project,n,t["url"].as_str(),now());
+                let task_url=j.task_url(&project,n).ok().flatten();
+                j.observe(&project, n, state, t["revision"].as_i64().unwrap_or(0), card, &status_text(&board, n, state, title, task_url.as_deref()), card.map(|c| question_text(&board, n, c, title, task_url.as_deref())).as_deref(), now())
             }
-            None => j.close_task(&project, n, &format!("{}\nClosed on the board; verdict and evidence are on the issue.", task_link(&board, n, j.task_title(&project, n).ok().flatten().as_deref())), now()),
+            None => j.close_task(&project, n, &format!("{}\nClosed on the board; verdict and evidence are on the issue.", saved_link(&j,&project,&board,n,j.task_title(&project,n).ok().flatten().as_deref())), now()),
         };
         match r {
             Ok(q) => queued |= q,
@@ -952,8 +887,8 @@ mod tests {
             ("проверено", "Выберите хранение", "Хранить", "Удалить", "история", "место на диске"),
         ] {
             let source = format!("Done: {done}\nProblem: {problem}\n1. {label} - + {gain}; - {cost} ★\n2. {other} - + {cost}; - {gain}\nTo answer: taskq answer 97.K");
-            let text = question_text("taskqorg/pilotq", 97, &source, Some("Ask layout"));
-            assert_eq!(text, format!("? {}\n✓ {done}\n⚑ {problem}\n1. {label} ★\n\\+ {gain}; - {cost}\n2. {other}\n\\+ {cost}; - {gain}", task_link("taskqorg/pilotq", 97, Some("Ask layout"))));
+            let text = question_text("taskqorg/pilotq", 97, &source, Some("Ask layout"), Some("https://forge.invalid/task/97"));
+            assert_eq!(text, format!("? {}\n✓ {done}\n⚑ {problem}\n1. {label} ★\n\\+ {gain}; - {cost}\n2. {other}\n\\+ {cost}; - {gain}", task_link("taskqorg/pilotq", 97, Some("Ask layout"), Some("https://forge.invalid/task/97"))));
             assert_eq!(crate::telegram::options(&text), vec![("answer:1".into(), format!("1. {label} ★")), ("answer:2".into(), format!("2. {other}"))]);
             assert_eq!(crate::telegram::options(&source), vec![("answer:1".into(), format!("1. {label} ★")), ("answer:2".into(), format!("2. {other}"))]);
         }
@@ -962,62 +897,12 @@ mod tests {
     // #91 / R8, R11: link identity and admission must not imply execution.
     #[test]
     fn compact_task_status() {
-        let text = status_text("taskqorg/pilotq", 91, "ready", Some("Visible processing"));
-        assert!(text.contains("GitHub · pilotq#91"), "{text}");
+        let text = status_text("taskqorg/pilotq", 91, "ready", Some("Visible processing"), Some("https://gitlab.example/gradus/tight/-/issues/91"));
+        assert!(text.contains("TaskQ · pilotq#91"), "{text}");
         assert!(text.contains("waiting for a free worker"), "{text}");
         assert!(text.contains("· Visible processing"));
         assert!(!text.contains("Open the task"));
-        assert!(task_link("taskqorg/pilotq", 91, Some("A [title] & <tag>")).contains(r"A \[title\] & <tag>"));
-    }
-
-    // #127 / §5: an old gh must deliver all pages to the existing trusted-answer fold.
-    // Run with a child-only PATH so parallel tests never inherit the fake executable.
-    #[cfg(unix)]
-    #[test]
-    fn board_answers_old_gh() {
-        use std::os::unix::fs::PermissionsExt;
-        if let Some(root) = std::env::var_os("PILOTQ_OLD_GH_FIXTURE") {
-            let tq = Taskq { bot: None, bin: "unused".into(), root: root.into(), poll: Duration::from_secs(1) };
-            let fails = tq.root.join("fail").exists() || tq.root.join("bad").exists();
-            let pages = board_answers(&tq, BOARD, 127);
-            if fails { assert!(pages.is_none()); }
-            else { assert_eq!(answer_entry(&pages.expect("old gh board read must succeed"),127,10), Some("Answered by alex: long".into())); }
-            let (ok, metadata) = answer_readiness(&tq, Some(BOARD));
-            assert_eq!(ok, !fails);
-            assert_eq!(metadata["path"], json!(tq.root.join("gh")));
-            assert_eq!(metadata["version"], "gh version 2.45.0 (invented)");
-            return;
-        }
-        let dir = std::env::temp_dir().join(format!("pilotq-old-gh-{}",std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("gh"), r#"#!/bin/sh
-[ "$1" = --version ] && { echo 'gh version 2.45.0 (invented)'; exit 0; }
-for arg in "$@"; do
-  if [ "$arg" = --slurp ]; then echo 'unknown flag: --slurp' >&2; exit 1; fi
-done
-[ -f fail ] && { echo "API unavailable $GH_TOKEN" >&2; exit 1; }
-[ -f bad ] && { cat pages.json; echo '{broken'; echo "parse diagnostic $GH_TOKEN" >&2; exit 0; }
-cat pages.json
-"#).unwrap();
-        std::fs::set_permissions(dir.join("gh"),std::fs::Permissions::from_mode(0o700)).unwrap();
-        let entry = |id,body| json!({"id":id,"body":body,"author_association":"MEMBER","created_at":"invented","updated_at":"invented","user":{"login":"alex"}});
-        std::fs::write(dir.join("pages.json"),format!("{}\n{}\n",json!([entry(10,"taskq: ask attempt 3\n1. short ★\n2. long")]),json!([entry(11,"taskq: answer 2 attempt 3")]))).unwrap();
-        for mode in ["ok", "fail", "bad"] {
-            if mode != "ok" { std::fs::write(dir.join(mode), "").unwrap(); }
-            let out = Command::new(std::env::current_exe().unwrap())
-                .args(["--exact","taskq::tests::board_answers_old_gh","--nocapture"])
-                .env("PILOTQ_OLD_GH_FIXTURE",&dir).env("PILOTQ_INSTALL",&dir)
-                .env("GH_TOKEN", "invented-test-credential")
-                .env("PATH",format!("{}:{}",dir.display(),std::env::var("PATH").unwrap_or_default()))
-                .output().unwrap();
-            assert!(out.status.success(),"{}{}",String::from_utf8_lossy(&out.stdout),String::from_utf8_lossy(&out.stderr));
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            if mode == "fail" { assert!(stderr.contains("gh [\"api\"") && stderr.contains("API unavailable [credential]"),"{stderr}"); }
-            if mode == "bad" { assert!(stderr.contains("invalid JSON") && stderr.contains("parse diagnostic [credential]"),"{stderr}"); }
-            assert!(!stderr.contains("invented-test-credential"));
-            if mode != "ok" { std::fs::remove_file(dir.join(mode)).unwrap(); }
-        }
-        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(task_link("taskqorg/pilotq", 91, Some("A [title] & <tag>"), None).contains(r"A \[title\] & <tag>"));
     }
 
     // #130 / §9 and §8: exit-zero invalid responses retain diagnostics, never credentials.
@@ -1114,37 +999,19 @@ print(json.dumps(dict(task=19,op_id=op,outcome='accepted',state='doing',revision
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    // #94 / §5: preserve trusted literal answers and option semantics; never borrow a newer question's answer.
+    // §5 / #144: the adapter must bind the canonical answer to its original task/question.
     #[test]
     fn u94_board_answer_evidence() {
-        let entry = |id,body: &str| json!({"id":id,"body":body,"author_association":"MEMBER","created_at":"invented","updated_at":"invented","user":{"login":"alex"}});
-        let ask = entry(10,"taskq: ask attempt 3\nProblem: pick\n1. short ★\n2. long");
-        for (body,expected) in [("taskq: answer 2\nop-id: invented\nrevision: 10","long"),
-            ("taskq: answer\nkeep this\nrevision: 99","keep this\nrevision: 99"),
-            ("taskq: answer\nkeep <literal> & text\nop-id: invented\nrevision: 10","keep <literal> & text"),
-            ("2","long"),("LONG","long"),("taskq answer 19.2","long")] {
-            assert_eq!(answer_entry(&json!([[ask,entry(11,body)]]),19,10),Some(format!("Answered by alex: {expected}")),"{body}");
+        let good = json!({"schema":1,"task":19,"answers":[{"by":"alex","at":20,"revision":10,"text":"keep <literal> & text","late":false}]});
+        assert_eq!(answer_entry(&good,19,10),Some("Answered by alex: keep <literal> & text".into()));
+        assert_eq!(answer_entry(&good,19,11),None);
+        assert_eq!(answer_entry(&good,20,10),None);
+        for field in ["by","at","text","revision"] {
+            let mut bad=good.clone();bad["answers"][0].as_object_mut().unwrap().remove(field);
+            assert_eq!(answer_entry(&bad,19,10),None);
         }
-        for barrier in ["taskq: ask\nProblem: new","taskq: requeue","taskq: later"] {
-            assert_eq!(answer_entry(&json!([[ask,entry(11,barrier),entry(12,"taskq: answer 2")]]),19,10),None);
-        }
-        assert_eq!(answer_entry(&json!([[ask,entry(11,"taskq: answer 2 attempt 99")]]),19,10),None);
-        assert_eq!(answer_entry(&json!([[ask,
-            entry(11,"taskq: answer 1 attempt 99\nop-id: wrong-attempt\nrevision: 10"),
-            entry(12,"taskq: answer 2 attempt 3\nop-id: correct\nrevision: 10")]]),19,10),
-            Some("Answered by alex: long".into()));
-        let mut raced = entry(11,"taskq: answer 1\nop-id: raced\nrevision: 9");
-        raced["updated_at"] = json!("edited");
-        assert_eq!(answer_entry(&json!([[ask,raced,entry(12,"taskq: answer 2\nop-id: raced\nrevision: 10")]]),19,10),
-            Some("Answered by alex: long".into()));
-
-        // §2: even an ignored entry consumes its operation ID; duplicates cannot answer.
-        let prior = entry(9,"taskq: steer\nold\nop-id: reused");
-        assert_eq!(answer_entry(&json!([[prior,ask,
-            entry(11,"taskq: answer 1\nop-id: reused\nrevision: 10"),
-            entry(12,"taskq: answer 2\nop-id: fresh\nrevision: 10")]]),19,10),
-            Some("Answered by alex: long".into()));
-
+        let mut late=good;late["answers"][0]["late"]=json!(true);
+        assert_eq!(answer_entry(&late,19,10),None);
     }
 
     // #124 / §5: board status must read the registered CLI, preserve runtime/session,
@@ -1278,4 +1145,49 @@ print(json.dumps(dict(task=19,op_id=op,outcome='accepted',state='doing',revision
         drop(j);
         std::fs::remove_dir_all(dir).unwrap();
     }
+    // #144 / R4, R8, R13: GitLab uses exactly the same registered CLI path, links and grants as existing projects.
+    #[cfg(unix)]
+    #[test]
+    fn gitlab_registry_status_and_urls() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir=std::env::temp_dir().join(format!("pilotq-gitlab-{}",std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("taskq.json"),r#"{"board":"gitlab","host":"gitlab.example","repo":"gradus/tight"}"#).unwrap();
+        let bin=dir.join("taskq");
+        std::fs::write(&bin,r#"#!/bin/sh
+case "$1" in
+ status) cat snapshot.json ;;
+ inbox) cat inbox.json ;;
+ *) exit 99 ;;
+esac
+"#).unwrap();
+        std::fs::set_permissions(&bin,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let task_url="https://gitlab.example/gradus/tight/-/issues/12";
+        let snapshot=json!({"schema":1,"complete":true,"observed":5,"board":{"repo":"gradus/tight","url":"https://gitlab.example/gradus/tight/-/boards"},"tasks":[{"n":12,"title":"Infrastructure","url":task_url,"state":"doing","revision":8}]});
+        std::fs::write(dir.join("snapshot.json"),snapshot.to_string()).unwrap();
+        std::fs::write(dir.join("inbox.json"),json!({"schema":1,"task":12,"answers":[],"progress":"working"}).to_string()).unwrap();
+        let mut journal=Journal::open(&dir.join("journal.sqlite")).unwrap();journal.bootstrap(7,0).unwrap();
+        journal.add_project(7,"pilotq",BOARD,"/invented/pilotq",0).unwrap();
+        journal.add_project(7,"tight","gradus/tight",dir.to_str().unwrap(),0).unwrap();
+        let r=journal.ask(7,&format!("Read task {task_url}"),1).unwrap();let j=Mutex::new(journal);
+        let tq=Taskq{bot:None,bin,root:dir.clone(),poll:Duration::from_secs(1)};
+        let text=dispatch(&tq,&j,&r,"task_status",&json!({"task":task_url})).unwrap();
+        assert!(text.contains(task_url) && text.contains("working") && !text.contains("github.com"),"{text}");
+        let projects=crate::direct::call(&crate::direct::Direct{keys:crate::keys::Keys(dir.join("absent"))},&j,&r,"project_list",&json!({}));
+        assert!(projects.0 && projects.1.contains("tight") && projects.1.contains("pilotq"));
+        let text=dispatch(&tq,&j,&r,"project_status",&json!({"project":"tight"})).unwrap();
+        assert!(text.contains("gradus/tight/-/boards"));
+        let mut empty=snapshot.clone();empty["tasks"]=json!([]);
+        std::fs::write(dir.join("snapshot.json"),empty.to_string()).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&dispatch(&tq,&j,&r,"project_status",&json!({"project":"tight"})).unwrap()).unwrap()["tasks"],json!([]));
+        empty["complete"]=json!(false);empty["reason"]=json!("permission denied");
+        std::fs::write(dir.join("snapshot.json"),empty.to_string()).unwrap();
+        assert!(dispatch(&tq,&j,&r,"project_status",&json!({"project":"tight"})).unwrap_err().contains("permission denied"));
+        std::fs::write(&tq.bin,"#!/bin/sh\necho 'network unreachable' >&2\nexit 1\n").unwrap();
+        assert!(tq.snapshot_for("gradus/tight").unwrap_err().contains("network unreachable"));
+        std::fs::remove_file(&tq.bin).unwrap();
+        assert!(tq.snapshot_for("gradus/tight").unwrap_err().contains("did not start"));
+        drop(j);std::fs::remove_dir_all(dir).unwrap();
+    }
+
 }

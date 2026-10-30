@@ -251,14 +251,9 @@ fn failed(e: RequestError, backoff: i64) -> Sent {
 fn tidy(text: &str) -> String {
     const FILES: [&str; 15] = ["md", "rs", "sh", "py", "json", "toml", "yml", "yaml", "txt", "lock", "js", "ts", "html", "css", "sql"];
     fn label(u: &url::Url) -> String {
-        let seg: Vec<&str> = u.path_segments().map(|s| s.filter(|p| !p.is_empty()).collect()).unwrap_or_default();
-        match (u.host_str().unwrap_or(""), seg.as_slice()) {
-            ("github.com", [_, repo, "issues" | "pull", n, ..]) => format!("GitHub · {repo}#{n}"),
-            ("github.com", [_, _, "blob" | "tree", _, .., file]) => file.to_string(),
-            ("github.com", [owner, repo, ..]) => format!("{owner}/{repo}"),
-            (host, _) => host.trim_start_matches("www.").to_string(),
-        }
+        u.host_str().unwrap_or("source").trim_start_matches("www.").to_string()
     }
+
     fn word(w: &str) -> String {
         let core = w.trim_start_matches(['(', '"', '*']);
         let start = w.len() - core.len();
@@ -746,13 +741,13 @@ mod tests {
     fn links_are_labeled_and_paths_are_code() {
         let issue="https://github.com/taskqorg/pilotq/issues/81#issuecomment-5";
         assert_eq!(super::markdown(&format!("Filed {issue}, see docs/status-notifications.md.")),
-            format!("Filed [GitHub · pilotq#81]({issue}), see `docs/status-notifications.md`."));
+            format!("Filed [github.com]({issue}), see `docs/status-notifications.md`."));
         assert_eq!(html("Read (https://example.invalid/a/b?x=1) and **pilotq.md**"),
             "Read (<a href=\"https://example.invalid/a/b?x=1\">example.invalid</a>) and <b><code>pilotq.md</code></b>");
         let kept="[Open the spec](https://github.com/taskqorg/pilotq/blob/main/pilotq.md) `docs/x.md https://x.invalid`\n```\nsrc/main.rs\n```\n";
         assert_eq!(super::tidy(kept),kept);
         assert_eq!(super::tidy("[see docs/a.md here](https://x.invalid) e.g. v0.2.5."),"[see docs/a.md here](https://x.invalid) e.g. v0.2.5.");
-        assert_eq!(super::tidy("https://github.com/taskqorg/pilotq/blob/abc/docs/acceptance.md"),"[acceptance.md](https://github.com/taskqorg/pilotq/blob/abc/docs/acceptance.md)");
+        assert_eq!(super::tidy("https://github.com/taskqorg/pilotq/blob/abc/docs/acceptance.md"),"[github.com](https://github.com/taskqorg/pilotq/blob/abc/docs/acceptance.md)");
         let card="Task #19 asks:\nDone: drafted\nProblem: pick\n1. short, see [spec](https://x.invalid) ★\n2. long\n5. not an option";
         assert_eq!(super::options(card),[("answer:1".into(),"1. short, see spec ★".into()),("answer:2".into(),"2. long".into())]);
     }

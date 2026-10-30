@@ -161,8 +161,8 @@ struct Config {
 }
 
 /// The key store and the GitHub CLI the direct tools use (§ 5, § 8).
-fn direct(t: &Tool, gh: Option<&str>) -> direct::Direct {
-    direct::Direct { gh: gh.unwrap_or("gh").into(), keys: keys::Keys(t.install.join("keys.json")) }
+fn direct(t: &Tool) -> direct::Direct {
+    direct::Direct { keys: keys::Keys(t.install.join("keys.json")) }
 }
 
 /// None when no bot is configured yet; an unsafe or malformed file is an error, never ignored.
@@ -199,7 +199,7 @@ fn config(t: &Tool) -> Result<Option<Config>, String> {
         (None, None) if vc.is_null() => None,
         _ => return Err("config.json: voice needs recognizer and model".into()),
     };
-    Ok(Some(Config { token, owner, api_url, codex, taskq, direct: direct(t, v["gh"].as_str()), voice }))
+    Ok(Some(Config { token, owner, api_url, codex, taskq, direct: direct(t), voice }))
 }
 
 fn initial_project(j: &journal::Journal, c: &Config) -> Result<(), String> {
@@ -252,7 +252,7 @@ fn selftest(t: &Tool) -> Result<(), String> {
 fn doctor(t: &Tool) -> Value {
     use teloxide::prelude::*;
     use std::process::{Command, Stdio};
-    let mut checks = json!({"configuration": "failed", "telegram": "unknown", "codex": "unknown", "taskq": "unknown", "voice": "unknown", "board_answers": "unknown"});
+    let mut checks = json!({"configuration": "failed", "telegram": "unknown", "codex": "unknown", "taskq": "unknown", "voice": "unknown"});
     let c = config(t).ok().flatten();
     let requirements = host::report(c.as_ref());
     let host_ok = host::healthy(&requirements);
@@ -279,13 +279,10 @@ fn doctor(t: &Tool) -> Value {
         });
     checks["codex"] = json!(if login { "ok" } else { "failed" });
     let board = c.taskq.as_ref().and_then(|tq| tq.board().ok());
-    let (answers, gh) = c.taskq.as_ref().map(|tq|taskq::answer_readiness(tq,board.as_deref()))
-        .unwrap_or((false, json!({"path":null,"version":null})));
-    checks["board_answers"] = json!(if answers { "ok" } else { "failed" });
     checks["taskq"] = json!(if board.is_some() { "ok" } else { "failed" });
     let voice = voice::readiness(c.voice.as_ref());
     checks["voice"] = json!(voice.as_ref().err().map(String::as_str).unwrap_or("ok"));
-    json!({"ok": host_ok && telegram && login && board.is_some() && answers && voice.is_ok(), "requirements":requirements, "checks": checks, "gh": gh})
+    json!({"ok": host_ok && telegram && login && board.is_some() && voice.is_ok(), "requirements":requirements, "checks": checks})
 }
 
 fn service_run(t: &Tool) -> ! {

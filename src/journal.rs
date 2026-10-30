@@ -1509,7 +1509,7 @@ impl Journal {
             WHERE q.session=?1 AND (EXISTS(SELECT 1 FROM grants WHERE user=?2 AND name='projects')
             OR EXISTS(SELECT 1 FROM grants WHERE user=?2 AND name='project:' || t.project)) ORDER BY t.project,t.number").map_err(e)?;
         let tasks: Vec<Value> = q.query_map(params![r.session,self.sender(r.request)?], |x| Ok(json!({
-            "project":x.get::<_,String>(0)?, "url":format!("https://github.com/{}/issues/{}",x.get::<_,String>(1)?,x.get::<_,i64>(2)?),
+            "project":x.get::<_,String>(0)?, "number":x.get::<_,i64>(2)?, "url":self.task_url(&x.get::<_,String>(0)?,x.get::<_,i64>(2)?).ok().flatten(),
             "state":x.get::<_,String>(3)?, "observed_at":x.get::<_,i64>(4)?, "question_revision":x.get::<_,i64>(6)?, "question":x.get::<_,Option<String>>(7)?,
             "intent":x.get::<_,Option<String>>(5)?.and_then(|v|serde_json::from_str::<Value>(&v).ok())
         }))).and_then(Iterator::collect).map_err(e)?;
@@ -2041,7 +2041,7 @@ impl Journal {
                 (false,"ready")=>"ready: queued for a worker",
                 (false,s)=>describe(s),
             };
-            text+=&format!("\n- {}: {status}",crate::taskq::task_link(&run.board,n,ticket.plan["title"].as_str()));
+            text+=&format!("\n- {}: {status}",crate::taskq::task_link(&run.board,n,ticket.plan["title"].as_str(),self.task_url(&run.project,n)?.as_deref()));
             listed=true;
         }
         if !listed { text+=if ru {" ничего."} else {" none."}; }
@@ -2170,6 +2170,32 @@ impl Journal {
         tx.commit().map_err(e)
     }
 
+    /// #144: retain the exact TaskQ URL in the existing audit store; no schema upgrade or forge synthesis.
+    pub fn remember_task_url(&self, project: &str, task: i64, url: Option<&str>, at: i64) -> Result<(), String> {
+        let Some(url)=url.filter(|u|crate::taskq::valid_url(u)) else { return Ok(()) };
+        let row: Option<(i64,String)>=self.0.query_row("SELECT request_id,root FROM tasks WHERE project=?1 AND number=?2",params![project,task],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(|e|e.to_string())?;
+        let Some((request,root))=row else { return Ok(()) };
+        if self.task_url(project,task)?.as_deref()==Some(url) { return Ok(()) }
+        self.0.execute("INSERT INTO audit_events(request_id,at,kind,target,item,result) VALUES (?1,?2,'task_url',?3,?4,?5)",params![request,at,format!("{project}#{task}"),root,url]).map_err(|e|e.to_string())?;
+        Ok(())
+    }
+
+    pub fn task_url(&self, project: &str, task: i64) -> Result<Option<String>, String> {
+        self.0.query_row("SELECT a.result FROM audit_events a JOIN tasks t ON a.request_id=t.request_id AND a.item=t.root
+            JOIN projects p ON p.name=t.project AND p.root=t.root AND p.repo=t.board
+            WHERE a.kind='task_url' AND a.target=?1 AND t.project=?2 AND t.number=?3 ORDER BY a.id DESC LIMIT 1",
+            params![format!("{project}#{task}"),project,task],|r|r.get(0)).optional().map_err(|e|e.to_string())
+    }
+
+    /// Exact readback identity only; never infer a forge or board from a URL's spelling.
+    pub fn url_target(&self, url: &str) -> Result<Option<(String,String,i64)>,String> {
+        let mut q=self.0.prepare("SELECT project,board,number FROM tasks").map_err(|e|e.to_string())?;
+        let rows:Vec<(String,String,i64)>=q.query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).and_then(Iterator::collect).map_err(|e|e.to_string())?;
+        let mut matches=Vec::new();
+        for (p,b,n) in rows { if self.task_url(&p,n)?.as_deref()==Some(url) { matches.push((p,b,n)); } }
+        match matches.len() {0=>Ok(None),1=>Ok(matches.pop()),_=>Err("task URL matches multiple registrations; clarify the project".into())}
+    }
+
     /// Saved title for a subscribed task, including after it leaves the open snapshot (§12).
     pub fn task_title(&self, project: &str, task: i64) -> Result<Option<String>, String> {
         let row: Option<(String, i64)> = self.0.query_row(
@@ -2203,11 +2229,12 @@ impl Journal {
 
     /// #92 / §5: only trusted same-conversation subscriptions may select a contextual status/steer target.
     pub fn related_target(&self, r: &Run, task: &str, project: Option<&str>) -> Result<Option<(String,String,i64)>,String> {
-        let (board,number) = match task.trim().strip_prefix("https://github.com/").and_then(|v|v.split_once("/issues/")) {
-            Some((board,n)) => (Some(board),n.trim_end_matches('/')),
-            None => (None,task.trim().trim_start_matches('#')),
+        let linked = if task.trim().starts_with("https://") { self.url_target(task.trim())? } else { None };
+        let board=linked.as_ref().map(|t|t.1.as_str());
+        let n=match linked.as_ref().map(|t|t.2).or_else(||task.trim().trim_start_matches('#').parse::<i64>().ok()) {
+            Some(n) if n>0 => n,
+            _ => return Ok(None),
         };
-        let Ok(n) = number.parse::<i64>() else { return Ok(None) };
         let mut q=self.0.prepare("SELECT t.project,t.board,t.root FROM tasks t JOIN requests q ON q.id=t.request_id WHERE q.session=?1 AND t.number=?2
             AND (?3 IS NULL OR t.project=?3) AND (?4 IS NULL OR t.board=?4)
             AND (EXISTS(SELECT 1 FROM grants WHERE user=?5 AND name='projects')
@@ -2491,7 +2518,8 @@ impl Journal {
         tx.commit().map_err(e)
     }
 
-    /// Persists an effect's intent and operation ID before its write (§ 4 Runs), while the run's fence holds.
+    /// Fixture for pre-cutover direct effects; runtime no longer creates these (#144).
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn intent(&self, r: &Run, project: &str, tool: &str, repo: &str, issue: i64, value: &str, key: &str, at: i64) -> Result<String, String> {
         let inst = self.instance()?;
@@ -3082,12 +3110,14 @@ mod tests {
         let r=j.claim_next(4,5).unwrap().remove(0);
         j.save_plan(&r,&json!([{"title":"Keep context"}]),"pilotq","taskqorg/pilotq","invented-root",5).unwrap();
         j.0.execute("INSERT INTO tasks(number,request_id,chat,topic,state,revision,observed,project,board,root) VALUES (92,?1,-100,5,'doing',1,5,'pilotq','taskqorg/pilotq','invented-root')",[r.request]).unwrap();
+        j.add_project(7,"pilotq","taskqorg/pilotq","invented-root",5).unwrap();
+        j.remember_task_url("pilotq",92,Some("https://gitlab.example/gradus/tight/-/issues/92"),5).unwrap();
         let context=j.conversation_context(&r).unwrap();
         assert_eq!(context["recent"].as_array().unwrap().len(),2,"DM excluded from shared topic");
         assert_eq!(context["recent"][0]["author"],8);
         assert!(j.own_project_inputs(&r).unwrap().is_empty(),"#124 other authors cannot select a project");
         assert_eq!(context["recent"][0]["reply"],"prior result");
-        assert_eq!(context["tasks"][0]["url"],"https://github.com/taskqorg/pilotq/issues/92");
+        assert_eq!(context["tasks"][0]["url"],"https://gitlab.example/gradus/tight/-/issues/92");
         assert_eq!(context["plan"]["revision"],1);
         j.add_project(7,"pilotq","taskqorg/pilotq","invented-root",5).unwrap();
         assert_eq!(j.related_target(&r,"#92",None).unwrap(),Some(("pilotq".into(),"taskqorg/pilotq".into(),92)));
@@ -3096,7 +3126,7 @@ mod tests {
         j.add_project(7,"other","taskqorg/other","invented-other",5).unwrap();
         j.0.execute("INSERT INTO tasks SELECT number,request_id,chat,topic,state,revision,card,observed,closed,'other','taskqorg/other','invented-other' FROM tasks WHERE number=92",[]).unwrap();
         assert!(j.related_target(&r,"#92",None).is_err(),"same numbers on two boards must not be guessed");
-        assert_eq!(j.related_target(&r,"https://github.com/taskqorg/pilotq/issues/92",None).unwrap().unwrap().0,"pilotq");
+        assert_eq!(j.related_target(&r,"https://gitlab.example/gradus/tight/-/issues/92",None).unwrap().unwrap().0,"pilotq");
         j.0.execute("UPDATE projects SET root='changed-root' WHERE name='pilotq'",[]).unwrap();
         assert!(j.related_target(&r,"92",Some("pilotq")).is_err(),"changed registration disables contextual target");
         j.0.execute("UPDATE projects SET root='invented-root' WHERE name='pilotq'",[]).unwrap();
@@ -3658,10 +3688,10 @@ mod tests {
         j.started(&run,1,19,"ready",4).unwrap();
         j.run_outcome(&run,"started",None,None,0,4).unwrap();
         let reply=j.launch_reply(&launch).unwrap().unwrap();
-        assert!(reply.contains("queued for a worker") && !reply.contains("started") && reply.contains("GitHub · pilotq#19 · Reply improvements"),"{reply}");
+        assert!(reply.contains("queued for a worker") && !reply.contains("started") && reply.contains("TaskQ · pilotq#19 · Reply improvements"),"{reply}");
         j.0.execute("UPDATE requests SET language='ru' WHERE id=?1",[launch.request]).unwrap();
         let reply=j.launch_reply(&launch).unwrap().unwrap();
-        assert!(reply.contains("в очеред") && !reply.contains("запущен") && reply.contains("GitHub · pilotq#19 · Reply improvements"),"{reply}");
+        assert!(reply.contains("в очеред") && !reply.contains("запущен") && reply.contains("TaskQ · pilotq#19 · Reply improvements"),"{reply}");
         drop(j); let _=std::fs::remove_dir_all(p);
     }
 
