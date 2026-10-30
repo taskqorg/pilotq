@@ -1,0 +1,44 @@
+{
+  "issue": {
+    "number": 540,
+    "state": "closed",
+    "title": "Diagnose failure",
+    "body": "Proposed follow-up: fix #541",
+    "comments": [
+      {
+        "trusted": true,
+        "body": "taskq: close\nChanged: Diagnosis accepted; fix #541 in work.\nChecks: review accepted\nOpen: Fix remains in #541\nReport: docs/research/540.md"
+      }
+    ]
+  },
+  "plans": [
+    {
+      "title": "Diagnose failure",
+      "type": "research"
+    },
+    {
+      "title": "Research options",
+      "type": "research"
+    },
+    {
+      "title": "Investigate timeout",
+      "type": "research"
+    },
+    {
+      "title": "Исследовать сбой",
+      "type": "research"
+    },
+    {
+      "title": "Диагностика ошибки",
+      "type": "research"
+    },
+    {
+      "title": "Fix timeout",
+      "type": "code"
+    },
+    {
+      "title": "Fix research report export",
+      "type": "code"
+    }
+  ]
+}

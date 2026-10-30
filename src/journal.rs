@@ -1278,7 +1278,7 @@ impl Journal {
 
     /// Applies one grant change and logs actor, target and before/after in the same transaction. `actor` None is protected config.
     fn change(&mut self, actor: Option<i64>, target: i64, at: i64, f: impl FnOnce(&mut std::collections::BTreeSet<String>)) -> Result<Vec<String>, String> {
-        let tx = self.0.transaction().map_err(|e| e.to_string())?;
+        let tx = self.0.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
         let after = Self::change_in(&tx, actor, target, at, f)?;
         tx.commit().map_err(|e| e.to_string())?;
         Ok(after)
@@ -2895,6 +2895,25 @@ impl Journal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // §8: grant read/modify/write and its audit must exclude concurrent writers,
+    // including the service while the operator CLI changes access.
+    #[test]
+    fn grant_change_reserves_writer_before_reading() {
+        let (mut j, d) = journal("grant-writer");
+        let other = Connection::open(d.join("journal.sqlite")).unwrap();
+        other.busy_timeout(std::time::Duration::ZERO).unwrap();
+        let after = j.change(Some(7), 8, 1, |grants| {
+            let competing = other.execute("INSERT INTO meta(key,value) VALUES ('competing',1)", []);
+            assert!(matches!(competing, Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ErrorCode::DatabaseBusy));
+            grants.insert("chat".into());
+        }).unwrap();
+        assert_eq!(after, vec!["chat"]);
+        assert_eq!(j.grants(8).unwrap(), after);
+        assert_eq!(j.grant_log(8).unwrap(), vec![(1, Some(7), "".into(), "chat".into())]);
+        other.execute("INSERT INTO meta(key,value) VALUES ('competing',1)", []).unwrap();
+    }
 
     fn journal(tag: &str) -> (Journal, std::path::PathBuf) {
         let d = std::env::temp_dir().join(format!("pilotq-journal-{tag}-{}", std::process::id()));
