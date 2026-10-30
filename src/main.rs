@@ -187,7 +187,7 @@ fn config(t: &Tool) -> Result<Option<Config>, String> {
     // § 5: the TaskQ CLI and the project root whose taskq.json names the board; absent, the manager has no TaskQ tools
     let tq = &v["taskq"];
     let taskq = match (tq["bin"].as_str(), tq["root"].as_str()) {
-        (Some(bin), Some(root)) => Some(taskq::Taskq { bin: bin.into(), root: root.into(), poll: Duration::from_secs(tq["poll"].as_u64().filter(|n| *n > 0).unwrap_or(15)) }),
+        (Some(bin), Some(root)) => Some(taskq::Taskq { bot: Some({ let mut bot=teloxide::Bot::new(&token); if let Some(url)=&api_url {bot=bot.set_api_url(url.clone());} bot }), bin: bin.into(), root: root.into(), poll: Duration::from_secs(tq["poll"].as_u64().filter(|n| *n > 0).unwrap_or(15)) }),
         (None, None) => None,
         _ => return Err("config.json: taskq needs bin and root".into()),
     };
@@ -495,7 +495,7 @@ fn admin(t: &Tool, a: &[&str]) -> Result<Value, String> {
             let root = std::fs::canonicalize(root).map_err(|e| format!("{root}: {e}"))?;
             let tj: Value = std::fs::read_to_string(root.join("taskq.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).ok_or(format!("{}: no readable taskq.json", root.display()))?;
             let repo = tj["repo"].as_str().ok_or("taskq.json names no repo")?;
-            let board = taskq::Taskq { bin: tq.bin.clone(), root: root.clone(), poll: tq.poll }.board()?;
+            let board = taskq::Taskq { bot: None, bin: tq.bin.clone(), root: root.clone(), poll: tq.poll }.board()?;
             if !board.eq_ignore_ascii_case(repo) {
                 return Err(format!("taskq reads board {board} under {}, not {repo}; nothing was registered", root.display()));
             }

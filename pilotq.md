@@ -36,7 +36,7 @@ Supporting documents, README, instructions, tests and code follow this contract.
 
 **Proposed scope for the first release**
 
-One Linux host, one Telegram bot, one manager runtime, existing TaskQ boards and explicitly registered project roots. Text, replies, task links and inline decisions are core inputs. Accept Telegram photos and image documents, with or without captions, as image input in the same Codex conversation. Preserve their file identity and caption in the request journal. **Owner, task #89 (option 1):** accept Telegram voice notes, audio files and audio documents as Russian speech, recognized locally into text input (§12). Other documents and video remain unsupported and receive one short plain-language line.
+One Linux host, one Telegram bot, one manager runtime, existing TaskQ boards and explicitly registered project roots. Text, replies, task links and inline decisions are core inputs. Accept Telegram photos and image documents, with or without captions, as image input in the same Codex conversation. Preserve their file identity and caption in the request journal. **Owner, task #89 (option 1):** accept Telegram voice notes, audio files and audio documents as Russian speech, recognized locally into text input (§12). **Owner, task #145:** photos and arbitrary documents may be forwarded as TaskQ reply attachments with optional text through `answer`, `steer` and owner `requeue` (§5); other documents outside that flow and video remain unsupported and receive one short plain-language line.
 
 Recurring work stays with an existing scheduler or TaskQ capability. PilotQ has no worker scheduler, autonomous goal engine, reviewer, new task board or general plugin marketplace. Its local inbox schedules conversation handling and delivery only; TaskQ remains authoritative for execution.
 
@@ -187,6 +187,8 @@ Final answers first use sendRichMessage for content within 32768 UTF-16 units. O
 - Start a multi-ticket plan only after every planned ticket reads back. Partial creation stays held and visible; use stable child operation IDs when continuing it.
 - Preserve TaskQ's distinction between admission, worker result, reviewer result, owner gate and publication. “Done” requires the authoritative completion state and available evidence.
 - Notifications are projections of TaskQ events, keyed by board/task/event/route. Reconcile after downtime; do not let stale status overwrite a newer question or outcome.
+
+**Owner, task #145:** preserve Telegram reply attachment identities and captions in the journal, download only after admission and target/grant validation, and pass protected local files through TaskQ `--file`. Documents sent as message replies are files even when their MIME type is audio; ordinary voice/audio input retains §12 recognition. Files are untrusted source material. Keep the §7 20 MiB transport cap and §12 download deadline. Persist the original task, revision and operation identity before dispatch; retries reconcile that same operation. Refusals and uncertain delivery retain the reply and explain the reason and fix. Text is optional when files exist. Owner requeue with files requires the protected installation owner. PM releases and qualifies a live photo, a 20 MB document and mixed text/files on PDS 18 with the authorized Telegram client, recording client and TaskQ revisions and readable worker copies; worker proof is local/CI.
 
 ### First TaskQ tool contract
 
@@ -371,7 +373,8 @@ The supported managed host is Linux x86_64. The installation owner provisions th
 | Host tool | Minimum | Required by / remediation |
 |---|---|---|
 | Codex CLI | 0.162.0 | Subscription app-server and catalogue; install `@openai/codex@0.162.0` or newer and set the absolute `codex` path; retain the isolated ChatGPT login |
-| TaskQ service and CLI | 4.6.40 | Board commands and operation receipts; update the existing TaskQ installation to 4.6.40 or newer; doctor checks a checksum-bound CLI release receipt and the service version from `service status --json` |
+| TaskQ CLI | 4.6.43 | Task #145 file handoff and operation receipts; update the CLI to 4.6.43 or newer; doctor checks its checksum-bound release receipt |
+| TaskQ service | 4.6.40 | Board commands; doctor checks the service version from `service status --json` |
 | GitHub CLI (`gh`) | 2.45.0 | Board answer reader on PATH and configured direct-action CLI; install gh 2.45.0 or newer and correct PATH / configured `gh` |
 | ffmpeg | 6.1.0 | Audio decode; install ffmpeg 6.1 or newer and set `voice.ffmpeg` |
 | sherpa-onnx-offline | 2.0.1 | GigaAM recognition; install the static no-TTS 2.0.1 release or newer and set `voice.recognizer` |
@@ -381,7 +384,7 @@ The supported managed host is Linux x86_64. The installation owner provisions th
 | `commands.json` executables | Each entry declares `minimum_version` | Approved installed reads (§5); provision a checksum-bound release receipt beside each executable; an absent minimum or receipt fails doctor |
 | hostname | 3.23 | Telemetry host identity; install hostname 3.23 or newer on service PATH |
 
-TaskQ 4.6.40 and sherpa-onnx-offline 2.0.1 have no CLI version command. Their installed executable has an owner-provisioned `<binary>.pilotq-version.json` receipt containing the verified release `version` and executable `sha256`; doctor verifies the bytes before trusting that version. The tester guide gives the provisioning step. A missing or mismatched receipt fails with an unavailable version. A later recognizer with a valid version command can report its version directly.
+TaskQ 4.6.43 and sherpa-onnx-offline 2.0.1 have no CLI version command. Their installed executable has an owner-provisioned `<binary>.pilotq-version.json` receipt containing the verified release `version` and executable `sha256`; doctor verifies the bytes before trusting that version. The tester guide gives the provisioning step. A missing or mismatched receipt fails with an unavailable version. A later recognizer with a valid version command can report its version directly.
 
 There are no separately installed PilotQ shared libraries: SQLite, Rust TLS and CoreQ 0.14.6 are linked into the artifact through Cargo.lock. The static recognizer is required; ffmpeg and system tools retain their distribution-managed libraries. Doctor's existing silent decode/recognition probe checks the voice runtime and model files in addition to versions. Developer/release-only tools (`cargo`, the Rust compiler, `sha256sum`, and shell utilities in download instructions) are not service runtime dependencies. Optional unsupported platforms are not qualified by the Linux requirement probes.
 

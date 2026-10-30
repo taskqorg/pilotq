@@ -64,7 +64,7 @@ pub fn report(c: Option<&crate::Config>) -> Value {
     let voice = c.and_then(|c|c.voice.as_ref());
     let mut checks = vec![
         probe("codex",c.map(|c|c.codex.bin.as_str()),&["--version"],"0.162.0","codex-cli ","Install @openai/codex@0.162.0 or newer; set config.json codex to its absolute path"),
-        probe("taskq",c.and_then(|c|c.taskq.as_ref()).and_then(|t|t.bin.to_str()),&["service","status","--json"],"4.6.40","","Update TaskQ CLI to 4.6.40 or newer; set taskq.bin and create its verified .pilotq-version.json receipt (tester guide)"),
+        probe("taskq",c.and_then(|c|c.taskq.as_ref()).and_then(|t|t.bin.to_str()),&["service","status","--json"],"4.6.43","","Update TaskQ CLI to 4.6.43 or newer; set taskq.bin and create its verified .pilotq-version.json receipt (tester guide)"),
         probe("taskq_service",c.and_then(|c|c.taskq.as_ref()).and_then(|t|t.bin.to_str()),&["service","status","--json"],"4.6.40","","Update the existing TaskQ service to 4.6.40 or newer"),
         probe("gh","gh".into(),&["--version"],"2.45.0","gh version ","Install gh 2.45.0 or newer on the service PATH"),
         probe("direct_gh",c.map(|c|c.direct.gh.as_str()),&["--version"],"2.45.0","gh version ","Install gh 2.45.0 or newer; set config.json gh"),
@@ -115,7 +115,7 @@ mod tests {
         let d=std::env::temp_dir().join(format!("pilotq-host-versions-{}",std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let bin=d.join("tool");
-        for (minimum,old) in [("0.162.0","0.161.9"),("4.6.40","4.6.39"),("2.45.0","2.9.0"),("6.1.0","6.0.9"),("2.0.1","2.0.0"),("7.68.0","7.67.9"),("245","244"),("3.3.17","3.3.16"),("3.23","3.22")] {
+        for (minimum,old) in [("0.162.0","0.161.9"),("4.6.40","4.6.39"),("4.6.43","4.6.42"),("2.45.0","2.9.0"),("6.1.0","6.0.9"),("2.0.1","2.0.0"),("7.68.0","7.67.9"),("245","244"),("3.3.17","3.3.16"),("3.23","3.22")] {
             for (found,expected) in [(old,"failed"),(minimum,"ok"),("nonsense","failed"),("2.45.0-rc1","failed")] {
                 std::fs::write(&bin,format!("#!/bin/sh\necho 'tool {found}'\n")).unwrap();
                 std::fs::set_permissions(&bin,std::fs::Permissions::from_mode(0o700)).unwrap();
