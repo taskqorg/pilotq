@@ -351,7 +351,9 @@ fn confirm(tq:&Taskq,j:&Shared,r:&crate::builtins::Request,id:i64)->Result<Strin
     let message=format!("{p}: {}\n{}",if uncertain {"release outcome uncertain; no automatic retry"}else{"release verified"},stages.join("\n"));
     let j=j.lock().unwrap();let tx=j.0.unchecked_transaction().map_err(err)?;
     let mut saved=get(&j,&format!("release-preview:{id}"))?.ok_or("Release intent unavailable")?;saved["state"]=json!(if uncertain {"uncertain"}else{"done"});saved["result"]=json!(message);
-    put(&j,&format!("release-preview:{id}"),&saved)?;result_card(&j,r.id,id,&message)?;tx.commit().map_err(err)?;Ok(message)
+    put(&j,&format!("release-preview:{id}"),&saved)?;result_card(&j,r.id,id,&message)?;
+    j.0.execute("UPDATE requests SET state=?2,reply=?3,error=?4 WHERE id=?1 AND state IN ('queued','waiting')",params![r.id,if uncertain {"uncertain"}else{"answered"},message,if uncertain {Some("Release outcome uncertain; automatic replay blocked")}else{None}]).map_err(err)?;
+    tx.commit().map_err(err)?;Ok(message)
 }
 pub fn control(t:&coreq::Tool,j:&Shared,r:&crate::builtins::Request)->Result<String,String> {
     let cfg=crate::config(t)?.ok_or("Configuration unavailable")?;let tq=cfg.taskq.as_ref().ok_or("TaskQ unavailable")?;
@@ -369,7 +371,9 @@ pub fn recover(j:&Journal)->Result<(),String> {
             if let Some(id)=v["confirmation"].as_i64() {let (chat,topic):(i64,Option<i64>)=j.0.query_row("SELECT chat,topic FROM requests WHERE id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(err)?;
                 let _=(chat,topic);
                 let preview=key.strip_prefix("release-preview:").and_then(|s|s.parse().ok()).ok_or("Invalid preview identity")?;
-                result_card(j,id,preview,"Release interrupted; outcome uncertain. It will not be repeated automatically.")?;}
+                let message="Release interrupted; outcome uncertain. It will not be repeated automatically.";
+                result_card(j,id,preview,message)?;
+                j.0.execute("UPDATE requests SET state='uncertain',reply=?2,error=?2 WHERE id=?1 AND state IN ('queued','waiting','failed')",params![id,message]).map_err(err)?;}
             tx.commit().map_err(err)?;}
     } Ok(())
 }
@@ -400,7 +404,7 @@ mod tests {
     }
     fn save_preview(f:&Fixture)->i64 {
         let id=f.r.request;let j=f.j.lock().unwrap();
-        j.0.execute("UPDATE requests SET front='telegram',message=99 WHERE id=?1",[id]).unwrap();
+        j.0.execute("UPDATE requests SET front='telegram',message=99,state='waiting',text='/release-confirm 1' WHERE id=?1",[id]).unwrap();
         j.0.execute("INSERT INTO meta(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![format!("callback:{id}"),b"invented".as_slice()]).unwrap();
         j.0.execute("INSERT INTO outbox(request_id,chat,topic,text,next_at,kind,state,sent_message) SELECT ?1,7,NULL,'invented preview',0,'release_preview','delivered',99 WHERE NOT EXISTS(SELECT 1 FROM outbox WHERE request_id=?1 AND kind='release_preview')",[id]).unwrap();
         put(&j,&format!("release-preview:{id}"),&json!({"project":"sample","owner":7,"session":f.r.session,"generation":f.r.generation,"config":f.c,"sha":f.b,"live":f.a,"created":crate::now(),"state":"preview","migrations":true})).unwrap();put(&j,&format!("release-latest:{}",f.r.session),&json!(id)).unwrap();id
@@ -440,6 +444,7 @@ mod tests {
         // Move main after preview; the argv must retain b. No live/network command is used.
         git(&f.c,&["update-ref","refs/heads/main",&f.a]).unwrap();
         let outcome=confirm(&f.tq,&f.j,&r,id).unwrap();assert!(outcome.contains("uncertain"));
+        {let mut j=f.j.lock().unwrap();j.builtin_finish(r.id,&outcome,true,crate::now() as i64).unwrap();assert_eq!(j.request(r.id).unwrap().0,"uncertain","§4/R17: the command audit must preserve unknown external effects");}
         let calls=std::fs::read_to_string(f.dir.join("calls")).unwrap();assert_eq!(calls,format!("preflight\nbackup\nrelease\n{}\npipeline\n{}\n",f.b,f.b));
         assert!(confirm(&f.tq,&f.j,&r,id).is_err());assert_eq!(std::fs::read_to_string(f.dir.join("calls")).unwrap(),calls);
         {let j=f.j.lock().unwrap();let mut v=get(&j,&format!("release-preview:{id}")).unwrap().unwrap();v["state"]=json!("intent");v["confirmation"]=json!(r.id);put(&j,&format!("release-preview:{id}"),&v).unwrap();recover(&j).unwrap();assert_eq!(get(&j,&format!("release-preview:{id}")).unwrap().unwrap()["state"],"uncertain");}
