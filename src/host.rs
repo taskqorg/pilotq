@@ -39,6 +39,11 @@ fn probe(name: &str, bin: Option<&str>, args: &[&str], minimum: &str, prefix: &s
         if name == "taskq_service" {
             return serde_json::from_str::<Value>(&text).ok()?["service"]["version"].as_str().map(str::to_string);
         }
+        // Approved executables may print a banner such as pwd (GNU coreutils) 8.30.
+        // Read only the first line; later copyright text is not a version.
+        if name == "command" {
+            return text.lines().next()?.split_whitespace().last().map(str::to_string);
+        }
         text.lines().find_map(|l|l.trim().strip_prefix(prefix)?.split_whitespace().next().map(str::to_string))
     }));
     // Only ffmpeg's distribution package suffix is accepted; prereleases are unqualified.
@@ -84,7 +89,7 @@ pub fn report(c: Option<&crate::Config>) -> Value {
         Ok(entries) => for (name,entry) in entries.as_object().unwrap() {
             let minimum=entry["minimum_version"].as_str().filter(|s|version(s).is_some());
             let check=if let Some(minimum)=minimum {
-                let mut v=probe("taskq",entry["executable"].as_str(),&["--version"],minimum,"","Provision the approved executable with a working --version command");
+                let mut v=probe("command",entry["executable"].as_str(),&["--version"],minimum,"","Provision the approved executable with a working --version command");
                 v["tool"]=json!(format!("command:{name}"));v
             } else {
                 json!({"tool":format!("command:{name}"),"found":null,"minimum":null,"outcome":"failed","fix":"Declare minimum_version in the protected commands.json entry and provision its executable with --version"})

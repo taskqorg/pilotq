@@ -157,7 +157,7 @@ Invented configuration (replace executable paths, root and user ID):
 {
   "taskq": {
     "description": "List tasks on the registered PilotQ board",
-    "minimum_version": "4.6.40",
+    "minimum_version": "4.6.46",
     "executable": "/opt/taskq/taskq",
     "args": [["status"]],
     "cwd": "/srv/pilotq",
