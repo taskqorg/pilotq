@@ -208,7 +208,7 @@ mod tests {
         let probe = dir.join("taskq-probe");
         std::fs::write(&probe,"#!/bin/sh\nprintf '%s' '{\"complete\":true,\"board\":{\"repo\":\"taskqorg/pilotq\"}}'\n").unwrap();
         std::fs::set_permissions(&probe,std::fs::Permissions::from_mode(0o700)).unwrap();
-        let tq=crate::taskq::Taskq{bin:probe.to_str().unwrap().into(),root:dir.clone(),poll:Duration::from_secs(1)};
+        let tq=crate::taskq::Taskq{bot:None,bin:probe.to_str().unwrap().into(),root:dir.clone(),poll:Duration::from_secs(1)};
         let call=|name:&str,args:Value,deadline|super::call(&d,&j,&r,name,&args,deadline,Some(&tq));
         let deadline=||Instant::now()+Duration::from_secs(2);
         // #137 / §5: a growing board must not consume the command's 16 KiB output budget.

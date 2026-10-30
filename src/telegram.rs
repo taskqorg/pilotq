@@ -40,7 +40,7 @@ fn input(kind: &UpdateKind) -> Option<Input> {
             else if let Some(k)=data.strip_prefix("answer:") { ("button",k) }
             else if data.starts_with("plan:") || data.starts_with("cancel:") || data.starts_with("choice:") { ("action",data) }
             else { return None };
-        return Some(Input { callback: Some(q.id.0.clone()),
+        return Some(Input { files: vec![], callback: Some(q.id.0.clone()),
             media_group: None,
             quote: None,
             image: None, voice: None,
@@ -73,8 +73,8 @@ fn input(kind: &UpdateKind) -> Option<Input> {
     });
     let voice = m.voice().map(|v| (&v.file, v.duration.seconds()))
         .or_else(|| m.audio().map(|a| (&a.file, a.duration.seconds())))
-        .or_else(|| audio_document.map(|d| (&d.file, 0)));
-    Some(Input { callback: None,
+        .or_else(|| audio_document.filter(|_|m.reply_to_message().is_none()).map(|d| (&d.file, 0)));
+    Some(Input { files: image.map(|f|json!({"id":f.id.0,"name":document.and_then(|d|d.file_name.clone()).unwrap_or_else(||"photo.jpg".into())})).or_else(||m.document().map(|d|json!({"id":d.file.id.0,"name":d.file_name.as_deref().unwrap_or("document")}))).into_iter().collect(), callback: None,
         media_group: m.media_group_id().map(|id|id.0.clone()),
         quote: m.reply_to_message().map(|r| json!({"message":r.id.0,"author":r.from.as_ref().map(|u|u.id.0),
             "text":r.text().or_else(||r.caption()), "has_image":r.photo().is_some() || r.document().is_some(),
@@ -89,7 +89,7 @@ fn input(kind: &UpdateKind) -> Option<Input> {
         message: m.id.0 as i64,
         kind: if m.text().is_some() { "text" } else if let Some(f) = image { if f.size > IMAGE_LIMIT as u32 { "image_limit" } else { "image" } }
             else if let Some((f, seconds)) = voice { if f.size > IMAGE_LIMIT as u32 || seconds > crate::voice::SECONDS { "voice_limit" } else { "voice" } }
-            else { "other" },
+            else if let Some(d)=m.document() { if d.file.size > IMAGE_LIMIT as u32 { "image_limit" } else { "document" } } else { "other" },
         text: m.text().or_else(|| m.caption()).map(str::to_string),
         reply_to: m.reply_to_message().map(|r| r.id.0 as i64),
     })
@@ -151,6 +151,30 @@ pub async fn download_image(bot: &Bot, file: &str, budget: Duration) -> Result<I
         Ok(image)
     };
     store().map_err(str::to_string)
+}
+
+pub(crate) fn document_name(name: &str) -> Result<(),String> {
+    if name.is_empty() || name=="." || name==".." || name.chars().any(|c| c=='/' || c=='\\' || c.is_control()) {
+        return Err("unsafe document name; rename the file without path separators or control characters".into());
+    }
+    Ok(())
+}
+
+/// #145: arbitrary regular documents use the same bounded download boundary as images.
+pub async fn download_document(bot: &Bot, id: &str, name: &str, budget: Duration) -> Result<ImageFile,String> {
+    use std::io::Write;
+    document_name(name)?;
+    let bytes=download(bot,id,budget).await.map_err(str::to_string)?;
+    let nonce=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|_|"attachment clock unavailable")?.as_nanos();
+    let dir=std::env::temp_dir().join(format!("pilotq-reply-{}-{nonce}",std::process::id()));
+    let mut builder=std::fs::DirBuilder::new();
+    #[cfg(unix)] {use std::os::unix::fs::DirBuilderExt;builder.mode(0o700);}
+    builder.create(&dir).map_err(|_|"attachment storage unavailable; restore temporary disk space")?;
+    let file=ImageFile {path:dir.join(name)};
+    let mut options=std::fs::OpenOptions::new();options.write(true).create_new(true);
+    #[cfg(unix)] {use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}
+    options.open(&file.path).and_then(|mut f|f.write_all(&bytes)).map_err(|_|"attachment storage unavailable; restore temporary disk space")?;
+    Ok(file)
 }
 
 fn health(j: &Shared, source: &str, state: &str, reason: Option<&str>) {
@@ -618,6 +642,28 @@ pub async fn deliver(bot: Bot, j: Shared, wake: Arc<Notify>) {
 #[cfg(test)]
 mod tests {
     use super::html;
+    use serde_json::json;
+
+    // #145 / R13: photos and arbitrary documents retain file identity, caption and reply correlation.
+    #[test]
+    fn reply_files_ingress() {
+        for media in [serde_json::json!({"photo":[{"file_id":"invented-photo","file_unique_id":"invented-id","file_size":8,"width":2,"height":2}]}),
+            json!({"document":{"file_id":"invented-document","file_unique_id":"invented-id","file_size":20_000_000,"file_name":"sample.bin"}}),
+            json!({"document":{"file_id":"invented-audio-document","file_unique_id":"invented-id","file_size":8,"file_name":"sample.ogg","mime_type":"audio/ogg"}})] {
+            for caption in [None,Some("Forward this evidence")] {
+                let mut m=json!({"message_id":2,"date":0,"chat":{"id":7,"type":"private","first_name":"A"},"from":{"id":7,"is_bot":false,"first_name":"A"},
+                    "reply_to_message":{"message_id":1,"date":0,"chat":{"id":7,"type":"private","first_name":"A"}}});
+                m.as_object_mut().unwrap().extend(media.as_object().unwrap().clone());
+                if let Some(c)=caption {m["caption"]=json!(c);}
+                let u=teloxide::types::UpdateKind::Message(serde_json::from_value(m).unwrap());
+                let i=super::input(&u).unwrap();
+                assert!(matches!(i.kind,"image"|"document"));
+                assert_eq!(i.files.len(),1);
+                assert!(i.files[0]["id"].as_str().unwrap().starts_with("invented-"));
+                assert_eq!(i.reply_to,Some(1));assert_eq!(i.text.as_deref(),caption);
+            }
+        }
+    }
 
     // #72 / R13: Telegram photos and image documents retain captions and enter the same model queue.
     #[test]

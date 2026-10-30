@@ -904,3 +904,7 @@ removed its temporary copy. No model/API fallback or live service change occurre
 This run used the executor code from `7da47b9`; the continuation changes only the
 contract, operator example and fixture. Live Telegram remains unqualified; no
 deployment is part of #126.
+
+### Telegram reply files (#145)
+
+Under [§5](../pilotq.md#5-taskq-integration), photos and documents with optional captions reach TaskQ answer, steer and owner requeue as readable files. Local `reply_files` checks protect identity/caption admission, duplicate and ignored updates, source isolation, bounded HTTP downloads, readable CLI files, original revision and same-operation retry. Existing question/grant/fence checks continue to apply. A refusal or uncertain write retains the reply and explains its reason and fix. The PM executes the [A2 live recipe](reply-files-145.md) after release on PDS 18, recording exact client/TaskQ revisions, a photo, a 20 MB document, mixed text/files and verified worker copies. A2 is not qualified by fake transport or CI.

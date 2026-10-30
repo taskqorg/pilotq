@@ -112,7 +112,7 @@ fn accept_card(tx: &Connection, i: &Input, sender: i64, session: &str, request: 
         AND EXISTS(SELECT 1 FROM outbox o WHERE o.request_id=q.id AND o.chat=?4 AND o.topic IS ?5 AND o.sent_message=?6 AND o.kind IN ('rich','rich_part'))",
         params![id,session,sender,i.chat,i.topic,i.message],|x|Ok((x.get(0)?,x.get(1)?,x.get(2)?))).optional().map_err(e)?;
     let (plan,options,used)=card.ok_or("foreign or reset button")?;
-    let pending: bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM requests WHERE session=?1 AND id<?2 AND state IN ('queued','running') AND kind IN ('text','image','voice','choice'))",params![session,request],|x|x.get(0)).map_err(e)?;
+    let pending: bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM requests WHERE session=?1 AND id<?2 AND state IN ('queued','running') AND kind IN ('text','image','document','voice','choice'))",params![session,request],|x|x.get(0)).map_err(e)?;
     if pending { return Err("discussion is still updating; wait for its current display".into()); }
 
     if let Some(used)=used {
@@ -182,7 +182,7 @@ fn text_choice(tx: &Connection, i: &Input, sender: i64, session: &str) -> Result
     let text=i.text.as_deref().unwrap_or("").trim();
     let options:Vec<String>=serde_json::from_str(&options).map_err(|e|e.to_string())?;
     let choice=options.iter().enumerate().find(|(n,option)|text==(n+1).to_string() || text==option.as_str()).map(|(n,_)|n+1);
-    Ok(choice.map(|choice|Input{callback:None,image:None,voice:None,media_group:None,quote:None,language:i.language.clone(),chat:i.chat,topic:i.topic,sender:Some(sender),name:i.name.clone(),message,kind:"action",text:Some(format!("choice:{card}:{choice}")),reply_to:Some(message)}))
+    Ok(choice.map(|choice|Input{files:vec![],callback:None,image:None,voice:None,media_group:None,quote:None,language:i.language.clone(),chat:i.chat,topic:i.topic,sender:Some(sender),name:i.name.clone(),message,kind:"action",text:Some(format!("choice:{card}:{choice}")),reply_to:Some(message)}))
 }
 
 /// Telegram's message limit in UTF-16 code units.
@@ -585,6 +585,8 @@ pub struct Route {
 
 /// One Telegram message as the ingress sees it. Names are labels, never authority.
 pub struct Input {
+    /// Telegram photo/document identities and original names; untrusted source material (#145).
+    pub files: Vec<Value>,
     pub callback: Option<String>,
     pub media_group: Option<String>,
     /// Deliberately quoted Telegram source, never the quoted author’s authorization.
@@ -940,7 +942,7 @@ impl Journal {
                     let s = session(i.chat, i.topic, sender, shared);
                     let cmd = if i.kind == "text" { control(i.text.as_deref()) } else { None };
                     // controls bypass the backlog: they are answered here, never queued (§ 12)
-                    let busy = cmd.is_none() && matches!(i.kind, "text" | "image" | "voice" | "action") && {
+                    let busy = cmd.is_none() && matches!(i.kind, "text" | "image" | "document" | "voice" | "action") && {
                         let (route, total): (i64, i64) = tx
                             .query_row(
                                 "SELECT count(*) FILTER (WHERE chat=?1 AND topic IS ?2), count(*) FROM requests WHERE state='queued'",
@@ -957,7 +959,7 @@ impl Journal {
                     };
                     // a reply to a relayed TaskQ question is an answer: checked and written by PilotQ, never by the model (§ 5)
                     let question: Option<i64> = match (cmd, i.reply_to) {
-                        (None, Some(m)) if matches!(i.kind, "text" | "button") => tx
+                        (None, Some(m)) if matches!(i.kind, "text" | "button" | "image" | "document") => tx
                             .query_row("SELECT task FROM outbox WHERE kind='question' AND chat=?1 AND sent_message=?2 AND topic IS ?3", params![i.chat, m, i.topic], |r| r.get(0))
                             .optional()
                             .map_err(|e| e.to_string())?,
@@ -969,9 +971,9 @@ impl Journal {
                         (Some("/restart"), _) if meta(&tx,"owner")? == Some(sender) => ("builtin", "queued"),
                         (Some("/unknown" | "/skill" | "/restart"), _) => ("control", "failed"),
                         (Some(_), _) => ("control", "answered"),
-                        (None, "text" | "image" | "voice" | "action") if busy => (i.kind, "failed"),
-                        (None, "text" | "button") if question.is_some() => ("answer", "queued"),
-                        (None, "text" | "image" | "voice" | "action") => (i.kind, "queued"),
+                        (None, "text" | "image" | "document" | "voice" | "action") if busy => (i.kind, "failed"),
+                        (None, "text" | "button" | "image" | "document") if question.is_some() => ("answer", "queued"),
+                        (None, "text" | "image" | "document" | "voice" | "action") => (i.kind, "queued"),
                         _ => (i.kind, "failed"),
                     };
                     let id = insert(&tx, *update, "telegram", i.chat, i.topic, sender, i.name.as_deref(), i.message, kind, i.text.as_deref(), state, at, &s, i.reply_to)?;
@@ -997,6 +999,9 @@ impl Journal {
                     } else { None };
                     let state = if action_error.is_some() { "failed" } else { state };
 
+                    if !i.files.is_empty() {
+                        tx.execute("INSERT INTO audit_events(request_id,at,kind,item) VALUES (?1,?2,'reply_files',?3)",params![id,at,serde_json::to_string(&i.files).map_err(|e|e.to_string())?]).map_err(|e|e.to_string())?;
+                    }
                     if let Some(file) = &i.voice {
                         tx.execute("INSERT INTO audit_events(request_id,at,kind,item) VALUES (?1,?2,'voice',?3)",
                             params![id,at,file]).map_err(|e|e.to_string())?;
@@ -1428,7 +1433,7 @@ impl Journal {
         let ids: Vec<i64> = {
             let mut q = tx
                 .prepare(
-                    "SELECT min(id) FROM requests r WHERE state='queued' AND front='telegram' AND kind IN ('text','image','voice','choice','launch','cancel')
+                    "SELECT min(id) FROM requests r WHERE state='queued' AND front='telegram' AND kind IN ('text','image','document','voice','choice','launch','cancel')
                     AND NOT EXISTS (SELECT 1 FROM requests p WHERE p.session=r.session AND p.state='running') GROUP BY session ORDER BY 1 LIMIT ?1",
                 )
                 .map_err(|e| e.to_string())?;
@@ -1491,7 +1496,7 @@ impl Journal {
             AND EXISTS(SELECT 1 FROM runs x WHERE x.request_id=q.id AND x.generation=?2)
             AND EXISTS(SELECT 1 FROM grants g WHERE g.user=q.sender AND g.name='chat')
             ORDER BY q.id DESC LIMIT 12) OR id=?3 ORDER BY id").map_err(e)?;
-        let recent: Vec<Value> = q.query_map(params![r.session,r.generation,r.request], |x| Ok(json!({
+        let mut recent: Vec<Value> = q.query_map(params![r.session,r.generation,r.request], |x| Ok(json!({
             "request":x.get::<_,i64>(0)?, "author":x.get::<_,i64>(1)?, "name":x.get::<_,Option<String>>(2)?,
             "message":x.get::<_,i64>(3)?, "reply_to":x.get::<_,Option<i64>>(4)?, "text":x.get::<_,Option<String>>(5)?,
             "reply":x.get::<_,Option<String>>(6)?, "state":x.get::<_,String>(7)?, "image":x.get::<_,Option<String>>(8)?,
@@ -1515,6 +1520,7 @@ impl Journal {
                 "tickets":x.get::<_,String>(2)?}))).optional().map_err(e)?;
         let mut q=self.0.prepare("SELECT c.id,c.question,c.options,c.used_request FROM cards c JOIN requests q ON q.id=c.request_id WHERE q.session=?1 AND c.generation=?2 AND c.options IS NOT NULL AND q.sender=(SELECT sender FROM requests WHERE id=?3) ORDER BY c.id DESC LIMIT 4").map_err(e)?;
         let questions:Vec<Value>=q.query_map(params![r.session,r.generation,r.request],|x|Ok(json!({"card":x.get::<_,i64>(0)?,"question":x.get::<_,String>(1)?,"options":x.get::<_,String>(2)?,"answered":x.get::<_,Option<i64>>(3)?.is_some()}))).and_then(Iterator::collect).map_err(e)?;
+        for item in &mut recent { item["files"] = json!(self.reply_files(item["request"].as_i64().ok_or("invalid context request")?)?); }
         let context = json!({"policy": crate::manager::CONVERSATION, "recent":recent,"tasks":tasks,"plan":plan,"discussion_questions":questions});
         if context.to_string().len() > 100_000 { return Err("conversation context exceeds budget".into()); }
         Ok(context)
@@ -1829,6 +1835,15 @@ impl Journal {
             params![op,a.request,a.project,board,root,serde_json::to_string(args).map_err(|e|e.to_string())?,at]).map(drop).map_err(|e|e.to_string())
     }
 
+    pub fn task_effect_receipt(&self, op: &str) -> Result<Option<Value>,String> {
+        let raw:Option<String>=self.0.query_row("SELECT receipt FROM task_effects WHERE op=?1",[op],|r|r.get(0)).map_err(|e|e.to_string())?;
+        raw.map(|s|serde_json::from_str(&s).map_err(|e|e.to_string())).transpose()
+    }
+
+    pub fn effect_dispatchable(&self, op: &str) -> Result<bool,String> {
+        self.0.query_row("SELECT q.state<>'cancelled' AND NOT EXISTS(SELECT 1 FROM runs r JOIN conversations c ON c.session=r.session WHERE r.request_id=q.id AND r.state='running' AND (r.generation<>c.generation OR r.fence<>c.fence)) FROM task_effects t JOIN requests q ON q.id=t.request_id WHERE t.op=?1",[op],|r|r.get(0)).map_err(|e|e.to_string())
+    }
+
     pub fn task_effect_pending(&self, op: &str) -> Result<bool,String> {
         self.0.query_row("SELECT receipt IS NULL FROM task_effects WHERE op=?1",[op],|x|x.get(0)).map_err(|e|e.to_string())
     }
@@ -1866,6 +1881,30 @@ impl Journal {
         tx.execute("UPDATE plans SET draft=id WHERE draft IS NULL",[]).map_err(|e|e.to_string())?;
         tx.commit().map_err(|e|e.to_string())?;
         Ok(revision)
+    }
+
+    /// Pending attachment copies live beside the journal; unresolved effects are retained under §7.
+    pub fn reply_cache(&self, op: &str) -> Result<PathBuf,String> {
+        if !op.chars().all(|c|c.is_ascii_alphanumeric() || "-_.".contains(c)) || op=="." || op==".." {return Err("invalid attachment operation".into());}
+        Ok(self.1.parent().ok_or("journal directory unavailable")?.join("reply-files").join(op))
+    }
+
+    pub fn reply_budget(&self, op: &str, at: i64) -> Result<std::time::Duration,String> {
+        let start:i64=self.0.query_row("SELECT coalesce((SELECT min(started_at) FROM runs WHERE request_id=t.request_id),t.at) FROM task_effects t WHERE op=?1",[op],|r|r.get(0)).map_err(|e|e.to_string())?;
+        Ok(std::time::Duration::from_secs((60-at.saturating_sub(start).max(0)).max(0) as u64))
+    }
+
+    pub fn reply_files(&self, request: i64) -> Result<Vec<Value>,String> {
+        let raw:Option<String>=self.0.query_row("SELECT item FROM audit_events WHERE request_id=?1 AND kind='reply_files' ORDER BY id LIMIT 1",[request],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
+        raw.map(|s|serde_json::from_str(&s).map_err(|e|e.to_string())).unwrap_or(Ok(vec![]))
+    }
+
+    /// Only this caller's admitted input from this generation can supply files.
+    pub fn reply_file_source(&self, r: &Run, source: Option<i64>) -> Result<Vec<Value>,String> {
+        let source=source.unwrap_or(r.request);
+        let own:bool=self.0.query_row("SELECT EXISTS(SELECT 1 FROM requests q JOIN runs x ON x.request_id=q.id WHERE q.id=?1 AND q.id<=?2 AND q.sender=(SELECT sender FROM requests WHERE id=?2) AND q.session=?3 AND x.generation=?4)",params![source,r.request,r.session,r.generation],|x|x.get(0)).map_err(|e|e.to_string())?;
+        if !own { return Err("files must come from your own input in this conversation generation".into()); }
+        self.reply_files(source)
     }
 
     /// #108: only literal text supplied by this person in this conversation generation can be forwarded.
@@ -2303,7 +2342,7 @@ impl Journal {
         let tx = self.0.unchecked_transaction().map_err(e)?;
         let ru:bool=tx.query_row("SELECT coalesce(language,'en') LIKE 'ru%' FROM requests WHERE id=?1",[a.request],|x|x.get(0)).map_err(e)?;
         let diagnostic=reply;
-        let localized=if ru { match state {
+        let localized=if ru && self.reply_files(a.request)?.is_empty() { match state {
             "failed" if error==Some("stale question")=>Some(format!("Вопрос изменился; ответ не сохранён. {}",diagnostic.split_once("nothing was written. ").map(|(_,s)|s).unwrap_or("Проверьте актуальный вопрос."))),
             "failed" if error==Some("not authorized")=>Some(format!("Нет прав для ответа на задачу #{}; попросите администратора проверить доступ.",a.task)),
             "failed"=>Some("Ответ не сохранён; проверьте актуальный вопрос и права, затем ответьте ещё раз.".into()),
@@ -2581,8 +2620,31 @@ mod tests {
         (j, d)
     }
 
+    // #145 / §4, R10: durable file identities survive duplicate ingress; only own/current-generation files select a tool input.
+    #[test]
+    fn reply_files_journal() {
+        let (mut j,p)=journal("reply-files");
+        let make=|sender|Some(Input {files:vec![json!({"id":"invented-file","name":"sample.bin"})],callback:None,media_group:None,quote:None,image:None,voice:None,language:None,chat:7,topic:None,sender:Some(sender),name:None,message:1,kind:"document",text:None,reply_to:Some(99)});
+        j.admit(&[(1,make(7)),(2,make(99))],0).unwrap();
+        j.admit(&[(1,make(7))],0).unwrap();
+        let r=j.claim_next(4,1).unwrap().remove(0);
+        assert_eq!(j.reply_file_source(&r,None).unwrap(),vec![json!({"id":"invented-file","name":"sample.bin"})]);
+        assert!(j.answer_source(&r,None,"").is_err(),"discussion text validation stays nonempty");
+        assert_eq!(j.conversation_context(&r).unwrap()["recent"][0]["files"].as_array().unwrap().len(),1);
+        assert_eq!(count(&j,"SELECT count(*) FROM audit_events WHERE kind='reply_files'"),1,"ignored sender stores no body and duplicates add no files");
+        drop(j);
+        let j=Journal::open(&p.join("journal.sqlite")).unwrap();
+        assert_eq!(j.reply_files(r.request).unwrap().len(),1,"identity survives restart");
+        assert!(j.reply_file_source(&r,Some(99)).is_err());
+        let mut other_generation=r.clone();other_generation.generation+=1;
+        assert!(j.reply_file_source(&other_generation,Some(r.request)).is_err(),"clarification cannot import files across reset");
+        let mut other_route=r.clone();other_route.session="invented-other-route".into();
+        assert!(j.reply_file_source(&other_route,Some(r.request)).is_err(),"clarification cannot import files from another route");
+        drop(j);std::fs::remove_dir_all(p).unwrap();
+    }
+
     fn msg(chat: i64, sender: i64, message: i64) -> Option<Input> {
-        Some(Input { callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat, topic: None, sender: Some(sender), name: None, message, kind: "text", text: Some("hi".into()), reply_to: None })
+        Some(Input { files: vec![], callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat, topic: None, sender: Some(sender), name: None, message, kind: "text", text: Some("hi".into()), reply_to: None })
     }
 
     fn count(j: &Journal, sql: &str) -> i64 {
@@ -2649,7 +2711,7 @@ mod tests {
     }
 
     fn at(chat: i64, topic: Option<i64>, sender: i64, message: i64) -> Option<Input> {
-        Some(Input { callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat, topic, sender: Some(sender), name: None, message, kind: "text", text: Some("hi".into()), reply_to: None })
+        Some(Input { files: vec![], callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat, topic, sender: Some(sender), name: None, message, kind: "text", text: Some("hi".into()), reply_to: None })
     }
 
     fn sessions(j: &Journal) -> Vec<(i64, String)> {
@@ -2833,7 +2895,7 @@ mod tests {
 
         j.admit(&[(3, msg(7, 7, 3))], 4).unwrap();
         let r = j.claim_next(4, 4).unwrap().remove(0);
-        j.admit(&[(4, Some(Input { callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: 4, kind: "text", text: Some("/stop".into()), reply_to: None }))], 5).unwrap();
+        j.admit(&[(4, Some(Input { files: vec![], callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: 4, kind: "text", text: Some("/stop".into()), reply_to: None }))], 5).unwrap();
         assert!(j.fenced(&r).unwrap());
         assert!(j.typing(5, 60).unwrap().is_empty(), "#91: cancellation ends typing");
         assert!(!j.finish(&r, Some("t-old"), None, &Outcome::Answered("late".into()), 6).unwrap(), "a stopped run cannot reply");
@@ -2841,7 +2903,7 @@ mod tests {
 
         j.admit(&[(5, msg(7, 7, 5))], 7).unwrap();
         let r = j.claim_next(4, 7).unwrap().remove(0);
-        j.admit(&[(6, Some(Input { callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: 6, kind: "text", text: Some("/new".into()), reply_to: None }))], 8).unwrap();
+        j.admit(&[(6, Some(Input { files: vec![], callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: 6, kind: "text", text: Some("/new".into()), reply_to: None }))], 8).unwrap();
         assert!(j.finish(&r, Some("t-old"), None, &Outcome::Answered("ok".into()), 9).unwrap());
         assert_eq!(count(&j, "SELECT count(*) FROM conversations WHERE session='dm:7' AND thread IS NULL AND generation=1"), 1);
         drop(j);
@@ -2881,7 +2943,7 @@ mod tests {
         j.grant(7, 8, &["chat".into()], 0).unwrap();
         j.grant(7, 9, &["chat".into()], 0).unwrap();
         let named = |chat, topic, sender, message, text: &str| {
-            Some(Input { callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat, topic, sender: Some(sender), name: Some(format!("P{sender}")), message, kind: "text", text: Some(text.into()), reply_to: None })
+            Some(Input { files: vec![], callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat, topic, sender: Some(sender), name: Some(format!("P{sender}")), message, kind: "text", text: Some(text.into()), reply_to: None })
         };
         let secret = "sk-aaaaaaaaaaaaaaaaaaaa"; // invented value standing in for anything a person types
         j.admit(&[(1, named(8, None, 8, 1, &format!("dm question {secret}"))), (2, named(-100, Some(5), 9, 2, "topic question"))], 10).unwrap();
@@ -2948,7 +3010,7 @@ mod tests {
     }
 
     fn input(chat: i64, topic: Option<i64>, sender: Option<i64>, name: &str, kind: &'static str, text: Option<&str>) -> Option<Input> {
-        Some(Input { callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat, topic, sender, name: Some(name.into()), message: 1, kind, text: text.map(str::to_string), reply_to: None })
+        Some(Input { files: vec![], callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat, topic, sender, name: Some(name.into()), message: 1, kind, text: text.map(str::to_string), reply_to: None })
     }
 
     // F09, F15, F16, L06, L14: strangers in a DM, a group and a topic, an anonymous sender, a stranger reusing the owner's display
@@ -3098,7 +3160,7 @@ mod tests {
         let busy = ROUTE_BACKLOG + 1;
         assert_eq!(j.request(busy).unwrap(), ("failed".into(), Some(brief(None, "busy").into()), Some("busy: backlog full".into())));
         j.grant(7, 8, &["chat".into()], 1).unwrap();
-        j.admit(&[(100, msg(8, 8, 100)), (101, Some(Input { callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: 101, kind: "text", text: Some("/status".into()), reply_to: None }))], 2).unwrap();
+        j.admit(&[(100, msg(8, 8, 100)), (101, Some(Input { files: vec![], callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: 101, kind: "text", text: Some("/status".into()), reply_to: None }))], 2).unwrap();
         assert_eq!(j.request(busy + 1).unwrap().0, "queued", "another route is admitted");
         assert!(j.request(busy + 2).unwrap().1.unwrap().contains("\nRunning: 0. Queued: 50."), "the control answers on the full route");
         let runs = j.claim_next(4, 3).unwrap();
@@ -3400,7 +3462,7 @@ mod tests {
         assert!(q.edit.is_none() && q.text.starts_with("Task #19 asks:"), "the question is its own message");
         j.record(q.id, &Sent::Ok(500), 8).unwrap();
 
-        let answer = |id, to| Some(Input { callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: id, kind: "text", text: Some("2".into()), reply_to: Some(to) });
+        let answer = |id, to| Some(Input { files: vec![], callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: id, kind: "text", text: Some("2".into()), reply_to: Some(to) });
         j.admit(&[(3, answer(3, 500)), (4, answer(4, status))], 9).unwrap();
         let a = j.answers().unwrap();
         assert_eq!(a.iter().map(|(a, resumed)| (a.request, a.task, a.revision, *resumed)).collect::<Vec<_>>(), [(3, 19, 14, false)], "only a reply to the question answers it");
@@ -3421,7 +3483,7 @@ mod tests {
     fn a40_topic_plan_run_audit_project() {
         use crate::manager::Outcome;
         let (mut j, p) = journal("a40-project");
-        let topic = |message| Some(Input { callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat: -100, topic: Some(5), sender: Some(7), name: None,
+        let topic = |message| Some(Input { files: vec![], callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat: -100, topic: Some(5), sender: Some(7), name: None,
             message, kind: "text", text: Some("plan or run".into()), reply_to: None });
         j.admit(&[(1, topic(1))], 0).unwrap();
         let r = j.claim_next(4, 0).unwrap().remove(0);
@@ -3471,7 +3533,7 @@ mod tests {
     fn status_shows_version_and_non_ok_sources() {
         let (mut j, p) = journal("status-service");
         let status = |j: &mut Journal, u: i64, at: i64| {
-            j.admit(&[(u, Some(Input { callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: u, kind: "text", text: Some("/status".into()), reply_to: None }))], at).unwrap();
+            j.admit(&[(u, Some(Input { files: vec![], callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: u, kind: "text", text: Some("/status".into()), reply_to: None }))], at).unwrap();
             j.request(count(j, "SELECT max(id) FROM requests")).unwrap().1.unwrap()
         };
         let v = env!("CARGO_PKG_VERSION");
@@ -3654,7 +3716,7 @@ mod tests {
         let (mut j,p)=journal("u93-authority");
         j.set_route(7,-100,5,true,0).unwrap();
         j.grant(7,8,&["chat".into(),"taskq".into(),"projects".into()],0).unwrap();
-        let input=|sender,chat,topic,message,data:&str| Some(Input {callback:None,image:None,voice:None,media_group:None,quote:None,language:None,chat,topic,sender:Some(sender),name:None,message,kind:"action",text:Some(data.into()),reply_to:Some(message)});
+        let input=|sender,chat,topic,message,data:&str| Some(Input { files: vec![],callback:None,image:None,voice:None,media_group:None,quote:None,language:None,chat,topic,sender:Some(sender),name:None,message,kind:"action",text:Some(data.into()),reply_to:Some(message)});
         // Mark actual outbox sends and retain the exact callback token/message pairing.
         let deliver=|j:&mut Journal| {
             let mut buttons=vec![];
@@ -3664,7 +3726,7 @@ mod tests {
             }
             buttons
         };
-        j.admit(&[(1,Some(Input{callback:None,image:None,voice:None,media_group:None,quote:None,language:None,chat:-100,topic:Some(5),sender:Some(7),name:None,message:1,kind:"text",text:Some("Plan reply improvements".into()),reply_to:None}))],0).unwrap();
+        j.admit(&[(1,Some(Input{files:vec![],callback:None,image:None,voice:None,media_group:None,quote:None,language:None,chat:-100,topic:Some(5),sender:Some(7),name:None,message:1,kind:"text",text:Some("Plan reply improvements".into()),reply_to:None}))],0).unwrap();
         let r=j.claim_next(4,0).unwrap().remove(0);
         j.save_plan(&r,&json!([{"title":"Replies","goal":"Keep paragraphs","acceptance":["Buttons work"]}]),"pilotq","taskqorg/pilotq","",1).unwrap();
         j.finish(&r,None,None,&Outcome::Answered("Saved".into()),2).unwrap();
@@ -3700,7 +3762,7 @@ mod tests {
         assert_eq!(r.text,"2. Detailed");
         assert!(j.is_choice(&r).unwrap());
         assert!(j.button_plan(&r).unwrap().is_none());
-        let tq=crate::taskq::Taskq{bin:"/nonexistent".into(),root:"/nonexistent".into(),poll:std::time::Duration::from_secs(1)};
+        let tq=crate::taskq::Taskq{bot:None,bin:"/nonexistent".into(),root:"/nonexistent".into(),poll:std::time::Duration::from_secs(1)};
         let wrapped=std::sync::Mutex::new(j);
         let (ok,reason)=crate::taskq::call(&tq,&wrapped,&r,"task_run_plan",&json!({"revision":1}));
         assert!(!ok && reason.contains("never authorizes launch"));

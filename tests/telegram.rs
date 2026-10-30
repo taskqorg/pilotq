@@ -3312,3 +3312,108 @@ printf 'fixture task #42 ready\n'"#);
     wait("unapproved argv refused",15,||sent_has(&st,"command arguments are not approved"));
     stop(c,d);
 }
+
+// #145 / R13, §4–5: service ingress -> durable answer/tool intent -> real download -> readable CLI files.
+// Lost answer response recovers the original operation; provider refusals retain reply/files with the actual remedy.
+#[test]
+fn reply_files_service() {
+    let (d,st)=tq_setup("reply-files-service",true);
+    let fake=FAKE_TASKQ.replace("cmd, op = a[0], opt(\"--op-id\")",r#"
+cmd, op = a[0], opt("--op-id")
+paths=[a[i+1] for i,x in enumerate(a) if x=='--file']
+if paths:
+    import pathlib
+    for i,p in enumerate(paths):
+        data=pathlib.Path(p).read_bytes()
+        assert data.startswith(b'\x89PNG\r\n\x1a\n')
+        pathlib.Path(d,'worker-'+op+'-'+str(i)).write_bytes(data)
+    if os.path.exists(os.path.join(d,'refuse-files')):
+        r=receipt(int(a[1]),'rejected','Invented provider quota exhausted; increase board storage then retry')
+        r['next']='Increase board storage then retry'
+        out(r,1)
+"#);
+    fs::write(d.join("fake-taskq"),fake).unwrap();
+    let c=spawn(&d,None);
+    push(&st,call(1,OWNER,None,OWNER,"task_plan",plan(&["File evidence"])));
+    wait("plan",15,||sent_has(&st,"Draft saved locally."));
+    push(&st,call(2,OWNER,None,OWNER,"task_run_plan",json!({"revision":1})));
+    wait("task",15,||board(&d)["tasks"]["19"]["state"]=="ready");
+    set_task(&d,19,|t|{t["state"]=json!("ask");t["card"]=json!("Done: ready\nProblem: send the evidence\n1. Continue ★\n2. Stop");});
+    wait("question",15,||sent_has(&st,"send the evidence"));
+    let q=sent(&st).into_iter().find(|m|m["text"].as_str().is_some_and(|s|s.contains("⚑ send the evidence"))).unwrap();
+    let revision=board(&d)["tasks"]["19"]["revision"].as_i64().unwrap();
+    fs::write(d.join("lose-control"),"").unwrap();
+    let mut photo=reply(3,OWNER,None,OWNER,q["id"].as_i64().unwrap(),"");
+    photo["message"].as_object_mut().unwrap().remove("text");
+    photo["message"]["photo"]=json!([{"file_id":"invented-photo","file_unique_id":"invented-id","file_size":68,"width":1,"height":1}]);
+    push(&st,photo);
+    wait("unknown receipt",15,||query(&d,"SELECT count(*) FROM task_effects WHERE receipt IS NULL")==1 && sent_has(&st,"is uncertain"));
+    assert_eq!(query(&d,"SELECT count(*) FROM requests WHERE update_id=3 AND kind='answer'"),1);
+    drop(c);
+    fs::remove_file(d.join("board-down")).unwrap();
+    let c=spawn(&d,None);
+    wait("reconciled",15,||query(&d,"SELECT count(*) FROM task_effects WHERE receipt IS NULL")==0);
+    let answers:Vec<_>=tq_calls(&d).into_iter().filter(|a|a[0]=="answer").collect();
+    assert!(answers.len()>=2);
+    let op=|a:&Vec<String>|a[a.iter().position(|s|s=="--op-id").unwrap()+1].clone();
+    assert!(answers.iter().all(|a|op(a)==op(&answers[0]) && a.contains(&revision.to_string()) && a.contains(&"--file".into())));
+    assert_eq!(board(&d)["ops"].as_object().unwrap().keys().filter(|k|k.as_str()==op(&answers[0])).count(),1);
+    for (id,tool,args) in [(4,"task_steer",json!({"project":"pilotq","task":"19","text":"Mixed caption and file"})),
+        (5,"task_requeue",json!({"project":"pilotq","task":"19"}))] {
+        let mut u=call(id,OWNER,None,OWNER,tool,args);
+        let caption=u["message"].as_object_mut().unwrap().remove("text").unwrap();
+        u["message"]["caption"]=caption;
+        u["message"]["document"]=json!({"file_id":"invented-document","file_unique_id":"invented-id","file_size":68,"file_name":"evidence.bin"});
+        push(&st,u);
+        wait(tool,15,||tq_calls(&d).iter().any(|a|a[0]==if tool=="task_steer" {"steer"}else{"requeue"} && a.contains(&"--file".into())));
+        wait("receipt",15,||query(&d,&format!("SELECT count(*) FROM requests WHERE update_id={id} AND state='answered'"))==1);
+    }
+    fs::write(d.join("refuse-files"),"").unwrap();
+    set_task(&d,19,|t|t["state"]=json!("doing"));
+    let mut u=call(6,OWNER,None,OWNER,"task_steer",json!({"project":"pilotq","task":"19"}));
+    let caption=u["message"].as_object_mut().unwrap().remove("text").unwrap();u["message"]["caption"]=caption;
+    u["message"]["document"]=json!({"file_id":"invented-document","file_unique_id":"invented-id","file_size":68,"file_name":"refused.bin"});
+    push(&st,u);
+    wait("provider reason and fix",15,||sent_has(&st,"Invented provider quota exhausted; increase board storage then retry"));
+    assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE request_id=(SELECT id FROM requests WHERE update_id=6) AND kind='reply_files'"),1);
+    assert!(fs::read_dir(d.join("reply-files")).unwrap().next().is_some(),"refusal retains protected file bytes");
+    ok(cli(&d,&["users","grant","8","chat","taskq","project:pilotq"]));
+    let before=tq_calls(&d).iter().filter(|a|a[0]=="requeue").count();
+    let mut u=call(7,8,None,8,"task_requeue",json!({"project":"pilotq","task":"19"}));
+    let caption=u["message"].as_object_mut().unwrap().remove("text").unwrap();u["message"]["caption"]=caption;
+    u["message"]["document"]=json!({"file_id":"invented-document","file_unique_id":"invented-id","file_size":68,"file_name":"evidence.bin"});
+    push(&st,u);
+    wait("owner-only file requeue",15,||sent_has(&st,"Only the installation owner may requeue with files"));
+    assert_eq!(tq_calls(&d).iter().filter(|a|a[0]=="requeue").count(),before);
+    // §2/§5: destination clarification must retain the earlier caller-owned file.
+    fs::remove_file(d.join("refuse-files")).unwrap();
+    let mut missing=vec![];
+    for (id,tool,cmd) in [(8,"task_steer","steer"),(10,"task_requeue","requeue")] {
+        set_task(&d,19,|t|t["state"]=json!("doing"));
+        let before=tq_calls(&d).iter().filter(|a|a[0]==cmd).count();
+        let mut u=text(id,OWNER,None,OWNER,"");
+        u["message"].as_object_mut().unwrap().remove("text");
+        u["message"]["document"]=json!({"file_id":"invented-document","file_unique_id":"invented-id","file_size":68,"file_name":"clarified.bin"});
+        push(&st,u);
+        wait("file awaits destination",15,||query(&d,&format!("SELECT count(*) FROM requests WHERE update_id={id} AND state='answered'"))==1);
+        assert_eq!(tq_calls(&d).iter().filter(|a|a[0]==cmd).count(),before,"no guessed destination write");
+        let source=query(&d,&format!("SELECT id FROM requests WHERE update_id={id}"));
+        push(&st,call(id+1,OWNER,None,OWNER,tool,json!({"project":"pilotq","task":"19","source_request":source})));
+        wait("clarified reply handled",15,||query(&d,&format!("SELECT count(*) FROM requests WHERE update_id={} AND state='answered'",id+1))==1);
+        let calls=tq_calls(&d);
+        let writes:Vec<_>=calls.iter().filter(|a|a[0]==cmd).collect();
+        if writes.len()!=before+1 {missing.push(tool);} else {
+            assert!(writes.last().unwrap().contains(&"--file".into()));
+        }
+    }
+    assert!(missing.is_empty(),"clarification lost the earlier file for {missing:?}");
+    let foreign=query(&d,"SELECT id FROM requests WHERE update_id=7");
+    for (id,tool,cmd) in [(12,"task_steer","steer"),(13,"task_requeue","requeue")] {
+        let before=tq_calls(&d).iter().filter(|a|a[0]==cmd).count();
+        push(&st,call(id,OWNER,None,OWNER,tool,json!({"project":"pilotq","task":"19","source_request":foreign})));
+        wait("foreign file source refused",15,||query(&d,&format!("SELECT count(*) FROM requests WHERE update_id={id} AND state='answered'"))==1);
+        assert!(sent_has(&st,"files must come from your own input in this conversation generation"));
+        assert_eq!(tq_calls(&d).iter().filter(|a|a[0]==cmd).count(),before,"another person's files never authorize dispatch");
+    }
+    stop(c,d);
+}
