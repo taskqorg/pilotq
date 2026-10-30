@@ -1399,7 +1399,8 @@ fn u10_restart_new_status_pause_and_park() {
     wait("status parked", 15, || sent(&st).iter().any(|s| s.get("edit").is_none() && s["chat_id"] == OWNER && s["text"].as_str().unwrap().contains("Parked")));
     let b = board(&d);
     assert_eq!((b["creates"].as_i64(), b["paused"].as_bool()), (Some(1), Some(true)), "status reads never create");
-    assert_eq!(tq_calls(&d).iter().map(|c| c[0].as_str()).collect::<Vec<_>>(), ["add", "start", "service", "later"]);
+    // #170 A2: status additionally reads the issue; the no-extra-mutations guard remains exact.
+    assert_eq!(tq_calls(&d).iter().map(|c| c[0].as_str()).collect::<Vec<_>>(), ["add", "start", "issue", "service", "later"]);
     stop(c, d);
 }
 
