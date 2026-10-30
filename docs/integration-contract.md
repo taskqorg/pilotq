@@ -200,7 +200,11 @@ grants refuse before deployment commands run.
 Status checks the declared DEV health JSON (`sha`, optionally `deployed_at` or health-instance
 `started_at`). A task's merged SHA comes from TaskQ's explicit `merged_sha` field or a trusted
 terminal `delivery … as SHA; merge-result CI green` receipt, never from prose or absence in an open
-snapshot. Git ancestry proves inclusion. Report `on DEV since T` when included and the health
+snapshot. Without that receipt (a GitLab MR a person merged after close, task #183), the latest
+trusted `taskq: result SHA` comment names the MR head: the merge SHA is the oldest commit on the
+configured main ref's first-parent chain whose history contains that head, or the head itself when
+its successor's first parent is the head (fast-forward). Squashed, rebased or unfetched heads and
+failed Git reads leave the merge identity unknown. Git ancestry proves inclusion. Report `on DEV since T` when included and the health
 timestamp is available; otherwise `on DEV since T (first observed)` uses the persisted first
 positive observation, without claiming actual deployment time. Report `not yet on DEV` for a proven
 negative, and unknown for failed health, missing commit or failed Git reads. Project status includes

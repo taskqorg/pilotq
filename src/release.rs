@@ -11,7 +11,7 @@ fn get(j:&Journal,key:&str)->Result<Option<Value>,String> {
 fn put(j:&Journal,key:&str,v:&Value)->Result<(),String> {j.0.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?1,?2)",params![key,v.to_string()]).map(drop).map_err(err)}
 fn sha(s:&str)->bool {s.len()==40 && s.bytes().all(|c|c.is_ascii_hexdigit())}
 
-/// Only TaskQ's trusted terminal delivery receipt proves a merge identity.
+/// TaskQ's trusted terminal delivery receipt proves a merge identity; hand merges use `merge_identity`.
 pub fn merged_sha(issue:&Value)->Option<String> {
     if let Some(s)=issue["merged_sha"].as_str().filter(|s|sha(s)) {return Some(s.into());}
     issue["comments"].as_array()?.iter().rev().filter(|c|c["trusted"]==true)
@@ -20,6 +20,25 @@ pub fn merged_sha(issue:&Value)->Option<String> {
             if !line.starts_with("delivery ") || !line.contains("; merge-result CI green") {return None;}
             let (_,part)=line.split_once(" as ")?;let s=part.split(';').next()?;sha(s).then(||s.into())
         })
+}
+
+// #183 / §5: a GitLab hand merge writes no receipt; Git proves which main commit merged the trusted result head.
+fn merge_identity(c:&Value,issue:&Value,end:Instant)->Option<String> {
+    if let Some(s)=merged_sha(issue) {return Some(s);}
+    let result=issue["comments"].as_array()?.iter().rev().filter(|c|c["trusted"]==true)
+        .filter_map(|c|c["body"].as_str()?.strip_prefix("taskq: result ")?.split(' ').next()).find(|s|sha(s))?;
+    let main=resolve_until(c,c["main_ref"].as_str()?,end).ok()?;
+    let list=|args:&[&str]| {
+        let out=crate::commands::execute_bounded(crate::commands::command(c["git"].as_str()?,c["root"].as_str()?,args),end,||true,1024*1024);
+        (out["status"]=="success").then(||out["stdout"].as_str().unwrap_or("").lines().map(String::from).collect::<Vec<_>>())
+    };
+    let range=format!("{result}..{main}");
+    // ponytail: lists every main commit since the merge base (1 MiB cap); bisect if histories outgrow it.
+    let descendants:std::collections::HashSet<String>=list(&["rev-list","--ancestry-path",&range])?.into_iter().collect();
+    let merge=list(&["rev-list","--first-parent",&range])?.into_iter().rev().find(|s|descendants.contains(s))?;
+    // Fast-forward merges leave the result head itself on the main first-parent chain.
+    let parent=resolve_until(c,&format!("{merge}^1"),end).ok()?;
+    Some(if parent==result {result.into()} else {merge})
 }
 
 fn binding(j:&Journal,p:&str)->Result<(String,String),String> {j.projects()?.into_iter().find(|x|x.0==p).map(|x|(x.1,x.2)).ok_or("Project is not registered".into())}
@@ -131,12 +150,12 @@ fn health_until(c:&Value,end:Instant)->Result<Value,String> {
 }
 // #179 / §5: pipeline evidence is independent of historical worker closing notes.
 fn delivery_config(c:Result<Value,String>,issue:&Value,end:Instant)->Value {
-    let merged=merged_sha(issue);
+    let merged=c.as_ref().ok().and_then(|c|merge_identity(c,issue,end)).or_else(||merged_sha(issue));
     let mut stage=if issue["state"].as_str().is_some_and(|s|s.eq_ignore_ascii_case("closed")) {"closed"} else {"open"};
     if merged.is_some() {stage="merged";}
     let result=(|| -> Result<Value,String> {
         let c=c?;
-        let target=merged.as_deref().ok_or("TaskQ merge identity unavailable")?;
+        let target=merged.as_deref().ok_or("Merge identity unavailable")?;
         let output=run(&c,"delivery_status",target,end,||true);
         if output["status"]!="success" {return Err("Delivery adapter failed or unavailable".into());}
         let report:Value=serde_json::from_str(output["stdout"].as_str().unwrap_or("")).map_err(|_|"Delivery adapter JSON unreadable")?;
@@ -220,7 +239,7 @@ pub fn task_observations(j:&std::sync::Mutex<Journal>,p:&str,issue:&Value,end:In
 }
 pub fn task_dev(j:&std::sync::Mutex<Journal>,p:&str,issue:&Value,end:Instant)->Value {
     let result=(|| {let c=config(&j.lock().unwrap(),p)?;let h=health_until(&c,end)?;
-        dev_observe(j,p,&c,merged_sha(issue).as_deref(),&h,end)})();
+        dev_observe(j,p,&c,merge_identity(&c,issue,end).as_deref(),&h,end)})();
     result.unwrap_or_else(|e:String|json!({"state":"unknown","reason":e,"observed_at":crate::now()}))
 }
 pub fn project_status_dev(tq:&Taskq,j:&std::sync::Mutex<Journal>,p:&str,tasks:&Value,end:Instant)->Value {
@@ -233,7 +252,7 @@ pub fn project_status_dev(tq:&Taskq,j:&std::sync::Mutex<Journal>,p:&str,tasks:&V
         let main=dev_observe(j,p,&c,Some(&main),&h,end)?;
         let mut projected=vec![];
         for n in numbers {let issue=read(tq,&board,&["issue",&n.to_string(),"--json"],end);
-            let merged=issue.ok().filter(|i|i["number"]==n).as_ref().and_then(merged_sha);
+            let merged=issue.ok().filter(|i|i["number"]==n).as_ref().and_then(|i|merge_identity(&c,i,end));
             let dev=dev_observe(j,p,&c,merged.as_deref(),&h,end).unwrap_or_else(|e|json!({"state":"unknown","reason":e}));
             projected.push(json!({"task":n,"dev":dev}));}
         Ok(json!({"main":main,"tasks":projected}))
@@ -336,7 +355,7 @@ fn preview_for(tq:&Taskq,j:&std::sync::Mutex<Journal>,id:i64,session:&str,genera
         if Instant::now()>=end {return Err("Preview deadline reached".into());}
         let issue=read(&bound,&board,&["issue",&n.to_string(),"--json"],end)?;
         if issue["number"]!=n || !issue["comments"].is_array() {return Err("TaskQ issue evidence incomplete".into());}
-        if let Some(s)=merged_sha(&issue) {
+        if let Some(s)=merge_identity(&c,&issue,end) {
             if ancestor_until(&c,&s,&target,end)? && !ancestor_until(&c,&s,&live,end)? {
                 let u=issue["url"].as_str().filter(|u|crate::taskq::valid_url(u)).ok_or("Task URL unavailable")?;links.push(u.to_string());
             }
@@ -544,6 +563,34 @@ mod tests {
         assert_eq!(delivery_config(config(&j,"sample"),&issue,Instant::now()+Duration::from_secs(10))["stage"],"on LIVE");
         std::fs::write(&script,"#!/bin/sh\nexit 1\n").unwrap();
         let got=delivery_config(config(&j,"sample"),&issue,Instant::now()+Duration::from_secs(10));assert_eq!(got["pipeline"],"unknown");assert_eq!(got["reason"],"Delivery adapter failed or unavailable");
+    }
+    // #183 A2 / §5: a task closed without the delivery line still reports pipeline facts for its hand-merged result.
+    #[test]
+    fn hand_merge_identity_183() {
+        let f=fixture("handmerge183");
+        let cmd=|args:&[&str]| {let o=std::process::Command::new("/usr/bin/git").current_dir(&f.dir).args(args).output().unwrap();assert!(o.status.success(),"{:?}: {}",args,String::from_utf8_lossy(&o.stderr));String::from_utf8_lossy(&o.stdout).trim().to_string()};
+        cmd(&["checkout","-qb","taskq-541",&f.b]);std::fs::write(f.dir.join("r"),"r").unwrap();cmd(&["add","r"]);cmd(&["commit","-qm","result"]);let result=cmd(&["rev-parse","HEAD"]);
+        cmd(&["checkout","-q","main"]);std::fs::write(f.dir.join("m"),"m").unwrap();cmd(&["add","m"]);cmd(&["commit","-qm","other"]);
+        cmd(&["merge","-q","--no-ff","-m","Merge branch 'taskq-541' into 'main'","taskq-541"]);let merge=cmd(&["rev-parse","HEAD"]);
+        std::fs::write(f.dir.join("m"),"later").unwrap();cmd(&["commit","-qam","later"]);let later=cmd(&["rev-parse","HEAD"]);
+        let end=Instant::now()+Duration::from_secs(10);
+        let issue=|sha:&str,trusted:bool|json!({"state":"closed","comments":[{"trusted":trusted,"body":format!("taskq: result {sha} attempt 1\nChanged: invented")},{"trusted":true,"body":"taskq: close\nChanged: invented\ndelivery review-pr r0: pending"}]});
+        assert_eq!(merge_identity(&f.c,&issue(&result,true),end),Some(merge.clone()));
+        assert_eq!(merge_identity(&f.c,&issue(&result,false),end),None);
+        assert_eq!(merge_identity(&f.c,&issue(&f.b,true),end),Some(f.b.clone()),"fast-forward head is its own merge");
+        cmd(&["checkout","-qb","unmerged",&f.b]);std::fs::write(f.dir.join("u"),"u").unwrap();cmd(&["add","u"]);cmd(&["commit","-qm","unmerged"]);let unmerged=cmd(&["rev-parse","HEAD"]);
+        assert_eq!(merge_identity(&f.c,&issue(&unmerged,true),end),None);
+        let job=|state:&str,id:&str|json!({"state":state,"url":format!("https://example.invalid/jobs/{id}")});
+        let mut smoke=job("failed","smoke1");smoke["first_failing_check"]=json!("homepage returns 503");
+        let report=json!({"merged_at":"2026-10-30T16:10:00Z","first_main":{"sha":merge,"state":"failed","url":"https://example.invalid/pipelines/1","deploy":job("success","web_dev"),"smoke":[smoke]},"later_main":{"sha":later,"state":"success","url":"https://example.invalid/pipelines/2"}});
+        let script=f.dir.join("runner");
+        std::fs::write(&script,format!("#!/bin/sh\nprintf '%s' '{}' | sed \"s/SHA/$1/\"\n",report.to_string().replacen('{',r#"{"sha":"SHA","#,1))).unwrap();
+        let mut c=f.c.clone();c["delivery_status"]=json!([script,"{sha}"]);
+        let j=f.j.lock().unwrap();configure(&j,7,"sample",c).unwrap();
+        let got=delivery_config(config(&j,"sample"),&issue(&result,true),end);
+        assert_eq!(got["sha"],merge.as_str(),"{got}");assert_eq!(got["stage"],"on DEV");assert_eq!(got["live_includes"],false);
+        let reply=delivery_text(&got);
+        for fact in ["2026-10-30T16:10:00Z","web_dev","homepage returns 503","Later containing main pipeline: success","LIVE is behind"] {assert!(reply.contains(fact),"{reply}");}
     }
     // §5/§7/§12: a slow pipeline cannot hold controls or renew Git read budgets.
     #[test]
