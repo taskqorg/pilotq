@@ -398,6 +398,18 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
     }
     use crate::direct;
     let mut tools = direct::tools();
+    // §8 / R15: advertise administration only within current authority; dispatch still rechecks it.
+    {
+        let j=j.lock().unwrap();
+        let user=j.sender(r.request)?;
+        let users=j.has(user,"users")?;
+        let projects=j.has(user,"projects")?;
+        let grants=j.grants(user)?;
+        let scoped=projects || j.projects()?.iter().any(|p|grants.contains(&format!("project:{}",p.0)));
+        tools.retain(|t|match t["name"].as_str().unwrap_or("") {
+            "project_register"=>projects, "user_grant"|"user_revoke"=>users, "topic_open"=>users && scoped, _=>true,
+        });
+    }
     let instructions = match tq {
         Some(_) => {
             tools.extend(crate::taskq::tools().as_array().cloned().unwrap_or_default());
