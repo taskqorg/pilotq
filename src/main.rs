@@ -2,6 +2,7 @@
 
 mod builtins;
 mod direct;
+mod asana;
 mod commands;
 mod journal;
 mod instructions;

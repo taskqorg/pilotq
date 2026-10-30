@@ -6,7 +6,7 @@ use serde_json::{Map, Value, json};
 use std::path::PathBuf;
 
 /// Tools that may name a key (§ 5 Direct actions).
-pub const TOOLS: [&str; 3] = ["issue_read", "issue_comment", "issue_label"];
+pub const TOOLS: [&str; 4] = ["issue_read", "issue_comment", "issue_label", "asana_read"];
 
 pub struct Keys(pub PathBuf);
 
