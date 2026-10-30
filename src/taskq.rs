@@ -1094,15 +1094,21 @@ print(json.dumps(dict(task=19,op_id=op,outcome='accepted',state='doing',revision
         assert!(dispatch(&tq,&j,&r,"task_plan",&plan).unwrap_err().contains("Which project"),"ambiguity asks, writes nothing");
         assert!(j.lock().unwrap().plan_target(&r.session,None).is_err());
         let mut journal = j.into_inner().unwrap();
-        journal.finish(&r,None,None,&crate::manager::Outcome::Answered("Which project?\n1. pilotq\n2. tight".into()),8).unwrap();
+        journal.finish(&r,None,None,&crate::manager::Outcome::Answered("For pilotq or tight: 1. tight; 2. pilotq".into()),8).unwrap();
         let r = journal.ask(7,"1",9).unwrap();
+        assert_eq!(crate::direct::context_project(&journal,&r,7).unwrap().as_deref(),Some("tight"));
+        journal.finish(&r,None,None,&crate::manager::Outcome::Answered("ok".into()),10).unwrap();
+        let r = journal.ask(7,"make a task",11).unwrap();
+        assert!(crate::direct::context_project(&journal,&r,7).is_err());
+        journal.finish(&r,None,None,&crate::manager::Outcome::Answered("Which project?\n1. pilotq\n2. tight".into()),12).unwrap();
+        let r = journal.ask(7,"1",13).unwrap();
         let j = Mutex::new(journal);
         dispatch(&tq,&j,&r,"task_plan",&plan).unwrap();
         assert_eq!(j.lock().unwrap().plan_target(&r.session,None).unwrap().1,"pilotq");
         let mut journal = j.into_inner().unwrap();
-        journal.finish(&r,None,None,&crate::manager::Outcome::Answered("ok".into()),10).unwrap();
+        journal.finish(&r,None,None,&crate::manager::Outcome::Answered("ok".into()),14).unwrap();
         // The answered question is closed: a later bare number selects nothing.
-        let r = journal.ask(7,"2",11).unwrap();
+        let r = journal.ask(7,"2",15).unwrap();
         assert!(crate::direct::context_project(&journal,&r,7).is_err());
         drop(journal);
         std::fs::remove_dir_all(dir).unwrap();
