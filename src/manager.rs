@@ -493,6 +493,12 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
                 // no key value reaches the model, whichever tool printed it (§ 8)
                 (ok, d.keys.scrub(&out))
             })();
+            if ok {
+                let language=j.lock().unwrap().language(r.request).ok().flatten();
+                if let Some(finding)=crate::conversation::finding(name,&out,language.as_deref()) {
+                    let _=j.lock().unwrap().keep_finding(r,&finding,now());
+                }
+            }
             if let Err(e) = j.lock().unwrap().tool_size(r, name, out.len(), version, now()) {
                 eprintln!("run {} tool size: {e}", r.id);
             }

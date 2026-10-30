@@ -138,6 +138,10 @@
     "queued": "Queued for a worker · confirmed 0 s ago · TaskQ · pilotq#19 · First\nQueued for a worker · confirmed 0 s ago · TaskQ · pilotq#20 · Second",
     "doing": "Worker is working · confirmed 0 s ago · TaskQ · pilotq#19 · First\nQueued for a worker · confirmed 3 s ago · TaskQ · pilotq#20 · Second",
     "ask": "Worker is working · confirmed 2 s ago · TaskQ · pilotq#19 · First\nWaiting for your answer · confirmed 0 s ago · TaskQ · pilotq#20 · Second",
-    "closed": "Task closed; see the result · TaskQ · pilotq#19 · First\nWaiting for your answer · confirmed 2 s ago · TaskQ · pilotq#20 · Second"
+    "closed": "Task closed; see the result · TaskQ · pilotq#19 · First\nChanged: Replies preserve line breaks.\nOpen: Live check pending.\nWaiting for your answer · confirmed 2 s ago · TaskQ · pilotq#20 · Second"
+  },
+  "recovered_refusal": {
+    "en": "Reply not saved; check the current question and access.",
+    "ru": "Ответ не сохранён; проверьте актуальный вопрос и права."
   }
 }

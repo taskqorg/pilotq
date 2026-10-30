@@ -1724,6 +1724,10 @@ impl Journal {
         tx.commit().map_err(e)
     }
 
+    pub fn keep_finding(&self, r: &Run, text: &str, at: i64) -> Result<(),String> {
+        self.0.execute("INSERT INTO audit_events(request_id,run_id,at,kind,result) VALUES (?1,?2,?3,'kept_finding',?4)",params![r.request,r.id,at,text]).map(drop).map_err(|e|e.to_string())
+    }
+
     /// Spends one of the request's PilotQ tool calls (§ 5 Budget), counted in its audit record across runs and restarts, so a
     /// retried run continues the budget instead of starting a new one. False once `budget` are spent; a refused call records nothing.
     pub fn spend(&self, r: &Run, tool: &str, budget: usize, at: i64) -> Result<bool, String> {
@@ -1757,6 +1761,14 @@ impl Journal {
             Outcome::Failed(x) => ("failed", brief(language.as_deref(), if x.starts_with("voice") { if x.contains("20 MiB") || x.contains("5 minutes") { "voice_limit" } else { "voice_failed" } } else if x.contains("20 MiB") { "image_limit" } else if x.starts_with("image") || x.contains("image") { "image_failed" } else if x.contains("within") || x.contains("budget") { "limit" } else { "failed" }).into(), Some(x)),
             Outcome::Uncertain(x) => ("uncertain", brief(language.as_deref(), "uncertain").into(), Some(x)),
         };
+        if matches!(state,"failed"|"uncertain") {
+            let mut q=tx.prepare("SELECT DISTINCT result FROM audit_events WHERE request_id=?1 AND kind='kept_finding' ORDER BY id").map_err(e)?;
+            let findings:Vec<String>=q.query_map([r.request],|r|r.get(0)).and_then(Iterator::collect).map_err(e)?;
+            if !findings.is_empty() {
+                text.push_str("\n\n");text.push_str(&findings.join("\n"));
+                text.push_str(if language.as_deref().unwrap_or("en").starts_with("ru") {"\nОстальное можно запланировать отдельной задачей."} else {"\nThe remaining work can be planned as a task."});
+            }
+        }
         tx.execute("UPDATE runs SET state=?2, ended_at=?3, outcome=?4, model=?5 WHERE id=?1", params![r.id, state, at, error, model]).map_err(e)?;
         if state == "fenced" {
             tx.commit().map_err(e)?;
@@ -1919,6 +1931,10 @@ impl Journal {
         tx.execute("INSERT INTO audit_events(request_id,at,kind,target,item,result) SELECT request_id,?2,'task',board || ' ' || args,op,?3 FROM task_effects WHERE op=?1", params![op,at,receipt.to_string()]).map_err(|e| e.to_string())?;
         tx.execute("UPDATE requests SET project=(SELECT project FROM task_effects WHERE op=?1) WHERE id=(SELECT request_id FROM task_effects WHERE op=?1)", [op]).map_err(|e| e.to_string())?;
         if let Some(text) = notification {
+            // Recovery shares the live refusal projection; receipt diagnostics remain above in audit.
+            let language:Option<String>=tx.query_row("SELECT q.language FROM requests q JOIN task_effects e ON e.request_id=q.id WHERE e.op=?1",[op],|r|r.get(0)).map_err(|e|e.to_string())?;
+            let localized=crate::conversation::refusal(language.as_deref());
+            let text=if receipt["outcome"]=="accepted" {text} else {localized};
             tx.execute("UPDATE requests SET state=CASE WHEN ?2='accepted' THEN 'answered' ELSE 'failed' END,reply=?3,error=NULL WHERE kind='answer' AND id=(SELECT request_id FROM task_effects WHERE op=?1)",params![op,receipt["outcome"].as_str(),text]).map_err(|e|e.to_string())?;
             let (request, chat, topic, front): (i64, i64, Option<i64>, String) = tx.query_row("SELECT q.id,q.chat,q.topic,q.front FROM requests q JOIN task_effects e ON e.request_id=q.id WHERE e.op=?1", [op], |x| Ok((x.get(0)?,x.get(1)?,x.get(2)?,x.get(3)?))).map_err(|e| e.to_string())?;
             if front == "telegram" { outbox(&tx, request, chat, topic, None, None, text, at)?; }
@@ -2452,6 +2468,10 @@ impl Journal {
         self.0.query_row("SELECT state, revision, card FROM tasks WHERE number=?1 AND project=?2", params![task, project], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional().map_err(|e| e.to_string())
     }
 
+    pub fn task_language(&self, project: &str, task: i64) -> Result<Option<String>,String> {
+        self.0.query_row("SELECT q.language FROM requests q JOIN tasks t ON t.request_id=q.id WHERE t.project=?1 AND t.number=?2",params![project,task],|r|r.get(0)).map_err(|e|e.to_string())
+    }
+
     /// #165 A5: all tasks in a launch project into one status card, never one message per transition.
     fn launch_status(&self, request: i64, at: i64) -> Result<String,String> {
         let language:Option<String>=self.0.query_row("SELECT language FROM requests WHERE id=?1",[request],|r|r.get(0)).map_err(|e|e.to_string())?;
@@ -2463,6 +2483,13 @@ impl Journal {
             let status=crate::conversation::task_state(&state,closed,language.as_deref());
             let age=if closed {String::new()} else {if ru {format!(" · подтверждено {} с назад",at.saturating_sub(observed).max(0))} else {format!(" · confirmed {} s ago",at.saturating_sub(observed).max(0))}};
             lines.push(format!("{status}{age} · {}",crate::taskq::task_link(&board,n,self.task_title(&project,n)?.as_deref(),self.task_url(&project,n)?.as_deref())));
+            if closed {
+                let result:Option<String>=self.0.query_row("SELECT result FROM audit_events WHERE request_id=?1 AND kind='task_result' AND target=?2 ORDER BY id DESC LIMIT 1",params![request,format!("{project}#{n}")],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
+                if let Some(result)=result {
+                    let detail=result.lines().skip(1).collect::<Vec<_>>().join("\n");
+                    if !detail.is_empty() {lines.push(crate::conversation::reply(&detail,language.as_deref()));}
+                }
+            }
         }
         Ok(if lines.is_empty() {if ru {"Ожидает отправки.".into()} else {"Waiting to submit.".into()}} else {lines.join("\n")})
     }
@@ -2945,6 +2972,24 @@ mod tests {
         drop(j);std::fs::remove_dir_all(p).unwrap();
     }
 
+    // A3/A6: a restart must not bypass the localized answer refusal boundary.
+    #[test]
+    fn conversation_recovered_refusal() {
+        let (mut j,p)=journal("165-refusal");
+        let mut input=msg(7,7,1).unwrap(); input.language=Some("ru".into());
+        j.admit(&[(1,Some(input))],0).unwrap();
+        let r=j.claim_next(4,0).unwrap().remove(0);
+        let op=j.task_intent(&r,"pilotq","taskqorg/pilotq","",&["answer".into(),"19".into()],1).unwrap();
+        drop(j);
+        let j=Journal::open(&p.join("journal.sqlite")).unwrap();
+        let rc=json!({"task":19,"outcome":"rejected","reason":"Error: invented CLI error", "next":"{\"op_id\":\"invented\"}"});
+        j.task_receipt(&op,&rc,Some("Answer not saved: Error: invented CLI error {\"op_id\":\"invented\"}"),2).unwrap();
+        let text:String=j.0.query_row("SELECT text FROM outbox WHERE request_id=?1 ORDER BY id DESC LIMIT 1",[r.request],|r|r.get(0)).unwrap();
+        assert_eq!(text,"Ответ не сохранён; проверьте актуальный вопрос и права.");
+        assert!(j.0.query_row("SELECT result FROM audit_events WHERE kind='task'",[],|r|r.get::<_,String>(0)).unwrap().contains("invented CLI error"));
+        drop(j);std::fs::remove_dir_all(p).unwrap();
+    }
+
     // #165 A5: two tasks from one launch share a status receipt even as they
     // transition independently; task-specific questions remain separate messages.
     #[test]
@@ -2970,7 +3015,7 @@ mod tests {
                 j.record(d.id,&Sent::Ok(d.edit.unwrap_or(100+d.id)),at).unwrap();
             }
         }
-        j.close_task("pilotq",19,"Closed; result linked",9).unwrap();
+        j.close_task("pilotq",19,"Task closed; see the result\nChanged: Replies preserve line breaks.\nOpen: Live check pending.",9).unwrap();
         let d=j.due(9).unwrap().0.unwrap();assert_eq!(d.edit,status);
         assert_eq!(d.text,fixture["launch_status"]["closed"].as_str().unwrap());
         assert_eq!(count(&j,"SELECT count(DISTINCT sent_message) FROM outbox WHERE kind='status' AND state='delivered'"),1);

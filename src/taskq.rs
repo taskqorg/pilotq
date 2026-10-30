@@ -82,6 +82,20 @@ pub(crate) fn valid_url(url: &str) -> bool {
     url.starts_with("https://") && url.len() > 8 && !url.chars().any(|c| c.is_control() || c.is_whitespace() || matches!(c, '<' | '>' | '"' | '\''))
 }
 
+/// Only TaskQ's trusted close verdict supplies completion detail; an absent verdict stays unknown.
+fn closing_detail(issue: &Value, task: i64) -> Option<String> {
+    if issue["number"]!=task || issue["state"].as_str()?.to_lowercase()!="closed" {return None;}
+    let body=issue["comments"].as_array()?.iter().rev().filter(|c|c["trusted"]==true)
+        .filter_map(|c|c["body"].as_str()).find(|b|b.lines().next().is_some_and(|l|l.starts_with("taskq: close")))?;
+    let mut keep=false;
+    let lines=body.lines().skip(1).filter(|line| {
+        if line.starts_with("Changed: ") || line.starts_with("Open: ") {keep=true;}
+        else if line.starts_with("Checks: ") || line.starts_with("Report: ") || line.starts_with("op-id: ") {keep=false;}
+        keep
+    }).collect::<Vec<_>>();
+    if lines.is_empty() {None} else {Some(lines.join("\n"))}
+}
+
 fn saved_link(j: &Journal, project: &str, board: &str, task: i64, title: Option<&str>) -> String {
     task_link(board, task, title, j.task_url(project, task).ok().flatten().as_deref())
 }
@@ -523,7 +537,7 @@ fn reconcile_effect(tq: &Taskq, j: &Mutex<Journal>, op: &str, board: &str, args:
     let (request,project)=j.lock().unwrap().answer_effect_owner(op)?;
     let previous=j.lock().unwrap().task_effect_receipt(op)?;
     if let Some(rc)=previous {
-        return if rc["outcome"]=="accepted" {Ok(format!("Change already confirmed. {}",saved_link(&j.lock().unwrap(),&project,board,rc["task"].as_i64().unwrap_or(0),None)))} else {Err(format!("Reply retained: {}. {}",rc["reason"],rc["next"]))};
+        return if rc["outcome"]=="accepted" {Ok(format!("Change already confirmed. {}",saved_link(&j.lock().unwrap(),&project,board,rc["task"].as_i64().unwrap_or(0),None)))} else {Err(crate::conversation::refusal(j.lock().unwrap().language(request)?.as_deref()).into())};
     }
     let sender=j.lock().unwrap().sender(request)?;
     allowed(&j.lock().unwrap(),sender,&project,true)?;
@@ -564,9 +578,10 @@ fn reconcile_effect(tq: &Taskq, j: &Mutex<Journal>, op: &str, board: &str, args:
         let saved=receipt.is_some();
         let state=j.lock().unwrap().answer_state(request,rc["state"].as_str().unwrap_or("unknown"))?;
         let title=j.lock().unwrap().task_title(&project,n)?;
+        let language=j.lock().unwrap().language(request)?;
         let message=match receipt {
             Some(receipt)=>format!("{receipt}\nTaskQ: {state}. {}",saved_link(&j.lock().unwrap(),&project,board,n,title.as_deref())),
-            None=>format!("Answer not saved: {}: {}. {}. Reply retained; check task status before answering again. {}",rc["outcome"],rc["reason"].as_str().unwrap_or("no reason given"),rc["next"].as_str().unwrap_or("Resolve the refusal before retrying"),saved_link(&j.lock().unwrap(),&project,board,n,None)),
+            None=>format!("{} {}",crate::conversation::refusal(language.as_deref()),saved_link(&j.lock().unwrap(),&project,board,n,None)),
         };
         j.lock().unwrap().task_receipt(op,&rc,notify.then_some(message.as_str()),now())?;
         if rc["outcome"]=="accepted" { let _=std::fs::remove_dir_all(&cache); }
@@ -578,7 +593,7 @@ fn reconcile_effect(tq: &Taskq, j: &Mutex<Journal>, op: &str, board: &str, args:
     let message = format!("{label}. {}",saved_link(&j.lock().unwrap(),&project,board,n,None));
     j.lock().unwrap().task_receipt(op, &rc, notify.then_some(message.as_str()), now())?;
     if rc["outcome"]=="accepted" { let _=std::fs::remove_dir_all(&cache); }
-    if rc["outcome"] != "accepted" { return Err(format!("Task #{n} {}: {}. {}. Reply retained. {}", rc["outcome"], rc["reason"].as_str().unwrap_or("no reason given"), rc["next"].as_str().unwrap_or("Resolve the refusal and check task status before retrying"), saved_link(&j.lock().unwrap(),&project,board,n,None))); }
+    if rc["outcome"] != "accepted" { return Err(message); }
     Ok(format!("Task #{n}: {} accepted; TaskQ readback {}. Worker termination is not implied. {}", args[0], rc["state"].as_str().unwrap_or("unknown"), saved_link(&j.lock().unwrap(),&project,board,n,None)))
 }
 
@@ -825,6 +840,10 @@ fn scan(tq: &Taskq, j: &Mutex<Journal>) -> bool {
         let snapshot = snapshots.entry(project.clone()).or_insert_with(|| bound.snapshot_for(&board));
         let s = match snapshot { Ok(s) => s, Err(e) => { failure = Some(e.clone()); continue; } };
         reconcile_questions(&bound,j,&project,&board,n);
+        let closing=if find(s,n).is_none() {
+            bound.cli(&["issue".into(),n.to_string(),"--json".into()]).ok()
+                .and_then(|s|serde_json::from_str::<Value>(&s).ok()).and_then(|v|closing_detail(&v,n))
+        } else {None};
         let j = j.lock().unwrap();
         let r = match find(s, n) {
             Some(t) => {
@@ -835,7 +854,11 @@ fn scan(tq: &Taskq, j: &Mutex<Journal>) -> bool {
                 let task_url=j.task_url(&project,n).ok().flatten();
                 j.observe(&project, n, state, t["revision"].as_i64().unwrap_or(0), card, &status_text(&board, n, state, title, task_url.as_deref()), card.map(|c| question_text(&board, n, c, title, task_url.as_deref())).as_deref(), now())
             }
-            None => j.close_task(&project, n, &format!("{}\nClosed on the board; verdict and evidence are on the issue.", saved_link(&j,&project,&board,n,j.task_title(&project,n).ok().flatten().as_deref())), now()),
+            None => {
+                let language=j.task_language(&project,n).ok().flatten();
+                let unknown=if language.as_deref().unwrap_or("en").starts_with("ru") {"Результат и ограничения пока не подтверждены."} else {"Result and limitations are not confirmed yet."};
+                j.close_task(&project,n,&format!("{}\n{}",crate::conversation::task_state("",true,language.as_deref()),closing.as_deref().unwrap_or(unknown)),now())
+            },
         };
         match r {
             Ok(q) => queued |= q,

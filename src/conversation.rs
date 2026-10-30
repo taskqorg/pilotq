@@ -22,6 +22,25 @@ pub fn reply(text: &str, language: Option<&str>) -> String {
     } else { clean }
 }
 
+pub fn refusal(language: Option<&str>) -> &'static str {
+    if language.unwrap_or("en").starts_with("ru") {"Ответ не сохранён; проверьте актуальный вопрос и права."}
+    else {"Reply not saved; check the current question and access."}
+}
+
+/// Only successful, bounded read results become fallback findings; never project a mutation as success.
+pub fn finding(name: &str, text: &str, language: Option<&str>) -> Option<String> {
+    let ru=language.unwrap_or("en").starts_with("ru");
+    let v:Value=serde_json::from_str(text).ok()?;
+    match name {
+        "project_list" => {
+            let names=v["projects"].as_array()?.iter().filter_map(|p|p["name"].as_str()).collect::<Vec<_>>().join(", ");
+            Some(format!("{}: {}",if ru {"Доступные проекты"} else {"Accessible projects"},if names.is_empty() {if ru {"нет"} else {"none"}} else {&names}))
+        }
+        "issue_read" => Some(format!("{}\n{}",v["title"].as_str()?,v["body"].as_str().unwrap_or(""))),
+        _ => None,
+    }.map(|s|reply(&s,language))
+}
+
 pub fn progress(phase: &str, elapsed: i64, language: Option<&str>) -> String {
     let ru=language.unwrap_or("en").starts_with("ru");
     let label=match (ru,phase) {
@@ -80,6 +99,10 @@ mod tests {
                 assert!(!text.contains(forbidden), "{text}");
             }
         };
+        for lang in ["en","ru"] {
+            assert_eq!(refusal(Some(lang)),fixture["recovered_refusal"][lang].as_str().unwrap());
+            clean(refusal(Some(lang)));
+        }
         for case in fixture["plans"].as_array().unwrap() {
             let rendered = plan(&case["tickets"], case["language"].as_str());
             assert_eq!(rendered, case["snapshot"].as_str().unwrap());

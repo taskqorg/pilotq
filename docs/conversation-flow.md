@@ -11,11 +11,12 @@ Presentation detail of the [Conversation contract](../pilotq.md#conversation-con
 | Queued | Last confirmed waiting state, observation age and verified links | None | None | Edit status card on fresh working/question/done observation |
 | Working | Last confirmed working state, observation age and verified links | None | None | Edit status card; never infer execution from admission |
 | Worker question | Complete TaskQ answer card, no footer | Number and label, recommendation star | Answer only current question under current grants | Edit question with accepted option/text and actor; remove buttons; status card says waiting for answer |
-| Done | One factual effect line followed by verified result and limitations | None | None | Edit status card; preserve unanswered question and terminal evidence |
+| Done | One factual effect line followed by trusted TaskQ closing result and limitations; explicitly unconfirmed when unavailable | None | None | Edit status card; preserve unanswered question and terminal evidence |
 | Cancelled plan | Original summary plus “Plan cancelled.” | None | None | Same message, no new acknowledgement |
 | Stale/foreign/reset/repeated callback | Short popup toast | None | No effect | No chat message |
 | Long launch | Original plan plus one phase and elapsed-time line | None | None | Coalesced, rate-limited edit of that source message; completion replaces the line |
 | Give-up | Original plan plus one plain problem line | Retry, Cancel | Retry resumes the same authorized operations; Cancel stops only remaining submission | Same message; remove buttons; old controls get a toast |
+| Deadline | One plain limit line, readable completed read findings and an offer to plan the remainder | None | None | Preserve confirmed observations without asserting uncertain effects |
 | Failure episode | One plain line describing what could not finish | None | None | No repeated retry notices; one resolution line only after verified recovery |
 | Partial or uncertain launch | Plain line; preserve verified links to filed tasks | None | None | Same status card; reconcile stable operations, never claim missing work exists |
 | `/status` | Health, conversation activity, latest model/context/quota observation and age | None | Deterministic read | Separate control reply; unavailable/stale observations labeled |
