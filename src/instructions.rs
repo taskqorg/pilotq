@@ -9,7 +9,7 @@ fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
 
 pub fn policy() -> String {
     let workflow = include_str!("../specq/engineering/agent-workflow.md");
-    let contract = include_str!("../pilotq.md");
+    let conversation = include_str!("../docs/conversation-contract.md");
     format!("You are PilotQ, a conversational front end, not a TaskQ worker. Shared communication rules apply to every answer, progress message, plan, task title and body, question and result. Use Documentation for persistent task text and Change communication for change reports. Shared workflow sections apply to preparing and admitting tasks through PilotQ tools. PilotQ's contract additions take precedence. Tool grants are enforced separately.\n\n{}\n{}\n{}\n{}\n{}\n{}\n## Prepare the task{}\n## Task intake{}\n## PilotQ discussion and delegation{}\n## PilotQ conversation contract{}\n## Telegram feedback{}",
         include_str!("../specq/caveman/rules/core.md"),
         include_str!("../specq/caveman/rules/agents.md"),
@@ -19,8 +19,8 @@ pub fn policy() -> String {
         include_str!("../specq/caveman/rules/notifications.md"),
         section(workflow, "## Prepare the task", "## Task intake"),
         section(workflow, "## Task intake", "## Queue flow"),
-        section(contract, "### Discuss, act, delegate", "### Changing direction"),
-        section(contract, "### Conversation contract", "### Conversation identity"),
+        section(conversation, "### Discuss, act, delegate", "### Changing direction"),
+        section(conversation, "### Conversation contract", "### Conversation identity"),
         include_str!("../docs/telegram-feedback.md").split_once("change them here first.\n").expect("feedback detail exists").1)
 }
 
@@ -29,4 +29,17 @@ pub fn fingerprint() -> i64 {
     (policy(), crate::manager::CONVERSATION, crate::taskq::INSTRUCTIONS, crate::direct::INSTRUCTIONS,
         crate::taskq::tools().to_string(), serde_json::Value::Array(crate::direct::tools()).to_string()).hash(&mut hash);
     hash.finish() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn relocated_product_policy_is_loaded() {
+        // R13 / §2: relocation must retain both delegation authority and card presentation.
+        let policy = super::policy();
+        assert!(policy.contains("PilotQ does not perform queued task work or choose answers on the owner's"));
+        assert!(policy.contains("Each display offers Launch and Cancel"));
+        assert!(policy.contains("immutable task scope and durable receipt rules remain in force"));
+        assert!(policy.contains("No need to survive as a long-running job"));
+    }
 }

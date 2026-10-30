@@ -1,0 +1,831 @@
+# Contract relocation map
+
+Each inventory ID maps to the binding destination of its rule. Source-only dates, provenance and supersession wording are removed from the root; the exact original wording remains in the [before-edit inventory](contract-177-inventory.md). Proposed status is retained in linked specifications. No operational threshold or authorization exception is retired.
+
+- I001 → [PilotQ product contract](../pilotq.md#rules). Purpose, authority and qualification retained; historical dates/provenance archived in inventory.
+- I002 → [PilotQ product contract](../pilotq.md#rules). Purpose, authority and qualification retained; historical dates/provenance archived in inventory.
+- I003 → [PilotQ product contract](../pilotq.md#rules). Purpose, authority and qualification retained; historical dates/provenance archived in inventory.
+- I004 → [PilotQ product contract](../pilotq.md#rules). Purpose, authority and qualification retained; historical dates/provenance archived in inventory.
+- I005 → [PilotQ product contract](../pilotq.md#rules). Purpose, authority and qualification retained; historical dates/provenance archived in inventory.
+- I006 → [PilotQ product contract](../pilotq.md#rules). Purpose, authority and qualification retained; historical dates/provenance archived in inventory.
+- I007 → [PilotQ product contract](../pilotq.md#rules). Purpose, authority and qualification retained; historical dates/provenance archived in inventory.
+- I008 → [PilotQ product contract](../pilotq.md#rules). Purpose, authority and qualification retained; historical dates/provenance archived in inventory.
+- I009 → [PilotQ product contract](../pilotq.md#rules). Purpose, authority and qualification retained; historical dates/provenance archived in inventory.
+- I010 → [PilotQ product contract](../pilotq.md#rules). Purpose, authority and qualification retained; historical dates/provenance archived in inventory.
+- I011 → [PilotQ product contract](../pilotq.md#rules). Purpose, authority and qualification retained; historical dates/provenance archived in inventory.
+- I012 → [PilotQ product contract](../pilotq.md#rules). Purpose, authority and qualification retained; historical dates/provenance archived in inventory.
+- I013 → [Specification hierarchy](../pilotq.md#rules). Hierarchy and exception scope retained in R18/R19 and §9.
+- I014 → [Specification hierarchy](../pilotq.md#rules). Hierarchy and exception scope retained in R18/R19 and §9.
+- I015 → [Specification hierarchy](../pilotq.md#rules). Hierarchy and exception scope retained in R18/R19 and §9.
+- I016 → [Specification hierarchy](../pilotq.md#rules). Hierarchy and exception scope retained in R18/R19 and §9.
+- I017 → [Specification hierarchy](../pilotq.md#rules). Hierarchy and exception scope retained in R18/R19 and §9.
+- I018 → [Specification hierarchy](../pilotq.md#rules). Hierarchy and exception scope retained in R18/R19 and §9.
+- I019 → [Specification hierarchy](../pilotq.md#rules). Hierarchy and exception scope retained in R18/R19 and §9.
+- I020 → [Specification hierarchy](../pilotq.md#rules). Hierarchy and exception scope retained in R18/R19 and §9.
+- I021 → [Specification hierarchy](../pilotq.md#rules). Hierarchy and exception scope retained in R18/R19 and §9.
+- I022 → [Rules](../pilotq.md#rules). Requirement retained under its original R1–R17 ID.
+- I023 → [Rules](../pilotq.md#rules). Requirement retained under its original R1–R17 ID.
+- I024 → [Rules](../pilotq.md#rules). Requirement retained under its original R1–R17 ID.
+- I025 → [Rules](../pilotq.md#rules). Requirement retained under its original R1–R17 ID.
+- I026 → [Rules](../pilotq.md#rules). Requirement retained under its original R1–R17 ID.
+- I027 → [Rules](../pilotq.md#rules). Requirement retained under its original R1–R17 ID.
+- I028 → [Rules](../pilotq.md#rules). Requirement retained under its original R1–R17 ID.
+- I029 → [Rules](../pilotq.md#rules). Requirement retained under its original R1–R17 ID.
+- I030 → [Rules](../pilotq.md#rules). Requirement retained under its original R1–R17 ID.
+- I031 → [Rules](../pilotq.md#rules). Requirement retained under its original R1–R17 ID.
+- I032 → [Rules](../pilotq.md#rules). Requirement retained under its original R1–R17 ID.
+- I033 → [Rules](../pilotq.md#rules). Requirement retained under its original R1–R17 ID.
+- I034 → [Rules](../pilotq.md#rules). Requirement retained under its original R1–R17 ID.
+- I035 → [Rules](../pilotq.md#rules). Requirement retained under its original R1–R17 ID.
+- I036 → [Rules](../pilotq.md#rules). Requirement retained under its original R1–R17 ID.
+- I037 → [Rules](../pilotq.md#rules). Requirement retained under its original R1–R17 ID.
+- I038 → [Rules](../pilotq.md#rules). Requirement retained under its original R1–R17 ID.
+- I039 → [Rules](../pilotq.md#rules). Requirement retained under its original R1–R17 ID.
+- I040 → [Rules](../pilotq.md#rules). Requirement retained under its original R1–R17 ID.
+- I041 → [Rules](../pilotq.md#rules). Requirement retained under its original R1–R17 ID.
+- I042 → [Rules](../pilotq.md#rules). Requirement retained under its original R1–R17 ID.
+- I043 → [Rules](../pilotq.md#rules). Requirement retained under its original R1–R17 ID.
+- I044 → [Rules](../pilotq.md#rules). Requirement retained under its original R1–R17 ID.
+- I045 → [Rules](../pilotq.md#rules). Requirement retained under its original R1–R17 ID.
+- I046 → [Rules](../pilotq.md#rules). Requirement retained under its original R1–R17 ID.
+- I047 → [Rules](../pilotq.md#rules). Requirement retained under its original R1–R17 ID.
+- I048 → [Rules](../pilotq.md#rules). Requirement retained under its original R1–R17 ID.
+- I049 → [1. Outcomes and boundaries](../pilotq.md#1-scope-and-input-boundaries). Scope/input choice retained; R19 preserves proposed scope.
+- I050 → [1. Outcomes and boundaries](../pilotq.md#1-scope-and-input-boundaries). Scope/input choice retained; R19 preserves proposed scope.
+- I051 → [1. Outcomes and boundaries](../pilotq.md#1-scope-and-input-boundaries). Scope/input choice retained; R19 preserves proposed scope.
+- I052 → [1. Outcomes and boundaries](../pilotq.md#1-scope-and-input-boundaries). Scope/input choice retained; R19 preserves proposed scope.
+- I053 → [1. Outcomes and boundaries](../pilotq.md#1-scope-and-input-boundaries). Scope/input choice retained; R19 preserves proposed scope.
+- I054 → [1. Outcomes and boundaries](../pilotq.md#1-scope-and-input-boundaries). Scope/input choice retained; R19 preserves proposed scope.
+- I055 → [1. Outcomes and boundaries](../pilotq.md#1-scope-and-input-boundaries). Scope/input choice retained; R19 preserves proposed scope.
+- I056 → [1. Outcomes and boundaries](../pilotq.md#1-scope-and-input-boundaries). Scope/input choice retained; R19 preserves proposed scope.
+- I057 → [1. Outcomes and boundaries](../pilotq.md#1-scope-and-input-boundaries). Scope/input choice retained; R19 preserves proposed scope.
+- I058 → [1. Outcomes and boundaries](../pilotq.md#1-scope-and-input-boundaries). Scope/input choice retained; R19 preserves proposed scope.
+- I059 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I060 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I061 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I062 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I063 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I064 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I065 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I066 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I067 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I068 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I069 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I070 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I071 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I072 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I073 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I074 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I075 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I076 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I077 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I078 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I079 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I080 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I081 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I082 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I083 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I084 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I085 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I086 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I087 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I088 → [Conversation contract](conversation-contract.md#conversation-contract). Clause retained; attribution removed where present.
+- I089 → [Conversation identity](conversation-contract.md#conversation-identity). Clause retained; attribution removed where present.
+- I090 → [Conversation identity](conversation-contract.md#conversation-identity). Clause retained; attribution removed where present.
+- I091 → [Conversation identity](conversation-contract.md#conversation-identity). Clause retained; attribution removed where present.
+- I092 → [Conversation identity](conversation-contract.md#conversation-identity). Clause retained; attribution removed where present.
+- I093 → [Conversation identity](conversation-contract.md#conversation-identity). Clause retained; attribution removed where present.
+- I094 → [Conversation identity](conversation-contract.md#conversation-identity). Clause retained; attribution removed where present.
+- I095 → [Conversation identity](conversation-contract.md#conversation-identity). Clause retained; attribution removed where present.
+- I096 → [Conversation identity](conversation-contract.md#conversation-identity). Clause retained; attribution removed where present.
+- I097 → [Conversation identity](conversation-contract.md#conversation-identity). Clause retained; attribution removed where present.
+- I098 → [Conversation identity](conversation-contract.md#conversation-identity). Clause retained; attribution removed where present.
+- I099 → [Conversation identity](conversation-contract.md#conversation-identity). Clause retained; attribution removed where present.
+- I100 → [People and admission](conversation-contract.md#people-and-admission). Clause retained; attribution removed where present.
+- I101 → [People and admission](conversation-contract.md#people-and-admission). Clause retained; attribution removed where present.
+- I102 → [People and admission](conversation-contract.md#people-and-admission). Clause retained; attribution removed where present.
+- I103 → [People and admission](conversation-contract.md#people-and-admission). Clause retained; attribution removed where present.
+- I104 → [People and admission](conversation-contract.md#people-and-admission). Clause retained; attribution removed where present.
+- I105 → [People and admission](conversation-contract.md#people-and-admission). Clause retained; attribution removed where present.
+- I106 → [People and admission](conversation-contract.md#people-and-admission). Clause retained; attribution removed where present.
+- I107 → [People and admission](conversation-contract.md#people-and-admission). Clause retained; attribution removed where present.
+- I108 → [People and admission](conversation-contract.md#people-and-admission). Clause retained; attribution removed where present.
+- I109 → [People and admission](conversation-contract.md#people-and-admission). Clause retained; attribution removed where present.
+- I110 → [People and admission](conversation-contract.md#people-and-admission). Clause retained; attribution removed where present.
+- I111 → [People and admission](conversation-contract.md#people-and-admission). Clause retained; attribution removed where present.
+- I112 → [People and admission](conversation-contract.md#people-and-admission). Clause retained; attribution removed where present.
+- I113 → [People and admission](conversation-contract.md#people-and-admission). Clause retained; attribution removed where present.
+- I114 → [People and admission](conversation-contract.md#people-and-admission). Clause retained; attribution removed where present.
+- I115 → [People and admission](conversation-contract.md#people-and-admission). Clause retained; attribution removed where present.
+- I116 → [People and admission](conversation-contract.md#people-and-admission). Clause retained; attribution removed where present.
+- I117 → [People and admission](conversation-contract.md#people-and-admission). Clause retained; attribution removed where present.
+- I118 → [Discuss, act, delegate](conversation-contract.md#discuss-act-delegate). Clause retained; attribution removed where present.
+- I119 → [Discuss, act, delegate](conversation-contract.md#discuss-act-delegate). Clause retained; attribution removed where present.
+- I120 → [Discuss, act, delegate](conversation-contract.md#discuss-act-delegate). Clause retained; attribution removed where present.
+- I121 → [Discuss, act, delegate](conversation-contract.md#discuss-act-delegate). Clause retained; attribution removed where present.
+- I122 → [Discuss, act, delegate](conversation-contract.md#discuss-act-delegate). Clause retained; attribution removed where present.
+- I123 → [Discuss, act, delegate](conversation-contract.md#discuss-act-delegate). Clause retained; attribution removed where present.
+- I124 → [Discuss, act, delegate](conversation-contract.md#discuss-act-delegate). Clause retained; attribution removed where present.
+- I125 → [Discuss, act, delegate](conversation-contract.md#discuss-act-delegate). Clause retained; attribution removed where present.
+- I126 → [Discuss, act, delegate](conversation-contract.md#discuss-act-delegate). Clause retained; attribution removed where present.
+- I127 → [Discuss, act, delegate](conversation-contract.md#discuss-act-delegate). Clause retained; attribution removed where present.
+- I128 → [Discuss, act, delegate](conversation-contract.md#discuss-act-delegate). Clause retained; attribution removed where present.
+- I129 → [Discuss, act, delegate](conversation-contract.md#discuss-act-delegate). Clause retained; attribution removed where present.
+- I130 → [Discuss, act, delegate](conversation-contract.md#discuss-act-delegate). Clause retained; attribution removed where present.
+- I131 → [Discuss, act, delegate](conversation-contract.md#discuss-act-delegate). Clause retained; attribution removed where present.
+- I132 → [Discuss, act, delegate](conversation-contract.md#discuss-act-delegate). Clause retained; attribution removed where present.
+- I133 → [Discuss, act, delegate](conversation-contract.md#discuss-act-delegate). Clause retained; attribution removed where present.
+- I134 → [Discuss, act, delegate](conversation-contract.md#discuss-act-delegate). Clause retained; attribution removed where present.
+- I135 → [Discuss, act, delegate](conversation-contract.md#discuss-act-delegate). Clause retained; attribution removed where present.
+- I136 → [Discuss, act, delegate](conversation-contract.md#discuss-act-delegate). Clause retained; attribution removed where present.
+- I137 → [Changing direction](conversation-contract.md#changing-direction). Clause retained; attribution removed where present.
+- I138 → [Changing direction](conversation-contract.md#changing-direction). Clause retained; attribution removed where present.
+- I139 → [Changing direction](conversation-contract.md#changing-direction). Clause retained; attribution removed where present.
+- I140 → [Changing direction](conversation-contract.md#changing-direction). Clause retained; attribution removed where present.
+- I141 → [Changing direction](conversation-contract.md#changing-direction). Clause retained; attribution removed where present.
+- I142 → [Changing direction](conversation-contract.md#changing-direction). Clause retained; attribution removed where present.
+- I143 → [Changing direction](conversation-contract.md#changing-direction). Clause retained; attribution removed where present.
+- I144 → [Changing direction](conversation-contract.md#changing-direction). Clause retained; attribution removed where present.
+- I145 → [Changing direction](conversation-contract.md#changing-direction). Clause retained; attribution removed where present.
+- I146 → [Changing direction](conversation-contract.md#changing-direction). Clause retained; attribution removed where present.
+- I147 → [Changing direction](conversation-contract.md#changing-direction). Clause retained; attribution removed where present.
+- I148 → [Changing direction](conversation-contract.md#changing-direction). Clause retained; attribution removed where present.
+- I149 → [Changing direction](conversation-contract.md#changing-direction). Clause retained; attribution removed where present.
+- I150 → [Changing direction](conversation-contract.md#changing-direction). Clause retained; attribution removed where present.
+- I151 → [Changing direction](conversation-contract.md#changing-direction). Clause retained; attribution removed where present.
+- I152 → [Changing direction](conversation-contract.md#changing-direction). Clause retained; attribution removed where present.
+- I153 → [Changing direction](conversation-contract.md#changing-direction). Clause retained; attribution removed where present.
+- I154 → [Changing direction](conversation-contract.md#changing-direction). Clause retained; attribution removed where present.
+- I155 → [Changing direction](conversation-contract.md#changing-direction). Clause retained; attribution removed where present.
+- I156 → [Changing direction](conversation-contract.md#changing-direction). Clause retained; attribution removed where present.
+- I157 → [Changing direction](conversation-contract.md#changing-direction). Clause retained; attribution removed where present.
+- I158 → [Changing direction](conversation-contract.md#changing-direction). Clause retained; attribution removed where present.
+- I159 → [Changing direction](conversation-contract.md#changing-direction). Clause retained; attribution removed where present.
+- I160 → [Changing direction](conversation-contract.md#changing-direction). Clause retained; attribution removed where present.
+- I161 → [Changing direction](conversation-contract.md#changing-direction). Clause retained; attribution removed where present.
+- I162 → [Changing direction](conversation-contract.md#changing-direction). Clause retained; attribution removed where present.
+- I163 → [3. Architecture and ownership](runtime-contract.md#3-architecture-and-ownership). Clause retained; attribution removed where present.
+- I164 → [3. Architecture and ownership](runtime-contract.md#3-architecture-and-ownership). Clause retained; attribution removed where present.
+- I165 → [3. Architecture and ownership](runtime-contract.md#3-architecture-and-ownership). Clause retained; attribution removed where present.
+- I166 → [3. Architecture and ownership](runtime-contract.md#3-architecture-and-ownership). Clause retained; attribution removed where present.
+- I167 → [3. Architecture and ownership](runtime-contract.md#3-architecture-and-ownership). Clause retained; attribution removed where present.
+- I168 → [3. Architecture and ownership](runtime-contract.md#3-architecture-and-ownership). Clause retained; attribution removed where present.
+- I169 → [3. Architecture and ownership](runtime-contract.md#3-architecture-and-ownership). Clause retained; attribution removed where present.
+- I170 → [3. Architecture and ownership](runtime-contract.md#3-architecture-and-ownership). Clause retained; attribution removed where present.
+- I171 → [3. Architecture and ownership](runtime-contract.md#3-architecture-and-ownership). Clause retained; attribution removed where present.
+- I172 → [3. Architecture and ownership](runtime-contract.md#3-architecture-and-ownership). Clause retained; attribution removed where present.
+- I173 → [3. Architecture and ownership](runtime-contract.md#3-architecture-and-ownership). Clause retained; attribution removed where present.
+- I174 → [3. Architecture and ownership](runtime-contract.md#3-architecture-and-ownership). Clause retained; attribution removed where present.
+- I175 → [3. Architecture and ownership](runtime-contract.md#3-architecture-and-ownership). Clause retained; attribution removed where present.
+- I176 → [3. Architecture and ownership](runtime-contract.md#3-architecture-and-ownership). Clause retained; attribution removed where present.
+- I177 → [3. Architecture and ownership](runtime-contract.md#3-architecture-and-ownership). Clause retained; attribution removed where present.
+- I178 → [3. Architecture and ownership](runtime-contract.md#3-architecture-and-ownership). Clause retained; attribution removed where present.
+- I179 → [3. Architecture and ownership](runtime-contract.md#3-architecture-and-ownership). Clause retained; attribution removed where present.
+- I180 → [3. Architecture and ownership](runtime-contract.md#3-architecture-and-ownership). Clause retained; attribution removed where present.
+- I181 → [3. Architecture and ownership](runtime-contract.md#3-architecture-and-ownership). Clause retained; attribution removed where present.
+- I182 → [3. Architecture and ownership](runtime-contract.md#3-architecture-and-ownership). Clause retained; attribution removed where present.
+- I183 → [3. Architecture and ownership](runtime-contract.md#3-architecture-and-ownership). Clause retained; attribution removed where present.
+- I184 → [3. Architecture and ownership](runtime-contract.md#3-architecture-and-ownership). Clause retained; attribution removed where present.
+- I185 → [3. Architecture and ownership](runtime-contract.md#3-architecture-and-ownership). Clause retained; attribution removed where present.
+- I186 → [3. Architecture and ownership](runtime-contract.md#3-architecture-and-ownership). Clause retained; attribution removed where present.
+- I187 → [3. Architecture and ownership](runtime-contract.md#3-architecture-and-ownership). Clause retained; attribution removed where present.
+- I188 → [4. Durable conversation and effects](runtime-contract.md#4-durable-conversation-and-effects). Clause retained; attribution removed where present.
+- I189 → [4. Durable conversation and effects](runtime-contract.md#4-durable-conversation-and-effects). Clause retained; attribution removed where present.
+- I190 → [4. Durable conversation and effects](runtime-contract.md#4-durable-conversation-and-effects). Clause retained; attribution removed where present.
+- I191 → [Ingress](runtime-contract.md#ingress). Clause retained; attribution removed where present.
+- I192 → [Ingress](runtime-contract.md#ingress). Clause retained; attribution removed where present.
+- I193 → [Ingress](runtime-contract.md#ingress). Clause retained; attribution removed where present.
+- I194 → [Ingress](runtime-contract.md#ingress). Clause retained; attribution removed where present.
+- I195 → [Ingress](runtime-contract.md#ingress). Clause retained; attribution removed where present.
+- I196 → [Ingress](runtime-contract.md#ingress). Clause retained; attribution removed where present.
+- I197 → [Ingress](runtime-contract.md#ingress). Clause retained; attribution removed where present.
+- I198 → [Ingress](runtime-contract.md#ingress). Clause retained; attribution removed where present.
+- I199 → [Ingress](runtime-contract.md#ingress). Clause retained; attribution removed where present.
+- I200 → [Ingress](runtime-contract.md#ingress). Clause retained; attribution removed where present.
+- I201 → [Ingress](runtime-contract.md#ingress). Clause retained; attribution removed where present.
+- I202 → [Ingress](runtime-contract.md#ingress). Clause retained; attribution removed where present.
+- I203 → [Ingress](runtime-contract.md#ingress). Clause retained; attribution removed where present.
+- I204 → [Ingress](runtime-contract.md#ingress). Clause retained; attribution removed where present.
+- I205 → [Ingress](runtime-contract.md#ingress). Clause retained; attribution removed where present.
+- I206 → [Runs and tools](runtime-contract.md#runs-and-tools). Clause retained; attribution removed where present.
+- I207 → [Runs and tools](runtime-contract.md#runs-and-tools). Clause retained; attribution removed where present.
+- I208 → [Runs and tools](runtime-contract.md#runs-and-tools). Clause retained; attribution removed where present.
+- I209 → [Runs and tools](runtime-contract.md#runs-and-tools). Clause retained; attribution removed where present.
+- I210 → [Runs and tools](runtime-contract.md#runs-and-tools). Clause retained; attribution removed where present.
+- I211 → [Runs and tools](runtime-contract.md#runs-and-tools). Clause retained; attribution removed where present.
+- I212 → [Runs and tools](runtime-contract.md#runs-and-tools). Clause retained; attribution removed where present.
+- I213 → [Runs and tools](runtime-contract.md#runs-and-tools). Clause retained; attribution removed where present.
+- I214 → [Runs and tools](runtime-contract.md#runs-and-tools). Clause retained; attribution removed where present.
+- I215 → [Runs and tools](runtime-contract.md#runs-and-tools). Clause retained; attribution removed where present.
+- I216 → [Runs and tools](runtime-contract.md#runs-and-tools). Clause retained; attribution removed where present.
+- I217 → [Runs and tools](runtime-contract.md#runs-and-tools). Clause retained; attribution removed where present.
+- I218 → [Runs and tools](runtime-contract.md#runs-and-tools). Clause retained; attribution removed where present.
+- I219 → [Runs and tools](runtime-contract.md#runs-and-tools). Clause retained; attribution removed where present.
+- I220 → [Runs and tools](runtime-contract.md#runs-and-tools). Clause retained; attribution removed where present.
+- I221 → [Runs and tools](runtime-contract.md#runs-and-tools). Clause retained; attribution removed where present.
+- I222 → [Delivery](runtime-contract.md#delivery). Clause retained; attribution removed where present.
+- I223 → [Delivery](runtime-contract.md#delivery). Clause retained; attribution removed where present.
+- I224 → [Delivery](runtime-contract.md#delivery). Clause retained; attribution removed where present.
+- I225 → [Delivery](runtime-contract.md#delivery). Clause retained; attribution removed where present.
+- I226 → [Delivery](runtime-contract.md#delivery). Clause retained; attribution removed where present.
+- I227 → [Delivery](runtime-contract.md#delivery). Clause retained; attribution removed where present.
+- I228 → [Delivery](runtime-contract.md#delivery). Clause retained; attribution removed where present.
+- I229 → [Delivery](runtime-contract.md#delivery). Clause retained; attribution removed where present.
+- I230 → [Delivery](runtime-contract.md#delivery). Clause retained; attribution removed where present.
+- I231 → [Delivery](runtime-contract.md#delivery). Clause retained; attribution removed where present.
+- I232 → [Delivery](runtime-contract.md#delivery). Clause retained; attribution removed where present.
+- I233 → [Delivery](runtime-contract.md#delivery). Clause retained; attribution removed where present.
+- I234 → [Delivery](runtime-contract.md#delivery). Clause retained; attribution removed where present.
+- I235 → [Delivery](runtime-contract.md#delivery). Clause retained; attribution removed where present.
+- I236 → [Delivery](runtime-contract.md#delivery). Clause retained; attribution removed where present.
+- I237 → [Delivery](runtime-contract.md#delivery). Clause retained; attribution removed where present.
+- I238 → [Delivery](runtime-contract.md#delivery). Clause retained; attribution removed where present.
+- I239 → [Delivery](runtime-contract.md#delivery). Clause retained; attribution removed where present.
+- I240 → [Delivery](runtime-contract.md#delivery). Clause retained; attribution removed where present.
+- I241 → [Delivery](runtime-contract.md#delivery). Clause retained; attribution removed where present.
+- I242 → [Delivery](runtime-contract.md#delivery). Clause retained; attribution removed where present.
+- I243 → [Delivery](runtime-contract.md#delivery). Clause retained; attribution removed where present.
+- I244 → [Delivery](runtime-contract.md#delivery). Clause retained; attribution removed where present.
+- I245 → [Delivery](runtime-contract.md#delivery). Clause retained; attribution removed where present.
+- I246 → [Delivery](runtime-contract.md#delivery). Clause retained; attribution removed where present.
+- I247 → [Delivery](runtime-contract.md#delivery). Clause retained; attribution removed where present.
+- I248 → [Delivery](runtime-contract.md#delivery). Clause retained; attribution removed where present.
+- I249 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I250 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I251 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I252 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I253 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I254 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I255 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I256 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I257 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I258 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I259 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I260 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I261 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I262 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I263 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I264 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I265 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I266 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I267 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I268 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I269 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I270 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I271 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I272 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I273 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I274 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I275 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I276 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I277 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I278 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I279 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I280 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I281 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I282 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I283 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I284 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I285 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I286 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I287 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I288 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I289 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I290 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I291 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I292 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I293 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I294 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I295 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I296 → [5. TaskQ integration](integration-contract.md#5-taskq-integration). Clause retained; attribution removed where present.
+- I297 → [First TaskQ tool contract](integration-contract.md#first-taskq-tool-contract). Clause retained; attribution removed where present.
+- I298 → [First TaskQ tool contract](integration-contract.md#first-taskq-tool-contract). Clause retained; attribution removed where present.
+- I299 → [Plan discussion and action buttons](integration-contract.md#plan-discussion-and-action-buttons). Clause retained; attribution removed where present.
+- I300 → [Plan discussion and action buttons](integration-contract.md#plan-discussion-and-action-buttons). Clause retained; attribution removed where present.
+- I301 → [Plan discussion and action buttons](integration-contract.md#plan-discussion-and-action-buttons). Clause retained; attribution removed where present.
+- I302 → [Plan discussion and action buttons](integration-contract.md#plan-discussion-and-action-buttons). Clause retained; attribution removed where present.
+- I303 → [Plan discussion and action buttons](integration-contract.md#plan-discussion-and-action-buttons). Clause retained; attribution removed where present.
+- I304 → [Plan discussion and action buttons](integration-contract.md#plan-discussion-and-action-buttons). Clause retained; attribution removed where present.
+- I305 → [Plan discussion and action buttons](integration-contract.md#plan-discussion-and-action-buttons). Clause retained; attribution removed where present.
+- I306 → [Plan discussion and action buttons](integration-contract.md#plan-discussion-and-action-buttons). Clause retained; attribution removed where present.
+- I307 → [Plan discussion and action buttons](integration-contract.md#plan-discussion-and-action-buttons). Clause retained; attribution removed where present.
+- I308 → [Plan discussion and action buttons](integration-contract.md#plan-discussion-and-action-buttons). Clause retained; attribution removed where present.
+- I309 → [Plan discussion and action buttons](integration-contract.md#plan-discussion-and-action-buttons). Clause retained; attribution removed where present.
+- I310 → [Plan discussion and action buttons](integration-contract.md#plan-discussion-and-action-buttons). Clause retained; attribution removed where present.
+- I311 → [Plan discussion and action buttons](integration-contract.md#plan-discussion-and-action-buttons). Clause retained; attribution removed where present.
+- I312 → [Plan discussion and action buttons](integration-contract.md#plan-discussion-and-action-buttons). Clause retained; attribution removed where present.
+- I313 → [Plan discussion and action buttons](integration-contract.md#plan-discussion-and-action-buttons). Clause retained; attribution removed where present.
+- I314 → [Plan discussion and action buttons](integration-contract.md#plan-discussion-and-action-buttons). Clause retained; attribution removed where present.
+- I315 → [Plan discussion and action buttons](integration-contract.md#plan-discussion-and-action-buttons). Clause retained; attribution removed where present.
+- I316 → [Plan discussion and action buttons](integration-contract.md#plan-discussion-and-action-buttons). Clause retained; attribution removed where present.
+- I317 → [Plan discussion and action buttons](integration-contract.md#plan-discussion-and-action-buttons). Clause retained; attribution removed where present.
+- I318 → [Plan discussion and action buttons](integration-contract.md#plan-discussion-and-action-buttons). Clause retained; attribution removed where present.
+- I319 → [Plan discussion and action buttons](integration-contract.md#plan-discussion-and-action-buttons). Clause retained; attribution removed where present.
+- I320 → [Plan discussion and action buttons](integration-contract.md#plan-discussion-and-action-buttons). Clause retained; attribution removed where present.
+- I321 → [Plan discussion and action buttons](integration-contract.md#plan-discussion-and-action-buttons). Clause retained; attribution removed where present.
+- I322 → [Plan discussion and action buttons](integration-contract.md#plan-discussion-and-action-buttons). Clause retained; attribution removed where present.
+- I323 → [Plan discussion and action buttons](integration-contract.md#plan-discussion-and-action-buttons). Clause retained; attribution removed where present.
+- I324 → [Plan discussion and action buttons](integration-contract.md#plan-discussion-and-action-buttons). Clause retained; attribution removed where present.
+- I325 → [Human trial](integration-contract.md#human-trial). Clause retained; attribution removed where present.
+- I326 → [Human trial](integration-contract.md#human-trial). Clause retained; attribution removed where present.
+- I327 → [Human trial](integration-contract.md#human-trial). Clause retained; attribution removed where present.
+- I328 → [Human trial](integration-contract.md#human-trial). Clause retained; attribution removed where present.
+- I329 → [Human trial](integration-contract.md#human-trial). Clause retained; attribution removed where present.
+- I330 → [Human trial](integration-contract.md#human-trial). Clause retained; attribution removed where present.
+- I331 → [Human trial](integration-contract.md#human-trial). Clause retained; attribution removed where present.
+- I332 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I333 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I334 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I335 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I336 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I337 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I338 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I339 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I340 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I341 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I342 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I343 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I344 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I345 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I346 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I347 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I348 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I349 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I350 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I351 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I352 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I353 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I354 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I355 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I356 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I357 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I358 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I359 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I360 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I361 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I362 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I363 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I364 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I365 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I366 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I367 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I368 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I369 → [Direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Clause retained; attribution removed where present.
+- I370 → [Asana task reads](integration-contract.md#asana-task-reads). Clause retained; attribution removed where present.
+- I371 → [Asana task reads](integration-contract.md#asana-task-reads). Clause retained; attribution removed where present.
+- I372 → [Asana task reads](integration-contract.md#asana-task-reads). Clause retained; attribution removed where present.
+- I373 → [Asana task reads](integration-contract.md#asana-task-reads). Clause retained; attribution removed where present.
+- I374 → [Asana task reads](integration-contract.md#asana-task-reads). Clause retained; attribution removed where present.
+- I375 → [Asana task reads](integration-contract.md#asana-task-reads). Clause retained; attribution removed where present.
+- I376 → [Asana task reads](integration-contract.md#asana-task-reads). Clause retained; attribution removed where present.
+- I377 → [Asana task reads](integration-contract.md#asana-task-reads). Clause retained; attribution removed where present.
+- I378 → [Asana task reads](integration-contract.md#asana-task-reads). Clause retained; attribution removed where present.
+- I379 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I380 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I381 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I382 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I383 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I384 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I385 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I386 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I387 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I388 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I389 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I390 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I391 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I392 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I393 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I394 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I395 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I396 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I397 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I398 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I399 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I400 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I401 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I402 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I403 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I404 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I405 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I406 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I407 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I408 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I409 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I410 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I411 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I412 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I413 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I414 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I415 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I416 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I417 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I418 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I419 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I420 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I421 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I422 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I423 → [DEV visibility and owner release (task #174)](integration-contract.md#dev-visibility-and-owner-release). Clause retained; attribution removed where present.
+- I424 → [Installed read commands](integration-contract.md#installed-read-commands). Clause retained; attribution removed where present.
+- I425 → [Installed read commands](integration-contract.md#installed-read-commands). Clause retained; attribution removed where present.
+- I426 → [Installed read commands](integration-contract.md#installed-read-commands). Clause retained; attribution removed where present.
+- I427 → [Installed read commands](integration-contract.md#installed-read-commands). Clause retained; attribution removed where present.
+- I428 → [Installed read commands](integration-contract.md#installed-read-commands). Clause retained; attribution removed where present.
+- I429 → [Installed read commands](integration-contract.md#installed-read-commands). Clause retained; attribution removed where present.
+- I430 → [Installed read commands](integration-contract.md#installed-read-commands). Clause retained; attribution removed where present.
+- I431 → [Installed read commands](integration-contract.md#installed-read-commands). Clause retained; attribution removed where present.
+- I432 → [Installed read commands](integration-contract.md#installed-read-commands). Clause retained; attribution removed where present.
+- I433 → [Installed read commands](integration-contract.md#installed-read-commands). Clause retained; attribution removed where present.
+- I434 → [Installed read commands](integration-contract.md#installed-read-commands). Clause retained; attribution removed where present.
+- I435 → [Installed read commands](integration-contract.md#installed-read-commands). Clause retained; attribution removed where present.
+- I436 → [Installed read commands](integration-contract.md#installed-read-commands). Clause retained; attribution removed where present.
+- I437 → [Installed read commands](integration-contract.md#installed-read-commands). Clause retained; attribution removed where present.
+- I438 → [Installed read commands](integration-contract.md#installed-read-commands). Clause retained; attribution removed where present.
+- I439 → [Installed read commands](integration-contract.md#installed-read-commands). Clause retained; attribution removed where present.
+- I440 → [Installed read commands](integration-contract.md#installed-read-commands). Clause retained; attribution removed where present.
+- I441 → [Installed read commands](integration-contract.md#installed-read-commands). Clause retained; attribution removed where present.
+- I442 → [Installed read commands](integration-contract.md#installed-read-commands). Clause retained; attribution removed where present.
+- I443 → [Installed read commands](integration-contract.md#installed-read-commands). Clause retained; attribution removed where present.
+- I444 → [Installed read commands](integration-contract.md#installed-read-commands). Clause retained; attribution removed where present.
+- I445 → [Installed read commands](integration-contract.md#installed-read-commands). Clause retained; attribution removed where present.
+- I446 → [Installed read commands](integration-contract.md#installed-read-commands). Clause retained; attribution removed where present.
+- I447 → [Installed read commands](integration-contract.md#installed-read-commands). Clause retained; attribution removed where present.
+- I448 → [Administration by request (task #160)](integration-contract.md#administration-by-request). Clause retained; attribution removed where present.
+- I449 → [Administration by request (task #160)](integration-contract.md#administration-by-request). Clause retained; attribution removed where present.
+- I450 → [Administration by request (task #160)](integration-contract.md#administration-by-request). Clause retained; attribution removed where present.
+- I451 → [Administration by request (task #160)](integration-contract.md#administration-by-request). Clause retained; attribution removed where present.
+- I452 → [Administration by request (task #160)](integration-contract.md#administration-by-request). Clause retained; attribution removed where present.
+- I453 → [Administration by request (task #160)](integration-contract.md#administration-by-request). Clause retained; attribution removed where present.
+- I454 → [Administration by request (task #160)](integration-contract.md#administration-by-request). Clause retained; attribution removed where present.
+- I455 → [Administration by request (task #160)](integration-contract.md#administration-by-request). Clause retained; attribution removed where present.
+- I456 → [Administration by request (task #160)](integration-contract.md#administration-by-request). Clause retained; attribution removed where present.
+- I457 → [Administration by request (task #160)](integration-contract.md#administration-by-request). Clause retained; attribution removed where present.
+- I458 → [Administration by request (task #160)](integration-contract.md#administration-by-request). Clause retained; attribution removed where present.
+- I459 → [Administration by request (task #160)](integration-contract.md#administration-by-request). Clause retained; attribution removed where present.
+- I460 → [Administration by request (task #160)](integration-contract.md#administration-by-request). Clause retained; attribution removed where present.
+- I461 → [Administration by request (task #160)](integration-contract.md#administration-by-request). Clause retained; attribution removed where present.
+- I462 → [Administration by request (task #160)](integration-contract.md#administration-by-request). Clause retained; attribution removed where present.
+- I463 → [Administration by request (task #160)](integration-contract.md#administration-by-request). Clause retained; attribution removed where present.
+- I464 → [Administration by request (task #160)](integration-contract.md#administration-by-request). Clause retained; attribution removed where present.
+- I465 → [Administration by request (task #160)](integration-contract.md#administration-by-request). Clause retained; attribution removed where present.
+- I466 → [Administration by request (task #160)](integration-contract.md#administration-by-request). Clause retained; attribution removed where present.
+- I467 → [Administration by request (task #160)](integration-contract.md#administration-by-request). Clause retained; attribution removed where present.
+- I468 → [Administration by request (task #160)](integration-contract.md#administration-by-request). Clause retained; attribution removed where present.
+- I469 → [Administration by request (task #160)](integration-contract.md#administration-by-request). Clause retained; attribution removed where present.
+- I470 → [Administration by request (task #160)](integration-contract.md#administration-by-request). Clause retained; attribution removed where present.
+- I471 → [Administration by request (task #160)](integration-contract.md#administration-by-request). Clause retained; attribution removed where present.
+- I472 → [Administration by request (task #160)](integration-contract.md#administration-by-request). Clause retained; attribution removed where present.
+- I473 → [Administration by request (task #160)](integration-contract.md#administration-by-request). Clause retained; attribution removed where present.
+- I474 → [Administration by request (task #160)](integration-contract.md#administration-by-request). Clause retained; attribution removed where present.
+- I475 → [Administration by request (task #160)](integration-contract.md#administration-by-request). Clause retained; attribution removed where present.
+- I476 → [Project registration](integration-contract.md#project-registration). Clause retained; attribution removed where present.
+- I477 → [Project registration](integration-contract.md#project-registration). Clause retained; attribution removed where present.
+- I478 → [Project registration](integration-contract.md#project-registration). Clause retained; attribution removed where present.
+- I479 → [Project registration](integration-contract.md#project-registration). Clause retained; attribution removed where present.
+- I480 → [Project registration](integration-contract.md#project-registration). Clause retained; attribution removed where present.
+- I481 → [Project registration](integration-contract.md#project-registration). Clause retained; attribution removed where present.
+- I482 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I483 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I484 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I485 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I486 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I487 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I488 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I489 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I490 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I491 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I492 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I493 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I494 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I495 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I496 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I497 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I498 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I499 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I500 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I501 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I502 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I503 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I504 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I505 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I506 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I507 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I508 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I509 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I510 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I511 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I512 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I513 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I514 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I515 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I516 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I517 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I518 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I519 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I520 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I521 → [Project onboarding (task #168)](integration-contract.md#project-onboarding). Clause retained; attribution removed where present.
+- I522 → [6. Memory and agentq](runtime-contract.md#6-memory-and-agentq). Clause retained; attribution removed where present.
+- I523 → [6. Memory and agentq](runtime-contract.md#6-memory-and-agentq). Clause retained; attribution removed where present.
+- I524 → [6. Memory and agentq](runtime-contract.md#6-memory-and-agentq). Clause retained; attribution removed where present.
+- I525 → [6. Memory and agentq](runtime-contract.md#6-memory-and-agentq). Clause retained; attribution removed where present.
+- I526 → [6. Memory and agentq](runtime-contract.md#6-memory-and-agentq). Clause retained; attribution removed where present.
+- I527 → [6. Memory and agentq](runtime-contract.md#6-memory-and-agentq). Clause retained; attribution removed where present.
+- I528 → [6. Memory and agentq](runtime-contract.md#6-memory-and-agentq). Clause retained; attribution removed where present.
+- I529 → [6. Memory and agentq](runtime-contract.md#6-memory-and-agentq). Clause retained; attribution removed where present.
+- I530 → [6. Memory and agentq](runtime-contract.md#6-memory-and-agentq). Clause retained; attribution removed where present.
+- I531 → [6. Memory and agentq](runtime-contract.md#6-memory-and-agentq). Clause retained; attribution removed where present.
+- I532 → [6. Memory and agentq](runtime-contract.md#6-memory-and-agentq). Clause retained; attribution removed where present.
+- I533 → [6. Memory and agentq](runtime-contract.md#6-memory-and-agentq). Clause retained; attribution removed where present.
+- I534 → [6. Memory and agentq](runtime-contract.md#6-memory-and-agentq). Clause retained; attribution removed where present.
+- I535 → [6. Memory and agentq](runtime-contract.md#6-memory-and-agentq). Clause retained; attribution removed where present.
+- I536 → [6. Memory and agentq](runtime-contract.md#6-memory-and-agentq). Clause retained; attribution removed where present.
+- I537 → [6. Memory and agentq](runtime-contract.md#6-memory-and-agentq). Clause retained; attribution removed where present.
+- I538 → [6. Memory and agentq](runtime-contract.md#6-memory-and-agentq). Clause retained; attribution removed where present.
+- I539 → [6. Memory and agentq](runtime-contract.md#6-memory-and-agentq). Clause retained; attribution removed where present.
+- I540 → [6. Memory and agentq](runtime-contract.md#6-memory-and-agentq). Clause retained; attribution removed where present.
+- I541 → [6. Memory and agentq](runtime-contract.md#6-memory-and-agentq). Clause retained; attribution removed where present.
+- I542 → [6. Memory and agentq](runtime-contract.md#6-memory-and-agentq). Clause retained; attribution removed where present.
+- I543 → [6. Memory and agentq](runtime-contract.md#6-memory-and-agentq). Clause retained; attribution removed where present.
+- I544 → [6. Memory and agentq](runtime-contract.md#6-memory-and-agentq). Clause retained; attribution removed where present.
+- I545 → [6. Memory and agentq](runtime-contract.md#6-memory-and-agentq). Clause retained; attribution removed where present.
+- I546 → [6. Memory and agentq](runtime-contract.md#6-memory-and-agentq). Clause retained; attribution removed where present.
+- I547 → [6. Memory and agentq](runtime-contract.md#6-memory-and-agentq). Clause retained; attribution removed where present.
+- I548 → [6. Memory and agentq](runtime-contract.md#6-memory-and-agentq). Clause retained; attribution removed where present.
+- I549 → [6. Memory and agentq](runtime-contract.md#6-memory-and-agentq). Clause retained; attribution removed where present.
+- I550 → [6. Memory and agentq](runtime-contract.md#6-memory-and-agentq). Clause retained; attribution removed where present.
+- I551 → [7. Proposed operating budgets](runtime-contract.md#7-proposed-operating-budgets). Clause retained; attribution removed where present.
+- I552 → [7. Proposed operating budgets](runtime-contract.md#7-proposed-operating-budgets). Clause retained; attribution removed where present.
+- I553 → [7. Proposed operating budgets](runtime-contract.md#7-proposed-operating-budgets). Clause retained; attribution removed where present.
+- I554 → [7. Proposed operating budgets](runtime-contract.md#7-proposed-operating-budgets). Clause retained; attribution removed where present.
+- I555 → [7. Proposed operating budgets](runtime-contract.md#7-proposed-operating-budgets). Clause retained; attribution removed where present.
+- I556 → [7. Proposed operating budgets](runtime-contract.md#7-proposed-operating-budgets). Clause retained; attribution removed where present.
+- I557 → [7. Proposed operating budgets](runtime-contract.md#7-proposed-operating-budgets). Clause retained; attribution removed where present.
+- I558 → [7. Proposed operating budgets](runtime-contract.md#7-proposed-operating-budgets). Clause retained; attribution removed where present.
+- I559 → [7. Proposed operating budgets](runtime-contract.md#7-proposed-operating-budgets). Clause retained; attribution removed where present.
+- I560 → [7. Proposed operating budgets](runtime-contract.md#7-proposed-operating-budgets). Clause retained; attribution removed where present.
+- I561 → [7. Proposed operating budgets](runtime-contract.md#7-proposed-operating-budgets). Clause retained; attribution removed where present.
+- I562 → [7. Proposed operating budgets](runtime-contract.md#7-proposed-operating-budgets). Clause retained; attribution removed where present.
+- I563 → [7. Proposed operating budgets](runtime-contract.md#7-proposed-operating-budgets). Clause retained; attribution removed where present.
+- I564 → [7. Proposed operating budgets](runtime-contract.md#7-proposed-operating-budgets). Clause retained; attribution removed where present.
+- I565 → [7. Proposed operating budgets](runtime-contract.md#7-proposed-operating-budgets). Clause retained; attribution removed where present.
+- I566 → [7. Proposed operating budgets](runtime-contract.md#7-proposed-operating-budgets). Clause retained; attribution removed where present.
+- I567 → [7. Proposed operating budgets](runtime-contract.md#7-proposed-operating-budgets). Clause retained; attribution removed where present.
+- I568 → [7. Proposed operating budgets](runtime-contract.md#7-proposed-operating-budgets). Clause retained; attribution removed where present.
+- I569 → [7. Proposed operating budgets](runtime-contract.md#7-proposed-operating-budgets). Clause retained; attribution removed where present.
+- I570 → [7. Proposed operating budgets](runtime-contract.md#7-proposed-operating-budgets). Clause retained; attribution removed where present.
+- I571 → [7. Proposed operating budgets](runtime-contract.md#7-proposed-operating-budgets). Clause retained; attribution removed where present.
+- I572 → [7. Proposed operating budgets](runtime-contract.md#7-proposed-operating-budgets). Clause retained; attribution removed where present.
+- I573 → [7. Proposed operating budgets](runtime-contract.md#7-proposed-operating-budgets). Clause retained; attribution removed where present.
+- I574 → [7. Proposed operating budgets](runtime-contract.md#7-proposed-operating-budgets). Clause retained; attribution removed where present.
+- I575 → [7. Proposed operating budgets](runtime-contract.md#7-proposed-operating-budgets). Clause retained; attribution removed where present.
+- I576 → [7. Proposed operating budgets](runtime-contract.md#7-proposed-operating-budgets). Clause retained; attribution removed where present.
+- I577 → [7. Proposed operating budgets](runtime-contract.md#7-proposed-operating-budgets). Clause retained; attribution removed where present.
+- I578 → [8. Access and observability](runtime-contract.md#8-access-and-observability). Clause retained; attribution removed where present.
+- I579 → [8. Access and observability](runtime-contract.md#8-access-and-observability). Clause retained; attribution removed where present.
+- I580 → [8. Access and observability](runtime-contract.md#8-access-and-observability). Clause retained; attribution removed where present.
+- I581 → [8. Access and observability](runtime-contract.md#8-access-and-observability). Clause retained; attribution removed where present.
+- I582 → [8. Access and observability](runtime-contract.md#8-access-and-observability). Clause retained; attribution removed where present.
+- I583 → [8. Access and observability](runtime-contract.md#8-access-and-observability). Clause retained; attribution removed where present.
+- I584 → [Key store](runtime-contract.md#key-store). Clause retained; attribution removed where present.
+- I585 → [Key store](runtime-contract.md#key-store). Clause retained; attribution removed where present.
+- I586 → [Key store](runtime-contract.md#key-store). Clause retained; attribution removed where present.
+- I587 → [Key store](runtime-contract.md#key-store). Clause retained; attribution removed where present.
+- I588 → [Key store](runtime-contract.md#key-store). Clause retained; attribution removed where present.
+- I589 → [Key store](runtime-contract.md#key-store). Clause retained; attribution removed where present.
+- I590 → [Key store](runtime-contract.md#key-store). Clause retained; attribution removed where present.
+- I591 → [Key store](runtime-contract.md#key-store). Clause retained; attribution removed where present.
+- I592 → [Key store](runtime-contract.md#key-store). Clause retained; attribution removed where present.
+- I593 → [Key store](runtime-contract.md#key-store). Clause retained; attribution removed where present.
+- I594 → [Key store](runtime-contract.md#key-store). Clause retained; attribution removed where present.
+- I595 → [Key store](runtime-contract.md#key-store). Clause retained; attribution removed where present.
+- I596 → [Request audit](runtime-contract.md#request-audit). Clause retained; attribution removed where present.
+- I597 → [Request audit](runtime-contract.md#request-audit). Clause retained; attribution removed where present.
+- I598 → [Request audit](runtime-contract.md#request-audit). Clause retained; attribution removed where present.
+- I599 → [Request audit](runtime-contract.md#request-audit). Clause retained; attribution removed where present.
+- I600 → [Request audit](runtime-contract.md#request-audit). Clause retained; attribution removed where present.
+- I601 → [Request audit](runtime-contract.md#request-audit). Clause retained; attribution removed where present.
+- I602 → [Request audit](runtime-contract.md#request-audit). Clause retained; attribution removed where present.
+- I603 → [Request audit](runtime-contract.md#request-audit). Clause retained; attribution removed where present.
+- I604 → [Request audit](runtime-contract.md#request-audit). Clause retained; attribution removed where present.
+- I605 → [Request audit](runtime-contract.md#request-audit). Clause retained; attribution removed where present.
+- I606 → [Request audit](runtime-contract.md#request-audit). Clause retained; attribution removed where present.
+- I607 → [Request audit](runtime-contract.md#request-audit). Clause retained; attribution removed where present.
+- I608 → [Request audit](runtime-contract.md#request-audit). Clause retained; attribution removed where present.
+- I609 → [Request audit](runtime-contract.md#request-audit). Clause retained; attribution removed where present.
+- I610 → [Request audit](runtime-contract.md#request-audit). Clause retained; attribution removed where present.
+- I611 → [Request audit](runtime-contract.md#request-audit). Clause retained; attribution removed where present.
+- I612 → [Request audit](runtime-contract.md#request-audit). Clause retained; attribution removed where present.
+- I613 → [Request audit](runtime-contract.md#request-audit). Clause retained; attribution removed where present.
+- I614 → [Request audit](runtime-contract.md#request-audit). Clause retained; attribution removed where present.
+- I615 → [Request audit](runtime-contract.md#request-audit). Clause retained; attribution removed where present.
+- I616 → [Request audit](runtime-contract.md#request-audit). Clause retained; attribution removed where present.
+- I617 → [Request audit](runtime-contract.md#request-audit). Clause retained; attribution removed where present.
+- I618 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I619 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I620 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I621 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I622 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I623 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I624 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I625 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I626 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I627 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I628 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I629 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I630 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I631 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I632 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I633 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I634 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I635 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I636 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I637 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I638 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I639 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I640 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I641 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I642 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I643 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I644 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I645 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I646 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I647 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I648 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I649 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I650 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I651 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I652 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I653 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I654 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I655 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I656 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I657 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I658 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I659 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I660 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I661 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I662 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I663 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I664 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I665 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I666 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I667 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I668 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I669 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I670 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I671 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I672 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I673 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I674 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I675 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I676 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I677 → [Command line](service-contract.md#command-line). Clause retained; attribution removed where present.
+- I678 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I679 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I680 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I681 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I682 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I683 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I684 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I685 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I686 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I687 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I688 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I689 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I690 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I691 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I692 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I693 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I694 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I695 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I696 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I697 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I698 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I699 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I700 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I701 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I702 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I703 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I704 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I705 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I706 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I707 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I708 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I709 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I710 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I711 → [Host requirements (task #130)](service-contract.md#host-requirements). Clause retained; attribution removed where present.
+- I712 → [Update and monitoring](service-contract.md#update-and-monitoring). Clause retained; attribution removed where present.
+- I713 → [Update and monitoring](service-contract.md#update-and-monitoring). Clause retained; attribution removed where present.
+- I714 → [Update and monitoring](service-contract.md#update-and-monitoring). Clause retained; attribution removed where present.
+- I715 → [Update and monitoring](service-contract.md#update-and-monitoring). Clause retained; attribution removed where present.
+- I716 → [Update and monitoring](service-contract.md#update-and-monitoring). Clause retained; attribution removed where present.
+- I717 → [Update and monitoring](service-contract.md#update-and-monitoring). Clause retained; attribution removed where present.
+- I718 → [Update and monitoring](service-contract.md#update-and-monitoring). Clause retained; attribution removed where present.
+- I719 → [Update and monitoring](service-contract.md#update-and-monitoring). Clause retained; attribution removed where present.
+- I720 → [Update and monitoring](service-contract.md#update-and-monitoring). Clause retained; attribution removed where present.
+- I721 → [Update and monitoring](service-contract.md#update-and-monitoring). Clause retained; attribution removed where present.
+- I722 → [Update and monitoring](service-contract.md#update-and-monitoring). Clause retained; attribution removed where present.
+- I723 → [Update and monitoring](service-contract.md#update-and-monitoring). Clause retained; attribution removed where present.
+- I724 → [Update and monitoring](service-contract.md#update-and-monitoring). Clause retained; attribution removed where present.
+- I725 → [Update and monitoring](service-contract.md#update-and-monitoring). Clause retained; attribution removed where present.
+- I726 → [Update and monitoring](service-contract.md#update-and-monitoring). Clause retained; attribution removed where present.
+- I727 → [Update and monitoring](service-contract.md#update-and-monitoring). Clause retained; attribution removed where present.
+- I728 → [Update and monitoring](service-contract.md#update-and-monitoring). Clause retained; attribution removed where present.
+- I729 → [Update and monitoring](service-contract.md#update-and-monitoring). Clause retained; attribution removed where present.
+- I730 → [Update and monitoring](service-contract.md#update-and-monitoring). Clause retained; attribution removed where present.
+- I731 → [First release delivery](service-contract.md#first-release-delivery). Clause retained; attribution removed where present.
+- I732 → [First release delivery](service-contract.md#first-release-delivery). Clause retained; attribution removed where present.
+- I733 → [First release delivery](service-contract.md#first-release-delivery). Clause retained; attribution removed where present.
+- I734 → [First release delivery](service-contract.md#first-release-delivery). Clause retained; attribution removed where present.
+- I735 → [First release delivery](service-contract.md#first-release-delivery). Clause retained; attribution removed where present.
+- I736 → [First release delivery](service-contract.md#first-release-delivery). Clause retained; attribution removed where present.
+- I737 → [First release delivery](service-contract.md#first-release-delivery). Clause retained; attribution removed where present.
+- I738 → [First release delivery](service-contract.md#first-release-delivery). Clause retained; attribution removed where present.
+- I739 → [First release delivery](service-contract.md#first-release-delivery). Clause retained; attribution removed where present.
+- I740 → [First release delivery](service-contract.md#first-release-delivery). Clause retained; attribution removed where present.
+- I741 → [First release delivery](service-contract.md#first-release-delivery). Clause retained; attribution removed where present.
+- I742 → [First release delivery](service-contract.md#first-release-delivery). Clause retained; attribution removed where present.
+- I743 → [First release delivery](service-contract.md#first-release-delivery). Clause retained; attribution removed where present.
+- I744 → [First release delivery](service-contract.md#first-release-delivery). Clause retained; attribution removed where present.
+- I745 → [First release delivery](service-contract.md#first-release-delivery). Clause retained; attribution removed where present.
+- I746 → [First release delivery](service-contract.md#first-release-delivery). Clause retained; attribution removed where present.
+- I747 → [First release delivery](service-contract.md#first-release-delivery). Clause retained; attribution removed where present.
+- I748 → [First release delivery](service-contract.md#first-release-delivery). Clause retained; attribution removed where present.
+- I749 → [First release delivery](service-contract.md#first-release-delivery). Clause retained; attribution removed where present.
+- I750 → [First release delivery](service-contract.md#first-release-delivery). Clause retained; attribution removed where present.
+- I751 → [First release delivery](service-contract.md#first-release-delivery). Clause retained; attribution removed where present.
+- I752 → [Development](service-contract.md#development). Clause retained; attribution removed where present.
+- I753 → [Development](service-contract.md#development). Clause retained; attribution removed where present.
+- I754 → [Development](service-contract.md#development). Clause retained; attribution removed where present.
+- I755 → [Development](service-contract.md#development). Clause retained; attribution removed where present.
+- I756 → [Development](service-contract.md#development). Clause retained; attribution removed where present.
+- I757 → [Development](service-contract.md#development). Clause retained; attribution removed where present.
+- I758 → [Development](service-contract.md#development). Clause retained; attribution removed where present.
+- I759 → [Development](service-contract.md#development). Clause retained; attribution removed where present.
+- I760 → [Development](service-contract.md#development). Clause retained; attribution removed where present.
+- I761 → [Development](service-contract.md#development). Clause retained; attribution removed where present.
+- I762 → [Development](service-contract.md#development). Clause retained; attribution removed where present.
+- I763 → [Development](service-contract.md#development). Clause retained; attribution removed where present.
+- I764 → [Development](service-contract.md#development). Clause retained; attribution removed where present.
+- I765 → [Development](service-contract.md#development). Clause retained; attribution removed where present.
+- I766 → [Development](service-contract.md#development). Clause retained; attribution removed where present.
+- I767 → [10. Adoption sequence](adoption.md#10-adoption-sequence). Existing linked adoption specification retained.
+- I768 → [11. Decisions still open](adoption.md#11-decisions-still-open). Existing unresolved qualification retained; no decision adopted.
+- I769 → [12. Proposed lifecycle and feedback protocol](runtime-contract.md#12-proposed-lifecycle-and-feedback-protocol). Clause retained; attribution removed where present.
+- I770 → [12. Proposed lifecycle and feedback protocol](runtime-contract.md#12-proposed-lifecycle-and-feedback-protocol). Clause retained; attribution removed where present.
+- I771 → [12. Proposed lifecycle and feedback protocol](runtime-contract.md#12-proposed-lifecycle-and-feedback-protocol). Clause retained; attribution removed where present.
+- I772 → [12. Proposed lifecycle and feedback protocol](runtime-contract.md#12-proposed-lifecycle-and-feedback-protocol). Clause retained; attribution removed where present.
+- I773 → [One request, separate observations](runtime-contract.md#one-request-separate-observations). Clause retained; attribution removed where present.
+- I774 → [One request, separate observations](runtime-contract.md#one-request-separate-observations). Clause retained; attribution removed where present.
+- I775 → [One request, separate observations](runtime-contract.md#one-request-separate-observations). Clause retained; attribution removed where present.
+- I776 → [One request, separate observations](runtime-contract.md#one-request-separate-observations). Clause retained; attribution removed where present.
+- I777 → [One request, separate observations](runtime-contract.md#one-request-separate-observations). Clause retained; attribution removed where present.
+- I778 → [One request, separate observations](runtime-contract.md#one-request-separate-observations). Clause retained; attribution removed where present.
+- I779 → [One request, separate observations](runtime-contract.md#one-request-separate-observations). Clause retained; attribution removed where present.
+- I780 → [One request, separate observations](runtime-contract.md#one-request-separate-observations). Clause retained; attribution removed where present.
+- I781 → [One request, separate observations](runtime-contract.md#one-request-separate-observations). Clause retained; attribution removed where present.
+- I782 → [One request, separate observations](runtime-contract.md#one-request-separate-observations). Clause retained; attribution removed where present.
+- I783 → [One request, separate observations](runtime-contract.md#one-request-separate-observations). Clause retained; attribution removed where present.
+- I784 → [One request, separate observations](runtime-contract.md#one-request-separate-observations). Clause retained; attribution removed where present.
+- I785 → [One request, separate observations](runtime-contract.md#one-request-separate-observations). Clause retained; attribution removed where present.
+- I786 → [One request, separate observations](runtime-contract.md#one-request-separate-observations). Clause retained; attribution removed where present.
+- I787 → [One request, separate observations](runtime-contract.md#one-request-separate-observations). Clause retained; attribution removed where present.
+- I788 → [Telegram feedback](runtime-contract.md#telegram-feedback). Clause retained; attribution removed where present.
+- I789 → [Telegram feedback](runtime-contract.md#telegram-feedback). Clause retained; attribution removed where present.
+- I790 → [Input and control edges](runtime-contract.md#input-and-control-edges). Clause retained; attribution removed where present.
+- I791 → [Input and control edges](runtime-contract.md#input-and-control-edges). Clause retained; attribution removed where present.
+- I792 → [Input and control edges](runtime-contract.md#input-and-control-edges). Clause retained; attribution removed where present.
+- I793 → [Input and control edges](runtime-contract.md#input-and-control-edges). Clause retained; attribution removed where present.
+- I794 → [Input and control edges](runtime-contract.md#input-and-control-edges). Clause retained; attribution removed where present.
+- I795 → [Input and control edges](runtime-contract.md#input-and-control-edges). Clause retained; attribution removed where present.
+- I796 → [Input and control edges](runtime-contract.md#input-and-control-edges). Clause retained; attribution removed where present.
+- I797 → [Input and control edges](runtime-contract.md#input-and-control-edges). Clause retained; attribution removed where present.
+- I798 → [Input and control edges](runtime-contract.md#input-and-control-edges). Clause retained; attribution removed where present.
+- I799 → [Input and control edges](runtime-contract.md#input-and-control-edges). Clause retained; attribution removed where present.
+- I800 → [Input and control edges](runtime-contract.md#input-and-control-edges). Clause retained; attribution removed where present.
+- I801 → [Input and control edges](runtime-contract.md#input-and-control-edges). Clause retained; attribution removed where present.
+- I802 → [Input and control edges](runtime-contract.md#input-and-control-edges). Clause retained; attribution removed where present.
+- I803 → [Input and control edges](runtime-contract.md#input-and-control-edges). Clause retained; attribution removed where present.
+- I804 → [Runtime and recovery boundaries](runtime-contract.md#runtime-and-recovery-boundaries). Clause retained; attribution removed where present.
+- I805 → [Runtime and recovery boundaries](runtime-contract.md#runtime-and-recovery-boundaries). Clause retained; attribution removed where present.
+- I806 → [Runtime and recovery boundaries](runtime-contract.md#runtime-and-recovery-boundaries). Clause retained; attribution removed where present.
+- I807 → [Runtime and recovery boundaries](runtime-contract.md#runtime-and-recovery-boundaries). Clause retained; attribution removed where present.
+- I808 → [Runtime and recovery boundaries](runtime-contract.md#runtime-and-recovery-boundaries). Clause retained; attribution removed where present.
+- I809 → [Runtime and recovery boundaries](runtime-contract.md#runtime-and-recovery-boundaries). Clause retained; attribution removed where present.
+- I810 → [Runtime and recovery boundaries](runtime-contract.md#runtime-and-recovery-boundaries). Clause retained; attribution removed where present.
+- I811 → [Runtime and recovery boundaries](runtime-contract.md#runtime-and-recovery-boundaries). Clause retained; attribution removed where present.
+- I812 → [Runtime and recovery boundaries](runtime-contract.md#runtime-and-recovery-boundaries). Clause retained; attribution removed where present.
+- I813 → [Runtime and recovery boundaries](runtime-contract.md#runtime-and-recovery-boundaries). Clause retained; attribution removed where present.
+- I814 → [Runtime and recovery boundaries](runtime-contract.md#runtime-and-recovery-boundaries). Clause retained; attribution removed where present.
+- I815 → [Runtime and recovery boundaries](runtime-contract.md#runtime-and-recovery-boundaries). Clause retained; attribution removed where present.
+- I816 → [Runtime and recovery boundaries](runtime-contract.md#runtime-and-recovery-boundaries). Clause retained; attribution removed where present.
+- I817 → [Runtime and recovery boundaries](runtime-contract.md#runtime-and-recovery-boundaries). Clause retained; attribution removed where present.
+- I818 → [Runtime and recovery boundaries](runtime-contract.md#runtime-and-recovery-boundaries). Clause retained; attribution removed where present.
+- I819 → [Runtime and recovery boundaries](runtime-contract.md#runtime-and-recovery-boundaries). Clause retained; attribution removed where present.
+- I820 → [Runtime and recovery boundaries](runtime-contract.md#runtime-and-recovery-boundaries). Clause retained; attribution removed where present.
+- I821 → [Runtime and recovery boundaries](runtime-contract.md#runtime-and-recovery-boundaries). Clause retained; attribution removed where present.
+- I822 → [Runtime and recovery boundaries](runtime-contract.md#runtime-and-recovery-boundaries). Clause retained; attribution removed where present.
+- I823 → [Runtime and recovery boundaries](runtime-contract.md#runtime-and-recovery-boundaries). Clause retained; attribution removed where present.
+- I824 → [Runtime and recovery boundaries](runtime-contract.md#runtime-and-recovery-boundaries). Clause retained; attribution removed where present.
+- I825 → [Runtime and recovery boundaries](runtime-contract.md#runtime-and-recovery-boundaries). Clause retained; attribution removed where present.
+- I826 → [Runtime and recovery boundaries](runtime-contract.md#runtime-and-recovery-boundaries). Clause retained; attribution removed where present.
+- I827 → [Runtime and recovery boundaries](runtime-contract.md#runtime-and-recovery-boundaries). Clause retained; attribution removed where present.

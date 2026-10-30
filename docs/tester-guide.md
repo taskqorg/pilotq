@@ -1,6 +1,6 @@
 # Test PilotQ
 
-Use PilotQ to discuss work, approve a saved plan and follow TaskQ in Telegram. This guide describes the first release candidate, `0.2.4`, not production-cutover acceptance ([contract §9](../pilotq.md#first-release-delivery)). The owner releases by fast-forwarding `live` after merge-queue acceptance; the download commands work after that workflow publishes the assets.
+Use PilotQ to discuss work, approve a saved plan and follow TaskQ in Telegram. This guide describes the first release candidate, `0.2.4`, not production-cutover acceptance ([contract §9](service-contract.md#first-release-delivery)). The owner releases by fast-forwarding `live` after merge-queue acceptance; the download commands work after that workflow publishes the assets.
 
 ## Join an existing test bot
 
@@ -52,7 +52,7 @@ Missing grants, a foreign board, stale answers, unregistered targets and the six
 
 ## Host tools and readiness
 
-The required versions and their consumers are owned by [contract §9](../pilotq.md#host-requirements-task-130). Use the installation owner's account and the same PATH as the service. Before installation or an update, run `pilotq doctor --json`; inspect every `requirements` entry, including `found`, `minimum`, `outcome` and `fix`. A failed entry blocks service installation and manual/scheduled update checks. The current release keeps running; doctor stays failed until the named step is completed. PilotQ does not elevate privileges or install packages on the owner's behalf.
+The required versions and their consumers are owned by [contract §9](service-contract.md#host-requirements). Use the installation owner's account and the same PATH as the service. Before installation or an update, run `pilotq doctor --json`; inspect every `requirements` entry, including `found`, `minimum`, `outcome` and `fix`. A failed entry blocks service installation and manual/scheduled update checks. The current release keeps running; doctor stays failed until the named step is completed. PilotQ does not elevate privileges or install packages on the owner's behalf.
 
 For an Ubuntu 24.04 managed host, the operator provisions `ffmpeg`, `curl`, `procps`, `hostname` and `systemd` with the distribution package manager, then verifies the actual versions with doctor. If the distribution offers an older version, use the tool's upstream package repository or upgrade the host; do not bypass the check. Install Codex with `npm install --global @openai/codex@0.162.0` (or a newer approved version), set its absolute path in configuration and preserve the existing isolated ChatGPT login. Update the existing TaskQ installation with `taskq update`; verify its service version and preserve its existing host credentials. Do not run GitHub device login.
 
@@ -116,7 +116,7 @@ For 0.2.4 acceptance, the PM updates FRA and runs A40 after merge and publicatio
 
 ## Built-in controls (task #106)
 
-The command contract and permissions are in [§9](../pilotq.md#command-line).
+The command contract and permissions are in [§9](service-contract.md#command-line).
 Send `/help` for the current list. `/version`, `/model`, `/doctor` and `/restart`
 are service controls; they do not ask Codex to explain or execute a command.
 `/model` offers catalogue buttons. `/model MODEL` accepts an exact catalogue
@@ -215,7 +215,7 @@ An uncertain topic creation is never repeated automatically. Inspect the forum a
 PilotQ doctor and the TaskQ service-status fallback, and prints the setup findings.
 A nonzero exit with an onboarding report preserves registration but means the
 project is not ready. Registration does not grant worker access or capacity
-([contract §5](../pilotq.md#project-onboarding-task-168)).
+([contract §5](integration-contract.md#project-onboarding)).
 
 The installation owner receives a Telegram DM card with one line per gap and a
 Recheck button. Follow the displayed owner steps outside PilotQ, then tap Recheck;
@@ -237,7 +237,7 @@ is no directory discovery.
 
 ### Registered DEV/LIVE releases (#174)
 
-Only the installation owner provisions a release capability. Register the actual release checkout first; a second checkout (for example Tight's cs checkout) is a blocker source, never a fallback release directory. The contract in [§5](../pilotq.md#dev-visibility-and-owner-release-task-174) owns authority and recovery.
+Only the installation owner provisions a release capability. Register the actual release checkout first; a second checkout (for example Tight's cs checkout) is a blocker source, never a fallback release directory. The contract in [§5](integration-contract.md#dev-visibility-and-owner-release) owns authority and recovery.
 
 Save an owner-vetted JSON configuration to a protected file, then run `pilotq projects release NAME FILE --json` and `pilotq users grant OWNER_ID release:NAME --json` (replace uppercase placeholders). Configuration is stored against the registered root/board; chat cannot edit commands or provision this grant. An invented configuration shape follows; replace paths, refs, URL, migration prefixes and minimum versions with verified project values:
 

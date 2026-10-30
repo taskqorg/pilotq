@@ -126,7 +126,7 @@ Implementation owners are **PilotQ**, **Codex**, **TaskQ**, **agentq**, or the e
 
 ## What changed in the specification
 
-The matrix contains 60 mechanism decisions, not 60 services or a promise to reimplement four agents. Previously under-specified areas are now proposed in [contract section 12](../pilotq.md#12-proposed-lifecycle-and-feedback-protocol): startup and independent activity clocks, typing/progress lifecycle, notification semantics, prioritized controls, stale-event fences, chunk-level delivery, subscription wait/renewal, capability readiness, lost-wakeup reconciliation and safe runtime lifecycle.
+The matrix contains 60 mechanism decisions, not 60 services or a promise to reimplement four agents. Previously under-specified areas are now proposed in [contract section 12](runtime-contract.md#12-proposed-lifecycle-and-feedback-protocol): startup and independent activity clocks, typing/progress lifecycle, notification semantics, prioritized controls, stale-event fences, chunk-level delivery, subscription wait/renewal, capability readiness, lost-wakeup reconciliation and safe runtime lifecycle.
 
 Twenty lifecycle cases L01–L20 extend the existing 42 functional/fault/context cases to 62 cases. They are scenario families with concrete fault points, not executed tests. A required mechanism cannot be accepted solely because the equivalent upstream module exists. The release report must map each required matrix row to results on the exact candidate, with unknowns visible. Out-of-scope rows receive configuration/dependency review rather than invented runtime tests.
 

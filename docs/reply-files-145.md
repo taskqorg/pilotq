@@ -1,6 +1,6 @@
 # Telegram reply file qualification (#145)
 
-PilotQ forwards admitted Telegram photos and documents through TaskQ's existing `--file` interface under [§5](../pilotq.md#5-taskq-integration). This is a PM live recipe, not a claim of live acceptance. Task note 145.1 assigns release and A2 execution to the PM; workers verify A1/A3 locally and in CI.
+PilotQ forwards admitted Telegram photos and documents through TaskQ's existing `--file` interface under [§5](integration-contract.md#5-taskq-integration). This is a PM live recipe, not a claim of live acceptance. Task note 145.1 assigns release and A2 execution to the PM; workers verify A1/A3 locally and in CI.
 
 ## Boundary and local evidence
 

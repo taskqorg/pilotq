@@ -1,523 +1,204 @@
 # PilotQ product contract
 
-PilotQ is the conversational front end for work on a shared server. People discuss work in Telegram; PilotQ answers, performs bounded direct actions, or manages execution through TaskQ. A lost model connection must never silently lose an accepted request or authorize a repeated external action.
+PilotQ is the conversational front end for work on a shared server: it answers in Telegram or the CLI, performs bounded authorized actions and manages substantial work through TaskQ. It has no worker scheduler, autonomous goal engine, reviewer, separate task board or general plugin marketplace. Accepted requests must survive a lost model connection without authorizing repeated external effects.
 
-Date: 2026-10-24. Stage: implemented test service; first release preparation. The name and repository are owner-approved; the owner made the repository public on 2026-10-22 so `main` rules apply (docs/bootstrap.md). The owner chose the base on 2026-10-22 (section 3). Requirements marked **Owner** come from the requested workflow. **Proposed** sections define a design to review and qualify, not shipped guarantees or permission to deploy.
+## Rules
 
-Shared engineering, storage, security and release rules belong to [specq](https://github.com/taskqorg/specq/tree/main/engineering). Evidence: [research](docs/research.md), [mechanism matrix](docs/mechanism-matrix.md). Requirement checks: [acceptance](docs/acceptance.md).
-
-## Specification hierarchy
-
-The owner requires spec-driven work. `specq` is the shared base; this root contract contains only PilotQ-specific decisions and additions. For PilotQ, an explicit owner-approved decision or exception here takes priority over a conflicting shared default. Unmentioned areas inherit `specq`. An exception names the shared rule, scope and reason; an accidental conflict or an unapproved proposal is not an exception.
-
-Supporting documents, README, instructions, tests and code follow this contract. They cannot introduce independent product decisions. Update the owning specification before implementing a changed decision. The development-live exception in section 9 is owner-approved for tasks #106, #108, #117 and #119.
-
-## 1. Outcomes and boundaries
-
-**Owner requirements**
-
-- **R1 Conversation:** run on a server, serve multiple authorized people through DMs, groups and forum topics, and preserve who said what and where.
-- **R2 Direct help:** discuss, research briefly, answer, inspect a bounded resource and make a small authorized update without filing every request as a task.
-- **R3 Management:** use TaskQ for most substantial work: clarify, plan, file, follow, answer status questions and relay worker questions and results.
-- **R4 Flexible projects:** remember the usual project but allow a conversation to switch projects. Every external action must resolve a concrete authorized target.
-- **R5 Reliability:** ordinary conversations and simple tasks work without repeated nudges. Restarts, timeouts and long context have explicit recoverable outcomes.
-- **R6 Continuity:** preserve existing people, access roles, conversation boundaries and project associations during a later Hermes migration.
-- **R7 Context:** support effective agentq integration, including original-data recovery and a measured quality baseline.
+- **R9 Model access:** use Codex with existing subscription access only. Claude and separately billed model APIs are out of scope; never fall back automatically to paid API credentials.
+- **R10 People and admission:** ignore people without explicit administrator-granted access; group membership grants nothing. Keep distinct, persistent, correctable profiles and support access inspection, change and revocation.
+- **R16 Keys:** tools may use credentials on an authorized person's behalf; the model never sees their values. Keys enter only through the protected CLI.
+- **R4 Flexible projects:** remember the usual project and allow switching; every external action resolves one concrete authorized target.
+- **R5 Reliability:** ordinary conversations and simple tasks work without repeated nudges. Restarts, timeouts and long context have explicit recoverable outcomes; accepted requests and uncertain effects are never silently lost or replayed.
+- **R17 Request audit and telemetry:** each request durably records who, when, where, request, actions and outcome, joined to CoreQ telemetry for investigations, personal history and self-improvement analysis.
+- **R13 Two front ends:** the CLI and Telegram gateway share the request, grant and audit path.
+- **R11 Observable lifecycle:** explain acceptance, progress, waiting, interruption, failure and completion in Telegram. Specify recovery and operational edge cases and their acceptance cases before implementation.
+- **R1 Conversation:** serve multiple authorized people on a server through DMs, groups and forum topics, preserving authorship and route.
+- **R2 Direct help:** discuss, research briefly, answer, inspect a bounded resource and make a small authorized update without filing every request as a task, within §5's write restrictions.
+- **R3 Management:** use TaskQ for most substantial work: clarify, plan, file, follow, report status and relay worker questions and results.
 - **R8 Visibility:** provide task URLs, current state, attempt evidence and outcomes through existing TaskQ facilities.
-- **R9 Model access:** use Codex with existing subscription access only. Claude and separately billed model API access are out of scope. Do not fall back automatically to paid API credentials.
-- **R10 People and admission:** remember distinct users in persistent, correctable profiles. Ignore a person until an authorized administrator explicitly grants access; group membership alone grants nothing. Support inspecting and correcting remembered information and changing or revoking access.
-- **R11 Observable lifecycle:** make acceptance, progress, waiting, interruption, failure and completion understandable in Telegram. Cover recovery and operational edge cases in the specification and acceptance plan before implementation, rather than adding them only after incidents.
-- **R12 Least effort:** build the simplest agent that serves TaskQ work. Reuse proven mechanisms from known projects and the shared TaskQ system instead of inventing new ones.
-- **R13 Two front ends:** offer a command-line interface and a Telegram gateway over the same request, grant and audit path.
-- **R14 Operated like our tools:** PilotQ is monitored, updates itself through releases and is developed spec-first through its own TaskQ board.
-- **R15 Administration by request:** an authorized administrator can tell PilotQ to remember a person with given rights and to create or register projects and open project-bound forum topics through the scoped administration tools in section 5.
-- **R16 Keys:** tools can use credentials on an authorized person's behalf; the model never sees a credential value.
-- **R17 Request audit and telemetry:** every request leaves one durable record of who asked, when, where, what was asked, what PilotQ did and the outcome, joined to CoreQ telemetry. The record answers later service investigations, a person's questions about their own history and PilotQ self-improvement analysis.
+- **R15 Administration by request:** authorized administrators may manage people and rights, create or register projects and open project-bound forum topics only through §5's scoped administration tools.
+- **R6 Continuity:** a later Hermes migration preserves existing people, access roles, conversation boundaries and project associations.
+- **R7 Context:** support effective agentq integration, original-data recovery and a measured quality baseline.
+- **R14 Operated like our tools:** monitor PilotQ, update it through releases and develop it spec-first through its own TaskQ board.
+- **R12 Least effort:** build the simplest agent serving TaskQ work; reuse proven mechanisms from known projects and the shared TaskQ system.
+- **R18 Specification authority:** [specq](https://github.com/taskqorg/specq) is binding. Explicit approved PilotQ exceptions take precedence and name their shared rule, scope and reason. Supporting specifications below are binding details of this contract; README, instructions, tests and code follow it.
+- **R19 Qualification:** the service is implemented for testing and first-release preparation. **Proposed** clauses and thresholds remain design targets, not shipped guarantees, an SLA or deployment permission. Production consumer replacement and unqualified acceptance gates remain unauthorized. Summaries inherit their linked clauses’ proposal status.
 
-**Proposed scope for the first release**
+## 1. Scope and input boundaries
 
-One Linux host, one Telegram bot, one manager runtime, existing TaskQ boards and explicitly registered project roots. Text, replies, task links and inline decisions are core inputs. Accept Telegram photos and image documents, with or without captions, as image input in the same Codex conversation. Preserve their file identity and caption in the request journal. **Owner, task #89 (option 1):** accept Telegram voice notes, audio files and audio documents as Russian speech, recognized locally into text input (§12). **Owner, task #145:** photos and arbitrary documents may be forwarded as TaskQ reply attachments with optional text through `answer`, `steer` and owner `requeue` (§5); other documents outside that flow and video remain unsupported and receive one short plain-language line.
+**Proposed scope:** one Linux host, one Telegram bot, one manager runtime, existing TaskQ boards and explicitly registered project roots. The input choices below are mandatory within that scope.
 
-Recurring work stays with an existing scheduler or TaskQ capability. PilotQ has no worker scheduler, autonomous goal engine, reviewer, new task board or general plugin marketplace. Its local inbox schedules conversation handling and delivery only; TaskQ remains authoritative for execution.
+Accept text, replies, task links, inline decisions, photos and image documents with captions retained. Recognize voice notes, audio files and audio documents locally as Russian speech. Photos and arbitrary documents may be TaskQ reply attachments through answer, steer and owner requeue; other documents and video receive one short unsupported-input line.
 
-## 2. User behavior
+Recurring execution stays with the existing scheduler or TaskQ. PilotQ's local inbox schedules only conversation handling and delivery. Detailed media, retention and admission protections are in §§2, 5, 7 and 12.
 
-### Conversation contract
+## 2. Conversation, admission and authorization
 
-**Owner, task #165:** [Conversation flow](docs/conversation-flow.md) is the single presentation contract for discussion, plan, launch, task status, questions, results and failure recovery (R11, R13, R17). It supersedes presentation wording from #72, #91, #93, #110, #119 and #124; authorization, immutable task scope and durable receipt rules remain in force.
+**Mandatory:** [conversation rules](docs/conversation-contract.md) define admission, route identity, discussion, delegation and follow-ups; [conversation flow](docs/conversation-flow.md) alone owns presentation. Grants, immutable task scope and durable receipts retain authority over presentation.
 
-A plan displays each task's title, one “We will” line and one “Done when” line in the person's language. The latter is a concise outcome summary, not the worker's acceptance list. Acceptance and scope remain in the saved task body. Do not show local-save receipts, internal revisions, board details or launch instructions. Each display offers Launch and Cancel; revisions remain internal authorization tokens.
+Ignore unknown, revoked and unidentifiable senders without reply, reaction, typing, model calls, tasks, profile updates or retained bodies. Bootstrap the protected owner through installation configuration. Stable Telegram IDs and explicit grants establish authority; names, group badges, quotations and external content do not.
 
-Launch, Cancel and discussion choices edit their source message: remove its buttons and append one factual outcome line, including verified task links on launch or the chosen option and actor. A stale callback receives only a popup toast. A superseded display loses its buttons. A launch has one durable status card edited through queued, working, question and done, based on TaskQ observations; missing/deleted cards may be replaced in the original route. Worker questions follow the TaskQ answer card and are edited with the accepted answer. Results lead with one factual effect line; closure alone proves neither publication nor deployment.
+Use isolated routes by default; shared topics preserve authorship and never import private DM context. Preserve the inspected Hermes per-user ordinary-group and shared-topic policies through a reviewed migration manifest before cutover.
 
-**Owner, #165 liveness continuation:** keep the 👀 receipt. A long launch edits one plain status line under its plan card, naming the current phase and elapsed time; it never sends a new message per retry. Rate-limit and coalesce these edits under §12 and the persisted Telegram cooldown. On completion replace that line with the receipt; on give-up show a plain problem line with Retry and Cancel. Retry resumes only the original authorized launch and operation IDs after current grant, target and generation checks. Cancel stops remaining launch steps, preserves prior effects and never parks or stops already admitted workers. Old problem buttons become stale after either action, reset or a later problem display. Retry counts and diagnostics remain in audit and PM telemetry; this presentation change does not enlarge existing retry budgets.
+Discussion never executes a plan. A bounded direct request authorizes its check; launch binds the saved immutable revision, target and scope. Direct work needs one target, a bounded verifiable result and the §7 budget. Substantial or uncertain-duration work goes to TaskQ, except §5's registered owner release.
 
-Deadline replies retain readable findings from completed reads and offer to plan the remainder (§5); findings never turn an uncertain write into success. Completion cards retain the trusted TaskQ closing result and limitations after the effect line; unavailable verdicts remain explicitly unconfirmed. Recovered reply refusals use the same localized line as live refusals; the original reason and remedy stay in audit.
+Keep one open draft per conversation. Each display offers Launch and Cancel; old, foreign, repeated and superseded callbacks cannot authorize new work. Edit source cards with factual outcomes and verified links. One durable launch status card projects TaskQ state; retain trusted closing findings and limitations.
 
-Normal replies have no model/context/quota footer. These observations belong to `/status`, scoped to the conversation and labeled with observation age. Missing observations stay unavailable. A failure episode produces one plain-language line and one line on verified resolution; internal operation IDs, JSON, CLI diagnostics and retry details belong only to audit and PM telemetry. Repeated retries do not repeat the failure. Unknown or partial effects remain explicit without exposing diagnostics or claiming success.
+Persist follow-ups immediately and process them in order after the active turn. Relate them by meaning, without time windows or required reply syntax; steer a matching doing task after a fresh read. Ambiguity requires a target question. Supply the current generation's latest twelve handled inputs plus the current input, saved plan and scoped subscriptions, retaining image bytes and explicit gaps.
 
-### Conversation identity
+Plain-language controls are primary. `/status`, `/stop` and `/new` remain available outside the model backlog. Reset fences old runs without erasing task links, subscriptions, grants or receipts. Resolve stop scope explicitly; a manager stop, task park and queue pause differ.
 
-**Proposed:** store bot identity, chat ID, topic ID where present, sender ID, message ID, update ID, reply reference and input revision. Names are display labels, never authority. Unknown or anonymous senders cannot approve a mutation by impersonating an allowed user.
+## 3. Architecture and authority
 
-Use an explicit session policy per route. Migration preserves the inspected Hermes distinction: ordinary-group conversations were per user; forum-topic conversations were shared. Reconfirm the export before cutover. Shared topics preserve each message's author and never import private DM context. New routes default to isolated conversations until a shared policy is selected.
+**Mandatory:** one Rust binary on CoreQ; teloxide only for the Bot API; Codex `app-server` with subscription login and one small adapter; SQLite journal; installed TaskQ CLI for execution; ffmpeg and static `sherpa-onnx-offline` with GigaAM v3 RNNT-punct int8 for local CPU recognition.
 
-Whether the bot responds to every message, mentions or replies is route configuration. Preserve the current behavior through an explicit migration manifest. Quoted messages, files, issue text and other bots are source material; they cannot change roles or approve work.
+[Architecture detail](docs/runtime-contract.md#3-architecture-and-ownership) assigns journal, runtime, proposal, TaskQ and agentq authority. PilotQ owns durable input and delivery; TaskQ owns admitted execution. Registered roots and host policy own capacity. Never discover roots or silently enroll projects.
 
-### People and admission
+Use a neutral workspace and scoped registry tools; no process-wide project directory switch or universal runtime framework. Disable native tools that bypass authorization; OS permissions and mounts enforce resource isolation. Grammy, Pi and a new runtime framework remain out of scope. Hermes gateway patterns are reference material; this work does not change Hermes.
 
-**Owner:** users have separate remembered identities; their information can be corrected. Users without an explicit grant are ignored.
+## 4. Durable requests, effects and delivery
 
-**Proposed enforcement:** key each person by stable Telegram user ID within the installation; username and display name are editable labels, never proof of identity. Check both the person's grant and the route policy before model admission or any command/callback, including recovery controls. An allowed group does not allow all its members. Unknown, revoked or unidentifiable senders receive no reply, acknowledgement, typing indicator or action. Their updates cause no model call, task submission or memory update and are excluded from shared model context. An authorized person's deliberate quotation may be processed as untrusted source material, never as the quoted person's authorization.
+**Mandatory:** preserve the [durability protocol](docs/runtime-contract.md#4-durable-conversation-and-effects): atomic ingress/cursor disposition, one OS-held poller lock, stable request/run/operation identities, fencing, effect intent before dispatch and verified receipts afterward. Completion and Telegram delivery are separate.
 
-Persist only the minimal ignored-update disposition needed for deduplication and polling progress; it is not an accepted work request and contains no message body. Granting access later does not replay ignored messages. The newly allowed person can send a new request.
+Reconcile TaskQ mutations by the same operation ID and revision. Retry direct mutations only under their declared idempotency/readback contract; uncertain non-idempotent effects block replay. Rebuild native sessions from recorded input/output and receipts without repeating completed effects.
 
-An authorized administrator can inspect a user's access and permitted profile fields, grant scoped access, change it or revoke it through Telegram. Accept an exact Telegram user ID or a verified sender reference; resolve ambiguous names before writing. Record the acting administrator, target ID and before/after grant. Admission to conversation does not automatically grant project mutations, TaskQ management or user administration. A Telegram group-admin badge does not confer PilotQ administration. Bootstrap the initial owner ID through protected installation configuration, never through the first incoming message. Model output, remembered job titles and self-declarations cannot grant rights.
+The proposed request states are queued, running, waiting for a person, delegated, answered, failed, cancelled and uncertain. Commit final replies and questions to an ordered outbox with immutable destinations. Retry delivery without rerunning work; ambiguous Telegram sends can visibly duplicate and must stay explicit.
 
-### Discuss, act, delegate
+Normal accepted text gets 👀 within five seconds, text on reaction failure and one queue notice after thirty seconds. Keep the retention notice separate and omit internal request IDs. Private drafts are ephemeral; final rich/HTML/plain fallback, UTF-16 limits, individual receipts and persisted per-chat cooldowns follow the linked delivery protocol.
 
-**Proposed:** discussion never implies execution. A direct request such as “check the disk space” already authorizes that bounded check. “Let's plan” produces a revisable proposal. “Run this plan” binds authorization to the displayed plan revision, target and scope; it does not require another ritual confirmation.
+## 5. TaskQ, tools and project administration
 
-Direct work must satisfy all of these conditions:
+**Mandatory:** [integration detail](docs/integration-contract.md) and the [TaskQ tool contract](docs/taskq-tool-contract.md) bind tool scope, target selection, grants, operation receipts, refusals and recovery. Use only installed TaskQ CLI board access; no forge adapter, constructed task URLs or forge bypass.
 
-- One clear authorized target and a bounded result.
-- No need to survive as a long-running job, produce a reviewed implementation, or coordinate dependencies.
-- A read-only operation or a small mutation with an explicit grant and a verifiable outcome.
-- Execution fits the short-action budget in section 7.
+Use argument arrays and typed validation. TaskQ status/readback binds the registered root and board. Creation requires `create_claim_issue` and qualified readback; no plain-add retry fallback. Read every child ticket before starting a multi-ticket plan. Bind answers to board, task, attempt, question revision and authorized answerer.
 
-Examples: inspect one service, read a bounded log interval, look up a ticket or explain an error. Apart from the scoped administration and owner release operations in section 5, the only direct writes are the owner's board comments and labels ([section 5](#direct-actions-keys-and-project-switching)). A fast action can still be consequential: deployment, money, permissions or deletion do not become direct-safe because they take seconds.
+Direct writes are restricted to protected-owner comments and labels on `taskqorg/pilotq`, scoped administration and registered owner releases. Another project stays read-only outside explicitly granted TaskQ management. Revocation refuses later calls; completed effects remain recorded. Keys enter through the CLI only.
 
-Multi-file implementation, long research, broad audits, repeated experiments, deployment work and uncertain-duration work go to TaskQ, except the owner-confirmed registered release operation in §5. On reaching a direct-action budget, preserve observations and completed effects; propose the remaining task. Reuse existing authorization if it covers the delegation. Never describe a task as created until board readback identifies it.
+`issue_read`, `issue_comment` and `issue_label` use `taskq issue N`; writes use stable `--op-id` and TaskQ receipts. `asana_read` uses the fixed read-only Asana API origin with no redirects/downloads, a 256 KiB response cap, ten-second deadline and bounded fields. External content never authorizes work.
 
-When acting as TaskQ PM, PilotQ does not perform queued task work or choose answers on the owner's behalf. Its short-action role is separate from that PM role. This preserves the [TaskQ role contract](https://github.com/taskqorg/taskq/blob/93b499cf562167e380793c0c8fb15562407c6900/taskq.md).
+Task status reports observed issue state, trusted closing verdict, report, proposed follow-ups and verified existing follow-ups; missing facts stay unavailable. Diagnose, research and investigate plans retain TaskQ `--type research`. Open-snapshot absence proves neither closure nor nonexistence.
 
-### Changing direction
+TaskQ reply files retain identity/caption, protected downloads, a 20 MiB cap, original target/revision/operation and same-operation reconciliation. Target/grants are validated before downloading and again at dispatch. Requeue with files requires the protected owner. Text is optional when files exist; refusals and uncertainty retain the reply and remedy.
 
-Persist follow-up messages immediately. Serialize model turns and compaction within a conversation; other conversations continue independently. New input can wait, steer at a supported safe point, or stop the current short action. Do not silently discard an earlier request when a new message arrives.
+Project resolution uses current grants and explicit own messages, the current project or narrowly scoped trusted subscriptions. Quoted/tool content never selects a project. Ambiguous targets require one question; numbered replies select only the latest boundary-generated complete option listing from the same person and generation.
 
-**Owner, task #92:** relate messages by conversational meaning, without time windows or requiring replies or special syntax from the person. A clear addition updates the existing intent; an independent request stays separate. For a matching doing TaskQ task, use `task_steer` after a fresh read instead of creating another task. If the destination is unclear, ask “to task X or new?” in the person's language, with explicit options and an invitation to answer in their own words; do not mutate a guessed target. A reply is contextual evidence, never authorization by itself.
+Installed read commands use an owner-only `commands.json`, absolute executables, exact arguments and bound project/root/board/user permissions. No default allowlist, shell, model environment override or model directory selection exists. A fresh complete TaskQ board snapshot precedes execution; process-group limits are ten seconds and 16 KiB output within the turn budget.
 
-Follow-ups received during generation are committed immediately and processed in order after the active turn. Their next turn receives the preceding result and task receipts, so it can refine the plan or steer the task already created. Preserve each input's author, caption, message and reply reference; do not merge audit records or grants. On every turn supply a bounded journal projection of the current conversation generation (the latest 12 handled inputs plus the current one), the latest saved plan and accessible task subscriptions with their observation times. It is historical source material, not renewed authorization or fresh board state. Attach available image bytes from that projection again, including multiple images before a text follow-up, so native-session recovery does not replace images with file IDs alone. Apply §12 download protections and the original turn deadline to all attachments. An unavailable historical image is an explicit context gap; an unavailable current image fails the request. Context outside this projection may require clarification; never pretend to have seen missing content. `/new`, route isolation and current grants bound the projection.
+Administration tools prepare/register only explicitly requested existing repositories under `<install>/projects`, change explicitly named grants for verified positive IDs seen in the route, or create one authorized forum topic with fresh bot permission. They cannot change the protected owner, create repositories/claim issues, install services, provision keys or alter capacity.
 
-Plain-language controls are primary. Deterministic `/status`, `/stop` and `/new` are recovery controls that remain available when the model is unavailable. `/new` resets the model conversation, not task links, authorization records or active TaskQ work.
+Persist immutable administration intent, readback and receipts. Unknown topic-creation effects never replay; a recorded topic ID permits only completing its local route binding after revalidation. Registration does not imply filing readiness or authority.
 
-“Stop” must resolve its scope. Stopping the manager turn, parking a task and pausing new queue admission are different actions. A queue pause must not be reported as stopping an active worker. Use supported TaskQ transitions and verify their result; explain partial or pending termination.
+Onboard only registered roots after registration, startup gaps or changed TaskQ identity. Require fresh doctor/setup evidence, active service, usable Codex capacity, explicit effective grant, claim prerequisite and owner CLI/DM `issue_read` key scope. Gaps remain visible in one durable owner DM card and nonzero CLI findings; Recheck edits it.
 
-## 3. Architecture and ownership
+Block a project's first launch until its current root/board readiness passes. Protected-owner `/onboard NAME override` bypasses only PilotQ's readiness gate, records findings and retains TaskQ checks; recheck or registration changes invalidate it. Existing workers continue. Owner-only installation, capacity, keys and login remain named steps rather than executable fixes.
 
-**Owner decision 2026-10-22 (option A):** PilotQ is one small Rust service in the TaskQ tool family.
+Registered DEV/LIVE release is an exception to §2 deployment delegation and §5 direct writes. Require protected owner, project scope and separate `release:NAME`; only a bound Release button executes. Protected configuration binds exact board/root, HTTPS health, refs, absolute executables, exact arguments and minimum versions. No shell or model command exists.
 
-| Part | Choice | Reason |
-|---|---|---|
-| Language and packaging | Rust single binary on [coreq](https://github.com/taskqorg/coreq) | Same release, update, service, status, selftest and incident path as taskq, agentq and dashq (R14) |
-| Telegram | [teloxide](https://github.com/teloxide/teloxide) for the Bot API only | Maintained Rust library; PilotQ keeps its own durable ingress and outbox (section 4) |
-| Telegram behavior | Patterns adapted from the Hermes gateway: update intake, delivery retry, stall watch, topic routing | Already exercised on our server (R12); read as reference, no change to Hermes |
-| Manager runtime | Codex `app-server` under the subscription login, one adapter | R9; [core options](docs/core-options.md) |
-| Journal | SQLite (section 7 settings) | One local file, supported snapshot backup |
-| Work execution | Existing TaskQ CLI | Section 5 |
-| Voice recognition | ffmpeg and `sherpa-onnx-offline` with GigaAM v3 RNNT-punct int8, local CPU subprocesses | Best Russian accuracy per CPU in the #89 benchmark; keeps the static PilotQ build free of onnxruntime |
+Preview pins main/LIVE SHAs, range/authors, verified task URLs, migrations and DEV inclusion; unavailable facts refuse. Expiry is fifteen minutes. Inspect every registered same-origin checkout through TaskQ before preview and dispatch; a running attempt or incomplete evidence blocks. Main advancement never retargets; LIVE advancement requires another preview.
 
-Grammy, Pi and a new runtime framework are out of scope. Earlier source findings remain in [research](docs/research.md).
+Persist confirmation before ordered preflight, backup, pinned release and pipeline readback. Use a repository lock and fifteen-minute deadline; drain refuses during release. Revocation stops remaining stages; ambiguous/interrupted commands stay uncertain without replay. Completion needs matching pinned/LIVE SHA and successful release, smoke and backmerge evidence with validated HTTPS links.
 
-```mermaid
-flowchart LR
-  T[Telegram] <--> P[PilotQ ingress and delivery]
-  P <--> D[(Conversation journal)]
-  P <--> A[Manager runtime]
-  A --> B[Authorized tool boundary]
-  B --> Q[TaskQ]
-  B --> S[Short actions]
-  Q --> W[Workers and reviewers]
-  Q --> P
-  C[agentq] --> A
-```
-
-| State | Authority | PilotQ responsibility |
-|---|---|---|
-| Received inputs, response delivery, route policy, grants and request correlation | PilotQ journal | Commit, deduplicate, restore and expose failures |
-| Model conversation and summaries | Runtime session, backed by recoverable PilotQ input and finalized-output records | Preserve session identity; rebuild explicitly if native state is unusable |
-| Plans being discussed | Versioned PilotQ proposal | Track target, author and authorization scope |
-| Admitted task state, attempts, questions, dependencies and completion | TaskQ trusted board log | Read and invoke supported commands; cache only with source time |
-| Project roots and worker capacity | TaskQ registration and host policy | Use registered entries; register a new project only on an administrator request (section 5); no directory discovery or silent enrollment |
-| Compressed tool output and recovery reference | agentq adapter plus retained original evidence | Preserve access scope and validate recovered content |
-
-Keep the runtime interface small: open/resume by ID, submit, stream events, interrupt, observe terminal result and close. Implement one adapter first. Do not build a universal runtime framework or expose native runtime tools that bypass the authorization boundary.
-
-The manager uses a neutral explicit workspace. Project context is resolved through the approved registry and scoped tools, avoiding a process-wide current-directory switch shared by conversations. Separate runtime processes are fault boundaries; OS permissions and mounts enforce actual resource isolation.
-
-## 4. Durable conversation and effects
-
-**Proposed invariant:** every durably accepted request is queryable as queued, running, waiting for a person, delegated, answered, failed, cancelled or uncertain. Completion and Telegram delivery are separate fields. No persistent state is inferred from a typing indicator or model prose.
-
-### Ingress
-
-Use long polling initially. Commit admitted inputs, minimal ignored-update dispositions, deduplication keys and the next polling cursor in one SQLite transaction before making a Telegram request that confirms those updates. A handler cannot advance the cursor past an uncommitted disposition. A duplicate admitted update produces the existing request, not a second turn or task; ignored updates remain ignored.
-
-Use one OS-held polling lock per bot installation; PID text alone is insufficient. The supported deployment is one host per token. A Telegram conflict from a second host is an incident, not an endless retry loop. Deployment explicitly stops the old consumer before activating a new one.
-
-Treat update IDs as protocol identifiers, not proof of uninterrupted human history. Telegram retains undelivered updates for at most 24 hours; after a longer outage report the possible gap. Do not claim that a new bot can fetch all old group history.
-
-Edited messages create a revision. They can revise an unstarted proposal; they cannot silently alter already authorized work. If work started, present the edit as a change request. A deleted input does not revoke an already executed side effect.
-
-### Runs and tools
-
-Persist request and run identity before invoking a runtime. Require a native terminal outcome; a closed stream or an empty response is not success. A generation/fencing token prevents a replaced or aborted runtime from emitting new authorized tool calls or final replies.
-
-Persist the intent and stable operation ID before each external effect; persist its outcome and readback after it. A crash can occur between these steps. Recovery rules are:
-
-| Interrupted operation | Recovery |
-|---|---|
-| Pure model generation or bounded read | Retry within budget; distinguish regenerated text from the original |
-| TaskQ mutation | Reconcile the same operation ID and revision against TaskQ |
-| Direct idempotent mutation | Read back the target, then retry only under its declared idempotency contract |
-| Non-idempotent or unobservable external effect | Mark uncertain, block automatic replay and request a decision |
-| Completed result with pending Telegram delivery | Retry delivery; do not rerun the agent or tools |
-
-SQLite records are the durable acceptance boundary. Pi's native JSONL session is not sufficient evidence of power-loss durability or atomic external effects. Preserve a recoverable transcript projection and tool receipts before acknowledging completion. Rebuilding a damaged native session must not replay previous mutations.
-
-### Delivery
-
-Commit final replies, worker questions and results to an outbox with immutable destination and correlation ID. Preserve per-conversation order; coalesce superseded progress updates only. Keep terminal outcomes and unanswered questions.
-
-Record Telegram message IDs after successful sends; update a known status message when useful. Telegram `sendMessage` has no general client idempotency key: after a lost send response, a duplicate visible reply is possible. Report an ambiguous send as such and use bounded at-least-once delivery for results. Never repeat task execution to solve a delivery problem.
-
-**Owner, task #68:** normal accepted text uses an 👀 reaction within five seconds, without a text acknowledgement. If the reaction fails, send a short text receipt. If an unstarted request waits over 30 seconds, send one “Queued behind N” notice with the observed number of earlier requests in its conversation. Busy, unsupported-input and recovery-control replies remain text. Keep the first-use retention notice as a separate message once per person. No Telegram reply exposes internal request numbers, including controls, failures and limits; IDs remain available through the operator CLI and audit records.
-
-Private-chat answers do not quote the latest user message. Groups and topics retain reply correlation, typing and edited task status messages. While generating in a private chat, stream user-visible answer text through sendRichMessageDraft, falling back to sendMessageDraft. Coalesce updates to at most one per second; drafts are ephemeral, fenced to the active run, and failures never change the request outcome or replace final delivery.
-
-Final answers first use sendRichMessage for content within 32768 UTF-16 units. On an explicit unsupported-method or content rejection, fall back to HTML sendMessage in stable ordered chunks of at most 4096 UTF-16 units, then plain text on entity errors. Preserve literal source content, escape generated HTML at the output boundary and never allow raw model HTML to become markup. Persist fallback chunks and individual receipts before sending; retries after an ambiguous rich send stay on that same delivery method. A draft is never a final receipt. On upgrade, native sessions with the older fixed tool catalogue rebuild explicitly from the recorded conversation and receipts before receiving the new tools; completed effects are never replayed. Split oversized replies safely; do not rerun generation. Reaction, draft, typing and final sends share a persisted per-chat cooldown after Telegram rate limits; no fallback bypasses retry_after. Respect server retry delays, bound retry counts and retain exhausted deliveries for operator recovery. Forbidden or missing-chat errors must not reroute private results to a broader group or silently mark them delivered.
-
-## 5. TaskQ integration
-
-**Owner, task #144:** PilotQ reads and manages boards only through the installed TaskQ CLI (R13). A registered project is the local root where TaskQ runs; TaskQ owns forge, host, authentication and board access. The registry binds that root to the board identity read back by `taskq status --json`, without a forge adapter or credential configuration in PilotQ. Use task URLs returned by TaskQ, never construct or interpret forge-specific issue URLs. Read task progress with `status --task` and accepted answers with `inbox --json` (actor, time and original question revision); writes use the supported `answer` and operation-receipt path. An unreadable response stays unknown. Missing TaskQ capabilities become TaskQ findings, never a PilotQ forge integration. Existing direct issue tools remain refused when TaskQ has no equivalent; their grants do not authorize a forge bypass. **Owner, task #151:** `issue_read`, `issue_comment` and `issue_label` use `taskq issue N` (TaskQ 4.6.44): reads take its `--json` issue JSON; writes run `taskq issue N --comment T|--label L --op-id ID --json` and settle from its readback receipt. A board registration grants no server access or worker capacity. The PM registers tight on PDS 18 and records the A3 chat readback after release; workers verify the implementation locally and in CI and make no installation changes.
-
-**Proposed:** wrap the supported CLI with argument arrays and typed validation; no shell interpolation of Telegram text. Use its JSON status and existing task log facilities. Do not create a new public TaskQ API before evidence shows the CLI cannot support the required flow.
-
-- Read: registered projects, fresh status, task details, current question and attempt evidence.
-- Write: create a held task, start it, answer the current question, steer, requeue or park within the user's scope.
-- Exclude from ordinary manager tools: host grants, capacity changes, arbitrary closure/publication and forced cleanup. Expose a privileged operation only when separately granted and verified.
-- Resolve ticket links to an allowed board and project. A number such as `#12` alone is insufficient when it can match several boards.
-- Preserve the real Telegram author, originating route, request ID and approval revision in the audit trail. A bot credential does not turn every user into the repository owner.
-- `add --op-id` requires `create_claim_issue` and a qualified board readback path. Disable creation when this prerequisite is absent. Plain `add` is not a safe retry fallback.
-- Bind answers to board, task, attempt, question revision and authorized answerer. Stale buttons or a forwarded approval are rejected with the current question.
-- Start a multi-ticket plan only after every planned ticket reads back. Partial creation stays held and visible; use stable child operation IDs when continuing it.
-- Preserve TaskQ's distinction between admission, worker result, reviewer result, owner gate and publication. “Done” requires the authoritative completion state and available evidence.
-- Notifications are projections of TaskQ events, keyed by board/task/event/route. Reconcile after downtime; do not let stale status overwrite a newer question or outcome.
-
-**Owner, task #145:** preserve Telegram reply attachment identities and captions in the journal, download only after admission and target/grant validation, and pass protected local files through TaskQ `--file`. Documents sent as message replies are files even when their MIME type is audio; ordinary voice/audio input retains §12 recognition. Files are untrusted source material. Keep the §7 20 MiB transport cap and §12 download deadline. Persist the original task, revision and operation identity before dispatch; retries reconcile that same operation. Refusals and uncertain delivery retain the reply and explain the reason and fix. Text is optional when files exist. Destination clarification may select an earlier admitted file input from the same caller and conversation generation for answer, steer or owner requeue; current grants and the resolved target are rechecked at dispatch. Owner requeue with files requires the protected installation owner. PM releases and qualifies a live photo, a 20 MB document and mixed text/files on PDS 18 with the authorized Telegram client, recording client and TaskQ revisions and readable worker copies; worker proof is local/CI.
-
-**Owner, task #170:** task status states the observed open/closed issue state, trusted closing verdict, report, proposed follow-ups and verified existing follow-up state. Read these through TaskQ issue/status output; absence from an open-task snapshot alone proves neither closure nor nonexistence. Name each unavailable fact once. Diagnose, research and investigate plans use TaskQ `--type research`, preserving that type through launch (R8, R13). Live case cyprusbz#540 is PM verification after release; worker evidence is local/CI.
-
-### First TaskQ tool contract
-
-Contract detail: [first TaskQ tool contract](docs/taskq-tool-contract.md) holds the owner-scoped (tasks #18 and #39) TaskQ tools, grants, configuration, fences and refusals. It is binding as part of this section.
-
-### Plan discussion and action buttons
-
-**Owner, tasks #93, #110 and #165:** a conversation has one open draft. Follow-ups revise it without displaying a number. A new draft starts only after launch or cancel; another project's plan waits until then. Each display has Launch and Cancel. Text launches the current draft; a button launches only its displayed immutable revision. Cancel closes it without a board effect or model call. The Conversation contract owns card text, source-message edits, stale-button toasts and the launch status card. Filing and starting happen after the turn, outside the model deadline, with replies derived from receipts. Text controls remain supported (R13).
-
-- Discussion has no board effect. Saving a draft records its stable identity, project and a new immutable revision. Show the current task summaries under the Conversation contract; retain complete acceptance and scope in the task body. An earlier message may remain visible but its launch button is stale.
-- A launch button belongs to the displayed revision, saved project, originating conversation generation and the person who requested that display. Recheck current admission and TaskQ/project grants at dispatch. A foreign, forwarded, reset, superseded or repeated press cannot authorize a different revision or create another run. Accepted launches use the same `task_run_plan` boundary, stable operation IDs, readback and audit as text.
-- Concrete discussion questions offer two to four numbered choices, preserved in the message, buttons and recorded answer. Choosing one submits that answer to the conversation; it never authorizes launch. Launch remains a separate button or explicit later text request. Old or already answered choice cards are refused.
-- Example: “Plan reply improvements”, “also keep line breaks”, “and add buttons” produces one draft with three internal revisions, no board tickets. The latest display has “Run plan”; pressing it launches only that display. Pressing either an earlier display or the same button again starts nothing new. Under #110 a separate idea waits for launch or Cancel, then starts a new draft. After launch, “also support audio” starts a separate discussion, preserving the launched scope.
-
-### Human trial
-
-**Owner, task #42:** the human trial ran with the owner and Simon, the two administrators, on the separate test bot from 2026-10-27T15:15Z to 2026-10-29T20:46Z. Its report covers request IDs, outcomes, refusals, failures and tester feedback; discovered defects are filed as held tasks. Naming administrators does not itself apply grants or expand authority.
-
-This human feedback supplements the 2026-10-23 scripted-run evidence above. Keep [gate 4](docs/acceptance.md#selection-gates) separate and preserve its existing pilot start. Hermes production cutover remains outside scope (§10 step 6). See the [trial cases](docs/acceptance.md#human-trial-task-42).
-
-### Direct actions, keys and project switching
-
-**Owner decision 2026-10-23 (option B, task #23, section 10 step 4):** direct actions are reads. Only the owner (`owner_id` from protected configuration) may write directly, and only a comment or a label on an issue of the `taskqorg/pilotq` board; the administration and owner-confirmed registered release exceptions below are the only additional direct-write scopes. Keys enter only through the CLI.
-
-The manager gets these tools beside the TaskQ tools, checked at dispatch like them:
-
-| Tool | Grants | Effect |
-|---|---|---|
-| `project_list` | current caller’s project grants | Reads registered project names and boards accessible to the caller, marking the conversation’s current project; no key or board call |
-| `project_use` | project scope | Sets the conversation's current project. The project must be registered and named in the person's own message |
-| `issue_read` | project scope and a key granted for the tool | Reads one issue of a registered project through `taskq issue N --json`: title, state, labels, canonical URL, a bounded body excerpt, the latest comments as bounded excerpts and the read time |
-| `issue_comment` | owner, a key | Adds one comment to a `taskqorg/pilotq` issue |
-| `issue_label` | owner, a key | Adds one label to a `taskqorg/pilotq` issue |
-
-- **Owner, task #92:** for `task_status` and `task_steer` (and `task_answer` under #108), the agent may select a trusted journal subscription from this same conversation by context, without asking the person to repeat its project. The tool boundary requires one matching subscribed task, current project grants and unchanged registered board/root. An explicit project or issue URL disambiguates subscribed boards; a bare number matching several accessible subscriptions is refused. This extends the Target rule below for these tools only; quoted text and external tool output do not create subscriptions.
-- **Owner, task #124:** plan, run, status (including `project_status`), steer, requeue, park and `project_use` may resolve a project named in the caller’s earlier own messages of this conversation generation. Use one unambiguous accessible match; current own wording can disambiguate earlier mentions. Quoted content, issue text, tool output and other people’s messages never select it. Multiple fits require one short question listing the accessible names and no guessed board write. Recheck grants, registration and board/root at dispatch. A saved plan retains its bound target. For example, “What is the task status for Pilot Q?” followed by “Make a task so this works” resolves `pilotq` without repeating its name.
-- **Owner, task #157:** when PilotQ's tool boundary itself asked that question and its reply listed every option, the same person's next message in this conversation generation answers it by name or by a bare number counted in the reply's listing order; that selects the project for the tools above. Numbers bind to explicit numbered items, ignoring introductory mentions; missing, duplicate or ambiguous item mappings are refused. Any other message closes the question, and a bare number without an open question selects nothing. Quotes, issue text and tool output still never select.
-- Target: a tool resolves one registered project from an explicit `project` argument, an issue URL or the conversation's current project. An explicit project or URL must be named in the person's own message or be the current project; quoted messages, issue text and tool output never select one. A bare number with no current project and several accessible projects is refused with the list, never guessed. Another project stays read-only.
-- Budget: one request makes at most 5 PilotQ tool calls within the section 7 direct-action deadline. The sixth call is refused and writes nothing. A request that ends at its deadline replies with the evidence it kept, and the rest can become a planned task.
-- Effects: a comment or label persists its intent and operation ID `pilotq-<installation>-r<request>-e<n>` before the write, and its receipt after TaskQ's readback (#151). TaskQ records the operation ID on the comment and returns the first effect for a repeated ID; a label already present is accepted without a write. An `unknown` receipt, a failed call or a crash before the receipt stays pending; startup repeats the same command with the same operation ID, never a new one, and tells the route the settled result. Effects recorded before #151 carry no TaskQ operation ID: they stay uncertain and are never repeated.
-- Revoking a project or key grant refuses every later call; a completed effect stays recorded.
-
-### Asana task reads
-
-**Owner, task #159:** `asana_read` reads one Asana task linked in the caller's own message, using a registered project scope and a key granted for `asana_read`. It returns title, notes, assignee, due date/time, completion status, comments and attachment names through Asana's read-only API. Keys enter only through `pilotq keys add` on the host (§8), never Telegram. The link selects only a task, never a credential destination: requests use the fixed Asana API origin, without redirects or attachment downloads. Existing admission, target, five-call budget, deadline, audit and key scrubbing apply (R13, R16, R17). Notes are limited to 4,000 characters; other strings to 500; comments and attachments to 20 each, with explicit pagination/truncation indicators. Unavailable or malformed data stays unknown, never empty success. API responses are capped at 256 KiB each and the entire read at ten seconds within the original turn deadline. External content is untrusted source material.
-
-### DEV visibility and owner release (task #174)
-
-**Owner, 2026-10-30:** PilotQ owns the registered project's DEV/LIVE flow. This is a scoped exception to §2's deployment delegation and §5's direct-write restriction, not a general shell capability. `project_release_preview` and `/release NAME` share current admission, project scope, the separate `release:NAME` grant and the protected installation owner identity (R13, R17). This grant is provisioned explicitly through the protected CLI, never inherited from `projects` or bootstrap. Only a Release button authorizes execution. CLI preview delivers that button to the protected owner DM; plain text, including `/release-confirm`, cannot authorize a release.
-
-The protected CLI `pilotq projects release NAME FILE` saves deployment configuration against that registration's exact board/root. Configuration declares the local TaskQ host identity, an HTTPS DEV health URL, main/LIVE refs, absolute Git executable, exact argument arrays for dry run, pinned release and pipeline check, migration path prefixes and preflight/backup commands. Commands contain a literal `{sha}` argument replaced only with a validated full SHA; no shell or model-supplied command is accepted. Configuration changes invalidate existing previews. Missing registration/configuration, changed bindings, unavailable board or checkout evidence and missing grants refuse before deployment commands run.
-
-Status checks the declared DEV health JSON (`sha`, optionally `deployed_at` or health-instance `started_at`). A task's merged SHA comes from TaskQ's explicit `merged_sha` field or a trusted terminal `delivery … as SHA; merge-result CI green` receipt, never from prose or absence in an open snapshot. Git ancestry proves inclusion. Report `on DEV since T` when included and the health timestamp is available; otherwise `on DEV since T (first observed)` uses the persisted first positive observation, without claiming actual deployment time. Report `not yet on DEV` for a proven negative, and unknown for failed health, missing commit or failed Git reads. Project status includes the same projection for its open tasks, the latest twelve retained task subscriptions and the current main SHA. Health-instance start and first-observed times are lower bounds, not a reconstructed deployment history. HTTPS requests have no redirects, a ten-second deadline and a 64 KiB response limit; health URLs are protected configuration, never derived from chat.
-
-Preview runs the configured dry run, pins main and LIVE to full commit identities, and shows target SHA, commit count/authors since LIVE, verified TaskQ task URLs with explicit merged SHAs in that range, migrations yes/no and DEV inclusion. Missing facts refuse preview rather than showing empty success. A preview expires after fifteen minutes, supersedes earlier previews in that conversation and binds owner, generation, registration, configuration and source card. Foreign, stale, repeated or reset confirmations run nothing. Main advancing does not retarget a preview; LIVE advancing requires a fresh preview.
-
-Before preview and again before dispatch, read every explicitly registered checkout on this host through TaskQ. A running execution on another checkout with the same Git origin blocks release, naming project, task and attempt; unavailable or incomplete evidence blocks rather than assuming idle. Do not discover other directories. The protected configuration names the only release root; never use Tight's checkout for cs.
-
-**Owner answer #174:** when migrations are present, Release also authorizes the configured promotion preflight and LIVE backup, in that order; both must succeed before the pinned release command. Persist one immutable confirmation intent before any command, then each stage receipt. Execute without a shell in the registered root only. Release execution runs outside the model turn, under a fifteen-minute total deadline and a repository lock; planned update drain refuses while it is active. Revoked access stops remaining stages. An interrupted/timeout/ambiguous command stays uncertain and is never automatically replayed. Repeated confirmation cannot repeat prerequisites or release. Pipeline readback must bind the pinned SHA and report `release`, `smoke`, `backmerge` stages with validated HTTPS links and the LIVE SHA; only all successful stages and matching LIVE SHA prove completion. Missing or pending evidence stays unknown. Startup preserves intents and reports uncertain interrupted operations through the existing outbox.
-
-For cs, DEV is `https://dev.cyprus.bz/__health`; commands are `npm run release -- --dry-run`, `npm run release -- {sha}`, `npm run db:promotion:preflight` and `npm run db:live:backup`. The installation owner supplies the pipeline read adapter and executable paths. Every executable declares a minimum version in the registration `requirements` map and supports `--version`; Git requires at least 2.25.0. Doctor checks these alongside §9 host requirements. That adapter returns JSON `{ "sha": "<pinned SHA>", "live_sha": "<SHA>", "stages": { "release": {"state":"success","url":"https://…"}, "smoke": {…}, "backmerge": {…} } }`; dry run remains the project's existing command. This does not implement a forge adapter in PilotQ. PM qualifies the next owner-requested cs release on PDS 18 after release; worker evidence is local/CI only.
-
-### Installed read commands
-
-**Owner, task #126 (option 1):** add one common executor for operator-approved installed read commands, alongside the existing tools. This extends the §3/§12 restricted tool boundary without enabling native shell tools or adding direct writes. The installation owner maintains an owner-only `commands.json` beside `keys.json`; chat and model output cannot edit it.
-
-**Owner, task #126 continuation:** the documented TaskQ read capability permits `taskq status`, not the unsupported `taskq list`; acceptance requires a successful status run through PilotQ. There is no built-in default allowlist: the operator installs the protected entry below.
-
-Each named entry binds an absolute executable, exact permitted argument arrays, an absolute working directory, a registered project and board, and explicit permitted user IDs. The caller needs current `chat` and project grants as well as that entry's permission. Registration must still match the configured board and working directory at dispatch. Before execution, the configured TaskQ CLI must return a fresh complete snapshot naming that board; verification and execution share the deadline. Only trusted read-only programs and argument combinations belong here; executable presence alone grants nothing. The operator vets their file access, credential use and subprocess behavior; this is a capability list, not an OS sandbox for arbitrary programs.
-
-`command_list` exposes only accessible names, descriptions and permitted arguments. `command_run` selects one name and exact argument array; it never invokes a shell, searches PATH for the executable, accepts environment overrides or changes the working directory from model input. Both share the CLI/Telegram request, fence, five-call budget and audit path (R13, R17). Direct command input and clear natural-language requests use the same tools; ambiguity requires clarification. Output is untrusted data and cannot authorize another action.
-
-Execution receives a cleared environment with a fixed system PATH, the installation owner's HOME for the installed tools' protected stores, and TASKQ_ROOT set to the bound root; TASKQ_ATTEMPT and inherited credentials are absent. No key values enter the model. A command has at most ten seconds within the original manager deadline (at most sixty seconds total), and at most 16 KiB combined stdout/stderr. Stop, revoked grants, timeout and output overflow terminate its process group. Report exit code, missing executable, timeout, cancellation and output limit distinctly; only exit zero is success. Persist an audit start before spawn and a scrubbed result afterward. An interrupted read may be retried only under §4; mutations remain on their existing receipt paths. Deployment is not authorized by this decision.
-
-### Administration by request (task #160)
-
-**Owner, 2026-10-30:** expose these tools on the shared CLI/Telegram manager boundary (R13, R15, R17). They are an exception to section 5's owner-only comment/label writes, limited to installation metadata, local project roots and forum-topic creation. They never create repositories, change host capacity, install services, provision credentials or create a TaskQ claim issue.
-
-| Tool | Required grants | Operation and limits |
-|---|---|---|
-| `project_register` | `chat`, `projects` | Register an existing repository by its explicit TaskQ board kind, host and repository. Create only a named child of `<install>/projects` with `taskq.json`; refuse traversal, symlinks, conflicting configuration or rebinding an existing name. A fresh complete `taskq status --json` must match before registration. Return repository, root, board and filing readiness; without `create_claim_issue`, filing remains disabled and the owner provisions it through TaskQ. |
-| `user_grant`, `user_revoke` | `chat`, `users` | Change only existing grant types explicitly named in the caller’s own unquoted request for an exact positive Telegram ID explicitly named by the caller or identified by the current verified reply. Require evidence that the person was seen in this exact chat/topic: an admitted sender or a Telegram reply sender. Names and forwarded messages never select authority. Retain the administrator, target and before/after grants atomically with the receipt. Protected owner identity cannot be changed. |
-| `topic_open` | `chat`, `users`, access to the bound project (`projects` or `project:NAME`) | Open one forum topic in the originating Telegram supergroup, or the explicitly named group for a CLI request. Resolve one registered project named by the caller or current in the conversation; recheck its board/root. Require a fresh bot `can_manage_topics` permission and forum capability; otherwise refuse plainly. Set isolated route policy by default (shared only when explicitly requested), and bind the new route to that project as its default. A route default never grants project access. |
-
-Each tool shares the five-call limit, original deadline, current admission, run fence and request audit. Store one immutable operation per tool per request; a changed argument set in that request is refused. Read back local changes before success. Duplicate calls return the saved receipt without applying the change again. Project preparation persists intent before filesystem writes and can reconcile only the same matching configuration. Topic creation has no Bot API idempotency key: persist intent before dispatch and its topic ID immediately on response. An interrupted creation without that ID is uncertain and is never automatically repeated; an ID recorded before route binding permits completing only that local binding after grant revalidation. Startup preserves unresolved operations and reports their partial or uncertain result. Unknown senders still follow R10; the service does not retain ignored message bodies or build profiles to make them grant candidates. An administrator may reply to that person's message to supply the verified sender reference.
-
-### Project registration
-
-An administrator with the `projects` grant can ask PilotQ to create or register a project. PilotQ shows the resolved repository, root and board, then applies the request through TaskQ's supported registration path (Add project, [taskq.md](https://github.com/taskqorg/taskq/blob/main/taskq.md) menu M10) and reads it back. Repository creation, capacity and worker grants stay owner operations unless a separate grant names them. A failed or partial registration stays visible and is never reported as done.
-
-Step 4 registers through the CLI: `pilotq projects add NAME ROOT` accepts a root whose `taskq.json` names a repository only when a fresh `taskq status --json` under that root reads back the same board, and records who registered it. TaskQ's Add project conversation stays the owner's way to create the TaskQ side; #160 additionally prepares a local root for an existing repository, without claiming filing readiness.
-
-### Project onboarding (task #168)
-
-**Owner, task #168, registered-roots answer:** onboarding covers only explicitly registered roots (§3). Successful `pilotq projects add` and `project_register` queue onboarding; service startup queues registrations without onboarding records, and a changed TaskQ installation/service identity queues a recheck of those roots. A new TaskQ project must first be registered explicitly. No directory discovery or silent enrollment is added.
-
-Registration and readiness are separate. After registration run `pilotq doctor --json` and the TaskQ setup check; until taskq#1938 ships use `taskq service status --json`, matching the registered root and board. Require complete evidence with service and per-root observations no older than 120 seconds (at most five seconds in the future), an active service, usable Codex capacity and an explicit effective Codex grant without refusal, plus the existing claim prerequisite. A capacity limit such as 4 never substitutes for a grant. Unavailable checks stay gaps. Setup evidence is not proof of the full first-task scenario or subscription entitlement.
-
-**Owner, #168 continuation:** check that each registered project has an `issue_read` key grant usable by the protected owner through both CLI and DM. Project grants and existing owner-wide grants retain §8 semantics; paired CLI/owner-DM route grants also qualify. Read key metadata only, never return values or update last-use time. If suitable issue-tool keys exist but lack scope, show the exact `pilotq keys grant KEY project:NAME` command for each owner-selectable candidate; do not grant automatically. Missing or unreadable key configuration remains a gap with a named protected-CLI provisioning step. Keep the 2026-10-30 fixture: `pilotq-github` permits `issue_read` but is granted to `pilotq` alone; `cyprusbz`, `tight` and `agentq` must each report their missing grant.
-
-The protected owner receives one durable Telegram DM card per project. It lists each gap on one plain line with its exact fix command or a named owner step, and offers Recheck. Rechecks edit that card; missing cards may be replaced only in the same DM. CLI registration prints the same findings and returns nonzero when gaps remain, preserving the registered project. `/onboard NAME` rechecks through the bounded control path; the CLI equivalent is `pilotq ask '/onboard NAME'`. Controls share current admission, audit and persisted Telegram cooldowns (R10, R13, R17). Buttons bind to the owner, card, current registration and conversation generation; stale or foreign buttons receive only a toast.
-
-Existing §5/§9 authority remains unchanged: installation, capacity, worker grants, credentials and subscription login are owner-only steps, shown with Recheck rather than executable Fix buttons. Any fix within PilotQ's existing authority requires one explicit OK for its displayed scope and the existing durable intent/readback path; this flow adds no host mutation capability. The flow ends either with all checks green or with the named owner-only steps still outstanding. It never calls a project ready with gaps.
-
-Before PilotQ starts the first task of an onboarding project, require a passed report bound to its current root and board. Pending, failed or unknown onboarding leaves the launch unsent. The protected owner may write `/onboard NAME override` to bypass only this PilotQ readiness gate; record actor, target and findings, keep readiness false and retain TaskQ's own admission, grant and claim checks. Recheck or changed registration invalidates the override. Existing admitted workers continue. Onboarding and its report survive restart without replaying mutations.
-
-An operations board is an explicit server-care project. Project work stays on that project's board. A server-wide overview aggregates tasks; it does not duplicate every issue onto a server board.
-
-TaskQ execution continues when PilotQ is down. If TaskQ is unreachable, conversations continue and proposed tasks remain unsent. Status shows the last observation time and unknown freshness. Previously authorized, unchanged submissions can resume when dependencies recover; changed scope or stale grants require revalidation.
+For cs use `https://dev.cyprus.bz/__health`, its registered release root and configured npm release/preflight/backup commands; never Tight's checkout. Git ancestry and trusted
+explicit merged SHAs prove DEV inclusion. Health timestamps or labeled first-positive observations bound timing; failures stay unknown. Pipeline adapter, command schema and PM live
+qualification remain in the integration detail.
 
 ## 6. Memory and agentq
 
-**Proposed:** conversation history, remembered preferences and authoritative task facts are distinct. Store route/project preferences with author, scope, source and update time. “Usually this project” is a hint; tool invocation still resolves the target. Explicit corrections supersede old preferences. Shared memory never includes private conversation content without authorization.
+**Mandatory:** [memory detail](docs/runtime-contract.md#6-memory-and-agentq) separates conversation history, scoped remembered preferences and authoritative TaskQ facts. Profiles retain subject, visibility, source and revision across restarts and resets; private DM facts never silently enter shared routes.
 
-Maintain durable per-person profiles for preferred name, relevant working preferences and explicitly remembered project associations. Each fact carries its subject user ID, visibility scope, source and revision. Load only facts permitted in the current route; remembering one person across chats does not copy private DM history into a group. Profiles survive restart and conversation reset.
+Users inspect, correct and forget non-authoritative preferences; administrators act only within scope. Persist and show changes, suppress superseded facts after rebuild/compaction, and distinguish preference deletion from audit retention. Profiles cannot change grants.
 
-Provide a Telegram flow to inspect, correct and forget remembered facts. Users can manage their own non-authoritative preferences; administrators can correct shared profile information within their grant. Administration does not implicitly reveal another person's private DM memory. Show the applied change and persist it before claiming success. Corrected or forgotten facts must not reappear as current facts from an old summary, restored session or automatic extraction. Profile deletion and correction are distinct from retention of conversation/audit records; do not claim that forgetting a preference erases every historical record. Access rights live in the grant registry and cannot be changed by editing a profile.
+Preserve identities, grants, revocations, project references, operation IDs, task URLs, pending questions, plan revisions, prohibitions and receipts outside lossy summaries. Use fresh TaskQ reads for task state.
 
-Keep these outside lossy summaries: identities and roles, grants and revocations, active project references, request/operation IDs, task URLs, pending questions, plan revisions, explicit prohibitions and verified effect receipts. Fresh TaskQ reads supply task state.
+Native compaction is the functional baseline. Agentq tool compression and conversation summarization have separate owners; preserve call/result associations and scoped original recovery. Qualify identical scenarios off/on for completion, constraints, recovery, provider tokens where available, latency and interventions. Byte reduction alone proves no savings or long-conversation correctness.
 
-Start with native runtime compaction as the functional baseline. Integrate agentq at the selected runtime's supported tool-result/context boundary. Tool-result compression and conversation summarization are separate stages with one owner each; never let two compactors race or compress the same result repeatedly.
+## 7. Proposed operating budgets and storage
 
-Compression preserves tool-call/result associations, errors, evidence locations and original-data recovery references. Recovery authorizes the requesting route before returning content. On compression failure, use original data only if it fits the context budget; otherwise fetch a bounded relevant portion or surface a context limit. Never silently truncate authorization or replay work to reconstruct a missing result.
+**Proposed:** [budget detail](docs/runtime-contract.md#7-proposed-operating-budgets) retains every acceptance target and retention constraint. These are initial targets to tune from recorded pilot evidence, not an SLA.
 
-Qualification compares identical scenario sets with agentq off and on. Measure correct completion, preserved constraints, exact original recovery, provider input/output/cache tokens where available, latency and interventions. Byte reduction alone is not a savings claim. A session that survives one compression is not evidence of a long conversation remaining correct.
+Receipt p95 ≤2 seconds; acknowledgement ≤5 seconds; direct actions ≤60 seconds and ≤5 calls; silent-runtime diagnosis after thirty seconds; cancellation acknowledgement ≤5 seconds plus a five-second termination grace; recovery within thirty seconds of readiness. Token activity never renews the absolute deadline.
 
-## 7. Proposed operating budgets
+Start with four concurrent conversations, one run each, round-robin routes; pending caps are fifty per route and 1,000 total. Safe dependency attempts total at most three within the original deadline; delivery attempts at most five per episode across restarts. Task notifications follow a fresh observed transition within fifteen seconds when Telegram is reachable.
 
-These are initial acceptance targets, not observed performance or a production SLA. Tune only from recorded pilot evidence.
+SQLite uses WAL, `synchronous=FULL`, one writer, local disk and bounded transactions. Raw conversations/native inactive sessions retain thirty days; audit metadata 365 days and text ninety days; reconciled receipts ninety days; diagnostics seven days; temporary attachments seven days, 20 MiB each. Preserve active/unresolved work and replay-preventing tombstones.
 
-| Concern | Initial target |
-|---|---|
-| Durable receipt | p95 <= 2 seconds from update receipt at PilotQ, under the defined pilot load |
-| Telegram acknowledgement | 👀 reaction within 5 seconds when Telegram is reachable; text fallback on reaction failure, one queue notice after 30 seconds |
-| Direct action | <= 60 seconds and <= 5 tool calls; longer work is delegated or returned with a bounded result |
-| Silent runtime | No useful event for 30 seconds triggers diagnosis; runtime deadline still applies even if it emits tokens indefinitely |
-| Cancellation | Acknowledge within 5 seconds when transport is healthy; abort then terminate the isolated process after a 5-second grace period if necessary |
-| Runtime recovery | Reconcile interrupted requests within 30 seconds after service readiness; uncertain effects stay blocked |
-| Model concurrency | 4 conversations initially, one active run per conversation; round-robin waiting routes |
-| Backlog | 50 pending requests per route, 1,000 total; excess gets a recorded busy response, never an untracked promise |
-| Dependency retry | At most 3 safe model/read attempts within the original deadline; no retry multiplication across SDK and coordinator |
-| Delivery retry | At most 5 attempts per episode, persisted across restart; obey Telegram retry delays, then surface pending delivery |
-| Task notifications | Within 15 seconds of observing a fresh TaskQ transition, while Telegram is reachable |
-| Health | Separate last successful poll, storage commit, model event, TaskQ observation and delivery; expose age and unknown state |
+Disk budget is 2 GiB; at 80% prune eligible data and alert. At the hard limit preserve unresolved records, stop admission and report pressure; never advance an unstored input's cursor. Report possible Telegram retention gaps. Use SQLite snapshots and prove restoration separately.
 
-Storage: SQLite WAL with `synchronous=FULL`, one writer, local disk and bounded transactions. A healthy process is not evidence of a healthy ingress path. Run liveness checks outside the model process; use the existing host monitoring path for an outage that prevents Telegram alerts.
+## 8. Access, credentials and audit
 
-Proposed retention: raw conversations 30 days; request audit records (section 8) 365 days for metadata and 90 days for message text; inactive native session files 30 days; request/effect receipts 90 days after reconciliation; diagnostic logs 7 days; temporary attachments 7 days with a 20 MiB per-file cap. Keep active plans, unresolved effects, unanswered questions and undelivered outcomes until resolved. Keep minimal deduplication/receipt tombstones beyond content pruning where replay remains possible.
+**Mandatory:** [access detail](docs/runtime-contract.md#8-access-and-observability) binds current user/route/project/action grants, revalidation at effect dispatch and delayed delivery, protected key storage and scrubbed output. Reading grants no mutation right; revocation cancels pending unauthorized effects without erasing prior effects.
 
-Initial PilotQ disk budget: 2 GiB including its journals, sessions and temporary files. At 80%, prune only eligible data and alert. At the hard limit, preserve unresolved records, stop new admission and report pressure through the host channel. Do not advance the Telegram cursor for an input that could not be stored. This limit can cause a Telegram retention gap during a prolonged outage; report it. Back up with SQLite's supported snapshot mechanism; prove restoration separately.
+Store named keys once in owner-only `keys.json` (0600 or Windows equivalent), with purpose, tool/holder scopes and last use. Inject at dispatch; never expose values through model, journal, telemetry, logs, replies or task bodies. CLI list shows metadata only; CLI add/grant/revoke are the sole key-entry path.
 
-## 8. Access and observability
+Audit each admitted CLI/Telegram request in the input transaction, retaining actor/grants, route/project, request edits/cancellation, times, model/version/agentq, tools, effects, task references, outcome and delivery. Join CoreQ and TaskQ by request ID; tell the person the retention at admission. Audit reads are themselves recorded.
 
-**Proposed:** configure explicit Telegram users/routes and action grants. Reading a group or a task does not grant permission to mutate a project. Revalidate authorization at effect dispatch and before delayed delivery. Revocation cancels pending unauthorized effects but cannot erase an already completed operation.
+Owner and `audit` administrators read via CLI; people read their own `/audit` only in DM without the model. Group/topic audit shows nothing. Analysis exports omit message text unless specifically approved. Optional Langfuse capture needs approved scope, redaction and bounded export; failure never blocks work or owns the only outcome copy.
 
-Keep credentials in protected host configuration, outside model context and diagnostics. The manager receives only tools granted to its caller and route.
+## 9. CLI, releases and service operations
 
-### Key store
+**Mandatory:** [service detail](docs/service-contract.md) defines CLI controls, host minimums, diagnostics, incidents, update drain, schema compatibility and release qualification. Built-in controls bypass the model backlog, retain admission/audit and support Telegram `@bot` suffixes. Unknown commands return usage errors.
 
-**Proposed:** a key is a named secret in one owner-only file under the install directory (mode 0600 or the Windows equivalent). Each key records its name, purpose, allowed tools, allowed users or routes and last use; the value is stored once and never returned.
+`/help`, `/version`, `/doctor`, `/model`, `/restart`, `/skills` and `/skill` keep their specified bounded paths. Model selection uses the configured Codex catalogue, persists per conversation across reset/restart and affects only subsequently claimed runs. Catalogue presence proves no subscription entitlement; no model/provider fallback or worker-default change exists.
 
-- A tool call names a key; the tool boundary injects the value into the child process environment or request header at dispatch.
-- The value never enters model context, the journal, telemetry, logs, replies or task text. Tool output is scrubbed for known values before the model or Telegram sees it.
-- A grant on a key names the person, route or project. Use is checked at dispatch, like any effect (section 8).
-- Keys are added, granted and revoked only through the CLI (owner decision 2026-10-23). Telegram key entry is not built.
-- `pilotq keys list` shows names, grants and last use, never values. A model's tool choice is a request, not enforcement. Downloaded content cannot expand grants, switch repositories or redirect private answers.
+Only the protected owner restarts the installed service; acknowledge, drain and report completion after healthy restart. Source runs refuse. No native manager skills are approved; adding one needs a contract decision. CLI asks use the same controls. Every writing command prints readback, supports JSON and fails nonzero on failure.
 
-### Request audit
+Doctor is read-only: bot identity, isolated ChatGPT login, complete matching TaskQ board, required executable versions and bounded local voice decode/recognition probe. It never polls updates, changes grants or starts a model. Offline selftest remains setup-independent; setup success proves neither subscription entitlement nor full task flow.
 
-**Proposed:** the journal keeps one audit record per request from the CLI or Telegram (R17). It is written in the same transaction as the admitted input and updated as the request moves.
+Supported managed host: Linux x86_64. Minimums: Codex 0.162.0, TaskQ CLI 4.6.46/service 4.6.40, ffmpeg 6.1.0, sherpa-onnx-offline 2.0.1, curl 7.68.0, systemd 245, procps-ng kill 3.3.17, hostname 3.23 and Git 2.25.0 for registered releases. Each approved command/release executable declares its own minimum.
 
-- Who: person ID, display name at that time and the grant set used. When: receive, start, each effect and delivery times. Where: front end, chat, topic and project.
-- What: the request text, its edits and cancellations, and the reply sent. Key values never appear (section 8 Key store).
-- Done: model, version and agentq mode; each tool call and effect with its target and result; TaskQ tasks filed, answered or followed; the final outcome or failure.
-- One request ID joins the audit record, the CoreQ telemetry trace and TaskQ task text, so an investigation can move from a Telegram message to a task attempt and back.
-- Readers: the owner and administrators with an `audit` grant read all records through `pilotq audit`; every person can read their own with `/audit` in a direct message, answered without the model like the section 2 controls. In a group or topic `/audit` shows nothing, since it would expose one person's history to the others. Reading is itself recorded.
-- Use: service investigation, answers to a person about their history, and self-improvement analysis. Analysis exports leave out message text unless the owner approves a specific export.
-- The person learns at admission that their requests are recorded and for how long.
+Use executable `--version`; only tools without that command use owner-provisioned version/SHA256 receipts. Verify recognizer bytes before trusting its receipt. Missing/unparseable/old tools refuse installed startup, install and update; report an exact operator remedy. Never provision tools, elevate privileges or change logins automatically.
 
-Local correlated events cover update → request → model turn → tool operation → TaskQ task/attempt → Telegram delivery. The runtime adapter reports actual completion/error events. Model/provider/version and agentq mode accompany evaluation evidence.
+Retain CoreQ v0.14.6 and journal schema 12; open schemas 0–12 through migrations, refuse newer schemas and refuse unsafe downgrade. The installation owner owns the user service/configuration. Releases use CoreQ versioned directories, checksum verification, selftest and rollback after three unhealthy starts.
 
-Use the existing Langfuse installation for optional, bounded telemetry export after capture scope is approved. Content capture is opt-in and redacted; operational metadata is enough for delivery and intervention metrics. Langfuse failure must not block conversations or become the only copy of a task outcome. The proposed metric set lives in [acceptance](docs/acceptance.md#metrics).
+Publish only by fast-forwarding `live` to a merge-queue-accepted main commit. That workflow builds/verifies static linux-x86_64 and publishes tag, binary, SHA256SUMS and latest.json. Tags alone do not publish. The PM updates the test pilot and records source/binary identity, status, selftest, doctor and request/journal continuity; production cutover is not authorized.
 
-## 9. Command line, update and monitoring
+Check for updates every five minutes, persisting attempt time; use a separate maintenance thread and one OS-held lock. Drain gates CLI/Telegram claims atomically, waits up to sixty-five seconds and refuses incomplete activation. Failed download/checksum/selftest resumes admission on the current release. Scheduled activation exits 75. Pause/resume affects automatic updates only.
 
-### Command line
+Rollback and service incidents use the durable owner-DM outbox only. Persist markers and episode deduplication across restarts. Report failed/restored versions after healthy
+rollback; successful updates stay silent. Model incidents need two failed runs; other sources need two minutes, with fresh recovery, six-hour per-key and ten/day limits. Undrained
+gaps over five minutes produce one after-start notice.
 
-**Owner, task #106 (option 1):** deterministic built-in commands never enter the model backlog, including while a chat run is active. They use the same admission and audit boundary as other requests (R10, R13, R17).
+**Development exception:** the shared release contract's development-host separation is waived only for merged, released builds on the existing PDS 18 (`pds18.ufobe.com`) live service, with the installation owner unchanged, drain and compatible-schema rollback. Workers verify locally/CI and never install live. Unfinished branches and Hermes cutover remain unauthorized.
 
-- `/help` lists available controls; `/version` reports this binary's version; `/doctor` runs bounded, read-only setup checks and returns check names and outcomes only. Unknown commands receive a usage error, not a model turn. Commands accept Telegram's `@bot` suffix.
-- `/model` reads the configured Codex app-server's model catalogue and displays selection buttons; `/model MODEL` selects an exact catalogue name, and `/model default` removes the override. The catalogue is not proof of subscription entitlement. Record the requested model separately from the last model reported by Codex. An unavailable catalogue refuses selection without changing the saved choice.
-- A model choice belongs to the existing isolated or shared conversation, requires current `chat` admission, survives restart and `/new`, and applies only to runs claimed after the change. Buttons bind to the displaying person, conversation generation and latest selector. Active runs keep their claimed choice. No automatic model or paid-provider fallback is allowed (R9).
-- Unset choices inherit the isolated Codex configuration. TaskQ worker defaults, inheritance, overrides and host resource admission stay with TaskQ; PilotQ never passes its manager choice to workers or changes running tasks. Model selection does not change the four-conversation budget (§7).
-- `/restart` is owner-only. The installed service acknowledges immediately, drains through the existing §9 path, and reports completion only after the restarted service writes healthy status. A failed drain resumes admission and reports failure. Source runs refuse service restart. Requests, task subscriptions and delivery receipts survive. Duplicate updates cannot restart twice.
-- `/skills` lists enabled skills; `/skill NAME TEXT` is the invocation syntax. No native skills are currently approved for the restricted manager. Both commands explain this without starting a model or enabling native tools; adding an approved skill requires a contract decision under §12.
-- The operator can send the same controls through `pilotq ask '/model MODEL'` (R13). Service restart and setup checks keep their own bounded control worker, independent of chat generation.
+PM live qualification includes real authorized DM/topic controls, model selection, answer-card actor/button removal/repeated-callback screenshots and task-specific
+file/status/release checks retained in linked detail. Before release all automatic-management suite cases and cleanup pass on a unique reserved `pilotq-e2e-*` host without ordinary
+workers. Simulated events qualify management, not real implementation/review.
 
-**Proposed:** the `pilotq` binary is the service and the operator CLI. The CLI uses the same journal, grants and audit records as Telegram; the local operator acts as the bootstrap owner identity from protected configuration.
+## 10. Adoption and migration
 
-| Command | Purpose |
-|---|---|
-| `pilotq ask TEXT [--project P]` | One request through the normal manager path; prints the reply or task link |
-| `pilotq status [--json]` | Health ages (section 7), pending requests, undelivered outcomes, uncertain effects |
-| `pilotq users list\|show\|grant\|revoke\|remember\|forget` | People, profiles and grants (R10, R15); `remember`/`forget` correct one profile fact |
-| `pilotq routes list\|set` | Chats, topics and their session and reply policy |
-| `pilotq projects list\|add` | Registered projects and the section 5 registration path |
-| `pilotq keys list\|add\|grant\|revoke` | Key store; `add` reads the value from stdin |
-| `pilotq pilot start\|note\|report [--since T] [--json]` | Seven-day pilot start, intervention and outage notes, gate 4 counts (section 10 step 5) |
-| `pilotq audit [--user U] [--route R] [--project P] [--since T] [--request ID] [--json]` | Request audit records (section 8, R17), filtered by who, where, what and when |
-| `pilotq service install\|run\|stop\|status` | coreq service unit |
-| `pilotq update [--check|--pause|--resume]`, `pilotq selftest`, `pilotq doctor` | coreq update, smoke test and setup check (bot identity, Codex login, TaskQ reachability) |
+**Mandatory:** [adoption sequence](docs/adoption.md#10-adoption-sequence) owns ordered qualification, pilot gates, reviewed migration inventory, restore proof, poller handoff and rollback. The human trial supplements scripted evidence; gate 4 retains its separate pilot start. Neither ended trials nor successful releases authorize production cutover.
 
-Every command that writes prints the readback, supports `--json` and returns a nonzero exit code on failure.
+## 11. Qualification boundaries
 
-`pilotq doctor [--json]` performs read-only setup checks: Telegram `getMe` returns a bot identity, the configured isolated Codex home reports a ChatGPT login, and TaskQ returns a complete snapshot matching its configured board. It never polls updates, starts a model turn or changes grants. Missing configuration, failed checks and unavailable dependencies return nonzero; diagnostics expose only check names and outcomes, never dependency output or credentials. This checks setup, not the full task flow or subscription entitlement (§11). **Owner, task #120:** also check local voice readiness. Missing voice configuration, unavailable ffmpeg or recognizer, missing GigaAM model files, or a failed one-second silent WAV decode/recognition probe makes doctor fail with a short reason. An empty transcript is expected for silence; the recognizer must still return valid result JSON. The probe uses protected temporary files, a ten-second total deadline and no Telegram input or model turn. This is setup evidence, not live voice acceptance.
+**Mandatory:** [qualification gaps](docs/adoption.md#11-decisions-still-open) retain unresolved subscription entitlement, cutover media parity, final retention/capacity and permitted telemetry content. Do not implement or deploy an unresolved proposal as an approved decision. Qualify agentq only through its dynamic-tool adapter and measured gate; the native-compaction pilot baseline remains.
 
-**Owner, task #144:** this supersedes #127's GitHub CLI answer reader and doctor probe. TaskQ owns board-answer access and trust. Doctor checks the configured TaskQ board through its CLI; it neither requires nor probes gh. Selftest remains offline. CLI failures retain scrubbed operator diagnostics under §8; unreadable answers remain unknown.
+## 12. Lifecycle and recovery protocol
 
-Prepare version `0.2.12` for #127. After merge-result CI and review acceptance, the PM publishes #127 through the existing `live` release workflow, updates the existing FRA service through `pilotq update`, and records source/binary identity, health, selftest, doctor and journal continuity with §12 drain and compatible-schema rollback protections. The PM records a real authorized person's question answered through TaskQ CLI, the original Telegram card with buttons removed and `Answered by <actor>: <text>`, and a later tap showing the same receipt. These post-release checks remain required evidence, not inferred from adapter tests. This grants no Hermes consumer cutover.
+**Proposed:** [lifecycle detail](docs/runtime-contract.md#12-proposed-lifecycle-and-feedback-protocol) translates R5/R11 into request phases, independent transport/activity/delivery clocks, deadline supervision, controls, capability validation and reconciliation. It does not add a task state machine or authorize installation, model calls, queue activation or consumer replacement.
 
-### Host requirements (task #130)
+**Mandatory:** [Telegram feedback](docs/telegram-feedback.md) binds manager instructions, questions, layout, reactions, drafts, images and voice. Startup readiness needs identity, permissions, route configuration, storage, poller lock and reconciliation. Partial tool arguments, unknown terminal semantics and empty useful output never prove success.
 
-The supported managed host is Linux x86_64. The installation owner provisions these tools; PilotQ never runs a package manager, elevates privileges or changes a subscription login. Doctor probes the configured binaries and PATH used by the service. Installed-release startup, install and manual/scheduled update checks refuse missing, unparseable or older versions, reporting the exact operator step. After remediation, rerun `pilotq doctor --json` and the original install/update command. Offline selftest remains independent of host setup.
+Use one bounded journal reconciler at startup and periodically. Keep external calls outside transactions; one failing route cannot block others. Persist retries, deadlines and account/workspace binding; auth changes never silently change identity or enable paid APIs. Planned restart fences/drains manager trees without stopping TaskQ workers; external host monitoring handles a dead PilotQ process.
 
-| Host tool | Minimum | Required by / remediation |
-|---|---|---|
-| Codex CLI | 0.162.0 | Subscription app-server and catalogue; install `@openai/codex@0.162.0` or newer and set the absolute `codex` path; retain the isolated ChatGPT login |
-| TaskQ CLI | 4.6.46 | Task #145 file handoff, operation receipts and task #151 `taskq issue`; update the CLI to 4.6.46 or newer; doctor reads `taskq --version` |
-| TaskQ service | 4.6.40 | Board commands; doctor checks the service version from `service status --json` |
-| ffmpeg | 6.1.0 | Audio decode; install ffmpeg 6.1 or newer and set `voice.ffmpeg` |
-| sherpa-onnx-offline | 2.0.1 | GigaAM recognition; install the static no-TTS 2.0.1 release or newer and set `voice.recognizer` |
-| curl | 7.68.0 | CoreQ release download; install curl 7.68 or newer on service PATH |
-| systemctl (systemd) | 245 | CoreQ Linux user service; provision systemd 245 or newer with a working user service manager |
-| kill (procps-ng) | 3.3.17 | Process-group cleanup on PATH and `/bin/kill`; install procps-ng 3.3.17 or newer on service PATH |
-| `commands.json` executables | Each entry declares `minimum_version` | Approved installed reads (§5); doctor runs the executable with `--version`; an absent minimum or unavailable version fails doctor |
-| hostname | 3.23 | Telemetry host identity; install hostname 3.23 or newer on service PATH |
+## Linked specifications and evidence
 
-**Owner, task #154:** TaskQ CLI 4.6.46 or newer reports its binary version through `taskq --version`, without board or network access. Doctor uses that command for `taskq.bin` and `--version` for approved command executables; TaskQ needs no receipt. Receipts remain only for tools without a version command: sherpa-onnx-offline 2.0.1 has no CLI version command. Its installed executable has an owner-provisioned `<binary>.pilotq-version.json` receipt containing the verified release `version` and executable `sha256`; doctor verifies the bytes before trusting that version. The tester guide gives the provisioning step. A missing or mismatched receipt fails with an unavailable version. A later recognizer with a valid version command can report its version directly.
+- [docs/conversation-contract.md](docs/conversation-contract.md): admission, route identity, delegation and follow-up rules.
+- [docs/runtime-contract.md](docs/runtime-contract.md): architecture, durable effects, memory, budgets, access and lifecycle protocols.
+- [docs/integration-contract.md](docs/integration-contract.md): TaskQ, project scopes, files, reads, administration, onboarding and DEV/LIVE releases.
+- [docs/service-contract.md](docs/service-contract.md): CLI, host requirements, incidents, release flow and development exception.
+- [docs/conversation-flow.md](docs/conversation-flow.md): authoritative presentation stages and cards.
+- [docs/taskq-tool-contract.md](docs/taskq-tool-contract.md): first TaskQ tools, fences, grants and refusals.
+- [docs/telegram-feedback.md](docs/telegram-feedback.md): restricted manager instructions and Telegram media/feedback protocol.
+- [docs/adoption.md](docs/adoption.md): ordered adoption, migration and unresolved qualification boundaries.
+- [docs/acceptance.md](docs/acceptance.md): product cases, metrics, automatic-management suite and qualification evidence.
+- [docs/tester-guide.md](docs/tester-guide.md): operator installation, provisioning, checks and current limitations.
+- [docs/status-notifications.md](docs/status-notifications.md): service-incident projections and deferred notification stages.
+- [docs/reply-files-145.md](docs/reply-files-145.md): PM live file-handoff qualification recipe.
+- [docs/trial-42.md](docs/trial-42.md): request-linked human-trial observations.
+- [docs/research.md](docs/research.md): runtime and Telegram mechanism evidence.
+- [docs/mechanism-matrix.md](docs/mechanism-matrix.md): source mechanisms, scoped proposals and acceptance mapping.
+- [docs/core-options.md](docs/core-options.md): architecture alternatives and subscription-runtime findings.
+- [docs/bootstrap.md](docs/bootstrap.md): repository setup observations.
+- [docs/projects.md](docs/projects.md): project relationships without implicit registration or grants.
 
-There are no separately installed PilotQ shared libraries: SQLite, Rust TLS and CoreQ 0.14.6 are linked into the artifact through Cargo.lock. The static recognizer is required; ffmpeg and system tools retain their distribution-managed libraries. Doctor's existing silent decode/recognition probe checks the voice runtime and model files in addition to versions. Developer/release-only tools (`cargo`, the Rust compiler, `sha256sum`, and shell utilities in download instructions) are not service runtime dependencies. Optional unsupported platforms are not qualified by the Linux requirement probes.
-
-Doctor's operator JSON adds `requirements` with tool, found version, minimum, outcome and fix; only validated version numbers enter this report. Missing configuration still reports independently probeable requirements and fails configured ones. `/doctor` projects the aggregate `host_tools` outcome without paths, versions or diagnostics (§8). Failed subprocesses log command and scrubbed errors to operator stderr; failures remain errors, never successful empty output. A new flag/API must retain the listed minimum or raise it with its oldest-version fixture.
-
-### Update and monitoring
-
-Follow coreq: `releases/<version>`, `current` and `previous` in the install directory; GitHub releases with `SHA256SUMS`; `pilotq update` verifies the checksum and runs `pilotq selftest` before the switch; the launcher returns to `previous` after three unhealthy starts. An update waits for the planned-restart drain in section 12.
-
-**Owner, task #77 (option A):** on the restored version’s first healthy start after a launcher rollback, send one incident to the protected `owner_id` Telegram DM, naming the failed and restored versions only. Persist the rollback marker before launcher handoff and enqueue the incident atomically with a failed/restored-version deduplication key in the existing journal. The existing outbox records the send receipt and applies bounded retries across restarts (§4, §7); never reroute a failed DM. Successful updates produce no failure notice. Both the launcher and restored release must include this integration; older releases cannot deliver a new rollback marker. No schema change or new notification infrastructure is required.
-
-**Owner, task #81 (option A):** extend the #77 path to service state; standard simple setup, no new component. `/status` adds the version and each non-ok health source with its age. Service incidents for `model`, `taskq`, `poll` and an unplanned restart go only to the `owner_id` DM through the outbox: one incident per episode key across restarts, opened after the source stays failed 2 minutes (model: two consecutive failed runs), closed only on a fresh successful observation, at most one message per key per 6 hours and 10 per day. Planned updates and drained restarts stay silent. On a healthy start after an undrained gap over 5 minutes, send one downtime notice; detection is after the fact. Rules and examples: [status and notifications](docs/status-notifications.md). An ops chat (stage B) and real-time dead-service detection through DashQ (stage C) wait for evidence.
-
-`status.json` publishes the section 7 health fields. Incident reports follow coreq. Telemetry uses the shared CoreQ telemetry store and DashQ connection, so the TaskQ PM sees PilotQ beside the other tools. Release and CI follow the shared [release contract](https://github.com/taskqorg/specq/blob/main/engineering/release-contract.md).
-
-### First release delivery
-
-Releases publish only through the `live` channel. After merge-queue CI accepts a `main` commit, the PM fast-forwards `live` to it; that push builds and verifies the static `linux-x86_64` artifact, creates the `vX.Y.Z` tag and publishes the binary, `SHA256SUMS` and `latest.json` from `taskqorg/pilotq`. Tags alone do not publish. After publishing, the PM updates the test pilot through `pilotq update` and verifies its running source commit, status, selftest, doctor and request continuity. Failure drills simulate failures in PilotQ's own environment only: an empty `CODEX_HOME` drop-in instead of the real Codex login, stopping only what PilotQ calls or waiting for zero workers before stopping TaskQ, and killing only the PilotQ process; afterwards the service configuration is restored and read back. A release authorizes the test pilot update, not production cutover.
-
-The installed Linux service checks for releases every five minutes, including at startup when no recent check is recorded. It persists the attempt time before the check so restarts do not reset the retry interval. A separate maintenance thread keeps health reporting and conversations available during downloads. Manual and scheduled updates share one OS-held update lock. A journal drain flag gates both CLI and Telegram claims in their claim transactions, so a new run cannot race the drain. Before activation, stop new manager turns and wait up to 65 seconds for running requests; an incomplete or failed drain refuses activation and preserves the current release. Failed downloads, checksum checks or selftests retain the current release and resume admission. Successful scheduled activation exits the service with code 75; the coreq Linux unit restarts it through the launcher. `pilotq update --pause` and `--resume` persist and read back automatic-update admission; pausing does not stop health or conversations. Manual updates remain available.
-
-This release retains coreq `v0.14.6` (locked in `Cargo.lock`) and journal schema 12. It opens existing schemas 0–12 through the current migrations and refuses newer schemas; rollback to a binary that cannot read the resulting schema is unsafe. The installation owner runs the user service and owns its protected configuration. See the [tester guide](docs/tester-guide.md) for installation, checks and current limitations. A published release and successful selftest do not qualify production cutover or the open decisions in section 11.
-
-### Development
-
-**Owner, tasks #106, #117, #119 and #139:** PilotQ is still in development. The PM installs merged, released builds on the existing live service on PDS 18 (`pds18.ufobe.com`) and verifies them there; no separate installation or bot. This is a scoped exception to the shared release contract's development-host separation, not authorization to install unfinished branches or a Hermes consumer cutover. The installation owner remains the service owner. Record the source commit, running binary identity, health, selftest and journal continuity across restart, with the section 12 drain and compatible-schema rollback protections. Telegram commands, model selection and answer cards need a real authorized person's run: the PM performs one DM/topic run and attaches screenshots. The live answer-card author, button removal and repeated-callback scenario (#117) remains unverified. Worker verification stays local/CI; workers never install live. Communication scope: [Telegram feedback](docs/telegram-feedback.md) under §12.
-
-PilotQ has its own TaskQ board. Changes follow the TaskQ flow: spec edit first, held task, worker, reviewer, release. Before each release, run the [automatic management suite](docs/acceptance.md#automatic-management-suite-a40) against the release candidate. Suite tasks use a unique reserved `pilotq-e2e-*` host that no service claims; the runner scripts their worker/reviewer board events without launching ordinary workers. This qualifies the management path, not real implementation or review. All cases and cleanup must pass; a blocked or incomplete run is not release evidence.
-
-## 10. Adoption sequence
-
-See [adoption sequence](docs/adoption.md#10-adoption-sequence).
-
-## 11. Decisions still open
-
-See [open decisions](docs/adoption.md#11-decisions-still-open).
-
-## 12. Proposed lifecycle and feedback protocol
-
-This section translates R5 and R11 into a proposed PilotQ protocol. The [mechanism matrix](docs/mechanism-matrix.md) records source evidence and scope choices; [acceptance](docs/acceptance.md#lifecycle-cases) defines the additional checks. These are design targets, not implemented guarantees. Notification presentation follows [specq](https://github.com/taskqorg/specq/blob/main/caveman/rules/notifications.md).
-
-### One request, separate observations
-
-Keep the request state from section 4; use a reason/phase field for queued capacity, model startup, tool execution, compaction, provider backoff, quota exhaustion or required login. Do not introduce a second task state machine. Waiting for a person or for TaskQ is not a hung manager run. A delegated request remains linked to the authoritative TaskQ task and its notification subscription.
-
-Track transport health, request activity and delivery separately. A successful empty poll proves transport contact; it does not prove received inputs reached admission. A live process or typing indicator proves neither useful progress nor task completion. Count accepted/dispatched inputs and pending age as well as successful polls. Unknown observation remains unknown.
-
-The runtime supervisor observes startup/first-event latency, last useful runtime/tool event and the absolute run deadline. The first-event watch starts before invoking Codex; it cannot depend on Codex having emitted its first event. Typing, polling and periodic status timers never renew useful-progress time. Token activity cannot extend the absolute short-action budget. Waiting states retain their reason and wake condition without busy retries. Use monotonic time within a process; persist deadlines/attempts across restart and handle wall-clock jumps without granting a fresh unlimited budget.
-
-### Telegram feedback
-
-Contract detail: [Telegram feedback](docs/telegram-feedback.md) holds the owner decisions on manager instructions, worker questions, reply layout, reactions, drafts, images and voice. It is binding as part of this section.
-
-### Input and control edges
-
-During startup, check bot identity, required Telegram permissions/privacy configuration and forum-topic support against the migration manifest. Do not report readiness solely from login success. Received but unsupported inputs get the explicit outcome in section 1; unknown senders still follow R10's silent policy.
-
-Preserve message/reply IDs, edits and media-group identities before optional batching. Never coalesce messages across users, routes or authorization revisions. A bounded media assembly window cannot swallow a text follow-up or change a running plan. Recognizing attachments and reporting limits are required; interpreting every media type remains an open cutover decision.
-
-Authorized `/status`, `/stop` and `/new` use a bounded control path outside the normal model backlog. They do not bypass identity or scope checks. A reset creates a new conversation generation; old requests and receipts remain queryable, and late old-run events cannot attach to the new conversation. Reset does not revoke the originating subscriptions to already admitted TaskQ work.
-
-Topic deletion/closure, group migration, bot removal and permission loss become explicit delivery/configuration incidents. Preserve the original destination and hold affected output. An administrator must authorize a route change; do not fall back to General, a private DM or another group automatically.
-
-### Runtime and recovery boundaries
-
-Validate the pinned Codex protocol/capabilities before accepting executable work. Unknown optional diagnostic events can be retained as metadata; unknown control/terminal semantics cannot be guessed as success. Parse tools only after a complete validated request; a parseable partial argument stream is not permission to act. Disable or contain native tools that bypass PilotQ's effect boundary. An empty useful answer with no verified delegation/action is an explicit outcome to recover or report, not silent success.
-
-Classify auth, quota, transport, protocol and tool failures. Keep one bounded retry budget per logical operation across layers/restarts; honor server retry times without holding conversation locks or spinning. Persist account/workspace binding with the native session. Reauthentication must not silently change that binding, discard the session or fall back to billed API access. The shared deployment's subscription entitlement remains a separate pre-production qualification.
-
-Use one journal reconciler at startup and on a bounded periodic scan to discover pending inputs, stale runs, uncertain effects, missed TaskQ events and undelivered outcomes. Timers are wakeups, never the sole copy of work. Reconcile one request at a time; a failing route cannot stop recovery for the others. Keep external calls outside database transactions.
-
-On planned restart/update, stop new execution, checkpoint/drain within a bounded grace period, fence and terminate remaining manager process trees, and leave unresolved work in the journal. TaskQ workers retain their own lifecycle. Startup validates config and storage, obtains the poller lock, reconciles state and only then reports readiness. A crash-loop backoff prevents repeated startup from consuming retries or producing alert storms. An external host monitor handles a dead or blocked PilotQ process; PilotQ cannot promise a Telegram notice while both it and Telegram are unavailable.
-
-Apply the shared [release/service contract](https://github.com/taskqorg/specq/blob/main/engineering/release-contract.md) to the selected Linux service and pinned Codex artifact. Before implementation, name the service owner, artifact/update source and compatible schema range. A rollback must preserve accepted work; an incompatible database prevents unsafe downgrade. No live runtime replacement occurs mid-turn without the drain/reconcile path.
-
-This specification does not authorize installation, model calls, queue activation or replacement of the production Telegram consumer.
+<!-- contract-budget: bytes=61440 lines=300 -->
