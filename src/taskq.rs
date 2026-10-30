@@ -38,26 +38,26 @@ pub fn tools() -> Value {
     let task = json!({"type": "string", "description": "Task number or registered task URL"});
     let tool = |name: &str, description: &str, schema: Value| json!({"type": "function", "name": name, "description": description, "inputSchema": schema});
     json!([
-        tool("task_plan", "Revise this conversation's one open plan draft with its complete ticket list (1-3 tickets). Files nothing. A new draft starts only after the open one is launched or cancelled.",
+        tool("task_plan", crate::catalog::purpose("task_plan"),
             json!({"type": "object", "properties": {"project": {"type": "string"}, "tickets": {"type": "array", "items": ticket}}, "required": ["tickets"]})),
-        tool("task_run_plan", "Launch the current draft: PilotQ files its tickets held, reads them back and starts them after this turn, then replies with each task's board state. Only when the person, in a later message, asks to run it.",
+        tool("task_run_plan", crate::catalog::purpose("task_run_plan"),
             json!({"type": "object", "properties": {"project": {"type": "string"}, "revision": {"type": "integer", "description": "Optional; defaults to the current draft's latest revision"}}})),
-        tool("discussion_choices", "Offer a concrete discussion question with 2-4 choices. Choosing answers only, never launches work. The final reply appends the question and numbered options with Telegram buttons.",
+        tool("discussion_choices", crate::catalog::purpose("discussion_choices"),
             json!({"type":"object","properties":{"question":{"type":"string"},"options":{"type":"array","items":{"type":"string"}}},"required":["question","options"]})),
-        tool("task_answer", "Forward only the person's own answer to a same-conversation subscribed question. Read task_status first. If destination or answer is ambiguous, clarify. Never choose for the person.",
+        tool("task_answer", crate::catalog::purpose("task_answer"),
             json!({"type":"object","properties":{"project":{"type":"string"},"task":task,"revision":{"type":"integer"},"text":{"type":"string"},"source_request":{"type":"integer","description":"Internal input ID containing the person's exact answer; omit for current input"}},"required":["task","revision"]})),
-        tool("discussion_answer", "Save the person's own free-text answer to the current discussion card from journal context. Clarify ambiguity first. Never launches tasks.",
+        tool("discussion_answer", crate::catalog::purpose("discussion_answer"),
             json!({"type":"object","properties":{"card":{"type":"integer"},"text":{"type":"string"},"source_request":{"type":"integer"}},"required":["card","text"]})),
-        tool("project_release_preview", "Preview a registered project LIVE release for the protected owner with a separate release grant. Never executes a release. A separate Release button is mandatory; do not repeat the preview card in final prose.", json!({"type":"object","properties":{"project":{"type":"string"}},"required":["project"]})),
-        tool("project_status", "Read the resolved project’s open tasks with state, runtime, session and read time. Use for project task status; do not ask for task numbers.", json!({"type":"object","properties":{"project":{"type":"string"}}})),
-        tool("task_status", "Read one registered task's current state from the board. Never creates anything.", json!({"type": "object", "properties": {"project": {"type": "string"}, "task": task}, "required": ["task"]})),
-        tool("task_park", "Park one registered task (TaskQ later) with the person's reason.",
+        tool("project_release_preview", crate::catalog::purpose("project_release_preview"), json!({"type":"object","properties":{"project":{"type":"string"}},"required":["project"]})),
+        tool("project_status", crate::catalog::purpose("project_status"), json!({"type":"object","properties":{"project":{"type":"string"}}})),
+        tool("task_status", crate::catalog::purpose("task_status"), json!({"type": "object", "properties": {"project": {"type": "string"}, "task": task}, "required": ["task"]})),
+        tool("task_park", crate::catalog::purpose("task_park"),
             json!({"type": "object", "properties": {"project": {"type": "string"}, "task": task, "reason": {"type": "string"}}, "required": ["task", "reason"]})),
-        tool("task_steer", "Send the person's instructions to a doing task at its current revision.",
+        tool("task_steer", crate::catalog::purpose("task_steer"),
             json!({"type": "object", "properties": {"project": {"type": "string"}, "task": task, "text": {"type": "string"}, "source_request": {"type": "integer", "description": "Earlier caller-owned file input after destination clarification; omit for current input"}}, "required": ["task"]})),
-        tool("task_requeue", "Requeue an open task with the person's reason. Does not prove worker termination.",
+        tool("task_requeue", crate::catalog::purpose("task_requeue"),
             json!({"type": "object", "properties": {"project": {"type": "string"}, "task": task, "reason": {"type": "string"}, "source_request": {"type": "integer", "description": "Earlier caller-owned file input after destination clarification; omit for current input"}}, "required": ["task"]})),
-        tool("queue_pause", "Pause new TaskQ admission on this host. Running workers continue.", json!({"type": "object", "properties": {}})),
+        tool("queue_pause", crate::catalog::purpose("queue_pause"), json!({"type": "object", "properties": {}})),
     ])
 }
 

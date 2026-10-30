@@ -143,6 +143,33 @@ Owner and `audit` administrators read via CLI; people read their own `/audit` on
 
 ## 9. CLI, releases and service operations
 
+**Owner, task #163:** one code catalog owns capability names, areas, purposes, examples and required
+grants for slash controls, operator commands and manager tools. Help and manager tool descriptions
+render from that catalog; schemas and dispatch checks remain at their existing boundaries (R13,
+R17). Areas are conversation, projects, tasks, reads, people and operations. Slash commands are
+deterministic controls; plain requests select authorized manager tools. Operator-only commands are
+labelled and never imply chat authority. Tool names use `area_verb`; existing names remain
+compatible.
+
+`/help` and `pilotq help` show a short introduction, how to ask, three examples and one line per
+accessible area. `/help AREA` and `pilotq help AREA` show purposes, examples and grants for that
+area. Hide capabilities outside current grants; end with one line explaining how to request access,
+then the TaskQ PM catalog read live through its machine-readable help. Missing, old or unreadable
+TaskQ help produces one availability line, never a copied catalog. Help follows the caller's
+language (English and Russian deterministic text); external TaskQ text remains source text.
+
+Projects cover accessible list, current selection, switch, fresh status, connect
+(`project_register`) and disconnect (`project_disconnect`). Current selection uses
+`project_current`. Disconnect requires `chat` and `projects`, an explicitly named registered project
+in the caller's own request, the active run fence and the same bounded audit/receipt path as §5
+administration. It removes only the PilotQ registration and matching conversation/route defaults,
+with atomic readback and receipt. It never deletes repositories, boards, files, grants, task
+subscriptions, saved plans or prior receipts. Bound pending work refuses dispatch while registration
+is absent; reconnect requires the normal verified registration path. Repeated operations return
+their receipt; changed arguments in one request are refused. CLI project operations can also use
+`pilotq ask` through this same boundary. A5 live Telegram qualification belongs to the PM under §9;
+worker proof remains local/CI.
+
 **Mandatory:** [service detail](docs/service-contract.md) defines CLI controls, host minimums, diagnostics, incidents, update drain, schema compatibility and release qualification. Built-in controls bypass the model backlog, retain admission/audit and support Telegram `@bot` suffixes. Unknown commands return usage errors.
 
 `/help`, `/version`, `/doctor`, `/model`, `/restart`, `/skills` and `/skill` keep their specified bounded paths. Model selection uses the configured Codex catalogue, persists per conversation across reset/restart and affects only subsequently claimed runs. Catalogue presence proves no subscription entitlement; no model/provider fallback or worker-default change exists.

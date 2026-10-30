@@ -4,27 +4,28 @@ use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 use std::{path::Path, sync::Mutex, time::{Duration, Instant}};
 
-pub const NAMES: [&str; 4] = ["project_register", "user_grant", "user_revoke", "topic_open"];
+pub const NAMES: [&str; 5] = ["project_register", "project_disconnect", "user_grant", "user_revoke", "topic_open"];
 fn err(e: rusqlite::Error) -> String { e.to_string() }
 fn now() -> i64 { crate::now() as i64 }
 
 pub fn tools() -> Vec<Value> {
     let tool = |name, description, properties, required| json!({"type":"function","name":name,"description":description,
         "inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}});
-    let mut tools = vec![tool("project_register", "Projects administrators: register an existing repository, preparing a local root. Never creates a repository or a claim issue. Return filing readiness and missing prerequisites.",
+    let mut tools = vec![tool("project_register", crate::catalog::purpose("project_register"),
         json!({"project":{"type":"string"},"repo":{"type":"string","description":"Exact owner/name named by the caller"},"board":{"type":"string","enum":["github","gitlab"]},"host":{"type":"string","description":"Board web host, e.g. github.com"}}), json!(["project","repo","board","host"]))];
     for name in ["user_grant", "user_revoke"] {
-        tools.push(tool(name,"Users administrators: change named grants for an exact Telegram ID seen in this route, explicitly named or supplied by the current reply. Names never authorize. Owner identity is protected.",
+        tools.push(tool(name,crate::catalog::purpose(name),
             json!({"user":{"type":"integer"},"grants":{"type":"array","minItems":1,"items":{"type":"string"}},"route":{"type":"string","description":"CLI only: exact CHAT:TOPIC named by caller"}}),json!(["user","grants"])));
     }
-    tools.push(tool("topic_open","Users administrator with project access: create a forum topic in this group and bind its default project. Requires bot can_manage_topics. Never repeat an uncertain creation.",
+    tools.push(tool("topic_open", crate::catalog::purpose("topic_open"),
         json!({"project":{"type":"string"},"name":{"type":"string"},"shared":{"type":"boolean","description":"Default false; true only when caller explicitly asks for shared conversation"},"chat":{"type":"integer","description":"CLI only: exact forum supergroup ID named by caller"}}),json!(["project","name"])));
+    tools.push(tool("project_disconnect",crate::catalog::purpose("project_disconnect"),json!({"project":{"type":"string"}}),json!(["project"])));
     tools
 }
 
 fn authorize(j: &Journal, r: &Run, tool: &str, args: &Value) -> Result<i64,String> {
     let user = j.sender(r.request)?;
-    let grant = if tool == "project_register" { "projects" } else { "users" };
+    let grant = if matches!(tool,"project_register"|"project_disconnect") { "projects" } else { "users" };
     if j.fenced(r)? || !j.has(user,"chat")? || !j.has(user,grant)? { return Err(format!("Administration refused: current chat and {grant} grants required, and run must be active.")); }
     if tool == "topic_open" {
         if args["shared"] == true && !shared_requested(&r.text) {
@@ -121,12 +122,33 @@ pub fn call(d: &Direct, j: &Mutex<Journal>, r: &Run, tool: &str, args: &Value, d
         if matches!(tool,"user_grant"|"user_revoke") { return user_change(&mut j.lock().unwrap(),r,tool,args); }
         { let j=j.lock().unwrap(); authorize(&j,r,tool,args)?; if let Some(v)=existing(&j,r.request,tool,args)? { return Ok(v); } }
         match tool {
+            "project_disconnect" => disconnect(&mut j.lock().unwrap(),r,args),
             "project_register" => register(d,j,r,args,deadline,tq.ok_or("TaskQ is not configured")?),
             "topic_open" => topic(j,r,args,deadline,tq.and_then(|t|t.bot.as_ref()).ok_or("Telegram bot is not configured")?),
             _ => Err("Unknown administration tool".into()),
         }
     })();
     match result { Ok(v)=>(v["outcome"]=="accepted",v.to_string()),Err(e)=>(false,e) }
+}
+
+// §5/#163: only installation metadata is removed; receipts and active work stay intact.
+fn disconnect(j:&mut Journal,r:&Run,args:&Value)->Result<Value,String> {
+    let actor=authorize(j,r,"project_disconnect",args)?;
+    if let Some(v)=existing(j,r.request,"project_disconnect",args)? { return Ok(v); }
+    let project=args["project"].as_str().ok_or("project required")?;
+    if !own_word(&r.text,project) { return Err("Explicitly name the project to disconnect in your own request.".into()); }
+    let before=j.projects()?.into_iter().find(|p|p.0==project).ok_or("Project is not registered; nothing changed")?;
+    let tx=j.0.unchecked_transaction().map_err(err)?;
+    start(j,r,"project_disconnect",args)?;
+    j.0.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?1,1)",[format!("project-disconnected:{project}")]).map_err(err)?;
+    j.0.execute("DELETE FROM projects WHERE name=?1",[project]).map_err(err)?;
+    j.0.execute("UPDATE conversations SET project=NULL,project_by=?2,project_at=?3 WHERE project=?1",params![project,actor,now()]).map_err(err)?;
+    j.0.execute("DELETE FROM route_projects WHERE project=?1",[project]).map_err(err)?;
+    if j.projects()?.iter().any(|p|p.0==project) { return Err("Disconnect readback failed".into()); }
+    let result=json!({"outcome":"accepted","project":project,"registered":false,"previous":{"board":before.1,"root":before.2},"preserved":"repository, board, files, grants, plans and task history"});
+    receipt(j,r.request,"project_disconnect",&result)?;
+    tx.commit().map_err(err)?;
+    Ok(result)
 }
 
 fn component(s: &str) -> bool { !s.is_empty() && s.len()<=100 && s!="." && s!=".." && s.bytes().all(|c|c.is_ascii_alphanumeric() || b"-_.".contains(&c)) }
@@ -349,6 +371,45 @@ mod tests {
         j.add_project(7,"demo","invented/demo",root.to_str().unwrap(),0).unwrap();
     }
     fn tq(bot:Option<teloxide::Bot>) -> Taskq { Taskq{bot,bin:"/unused".into(),root:"/unused".into(),poll:Duration::from_secs(15)} }
+
+    // A3 / R13/R17: disconnect changes only registration/defaults, with atomic audit and stable retries.
+    #[test]
+    fn command_163_disconnect_preserves_resources_and_receipts() {
+        let (mut j,dir,d)=setup();registered(&j,&dir);
+        let r=run(&mut j,7,1,"disconnect project demo");
+        j.use_project(&r,"demo",7,1).unwrap();
+        j.0.execute("INSERT INTO route_projects(chat,topic,project) VALUES (-100,5,'demo')",[]).unwrap();
+        let args=json!({"project":"demo"});let m=Mutex::new(j);
+        let before=std::fs::read(dir.join("demo/taskq.json")).unwrap();
+        let first=call(&d,&m,&r,"project_disconnect",&args,end(),None);
+        assert!(first.0,"{}",first.1);
+        assert_eq!(call(&d,&m,&r,"project_disconnect",&args,end(),None),first);
+        assert!(!call(&d,&m,&r,"project_disconnect",&json!({"project":"other"}),end(),None).0);
+        {
+            let j=m.lock().unwrap();
+            assert!(j.projects().unwrap().is_empty());assert!(j.project_disconnected("demo").unwrap());
+            assert!(j.current_project(&r.session).unwrap().is_none());
+            assert!(j.has(7,"projects").unwrap());
+            let audit:i64=j.0.query_row("SELECT count(*) FROM audit_events WHERE request_id=?1 AND target='project_disconnect'",[r.request],|r|r.get(0)).unwrap();
+            assert_eq!(audit,2,"one intent and one receipt; duplicate does not apply again");
+        }
+        assert_eq!(std::fs::read(dir.join("demo/taskq.json")).unwrap(),before);
+        let mut j=m.into_inner().unwrap();finish(&mut j,&r);
+        j.add_project(7,"demo","invented/demo",dir.join("demo").to_str().unwrap(),2).unwrap();
+        assert!(!j.project_disconnected("demo").unwrap());
+        j.grant(7,8,&["chat".into(),"project:demo".into()],2).unwrap();
+        let r=run(&mut j,8,2,"disconnect project demo");let m=Mutex::new(j);
+        assert!(!call(&d,&m,&r,"project_disconnect",&args,end(),None).0);
+        assert_eq!(m.lock().unwrap().projects().unwrap().len(),1);
+        let mut j=m.into_inner().unwrap();finish(&mut j,&r);
+        let r=run(&mut j,7,3,"> disconnect project demo");let m=Mutex::new(j);
+        assert!(!call(&d,&m,&r,"project_disconnect",&args,end(),None).0,"quoted input cannot authorize disconnect");
+        let mut j=m.into_inner().unwrap();finish(&mut j,&r);
+        let r=run(&mut j,7,4,"disconnect project demo");j.0.execute("UPDATE conversations SET fence=fence+1 WHERE session=?1",[&r.session]).unwrap();
+        let m=Mutex::new(j);assert!(!call(&d,&m,&r,"project_disconnect",&args,end(),None).0);
+        assert_eq!(m.lock().unwrap().projects().unwrap().len(),1);
+        drop(m);std::fs::remove_dir_all(dir).unwrap();
+    }
 
     // §4/§8: after grants change, native sessions must receive the newly scoped tools, not their old catalogue.
     #[test]

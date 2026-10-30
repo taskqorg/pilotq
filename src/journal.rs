@@ -54,14 +54,8 @@ fn session(chat: i64, topic: Option<i64>, sender: i64, shared: bool) -> String {
 fn control(text: Option<&str>) -> Option<&'static str> {
     let cmd = text?.split_whitespace().next()?.split('@').next()?;
     if !cmd.starts_with('/') { return None; }
-    Some(match cmd {
-        "/stop"=>"/stop", "/status"=>"/status", "/new"=>"/new", "/audit"=>"/audit",
-        "/help"=>"/help", "/version"=>"/version", "/model"=>"/model", "/model-button"=>"/model-button",
-        "/release"=>"/release", "/release-confirm"=>"/release-confirm",
-        "/onboard"=>"/onboard", "/onboard-button"=>"/onboard-button",
-        "/doctor"=>"/doctor", "/restart"=>"/restart", "/skills"=>"/skills", "/skill"=>"/skill",
-        _=>"/unknown",
-    })
+    if matches!(cmd,"/model-button"|"/release-confirm"|"/onboard-button") { return Some(match cmd {"/model-button"=>"/model-button","/release-confirm"=>"/release-confirm",_=>"/onboard-button"}); }
+    Some(crate::catalog::CATALOG.iter().find(|c|c.name==cmd && c.name.starts_with('/')).map(|c|c.name).unwrap_or("/unknown"))
 }
 
 
@@ -454,7 +448,7 @@ fn answer_control(tx: &Connection, session: &str, cmd: &str, request: i64, chat:
                 return Ok(("Stopped; queued follow-ups stay queued.".into(), Some(id)));
             }
             "/version" => format!("PilotQ {}", env!("CARGO_PKG_VERSION")),
-            "/help" => crate::builtins::HELP.into(),
+            "/help" => String::new(),
             "/skills" | "/skill" => "No skills are enabled for PilotQ's restricted manager. /skill NAME TEXT is unavailable until a skill is approved.".into(),
             "/unknown" => "Unknown command; use /help.".into(),
             "/restart" if meta(tx,"owner")? != Some(sender) => "Only the configured owner can restart PilotQ.".into(),
@@ -908,7 +902,7 @@ impl Journal {
         let tx=self.0.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
         let update:i64=tx.query_row("SELECT min(coalesce(min(update_id),0),0)-1 FROM requests",[],|r|r.get(0)).map_err(|e|e.to_string())?;
         let session=format!("cli:{sender}");
-        let deferred=matches!(cmd,"/model"|"/doctor"|"/onboard"|"/onboard-button"|"/release"|"/release-confirm"|"/restart") && (cmd!="/restart" || meta(&tx,"owner")?==Some(sender));
+        let deferred=matches!(cmd,"/help"|"/model"|"/doctor"|"/onboard"|"/onboard-button"|"/release"|"/release-confirm"|"/restart") && (cmd!="/restart" || meta(&tx,"owner")?==Some(sender));
         let failed=matches!(cmd,"/unknown"|"/skill"|"/restart") && !deferred;
         let id=insert(&tx,update,"cli",sender,None,sender,None,0,if deferred {"builtin"} else {"control"},Some(text),if deferred {"queued"} else if failed {"failed"} else {"answered"},at,&session,None)?;
         tx.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?1,coalesce((SELECT generation FROM conversations WHERE session=?2),0))",params![format!("builtin-generation:{id}"),session]).map_err(|e|e.to_string())?;
@@ -1056,7 +1050,7 @@ impl Journal {
                         route >= ROUTE_BACKLOG || total >= TOTAL_BACKLOG
                     };
                     // The independent read-control queue is bounded too; immediate recovery controls stay available.
-                    let builtin_busy=matches!(cmd,Some("/model"|"/model-button"|"/doctor"|"/onboard"|"/onboard-button"|"/release"|"/release-confirm"|"/restart")) && {
+                    let builtin_busy=matches!(cmd,Some("/help"|"/model"|"/model-button"|"/doctor"|"/onboard"|"/onboard-button"|"/release"|"/release-confirm"|"/restart")) && {
                         let (route,total):(i64,i64)=tx.query_row("SELECT count(*) FILTER(WHERE chat=?1 AND topic IS ?2),count(*) FROM requests WHERE kind='builtin' AND state IN ('queued','waiting')",params![i.chat,i.topic],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|e.to_string())?;
                         route>=ROUTE_BACKLOG || total>=TOTAL_BACKLOG
                     };
@@ -1070,7 +1064,7 @@ impl Journal {
                     };
                     let (kind, state) = match (cmd, i.kind) {
                         (Some(_), _) if builtin_busy => ("control", "failed"),
-                        (Some("/model" | "/model-button" | "/doctor" | "/onboard" | "/onboard-button" | "/release" | "/release-confirm"), _) => ("builtin", "queued"),
+                        (Some("/help"|"/model" | "/model-button" | "/doctor" | "/onboard" | "/onboard-button" | "/release" | "/release-confirm"), _) => ("builtin", "queued"),
                         (Some("/restart"), _) if meta(&tx,"owner")? == Some(sender) => ("builtin", "queued"),
                         (Some("/unknown" | "/skill" | "/restart"), _) => ("control", "failed"),
                         (Some(_), _) => ("control", "answered"),
@@ -2710,9 +2704,13 @@ impl Journal {
             return Err(format!("{actor} has no projects grant"));
         }
         self.0
-            .execute("INSERT OR REPLACE INTO projects(name, repo, root, by, at) VALUES (?1,?2,?3,?4,?5)", params![name, repo, root, actor, at])
-            .map(drop)
-            .map_err(|e| e.to_string())
+            .execute("INSERT OR REPLACE INTO projects(name, repo, root, by, at) VALUES (?1,?2,?3,?4,?5)", params![name, repo, root, actor, at]).map_err(|e|e.to_string())?;
+        self.0.execute("DELETE FROM meta WHERE key=?1",[format!("project-disconnected:{name}")]).map(drop).map_err(|e|e.to_string())
+    }
+
+    /// Prevent legacy configuration bootstrap from silently reconnecting a deliberately removed project.
+    pub fn project_disconnected(&self,name:&str)->Result<bool,String> {
+        self.0.query_row("SELECT EXISTS(SELECT 1 FROM meta WHERE key=?1)",[format!("project-disconnected:{name}")],|r|r.get(0)).map_err(|e|e.to_string())
     }
 
     /// Registered projects by name: (name, repo, root, by, at).

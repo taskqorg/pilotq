@@ -4,7 +4,6 @@ use coreq::Tool;
 use serde_json::Value;
 use std::time::{Duration, Instant};
 
-pub const HELP:&str="/help — available controls\n/version — running PilotQ version\n/status — observed health and this conversation\n/model — Codex catalogue and model buttons\n/model MODEL — save for the next run in this conversation\n/model default — inherit Codex configuration\n/doctor — bounded read-only setup checks\n/release NAME — owner LIVE preview\n/onboard NAME — owner project setup and Recheck\n/stop — fence this conversation's manager run\n/new — reset conversation; keep task links and model choice\n/audit — your history, in DM only\n/restart — owner-only service drain and restart\n/skills — enabled skills (currently none)\n/skill NAME TEXT — unavailable until a skill is approved\nTaskQ workers keep TaskQ's model and resource policy.";
 
 pub struct Request { pub id:i64, pub session:String, pub sender:i64, pub text:String }
 
@@ -50,6 +49,20 @@ pub fn execute(t:&Tool,j:&Shared,r:&Request,installed:bool) -> Result<(),String>
             "/onboard"|"/onboard-button"=> {
                 crate::onboarding::control(t,j,r)?;
                 return Ok(None);
+            }
+            "/help"=> {
+                let words:Vec<_>=r.text.split_whitespace().collect();
+                if words.len()>2 { return Err("Invalid command arguments; use /help.".into()); }
+                let config=crate::config(t)?;
+                let keys=crate::keys::Keys(t.install.join("keys.json"));
+                let (mut text,language)={
+                    let j=j.lock().unwrap();
+                    let language:Option<String>=j.0.query_row("SELECT language FROM requests WHERE id=?1",[r.id],|x|x.get(0)).map_err(|e|e.to_string())?;
+                    (crate::catalog::render(&j,r.sender,words.get(1).copied(),language.as_deref(),&keys,&j.route(r.id)?)?,language)
+                };
+                text.push('\n');
+                text.push_str(&keys.scrub(&crate::catalog::taskq_help(config.as_ref().and_then(|c|c.taskq.as_ref()).map(|t|t.bin.as_path()),language.as_deref())));
+                return Ok(Some(text));
             }
             "/model"|"/model-button"=> {
                 let config=crate::config(t)?.ok_or("PilotQ configuration unavailable")?;
@@ -129,6 +142,26 @@ pub fn cli(t:&Tool,j:Journal,id:i64,text:&str)->Result<Value,String> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    // A2/A4 / R13/R17: CLI help uses the same admitted control, catalog and durable reply, without Codex.
+    #[test]
+    fn command_163_help_uses_control_audit() {
+        let mut t=crate::tool();
+        t.install=std::env::temp_dir().join(format!("pilotq-help-control-{}",std::process::id()));
+        std::fs::create_dir_all(&t.install).unwrap();
+        let mut journal=Journal::open(&t.install.join("journal.sqlite")).unwrap();journal.bootstrap(7,0).unwrap();
+        let active=journal.ask(7,"ordinary conversation",1).unwrap();
+        let id=journal.builtin_cli(7,"/help projects",2).unwrap().unwrap();
+        let j=std::sync::Arc::new(std::sync::Mutex::new(journal));
+        let request=j.lock().unwrap().builtin_take(id).unwrap().unwrap();
+        execute(&t,&j,&request,false).unwrap();
+        let mut guard=j.lock().unwrap();let (state,reply,error)=guard.request(id).unwrap();
+        assert_eq!(state,"answered");assert!(error.is_none());
+        let reply=reply.unwrap();assert!(reply.contains("project_disconnect") && reply.contains("TaskQ catalog unavailable"));
+        assert_eq!(guard.request(active.request).unwrap().0,"running");
+        assert!(guard.builtin_take(id).unwrap().is_none(),"duplicate control must not replay");
+        drop(guard);drop(j);std::fs::remove_dir_all(t.install).unwrap();
+    }
 
     // #106 / R16, §7: a broken setup dependency must terminate, and arbitrary diagnostics never become replies.
     #[test]
