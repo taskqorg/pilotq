@@ -177,12 +177,17 @@ fn blockers(tq:&Taskq,j:&Journal,p:&str,c:&Value)->Result<(),String> {
             let attempts=match task["executions"].as_array() {
                 Some(a)=>a,
                 None if matches!(task["state"].as_str(),Some("held"|"ready"|"later"|"waiting"|"ask"|"failed"))=>continue,
-                None=>return Err("Running attempt evidence unavailable".into()),
+                None=>return Err(format!("Release blocked by {name} task #{}: running attempt evidence unavailable",task["n"])),
             };
+            if attempts.is_empty() && !matches!(task["state"].as_str(),Some("held"|"ready"|"later"|"waiting"|"ask"|"failed")) {
+                return Err(format!("Release blocked by {name} task #{}: running attempt evidence unavailable",task["n"]));
+            }
             for attempt in attempts {
-                if matches!(attempt["state"].as_str(),Some("running"|"doing")) {
-                    if attempt["host"].as_str().is_some_and(|h|h!=host) {continue;}
-                    return Err(format!("Release blocked by {name} task #{} attempt {}",task["n"],attempt["attempt"]));
+                if attempt["host"].as_str().is_some_and(|h|!h.is_empty() && h!=host) {continue;}
+                match attempt["state"].as_str() {
+                    Some("exited"|"released")=>{},
+                    Some("running"|"doing")=>return Err(format!("Release blocked by {name} task #{} attempt {}",task["n"],attempt["attempt"])),
+                    _=>return Err(format!("Release blocked by {name} task #{} attempt {}: execution state unknown",task["n"],attempt["attempt"])),
                 }
             }
         }
@@ -329,22 +334,31 @@ fn confirm(tq:&Taskq,j:&Shared,r:&crate::builtins::Request,id:i64)->Result<Strin
         let receipt=json!({"stage":field,"status":output["status"],"exit_code":output["exit_code"],"sha":target});
         audit(&j.lock().unwrap(),r.id,p,field,&receipt)?;
         stages.push(format!("{field}: {}",output["status"].as_str().unwrap_or("unknown")));
-        if output["status"]!="success" {uncertain=true;break;}
         if field=="pipeline" {
             let report:Value=output["stdout"].as_str().and_then(|s|serde_json::from_str(s).ok()).unwrap_or(Value::Null);
-            let valid=report["sha"]==target && report["live_sha"]==target && ["release","smoke","backmerge"].iter().all(|s|report["stages"][s]["state"]=="success" && report["stages"][s]["url"].as_str().is_some_and(crate::taskq::valid_url));
-            if valid {
-                let mut verified=json!({"sha":target,"live_sha":target,"stages":{}});
-                for s in ["release","smoke","backmerge"] {
-                    let link=crate::keys::Keys(crate::tool().install.join("keys.json")).scrub(report["stages"][s]["url"].as_str().unwrap());
-                    stages.push(format!("{s}: success {link}"));verified["stages"][s]=json!({"state":"success","url":link});
-                }
-                stages.push(format!("LIVE SHA: {target}"));audit(&j.lock().unwrap(),r.id,p,"verified",&verified)?;
+            let mut verified=json!({"sha":target,"stages":{}});
+            let bound=report["sha"]==target;
+            for stage in ["release","smoke","backmerge"] {
+                let state=report["stages"][stage]["state"].as_str().filter(|s|matches!(*s,"success"|"failed"|"pending"|"running"|"cancelled"|"skipped"));
+                let link=report["stages"][stage]["url"].as_str().filter(|s|crate::taskq::valid_url(s));
+                if let (true,Some(state))=(bound,state) {
+                    verified["stages"][stage]=json!({"state":state});
+                    if let Some(link)=link {
+                        let link=crate::keys::Keys(crate::tool().install.join("keys.json")).scrub(link);
+                        stages.push(format!("{stage}: {state} {link}"));verified["stages"][stage]["url"]=json!(link);
+                    } else {stages.push(format!("{stage}: {state} (link unavailable)"));uncertain=true;}
+                    if state!="success" {uncertain=true;}
+                } else {stages.push(format!("{stage}: unconfirmed"));uncertain=true;}
             }
-            else {stages.push("Release/smoke/backmerge or LIVE SHA unconfirmed".into());uncertain=true;}
+            if let Some(live)=report["live_sha"].as_str().filter(|s|bound && sha(s)) {
+                stages.push(format!("LIVE SHA: {live}"));verified["live_sha"]=json!(live);
+                if live!=target {uncertain=true;}
+            } else {stages.push("LIVE SHA: unknown".into());uncertain=true;}
+            audit(&j.lock().unwrap(),r.id,p,"verified",&verified)?;
         }
+        if output["status"]!="success" {uncertain=true;break;}
     }
-    if uncertain {
+    if !stages.iter().any(|s|s.starts_with("pipeline:")) {
         if !stages.iter().any(|s|s.starts_with("release:")) {stages.push("release: not run".into());}
         stages.extend(["smoke: unconfirmed".into(),"backmerge: unconfirmed".into(),"LIVE SHA: unknown".into()]);
     }
@@ -462,6 +476,24 @@ mod tests {
         let result=confirm(&f.tq,&f.j,&request(&f,7),id).unwrap();assert!(result.contains("release verified") && result.contains(&format!("LIVE SHA: {}",f.b)),"{result}");
         assert!(result.contains("backmerge: success https://example.invalid/backmerge"));
     }
+    // A7 / R11/R17: a failed backmerge must retain successful release/smoke and observed LIVE identity.
+    #[test]
+    fn partial_pipeline_evidence_174() {
+        let f=fixture("partial");f.j.lock().unwrap().grant(7,7,&["release:sample".into()],0).unwrap();
+        let report=json!({"sha":f.b,"live_sha":f.b,"stages":{"release":{"state":"success","url":"https://example.invalid/release"},"smoke":{"state":"success","url":"https://example.invalid/smoke"},"backmerge":{"state":"failed","url":"https://example.invalid/backmerge"}}});
+        std::fs::write(f.dir.join("runner"),format!("#!/bin/sh\nif [ \"$1\" = pipeline ]; then printf '%s' '{}'; exit 1; fi\n",report)).unwrap();
+        let id=save_preview(&f);let result=confirm(&f.tq,&f.j,&request(&f,7),id).unwrap();
+        assert!(result.contains("release: success https://example.invalid/release"),"{result}");
+        assert!(result.contains("smoke: success https://example.invalid/smoke"),"{result}");
+        assert!(result.contains("backmerge: failed https://example.invalid/backmerge"),"{result}");
+        assert!(result.contains(&format!("LIVE SHA: {}",f.b)),"{result}");
+        assert!(result.contains("uncertain") && !result.contains("LIVE SHA: unknown"));
+        assert!(confirm(&f.tq,&f.j,&request(&f,7),id).is_err());
+        let j=f.j.lock().unwrap();
+        let evidence:String=j.0.query_row("SELECT result FROM audit_events WHERE request_id=?1 AND item='verified'",[f.r.request],|r|r.get(0)).unwrap();
+        let evidence:Value=serde_json::from_str(&evidence).unwrap();
+        assert_eq!(evidence["live_sha"],f.b);assert_eq!(evidence["stages"],report["stages"]);
+    }
     // A6: other registered checkout of same repository must block before even preflight.
     #[test]
     fn release_running_checkout_blocker_174() {
@@ -471,5 +503,13 @@ mod tests {
         std::fs::write(other.join("snapshot.json"),r#"{"complete":true,"board":{"repo":"invented/tight"},"tasks":[{"n":42,"executions":[{"attempt":123,"state":"running"}]}]}"#).unwrap();
         f.j.lock().unwrap().add_project(7,"tight","invented/tight",other.to_str().unwrap(),0).unwrap();f.j.lock().unwrap().grant(7,7,&["release:sample".into()],0).unwrap();let id=save_preview(&f);
         let error=confirm(&f.tq,&f.j,&request(&f,7),id).unwrap_err();assert!(error.contains("tight task #42 attempt 123"),"{error}");assert!(!f.dir.join("calls").exists());
+        // A6: absence of running evidence is not evidence of an idle checkout.
+        for task in [json!({"n":42,"state":"doing","executions":[]}),json!({"n":42,"state":"doing","executions":[{"attempt":123,"host":"invented-local"}]}),json!({"n":42,"executions":[{"attempt":123,"state":"unrecognized"}]})] {
+            std::fs::write(other.join("snapshot.json"),json!({"complete":true,"board":{"repo":"invented/tight"},"tasks":[task]}).to_string()).unwrap();
+            let error=confirm(&f.tq,&f.j,&request(&f,7),id).unwrap_err();
+            assert!(error.contains("tight task #42"),"unresolved attempt must name blocker: {task}: {error}");
+            assert!(!f.dir.join("calls").exists());
+        }
+
     }
 }
