@@ -2,7 +2,7 @@
 
 Part of the [PilotQ contract](../pilotq.md). Decisions here bind like the root contract; change them here first.
 
-**Owner-scoped (tasks #18 and #39):** every explicitly registered project, through the TaskQ CLI on the PilotQ host. TaskQ mutations on these boards are separate from the owner-only direct issue writes below.
+**Owner-scoped (tasks #18 and #39):** every explicitly registered project, through the TaskQ CLI on the PilotQ host. TaskQ owns forge access, authentication, task URLs and trusted answers (#144, root contract §5). Registered entries bind local project roots, not a forge adapter. Direct issue tools refuse when TaskQ has no equivalent.
 
 - Configuration: `config.json` `taskq` names the CLI binary and the project root. PilotQ runs it with an argument array, `TASKQ_ROOT` set to that root and no `TASKQ_ATTEMPT`. The configured root seeds the initial `pilotq` registry entry only when its `taskq.json` names `taskqorg/pilotq`; it never replaces a registered entry. Each call uses the resolved registered root, checks its `taskq.json` against the registered board and requires a fresh complete snapshot naming that board before board writes or task reads. An unavailable snapshot leaves an authorized plan unsent for retry. A mismatch disables that target.
 - Project scope is `project:<registered-name>`, or `projects` for an administrator. The owner holds `projects` from protected configuration.

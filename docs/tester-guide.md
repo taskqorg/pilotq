@@ -48,13 +48,13 @@ If creation is partial or TaskQ is unavailable, keep the request number and obse
 - **Reset context:** `/new` starts a new conversation generation. It keeps audit records and subscriptions to admitted tasks.
 - **Inspect:** `/status` uses the deterministic control path even if the model is unavailable. Unknown health or an uncertain effect needs investigation, not another execution request.
 
-Missing grants, a foreign board, stale answers, unregistered targets and the sixth tool call are refusals, not successful actions. Only the configured owner can directly comment or label a PilotQ issue, with a suitable key. Direct writes to other projects are refused; TaskQ mutations remain available on explicitly registered projects within the caller's grants. Keys enter through `pilotq keys add` on the CLI, never Telegram (§5, §8).
+Missing grants, a foreign board, stale answers, unregistered targets and the sixth tool call are refusals, not successful actions. Direct issue tools are currently unavailable without a TaskQ CLI equivalent (#144); keys and owner rights never authorize a forge bypass. Direct writes to other projects are refused; TaskQ mutations remain available on explicitly registered projects within the caller's grants. Keys enter through `pilotq keys add` on the CLI, never Telegram (§5, §8).
 
 ## Host tools and readiness
 
 The required versions and their consumers are owned by [contract §9](../pilotq.md#host-requirements-task-130). Use the installation owner's account and the same PATH as the service. Before installation or an update, run `pilotq doctor --json`; inspect every `requirements` entry, including `found`, `minimum`, `outcome` and `fix`. A failed entry blocks service installation and manual/scheduled update checks. The current release keeps running; doctor stays failed until the named step is completed. PilotQ does not elevate privileges or install packages on the owner's behalf.
 
-For an Ubuntu 24.04 managed host, the operator provisions `gh`, `ffmpeg`, `curl`, `procps`, `hostname` and `systemd` with the distribution package manager, then verifies the actual versions with doctor. If the distribution offers an older version, use the tool's upstream package repository or upgrade the host; do not bypass the check. Install Codex with `npm install --global @openai/codex@0.162.0` (or a newer approved version), set its absolute path in configuration and preserve the existing isolated ChatGPT login. Update the existing TaskQ installation with `taskq update`; verify its service version and preserve its existing host credentials. Do not run GitHub device login.
+For an Ubuntu 24.04 managed host, the operator provisions `ffmpeg`, `curl`, `procps`, `hostname` and `systemd` with the distribution package manager, then verifies the actual versions with doctor. If the distribution offers an older version, use the tool's upstream package repository or upgrade the host; do not bypass the check. Install Codex with `npm install --global @openai/codex@0.162.0` (or a newer approved version), set its absolute path in configuration and preserve the existing isolated ChatGPT login. Update the existing TaskQ installation with `taskq update`; verify its service version and preserve its existing host credentials. Do not run GitHub device login.
 
 Install the static no-TTS [sherpa-onnx v2.0.1 Linux x64 release](https://github.com/k2-fsa/sherpa-onnx/releases/tag/v2.0.1), or a newer approved release, with the GigaAM files described below. Set the absolute `voice.recognizer` and `voice.ffmpeg` paths. Doctor additionally decodes and recognizes silence; version checks alone do not establish voice readiness.
 
@@ -136,11 +136,13 @@ The operator uses the same path with, for example,
 have absolute deadlines; dependency failures leave observations unknown and do
 not change the saved choice. Use the operator audit to investigate details.
 
-### GitHub answer-reader readiness
+### TaskQ-only board access
 
-`pilotq doctor --json` reports `gh.path`, `gh.version` and the `board_answers` check. The check reads one page of comments from the configured board without writing. A failed read exits nonzero; operator stderr records the command and scrubbed error. `/doctor` reports only check outcomes. Selftest stays offline (§9).
+Under #144, the configured TaskQ executable and registered project root own board access. PilotQ does not require gh, configure a forge or parse forge-specific issue paths. Doctor verifies a complete TaskQ snapshot; `status --task N --json` supplies task URLs/progress and `inbox N --json` supplies accepted answers with their original question revision, author and time. Failed reads stay unknown and preserve existing cards. Existing direct `issue_read`, `issue_comment` and `issue_label` calls explicitly refuse until TaskQ supplies equivalent interfaces; they do not use a forge fallback. Pre-cutover unresolved direct effects stay uncertain and are never replayed.
 
-For #127 after release and FRA update, record the exact running source and binary, health, selftest, doctor and journal continuity. Answer a real authorized person's subscribed question through TaskQ CLI. Within one board poll, capture the original Telegram card showing `Answered by <actor>: <text>` with no buttons, then tap an earlier client copy of its button and capture the same receipt. Local fake-adapter checks do not qualify this live evidence (§5, §9).
+The PM releases the accepted change on PDS 18, checks `project_list` for `agentq`, `pilotq` and `tight`, then asks an authorized person to request tight's board status in Telegram. Record the request and reply, source link, exact TaskQ/PilotQ revisions and complete snapshot. Zero tasks qualifies an empty board only after that successful read. Registration grants neither server access nor worker capacity. Task execution additionally needs TaskQ project setup, an authorized worker on PDS 18, applicable runtime/resource grants and the board's read-after-write qualification (§5). Do not change the installation from a worker attempt.
+
+
 ### Approved installed read commands (#126)
 
 The installation owner may create `commands.json` beside `keys.json`, mode `0600`.
