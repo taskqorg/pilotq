@@ -21,6 +21,7 @@ jobs:
           test -s README.md
           test -s AGENTS.md
           test -s pilotq.md
+          scripts/check-contract.sh
           test -s docs/research.md
           test -s docs/acceptance.md
           test -s docs/projects.md

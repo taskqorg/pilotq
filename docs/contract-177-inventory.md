@@ -1,0 +1,832 @@
+# Contract cleanup inventory
+
+Source: `origin/main` at `be57182fe926d5b0597e3ed44da1e2c4b5d65d9d`.
+Recorded before rewriting under A1; source wording includes proposals, evidence and history for explicit disposition. Each sentence or table row is separate. Destinations are recorded in the accompanying map.
+
+- I001 | PilotQ product contract | ```` PilotQ is the conversational front end for work on a shared server. ````
+- I002 | PilotQ product contract | ```` People discuss work in Telegram; PilotQ answers, performs bounded direct actions, or manages execution through TaskQ. ````
+- I003 | PilotQ product contract | ```` A lost model connection must never silently lose an accepted request or authorize a repeated external action. ````
+- I004 | PilotQ product contract | ```` Date: 2026-10-24. ````
+- I005 | PilotQ product contract | ```` Stage: implemented test service; first release preparation. ````
+- I006 | PilotQ product contract | ```` The name and repository are owner-approved; the owner made the repository public on 2026-10-22 so `main` rules apply (docs/bootstrap.md). ````
+- I007 | PilotQ product contract | ```` The owner chose the base on 2026-10-22 (section 3). ````
+- I008 | PilotQ product contract | ```` Requirements marked **Owner** come from the requested workflow. ````
+- I009 | PilotQ product contract | ```` **Proposed** sections define a design to review and qualify, not shipped guarantees or permission to deploy. ````
+- I010 | PilotQ product contract | ```` Shared engineering, storage, security and release rules belong to [specq](https://github.com/taskqorg/specq/tree/main/engineering). ````
+- I011 | PilotQ product contract | ```` Evidence: [research](docs/research.md), [mechanism matrix](docs/mechanism-matrix.md). ````
+- I012 | PilotQ product contract | ```` Requirement checks: [acceptance](docs/acceptance.md). ````
+- I013 | Specification hierarchy | ```` The owner requires spec-driven work. ````
+- I014 | Specification hierarchy | ```` `specq` is the shared base; this root contract contains only PilotQ-specific decisions and additions. ````
+- I015 | Specification hierarchy | ```` For PilotQ, an explicit owner-approved decision or exception here takes priority over a conflicting shared default. ````
+- I016 | Specification hierarchy | ```` Unmentioned areas inherit `specq`. ````
+- I017 | Specification hierarchy | ```` An exception names the shared rule, scope and reason; an accidental conflict or an unapproved proposal is not an exception. ````
+- I018 | Specification hierarchy | ```` Supporting documents, README, instructions, tests and code follow this contract. ````
+- I019 | Specification hierarchy | ```` They cannot introduce independent product decisions. ````
+- I020 | Specification hierarchy | ```` Update the owning specification before implementing a changed decision. ````
+- I021 | Specification hierarchy | ```` The development-live exception in section 9 is owner-approved for tasks #106, #108, #117 and #119. ````
+- I022 | 1. Outcomes and boundaries | ```` **Owner requirements** ````
+- I023 | 1. Outcomes and boundaries | ```` - **R1 Conversation:** run on a server, serve multiple authorized people through DMs, groups and forum topics, and preserve who said what and where. ````
+- I024 | 1. Outcomes and boundaries | ```` - **R2 Direct help:** discuss, research briefly, answer, inspect a bounded resource and make a small authorized update without filing every request as a task. ````
+- I025 | 1. Outcomes and boundaries | ```` - **R3 Management:** use TaskQ for most substantial work: clarify, plan, file, follow, answer status questions and relay worker questions and results. ````
+- I026 | 1. Outcomes and boundaries | ```` - **R4 Flexible projects:** remember the usual project but allow a conversation to switch projects. ````
+- I027 | 1. Outcomes and boundaries | ```` Every external action must resolve a concrete authorized target. ````
+- I028 | 1. Outcomes and boundaries | ```` - **R5 Reliability:** ordinary conversations and simple tasks work without repeated nudges. ````
+- I029 | 1. Outcomes and boundaries | ```` Restarts, timeouts and long context have explicit recoverable outcomes. ````
+- I030 | 1. Outcomes and boundaries | ```` - **R6 Continuity:** preserve existing people, access roles, conversation boundaries and project associations during a later Hermes migration. ````
+- I031 | 1. Outcomes and boundaries | ```` - **R7 Context:** support effective agentq integration, including original-data recovery and a measured quality baseline. ````
+- I032 | 1. Outcomes and boundaries | ```` - **R8 Visibility:** provide task URLs, current state, attempt evidence and outcomes through existing TaskQ facilities. ````
+- I033 | 1. Outcomes and boundaries | ```` - **R9 Model access:** use Codex with existing subscription access only. ````
+- I034 | 1. Outcomes and boundaries | ```` Claude and separately billed model API access are out of scope. ````
+- I035 | 1. Outcomes and boundaries | ```` Do not fall back automatically to paid API credentials. ````
+- I036 | 1. Outcomes and boundaries | ```` - **R10 People and admission:** remember distinct users in persistent, correctable profiles. ````
+- I037 | 1. Outcomes and boundaries | ```` Ignore a person until an authorized administrator explicitly grants access; group membership alone grants nothing. ````
+- I038 | 1. Outcomes and boundaries | ```` Support inspecting and correcting remembered information and changing or revoking access. ````
+- I039 | 1. Outcomes and boundaries | ```` - **R11 Observable lifecycle:** make acceptance, progress, waiting, interruption, failure and completion understandable in Telegram. ````
+- I040 | 1. Outcomes and boundaries | ```` Cover recovery and operational edge cases in the specification and acceptance plan before implementation, rather than adding them only after incidents. ````
+- I041 | 1. Outcomes and boundaries | ```` - **R12 Least effort:** build the simplest agent that serves TaskQ work. ````
+- I042 | 1. Outcomes and boundaries | ```` Reuse proven mechanisms from known projects and the shared TaskQ system instead of inventing new ones. ````
+- I043 | 1. Outcomes and boundaries | ```` - **R13 Two front ends:** offer a command-line interface and a Telegram gateway over the same request, grant and audit path. ````
+- I044 | 1. Outcomes and boundaries | ```` - **R14 Operated like our tools:** PilotQ is monitored, updates itself through releases and is developed spec-first through its own TaskQ board. ````
+- I045 | 1. Outcomes and boundaries | ```` - **R15 Administration by request:** an authorized administrator can tell PilotQ to remember a person with given rights and to create or register projects and open project-bound forum topics through the scoped administration tools in section 5. ````
+- I046 | 1. Outcomes and boundaries | ```` - **R16 Keys:** tools can use credentials on an authorized person's behalf; the model never sees a credential value. ````
+- I047 | 1. Outcomes and boundaries | ```` - **R17 Request audit and telemetry:** every request leaves one durable record of who asked, when, where, what was asked, what PilotQ did and the outcome, joined to CoreQ telemetry. ````
+- I048 | 1. Outcomes and boundaries | ```` The record answers later service investigations, a person's questions about their own history and PilotQ self-improvement analysis. ````
+- I049 | 1. Outcomes and boundaries | ```` **Proposed scope for the first release** ````
+- I050 | 1. Outcomes and boundaries | ```` One Linux host, one Telegram bot, one manager runtime, existing TaskQ boards and explicitly registered project roots. ````
+- I051 | 1. Outcomes and boundaries | ```` Text, replies, task links and inline decisions are core inputs. ````
+- I052 | 1. Outcomes and boundaries | ```` Accept Telegram photos and image documents, with or without captions, as image input in the same Codex conversation. ````
+- I053 | 1. Outcomes and boundaries | ```` Preserve their file identity and caption in the request journal. ````
+- I054 | 1. Outcomes and boundaries | ```` **Owner, task #89 (option 1):** accept Telegram voice notes, audio files and audio documents as Russian speech, recognized locally into text input (§12). ````
+- I055 | 1. Outcomes and boundaries | ```` **Owner, task #145:** photos and arbitrary documents may be forwarded as TaskQ reply attachments with optional text through `answer`, `steer` and owner `requeue` (§5); other documents outside that flow and video remain unsupported and receive one short plain-language line. ````
+- I056 | 1. Outcomes and boundaries | ```` Recurring work stays with an existing scheduler or TaskQ capability. ````
+- I057 | 1. Outcomes and boundaries | ```` PilotQ has no worker scheduler, autonomous goal engine, reviewer, new task board or general plugin marketplace. ````
+- I058 | 1. Outcomes and boundaries | ```` Its local inbox schedules conversation handling and delivery only; TaskQ remains authoritative for execution. ````
+- I059 | Conversation contract | ```` **Owner, task #165:** [Conversation flow](docs/conversation-flow.md) is the single presentation contract for discussion, plan, launch, task status, questions, results and failure recovery (R11, R13, R17). ````
+- I060 | Conversation contract | ```` It supersedes presentation wording from #72, #91, #93, #110, #119 and #124; authorization, immutable task scope and durable receipt rules remain in force. ````
+- I061 | Conversation contract | ```` A plan displays each task's title, one “We will” line and one “Done when” line in the person's language. ````
+- I062 | Conversation contract | ```` The latter is a concise outcome summary, not the worker's acceptance list. ````
+- I063 | Conversation contract | ```` Acceptance and scope remain in the saved task body. ````
+- I064 | Conversation contract | ```` Do not show local-save receipts, internal revisions, board details or launch instructions. ````
+- I065 | Conversation contract | ```` Each display offers Launch and Cancel; revisions remain internal authorization tokens. ````
+- I066 | Conversation contract | ```` Launch, Cancel and discussion choices edit their source message: remove its buttons and append one factual outcome line, including verified task links on launch or the chosen option and actor. ````
+- I067 | Conversation contract | ```` A stale callback receives only a popup toast. ````
+- I068 | Conversation contract | ```` A superseded display loses its buttons. ````
+- I069 | Conversation contract | ```` A launch has one durable status card edited through queued, working, question and done, based on TaskQ observations; missing/deleted cards may be replaced in the original route. ````
+- I070 | Conversation contract | ```` Worker questions follow the TaskQ answer card and are edited with the accepted answer. ````
+- I071 | Conversation contract | ```` Results lead with one factual effect line; closure alone proves neither publication nor deployment. ````
+- I072 | Conversation contract | ```` **Owner, #165 liveness continuation:** keep the 👀 receipt. ````
+- I073 | Conversation contract | ```` A long launch edits one plain status line under its plan card, naming the current phase and elapsed time; it never sends a new message per retry. ````
+- I074 | Conversation contract | ```` Rate-limit and coalesce these edits under §12 and the persisted Telegram cooldown. ````
+- I075 | Conversation contract | ```` On completion replace that line with the receipt; on give-up show a plain problem line with Retry and Cancel. ````
+- I076 | Conversation contract | ```` Retry resumes only the original authorized launch and operation IDs after current grant, target and generation checks. ````
+- I077 | Conversation contract | ```` Cancel stops remaining launch steps, preserves prior effects and never parks or stops already admitted workers. ````
+- I078 | Conversation contract | ```` Old problem buttons become stale after either action, reset or a later problem display. ````
+- I079 | Conversation contract | ```` Retry counts and diagnostics remain in audit and PM telemetry; this presentation change does not enlarge existing retry budgets. ````
+- I080 | Conversation contract | ```` Deadline replies retain readable findings from completed reads and offer to plan the remainder (§5); findings never turn an uncertain write into success. ````
+- I081 | Conversation contract | ```` Completion cards retain the trusted TaskQ closing result and limitations after the effect line; unavailable verdicts remain explicitly unconfirmed. ````
+- I082 | Conversation contract | ```` Recovered reply refusals use the same localized line as live refusals; the original reason and remedy stay in audit. ````
+- I083 | Conversation contract | ```` Normal replies have no model/context/quota footer. ````
+- I084 | Conversation contract | ```` These observations belong to `/status`, scoped to the conversation and labeled with observation age. ````
+- I085 | Conversation contract | ```` Missing observations stay unavailable. ````
+- I086 | Conversation contract | ```` A failure episode produces one plain-language line and one line on verified resolution; internal operation IDs, JSON, CLI diagnostics and retry details belong only to audit and PM telemetry. ````
+- I087 | Conversation contract | ```` Repeated retries do not repeat the failure. ````
+- I088 | Conversation contract | ```` Unknown or partial effects remain explicit without exposing diagnostics or claiming success. ````
+- I089 | Conversation identity | ```` **Proposed:** store bot identity, chat ID, topic ID where present, sender ID, message ID, update ID, reply reference and input revision. ````
+- I090 | Conversation identity | ```` Names are display labels, never authority. ````
+- I091 | Conversation identity | ```` Unknown or anonymous senders cannot approve a mutation by impersonating an allowed user. ````
+- I092 | Conversation identity | ```` Use an explicit session policy per route. ````
+- I093 | Conversation identity | ```` Migration preserves the inspected Hermes distinction: ordinary-group conversations were per user; forum-topic conversations were shared. ````
+- I094 | Conversation identity | ```` Reconfirm the export before cutover. ````
+- I095 | Conversation identity | ```` Shared topics preserve each message's author and never import private DM context. ````
+- I096 | Conversation identity | ```` New routes default to isolated conversations until a shared policy is selected. ````
+- I097 | Conversation identity | ```` Whether the bot responds to every message, mentions or replies is route configuration. ````
+- I098 | Conversation identity | ```` Preserve the current behavior through an explicit migration manifest. ````
+- I099 | Conversation identity | ```` Quoted messages, files, issue text and other bots are source material; they cannot change roles or approve work. ````
+- I100 | People and admission | ```` **Owner:** users have separate remembered identities; their information can be corrected. ````
+- I101 | People and admission | ```` Users without an explicit grant are ignored. ````
+- I102 | People and admission | ```` **Proposed enforcement:** key each person by stable Telegram user ID within the installation; username and display name are editable labels, never proof of identity. ````
+- I103 | People and admission | ```` Check both the person's grant and the route policy before model admission or any command/callback, including recovery controls. ````
+- I104 | People and admission | ```` An allowed group does not allow all its members. ````
+- I105 | People and admission | ```` Unknown, revoked or unidentifiable senders receive no reply, acknowledgement, typing indicator or action. ````
+- I106 | People and admission | ```` Their updates cause no model call, task submission or memory update and are excluded from shared model context. ````
+- I107 | People and admission | ```` An authorized person's deliberate quotation may be processed as untrusted source material, never as the quoted person's authorization. ````
+- I108 | People and admission | ```` Persist only the minimal ignored-update disposition needed for deduplication and polling progress; it is not an accepted work request and contains no message body. ````
+- I109 | People and admission | ```` Granting access later does not replay ignored messages. ````
+- I110 | People and admission | ```` The newly allowed person can send a new request. ````
+- I111 | People and admission | ```` An authorized administrator can inspect a user's access and permitted profile fields, grant scoped access, change it or revoke it through Telegram. ````
+- I112 | People and admission | ```` Accept an exact Telegram user ID or a verified sender reference; resolve ambiguous names before writing. ````
+- I113 | People and admission | ```` Record the acting administrator, target ID and before/after grant. ````
+- I114 | People and admission | ```` Admission to conversation does not automatically grant project mutations, TaskQ management or user administration. ````
+- I115 | People and admission | ```` A Telegram group-admin badge does not confer PilotQ administration. ````
+- I116 | People and admission | ```` Bootstrap the initial owner ID through protected installation configuration, never through the first incoming message. ````
+- I117 | People and admission | ```` Model output, remembered job titles and self-declarations cannot grant rights. ````
+- I118 | Discuss, act, delegate | ```` **Proposed:** discussion never implies execution. ````
+- I119 | Discuss, act, delegate | ```` A direct request such as “check the disk space” already authorizes that bounded check. ````
+- I120 | Discuss, act, delegate | ```` “Let's plan” produces a revisable proposal. ````
+- I121 | Discuss, act, delegate | ```` “Run this plan” binds authorization to the displayed plan revision, target and scope; it does not require another ritual confirmation. ````
+- I122 | Discuss, act, delegate | ```` Direct work must satisfy all of these conditions: ````
+- I123 | Discuss, act, delegate | ```` - One clear authorized target and a bounded result. ````
+- I124 | Discuss, act, delegate | ```` - No need to survive as a long-running job, produce a reviewed implementation, or coordinate dependencies. ````
+- I125 | Discuss, act, delegate | ```` - A read-only operation or a small mutation with an explicit grant and a verifiable outcome. ````
+- I126 | Discuss, act, delegate | ```` - Execution fits the short-action budget in section 7. ````
+- I127 | Discuss, act, delegate | ```` Examples: inspect one service, read a bounded log interval, look up a ticket or explain an error. ````
+- I128 | Discuss, act, delegate | ```` Apart from the scoped administration and owner release operations in section 5, the only direct writes are the owner's board comments and labels ([section 5](#direct-actions-keys-and-project-switching)). ````
+- I129 | Discuss, act, delegate | ```` A fast action can still be consequential: deployment, money, permissions or deletion do not become direct-safe because they take seconds. ````
+- I130 | Discuss, act, delegate | ```` Multi-file implementation, long research, broad audits, repeated experiments, deployment work and uncertain-duration work go to TaskQ, except the owner-confirmed registered release operation in §5. ````
+- I131 | Discuss, act, delegate | ```` On reaching a direct-action budget, preserve observations and completed effects; propose the remaining task. ````
+- I132 | Discuss, act, delegate | ```` Reuse existing authorization if it covers the delegation. ````
+- I133 | Discuss, act, delegate | ```` Never describe a task as created until board readback identifies it. ````
+- I134 | Discuss, act, delegate | ```` When acting as TaskQ PM, PilotQ does not perform queued task work or choose answers on the owner's behalf. ````
+- I135 | Discuss, act, delegate | ```` Its short-action role is separate from that PM role. ````
+- I136 | Discuss, act, delegate | ```` This preserves the [TaskQ role contract](https://github.com/taskqorg/taskq/blob/93b499cf562167e380793c0c8fb15562407c6900/taskq.md). ````
+- I137 | Changing direction | ```` Persist follow-up messages immediately. ````
+- I138 | Changing direction | ```` Serialize model turns and compaction within a conversation; other conversations continue independently. ````
+- I139 | Changing direction | ```` New input can wait, steer at a supported safe point, or stop the current short action. ````
+- I140 | Changing direction | ```` Do not silently discard an earlier request when a new message arrives. ````
+- I141 | Changing direction | ```` **Owner, task #92:** relate messages by conversational meaning, without time windows or requiring replies or special syntax from the person. ````
+- I142 | Changing direction | ```` A clear addition updates the existing intent; an independent request stays separate. ````
+- I143 | Changing direction | ```` For a matching doing TaskQ task, use `task_steer` after a fresh read instead of creating another task. ````
+- I144 | Changing direction | ```` If the destination is unclear, ask “to task X or new?” in the person's language, with explicit options and an invitation to answer in their own words; do not mutate a guessed target. ````
+- I145 | Changing direction | ```` A reply is contextual evidence, never authorization by itself. ````
+- I146 | Changing direction | ```` Follow-ups received during generation are committed immediately and processed in order after the active turn. ````
+- I147 | Changing direction | ```` Their next turn receives the preceding result and task receipts, so it can refine the plan or steer the task already created. ````
+- I148 | Changing direction | ```` Preserve each input's author, caption, message and reply reference; do not merge audit records or grants. ````
+- I149 | Changing direction | ```` On every turn supply a bounded journal projection of the current conversation generation (the latest 12 handled inputs plus the current one), the latest saved plan and accessible task subscriptions with their observation times. ````
+- I150 | Changing direction | ```` It is historical source material, not renewed authorization or fresh board state. ````
+- I151 | Changing direction | ```` Attach available image bytes from that projection again, including multiple images before a text follow-up, so native-session recovery does not replace images with file IDs alone. ````
+- I152 | Changing direction | ```` Apply §12 download protections and the original turn deadline to all attachments. ````
+- I153 | Changing direction | ```` An unavailable historical image is an explicit context gap; an unavailable current image fails the request. ````
+- I154 | Changing direction | ```` Context outside this projection may require clarification; never pretend to have seen missing content. ````
+- I155 | Changing direction | ```` `/new`, route isolation and current grants bound the projection. ````
+- I156 | Changing direction | ```` Plain-language controls are primary. ````
+- I157 | Changing direction | ```` Deterministic `/status`, `/stop` and `/new` are recovery controls that remain available when the model is unavailable. ````
+- I158 | Changing direction | ```` `/new` resets the model conversation, not task links, authorization records or active TaskQ work. ````
+- I159 | Changing direction | ```` “Stop” must resolve its scope. ````
+- I160 | Changing direction | ```` Stopping the manager turn, parking a task and pausing new queue admission are different actions. ````
+- I161 | Changing direction | ```` A queue pause must not be reported as stopping an active worker. ````
+- I162 | Changing direction | ```` Use supported TaskQ transitions and verify their result; explain partial or pending termination. ````
+- I163 | 3. Architecture and ownership | ```` **Owner decision 2026-10-22 (option A):** PilotQ is one small Rust service in the TaskQ tool family. ````
+- I164 | 3. Architecture and ownership | ```` | Part | Choice | Reason | ````
+- I165 | 3. Architecture and ownership | ```` | Language and packaging | Rust single binary on [coreq](https://github.com/taskqorg/coreq) | Same release, update, service, status, selftest and incident path as taskq, agentq and dashq (R14) | ````
+- I166 | 3. Architecture and ownership | ```` | Telegram | [teloxide](https://github.com/teloxide/teloxide) for the Bot API only | Maintained Rust library; PilotQ keeps its own durable ingress and outbox (section 4) | ````
+- I167 | 3. Architecture and ownership | ```` | Telegram behavior | Patterns adapted from the Hermes gateway: update intake, delivery retry, stall watch, topic routing | Already exercised on our server (R12); read as reference, no change to Hermes | ````
+- I168 | 3. Architecture and ownership | ```` | Manager runtime | Codex `app-server` under the subscription login, one adapter | R9; [core options](docs/core-options.md) | ````
+- I169 | 3. Architecture and ownership | ```` | Journal | SQLite (section 7 settings) | One local file, supported snapshot backup | ````
+- I170 | 3. Architecture and ownership | ```` | Work execution | Existing TaskQ CLI | Section 5 | ````
+- I171 | 3. Architecture and ownership | ```` | Voice recognition | ffmpeg and `sherpa-onnx-offline` with GigaAM v3 RNNT-punct int8, local CPU subprocesses | Best Russian accuracy per CPU in the #89 benchmark; keeps the static PilotQ build free of onnxruntime | ````
+- I172 | 3. Architecture and ownership | ```` Grammy, Pi and a new runtime framework are out of scope. ````
+- I173 | 3. Architecture and ownership | ```` Earlier source findings remain in [research](docs/research.md). ````
+- I174 | 3. Architecture and ownership | ```` ```mermaid flowchart LR   T[Telegram] <--> P[PilotQ ingress and delivery]   P <--> D[(Conversation journal)]   P <--> A[Manager runtime]   A --> B[Authorized tool boundary]   B --> Q[TaskQ]   B --> S[Short actions]   Q --> W[Workers and reviewers]   Q --> P   C[agentq] --> A ``` ````
+- I175 | 3. Architecture and ownership | ```` | State | Authority | PilotQ responsibility | ````
+- I176 | 3. Architecture and ownership | ```` | Received inputs, response delivery, route policy, grants and request correlation | PilotQ journal | Commit, deduplicate, restore and expose failures | ````
+- I177 | 3. Architecture and ownership | ```` | Model conversation and summaries | Runtime session, backed by recoverable PilotQ input and finalized-output records | Preserve session identity; rebuild explicitly if native state is unusable | ````
+- I178 | 3. Architecture and ownership | ```` | Plans being discussed | Versioned PilotQ proposal | Track target, author and authorization scope | ````
+- I179 | 3. Architecture and ownership | ```` | Admitted task state, attempts, questions, dependencies and completion | TaskQ trusted board log | Read and invoke supported commands; cache only with source time | ````
+- I180 | 3. Architecture and ownership | ```` | Project roots and worker capacity | TaskQ registration and host policy | Use registered entries; register a new project only on an administrator request (section 5); no directory discovery or silent enrollment | ````
+- I181 | 3. Architecture and ownership | ```` | Compressed tool output and recovery reference | agentq adapter plus retained original evidence | Preserve access scope and validate recovered content | ````
+- I182 | 3. Architecture and ownership | ```` Keep the runtime interface small: open/resume by ID, submit, stream events, interrupt, observe terminal result and close. ````
+- I183 | 3. Architecture and ownership | ```` Implement one adapter first. ````
+- I184 | 3. Architecture and ownership | ```` Do not build a universal runtime framework or expose native runtime tools that bypass the authorization boundary. ````
+- I185 | 3. Architecture and ownership | ```` The manager uses a neutral explicit workspace. ````
+- I186 | 3. Architecture and ownership | ```` Project context is resolved through the approved registry and scoped tools, avoiding a process-wide current-directory switch shared by conversations. ````
+- I187 | 3. Architecture and ownership | ```` Separate runtime processes are fault boundaries; OS permissions and mounts enforce actual resource isolation. ````
+- I188 | 4. Durable conversation and effects | ```` **Proposed invariant:** every durably accepted request is queryable as queued, running, waiting for a person, delegated, answered, failed, cancelled or uncertain. ````
+- I189 | 4. Durable conversation and effects | ```` Completion and Telegram delivery are separate fields. ````
+- I190 | 4. Durable conversation and effects | ```` No persistent state is inferred from a typing indicator or model prose. ````
+- I191 | Ingress | ```` Use long polling initially. ````
+- I192 | Ingress | ```` Commit admitted inputs, minimal ignored-update dispositions, deduplication keys and the next polling cursor in one SQLite transaction before making a Telegram request that confirms those updates. ````
+- I193 | Ingress | ```` A handler cannot advance the cursor past an uncommitted disposition. ````
+- I194 | Ingress | ```` A duplicate admitted update produces the existing request, not a second turn or task; ignored updates remain ignored. ````
+- I195 | Ingress | ```` Use one OS-held polling lock per bot installation; PID text alone is insufficient. ````
+- I196 | Ingress | ```` The supported deployment is one host per token. ````
+- I197 | Ingress | ```` A Telegram conflict from a second host is an incident, not an endless retry loop. ````
+- I198 | Ingress | ```` Deployment explicitly stops the old consumer before activating a new one. ````
+- I199 | Ingress | ```` Treat update IDs as protocol identifiers, not proof of uninterrupted human history. ````
+- I200 | Ingress | ```` Telegram retains undelivered updates for at most 24 hours; after a longer outage report the possible gap. ````
+- I201 | Ingress | ```` Do not claim that a new bot can fetch all old group history. ````
+- I202 | Ingress | ```` Edited messages create a revision. ````
+- I203 | Ingress | ```` They can revise an unstarted proposal; they cannot silently alter already authorized work. ````
+- I204 | Ingress | ```` If work started, present the edit as a change request. ````
+- I205 | Ingress | ```` A deleted input does not revoke an already executed side effect. ````
+- I206 | Runs and tools | ```` Persist request and run identity before invoking a runtime. ````
+- I207 | Runs and tools | ```` Require a native terminal outcome; a closed stream or an empty response is not success. ````
+- I208 | Runs and tools | ```` A generation/fencing token prevents a replaced or aborted runtime from emitting new authorized tool calls or final replies. ````
+- I209 | Runs and tools | ```` Persist the intent and stable operation ID before each external effect; persist its outcome and readback after it. ````
+- I210 | Runs and tools | ```` A crash can occur between these steps. ````
+- I211 | Runs and tools | ```` Recovery rules are: ````
+- I212 | Runs and tools | ```` | Interrupted operation | Recovery | ````
+- I213 | Runs and tools | ```` | Pure model generation or bounded read | Retry within budget; distinguish regenerated text from the original | ````
+- I214 | Runs and tools | ```` | TaskQ mutation | Reconcile the same operation ID and revision against TaskQ | ````
+- I215 | Runs and tools | ```` | Direct idempotent mutation | Read back the target, then retry only under its declared idempotency contract | ````
+- I216 | Runs and tools | ```` | Non-idempotent or unobservable external effect | Mark uncertain, block automatic replay and request a decision | ````
+- I217 | Runs and tools | ```` | Completed result with pending Telegram delivery | Retry delivery; do not rerun the agent or tools | ````
+- I218 | Runs and tools | ```` SQLite records are the durable acceptance boundary. ````
+- I219 | Runs and tools | ```` Pi's native JSONL session is not sufficient evidence of power-loss durability or atomic external effects. ````
+- I220 | Runs and tools | ```` Preserve a recoverable transcript projection and tool receipts before acknowledging completion. ````
+- I221 | Runs and tools | ```` Rebuilding a damaged native session must not replay previous mutations. ````
+- I222 | Delivery | ```` Commit final replies, worker questions and results to an outbox with immutable destination and correlation ID. ````
+- I223 | Delivery | ```` Preserve per-conversation order; coalesce superseded progress updates only. ````
+- I224 | Delivery | ```` Keep terminal outcomes and unanswered questions. ````
+- I225 | Delivery | ```` Record Telegram message IDs after successful sends; update a known status message when useful. ````
+- I226 | Delivery | ```` Telegram `sendMessage` has no general client idempotency key: after a lost send response, a duplicate visible reply is possible. ````
+- I227 | Delivery | ```` Report an ambiguous send as such and use bounded at-least-once delivery for results. ````
+- I228 | Delivery | ```` Never repeat task execution to solve a delivery problem. ````
+- I229 | Delivery | ```` **Owner, task #68:** normal accepted text uses an 👀 reaction within five seconds, without a text acknowledgement. ````
+- I230 | Delivery | ```` If the reaction fails, send a short text receipt. ````
+- I231 | Delivery | ```` If an unstarted request waits over 30 seconds, send one “Queued behind N” notice with the observed number of earlier requests in its conversation. ````
+- I232 | Delivery | ```` Busy, unsupported-input and recovery-control replies remain text. ````
+- I233 | Delivery | ```` Keep the first-use retention notice as a separate message once per person. ````
+- I234 | Delivery | ```` No Telegram reply exposes internal request numbers, including controls, failures and limits; IDs remain available through the operator CLI and audit records. ````
+- I235 | Delivery | ```` Private-chat answers do not quote the latest user message. ````
+- I236 | Delivery | ```` Groups and topics retain reply correlation, typing and edited task status messages. ````
+- I237 | Delivery | ```` While generating in a private chat, stream user-visible answer text through sendRichMessageDraft, falling back to sendMessageDraft. ````
+- I238 | Delivery | ```` Coalesce updates to at most one per second; drafts are ephemeral, fenced to the active run, and failures never change the request outcome or replace final delivery. ````
+- I239 | Delivery | ```` Final answers first use sendRichMessage for content within 32768 UTF-16 units. ````
+- I240 | Delivery | ```` On an explicit unsupported-method or content rejection, fall back to HTML sendMessage in stable ordered chunks of at most 4096 UTF-16 units, then plain text on entity errors. ````
+- I241 | Delivery | ```` Preserve literal source content, escape generated HTML at the output boundary and never allow raw model HTML to become markup. ````
+- I242 | Delivery | ```` Persist fallback chunks and individual receipts before sending; retries after an ambiguous rich send stay on that same delivery method. ````
+- I243 | Delivery | ```` A draft is never a final receipt. ````
+- I244 | Delivery | ```` On upgrade, native sessions with the older fixed tool catalogue rebuild explicitly from the recorded conversation and receipts before receiving the new tools; completed effects are never replayed. ````
+- I245 | Delivery | ```` Split oversized replies safely; do not rerun generation. ````
+- I246 | Delivery | ```` Reaction, draft, typing and final sends share a persisted per-chat cooldown after Telegram rate limits; no fallback bypasses retry_after. ````
+- I247 | Delivery | ```` Respect server retry delays, bound retry counts and retain exhausted deliveries for operator recovery. ````
+- I248 | Delivery | ```` Forbidden or missing-chat errors must not reroute private results to a broader group or silently mark them delivered. ````
+- I249 | 5. TaskQ integration | ```` **Owner, task #144:** PilotQ reads and manages boards only through the installed TaskQ CLI (R13). ````
+- I250 | 5. TaskQ integration | ```` A registered project is the local root where TaskQ runs; TaskQ owns forge, host, authentication and board access. ````
+- I251 | 5. TaskQ integration | ```` The registry binds that root to the board identity read back by `taskq status --json`, without a forge adapter or credential configuration in PilotQ. ````
+- I252 | 5. TaskQ integration | ```` Use task URLs returned by TaskQ, never construct or interpret forge-specific issue URLs. ````
+- I253 | 5. TaskQ integration | ```` Read task progress with `status --task` and accepted answers with `inbox --json` (actor, time and original question revision); writes use the supported `answer` and operation-receipt path. ````
+- I254 | 5. TaskQ integration | ```` An unreadable response stays unknown. ````
+- I255 | 5. TaskQ integration | ```` Missing TaskQ capabilities become TaskQ findings, never a PilotQ forge integration. ````
+- I256 | 5. TaskQ integration | ```` Existing direct issue tools remain refused when TaskQ has no equivalent; their grants do not authorize a forge bypass. ````
+- I257 | 5. TaskQ integration | ```` **Owner, task #151:** `issue_read`, `issue_comment` and `issue_label` use `taskq issue N` (TaskQ 4.6.44): reads take its `--json` issue JSON; writes run `taskq issue N --comment T|--label L --op-id ID --json` and settle from its readback receipt. ````
+- I258 | 5. TaskQ integration | ```` A board registration grants no server access or worker capacity. ````
+- I259 | 5. TaskQ integration | ```` The PM registers tight on PDS 18 and records the A3 chat readback after release; workers verify the implementation locally and in CI and make no installation changes. ````
+- I260 | 5. TaskQ integration | ```` **Proposed:** wrap the supported CLI with argument arrays and typed validation; no shell interpolation of Telegram text. ````
+- I261 | 5. TaskQ integration | ```` Use its JSON status and existing task log facilities. ````
+- I262 | 5. TaskQ integration | ```` Do not create a new public TaskQ API before evidence shows the CLI cannot support the required flow. ````
+- I263 | 5. TaskQ integration | ```` - Read: registered projects, fresh status, task details, current question and attempt evidence. ````
+- I264 | 5. TaskQ integration | ```` - Write: create a held task, start it, answer the current question, steer, requeue or park within the user's scope. ````
+- I265 | 5. TaskQ integration | ```` - Exclude from ordinary manager tools: host grants, capacity changes, arbitrary closure/publication and forced cleanup. ````
+- I266 | 5. TaskQ integration | ```` Expose a privileged operation only when separately granted and verified. ````
+- I267 | 5. TaskQ integration | ```` - Resolve ticket links to an allowed board and project. ````
+- I268 | 5. TaskQ integration | ```` A number such as `#12` alone is insufficient when it can match several boards. ````
+- I269 | 5. TaskQ integration | ```` - Preserve the real Telegram author, originating route, request ID and approval revision in the audit trail. ````
+- I270 | 5. TaskQ integration | ```` A bot credential does not turn every user into the repository owner. ````
+- I271 | 5. TaskQ integration | ```` - `add --op-id` requires `create_claim_issue` and a qualified board readback path. ````
+- I272 | 5. TaskQ integration | ```` Disable creation when this prerequisite is absent. ````
+- I273 | 5. TaskQ integration | ```` Plain `add` is not a safe retry fallback. ````
+- I274 | 5. TaskQ integration | ```` - Bind answers to board, task, attempt, question revision and authorized answerer. ````
+- I275 | 5. TaskQ integration | ```` Stale buttons or a forwarded approval are rejected with the current question. ````
+- I276 | 5. TaskQ integration | ```` - Start a multi-ticket plan only after every planned ticket reads back. ````
+- I277 | 5. TaskQ integration | ```` Partial creation stays held and visible; use stable child operation IDs when continuing it. ````
+- I278 | 5. TaskQ integration | ```` - Preserve TaskQ's distinction between admission, worker result, reviewer result, owner gate and publication. ````
+- I279 | 5. TaskQ integration | ```` “Done” requires the authoritative completion state and available evidence. ````
+- I280 | 5. TaskQ integration | ```` - Notifications are projections of TaskQ events, keyed by board/task/event/route. ````
+- I281 | 5. TaskQ integration | ```` Reconcile after downtime; do not let stale status overwrite a newer question or outcome. ````
+- I282 | 5. TaskQ integration | ```` **Owner, task #145:** preserve Telegram reply attachment identities and captions in the journal, download only after admission and target/grant validation, and pass protected local files through TaskQ `--file`. ````
+- I283 | 5. TaskQ integration | ```` Documents sent as message replies are files even when their MIME type is audio; ordinary voice/audio input retains §12 recognition. ````
+- I284 | 5. TaskQ integration | ```` Files are untrusted source material. ````
+- I285 | 5. TaskQ integration | ```` Keep the §7 20 MiB transport cap and §12 download deadline. ````
+- I286 | 5. TaskQ integration | ```` Persist the original task, revision and operation identity before dispatch; retries reconcile that same operation. ````
+- I287 | 5. TaskQ integration | ```` Refusals and uncertain delivery retain the reply and explain the reason and fix. ````
+- I288 | 5. TaskQ integration | ```` Text is optional when files exist. ````
+- I289 | 5. TaskQ integration | ```` Destination clarification may select an earlier admitted file input from the same caller and conversation generation for answer, steer or owner requeue; current grants and the resolved target are rechecked at dispatch. ````
+- I290 | 5. TaskQ integration | ```` Owner requeue with files requires the protected installation owner. ````
+- I291 | 5. TaskQ integration | ```` PM releases and qualifies a live photo, a 20 MB document and mixed text/files on PDS 18 with the authorized Telegram client, recording client and TaskQ revisions and readable worker copies; worker proof is local/CI. ````
+- I292 | 5. TaskQ integration | ```` **Owner, task #170:** task status states the observed open/closed issue state, trusted closing verdict, report, proposed follow-ups and verified existing follow-up state. ````
+- I293 | 5. TaskQ integration | ```` Read these through TaskQ issue/status output; absence from an open-task snapshot alone proves neither closure nor nonexistence. ````
+- I294 | 5. TaskQ integration | ```` Name each unavailable fact once. ````
+- I295 | 5. TaskQ integration | ```` Diagnose, research and investigate plans use TaskQ `--type research`, preserving that type through launch (R8, R13). ````
+- I296 | 5. TaskQ integration | ```` Live case cyprusbz#540 is PM verification after release; worker evidence is local/CI. ````
+- I297 | First TaskQ tool contract | ```` Contract detail: [first TaskQ tool contract](docs/taskq-tool-contract.md) holds the owner-scoped (tasks #18 and #39) TaskQ tools, grants, configuration, fences and refusals. ````
+- I298 | First TaskQ tool contract | ```` It is binding as part of this section. ````
+- I299 | Plan discussion and action buttons | ```` **Owner, tasks #93, #110 and #165:** a conversation has one open draft. ````
+- I300 | Plan discussion and action buttons | ```` Follow-ups revise it without displaying a number. ````
+- I301 | Plan discussion and action buttons | ```` A new draft starts only after launch or cancel; another project's plan waits until then. ````
+- I302 | Plan discussion and action buttons | ```` Each display has Launch and Cancel. ````
+- I303 | Plan discussion and action buttons | ```` Text launches the current draft; a button launches only its displayed immutable revision. ````
+- I304 | Plan discussion and action buttons | ```` Cancel closes it without a board effect or model call. ````
+- I305 | Plan discussion and action buttons | ```` The Conversation contract owns card text, source-message edits, stale-button toasts and the launch status card. ````
+- I306 | Plan discussion and action buttons | ```` Filing and starting happen after the turn, outside the model deadline, with replies derived from receipts. ````
+- I307 | Plan discussion and action buttons | ```` Text controls remain supported (R13). ````
+- I308 | Plan discussion and action buttons | ```` - Discussion has no board effect. ````
+- I309 | Plan discussion and action buttons | ```` Saving a draft records its stable identity, project and a new immutable revision. ````
+- I310 | Plan discussion and action buttons | ```` Show the current task summaries under the Conversation contract; retain complete acceptance and scope in the task body. ````
+- I311 | Plan discussion and action buttons | ```` An earlier message may remain visible but its launch button is stale. ````
+- I312 | Plan discussion and action buttons | ```` - A launch button belongs to the displayed revision, saved project, originating conversation generation and the person who requested that display. ````
+- I313 | Plan discussion and action buttons | ```` Recheck current admission and TaskQ/project grants at dispatch. ````
+- I314 | Plan discussion and action buttons | ```` A foreign, forwarded, reset, superseded or repeated press cannot authorize a different revision or create another run. ````
+- I315 | Plan discussion and action buttons | ```` Accepted launches use the same `task_run_plan` boundary, stable operation IDs, readback and audit as text. ````
+- I316 | Plan discussion and action buttons | ```` - Concrete discussion questions offer two to four numbered choices, preserved in the message, buttons and recorded answer. ````
+- I317 | Plan discussion and action buttons | ```` Choosing one submits that answer to the conversation; it never authorizes launch. ````
+- I318 | Plan discussion and action buttons | ```` Launch remains a separate button or explicit later text request. ````
+- I319 | Plan discussion and action buttons | ```` Old or already answered choice cards are refused. ````
+- I320 | Plan discussion and action buttons | ```` - Example: “Plan reply improvements”, “also keep line breaks”, “and add buttons” produces one draft with three internal revisions, no board tickets. ````
+- I321 | Plan discussion and action buttons | ```` The latest display has “Run plan”; pressing it launches only that display. ````
+- I322 | Plan discussion and action buttons | ```` Pressing either an earlier display or the same button again starts nothing new. ````
+- I323 | Plan discussion and action buttons | ```` Under #110 a separate idea waits for launch or Cancel, then starts a new draft. ````
+- I324 | Plan discussion and action buttons | ```` After launch, “also support audio” starts a separate discussion, preserving the launched scope. ````
+- I325 | Human trial | ```` **Owner, task #42:** the human trial ran with the owner and Simon, the two administrators, on the separate test bot from 2026-10-27T15:15Z to 2026-10-29T20:46Z. ````
+- I326 | Human trial | ```` Its report covers request IDs, outcomes, refusals, failures and tester feedback; discovered defects are filed as held tasks. ````
+- I327 | Human trial | ```` Naming administrators does not itself apply grants or expand authority. ````
+- I328 | Human trial | ```` This human feedback supplements the 2026-10-23 scripted-run evidence above. ````
+- I329 | Human trial | ```` Keep [gate 4](docs/acceptance.md#selection-gates) separate and preserve its existing pilot start. ````
+- I330 | Human trial | ```` Hermes production cutover remains outside scope (§10 step 6). ````
+- I331 | Human trial | ```` See the [trial cases](docs/acceptance.md#human-trial-task-42). ````
+- I332 | Direct actions, keys and project switching | ```` **Owner decision 2026-10-23 (option B, task #23, section 10 step 4):** direct actions are reads. ````
+- I333 | Direct actions, keys and project switching | ```` Only the owner (`owner_id` from protected configuration) may write directly, and only a comment or a label on an issue of the `taskqorg/pilotq` board; the administration and owner-confirmed registered release exceptions below are the only additional direct-write scopes. ````
+- I334 | Direct actions, keys and project switching | ```` Keys enter only through the CLI. ````
+- I335 | Direct actions, keys and project switching | ```` The manager gets these tools beside the TaskQ tools, checked at dispatch like them: ````
+- I336 | Direct actions, keys and project switching | ```` | Tool | Grants | Effect | ````
+- I337 | Direct actions, keys and project switching | ```` | `project_list` | current caller’s project grants | Reads registered project names and boards accessible to the caller, marking the conversation’s current project; no key or board call | ````
+- I338 | Direct actions, keys and project switching | ```` | `project_use` | project scope | Sets the conversation's current project. ````
+- I339 | Direct actions, keys and project switching | ```` The project must be registered and named in the person's own message | ````
+- I340 | Direct actions, keys and project switching | ```` | `issue_read` | project scope and a key granted for the tool | Reads one issue of a registered project through `taskq issue N --json`: title, state, labels, canonical URL, a bounded body excerpt, the latest comments as bounded excerpts and the read time | ````
+- I341 | Direct actions, keys and project switching | ```` | `issue_comment` | owner, a key | Adds one comment to a `taskqorg/pilotq` issue | ````
+- I342 | Direct actions, keys and project switching | ```` | `issue_label` | owner, a key | Adds one label to a `taskqorg/pilotq` issue | ````
+- I343 | Direct actions, keys and project switching | ```` - **Owner, task #92:** for `task_status` and `task_steer` (and `task_answer` under #108), the agent may select a trusted journal subscription from this same conversation by context, without asking the person to repeat its project. ````
+- I344 | Direct actions, keys and project switching | ```` The tool boundary requires one matching subscribed task, current project grants and unchanged registered board/root. ````
+- I345 | Direct actions, keys and project switching | ```` An explicit project or issue URL disambiguates subscribed boards; a bare number matching several accessible subscriptions is refused. ````
+- I346 | Direct actions, keys and project switching | ```` This extends the Target rule below for these tools only; quoted text and external tool output do not create subscriptions. ````
+- I347 | Direct actions, keys and project switching | ```` - **Owner, task #124:** plan, run, status (including `project_status`), steer, requeue, park and `project_use` may resolve a project named in the caller’s earlier own messages of this conversation generation. ````
+- I348 | Direct actions, keys and project switching | ```` Use one unambiguous accessible match; current own wording can disambiguate earlier mentions. ````
+- I349 | Direct actions, keys and project switching | ```` Quoted content, issue text, tool output and other people’s messages never select it. ````
+- I350 | Direct actions, keys and project switching | ```` Multiple fits require one short question listing the accessible names and no guessed board write. ````
+- I351 | Direct actions, keys and project switching | ```` Recheck grants, registration and board/root at dispatch. ````
+- I352 | Direct actions, keys and project switching | ```` A saved plan retains its bound target. ````
+- I353 | Direct actions, keys and project switching | ```` For example, “What is the task status for Pilot Q?” followed by “Make a task so this works” resolves `pilotq` without repeating its name. ````
+- I354 | Direct actions, keys and project switching | ```` - **Owner, task #157:** when PilotQ's tool boundary itself asked that question and its reply listed every option, the same person's next message in this conversation generation answers it by name or by a bare number counted in the reply's listing order; that selects the project for the tools above. ````
+- I355 | Direct actions, keys and project switching | ```` Numbers bind to explicit numbered items, ignoring introductory mentions; missing, duplicate or ambiguous item mappings are refused. ````
+- I356 | Direct actions, keys and project switching | ```` Any other message closes the question, and a bare number without an open question selects nothing. ````
+- I357 | Direct actions, keys and project switching | ```` Quotes, issue text and tool output still never select. ````
+- I358 | Direct actions, keys and project switching | ```` - Target: a tool resolves one registered project from an explicit `project` argument, an issue URL or the conversation's current project. ````
+- I359 | Direct actions, keys and project switching | ```` An explicit project or URL must be named in the person's own message or be the current project; quoted messages, issue text and tool output never select one. ````
+- I360 | Direct actions, keys and project switching | ```` A bare number with no current project and several accessible projects is refused with the list, never guessed. ````
+- I361 | Direct actions, keys and project switching | ```` Another project stays read-only. ````
+- I362 | Direct actions, keys and project switching | ```` - Budget: one request makes at most 5 PilotQ tool calls within the section 7 direct-action deadline. ````
+- I363 | Direct actions, keys and project switching | ```` The sixth call is refused and writes nothing. ````
+- I364 | Direct actions, keys and project switching | ```` A request that ends at its deadline replies with the evidence it kept, and the rest can become a planned task. ````
+- I365 | Direct actions, keys and project switching | ```` - Effects: a comment or label persists its intent and operation ID `pilotq-<installation>-r<request>-e<n>` before the write, and its receipt after TaskQ's readback (#151). ````
+- I366 | Direct actions, keys and project switching | ```` TaskQ records the operation ID on the comment and returns the first effect for a repeated ID; a label already present is accepted without a write. ````
+- I367 | Direct actions, keys and project switching | ```` An `unknown` receipt, a failed call or a crash before the receipt stays pending; startup repeats the same command with the same operation ID, never a new one, and tells the route the settled result. ````
+- I368 | Direct actions, keys and project switching | ```` Effects recorded before #151 carry no TaskQ operation ID: they stay uncertain and are never repeated. ````
+- I369 | Direct actions, keys and project switching | ```` - Revoking a project or key grant refuses every later call; a completed effect stays recorded. ````
+- I370 | Asana task reads | ```` **Owner, task #159:** `asana_read` reads one Asana task linked in the caller's own message, using a registered project scope and a key granted for `asana_read`. ````
+- I371 | Asana task reads | ```` It returns title, notes, assignee, due date/time, completion status, comments and attachment names through Asana's read-only API. ````
+- I372 | Asana task reads | ```` Keys enter only through `pilotq keys add` on the host (§8), never Telegram. ````
+- I373 | Asana task reads | ```` The link selects only a task, never a credential destination: requests use the fixed Asana API origin, without redirects or attachment downloads. ````
+- I374 | Asana task reads | ```` Existing admission, target, five-call budget, deadline, audit and key scrubbing apply (R13, R16, R17). ````
+- I375 | Asana task reads | ```` Notes are limited to 4,000 characters; other strings to 500; comments and attachments to 20 each, with explicit pagination/truncation indicators. ````
+- I376 | Asana task reads | ```` Unavailable or malformed data stays unknown, never empty success. ````
+- I377 | Asana task reads | ```` API responses are capped at 256 KiB each and the entire read at ten seconds within the original turn deadline. ````
+- I378 | Asana task reads | ```` External content is untrusted source material. ````
+- I379 | DEV visibility and owner release (task #174) | ```` **Owner, 2026-10-30:** PilotQ owns the registered project's DEV/LIVE flow. ````
+- I380 | DEV visibility and owner release (task #174) | ```` This is a scoped exception to §2's deployment delegation and §5's direct-write restriction, not a general shell capability. ````
+- I381 | DEV visibility and owner release (task #174) | ```` `project_release_preview` and `/release NAME` share current admission, project scope, the separate `release:NAME` grant and the protected installation owner identity (R13, R17). ````
+- I382 | DEV visibility and owner release (task #174) | ```` This grant is provisioned explicitly through the protected CLI, never inherited from `projects` or bootstrap. ````
+- I383 | DEV visibility and owner release (task #174) | ```` Only a Release button authorizes execution. ````
+- I384 | DEV visibility and owner release (task #174) | ```` CLI preview delivers that button to the protected owner DM; plain text, including `/release-confirm`, cannot authorize a release. ````
+- I385 | DEV visibility and owner release (task #174) | ```` The protected CLI `pilotq projects release NAME FILE` saves deployment configuration against that registration's exact board/root. ````
+- I386 | DEV visibility and owner release (task #174) | ```` Configuration declares the local TaskQ host identity, an HTTPS DEV health URL, main/LIVE refs, absolute Git executable, exact argument arrays for dry run, pinned release and pipeline check, migration path prefixes and preflight/backup commands. ````
+- I387 | DEV visibility and owner release (task #174) | ```` Commands contain a literal `{sha}` argument replaced only with a validated full SHA; no shell or model-supplied command is accepted. ````
+- I388 | DEV visibility and owner release (task #174) | ```` Configuration changes invalidate existing previews. ````
+- I389 | DEV visibility and owner release (task #174) | ```` Missing registration/configuration, changed bindings, unavailable board or checkout evidence and missing grants refuse before deployment commands run. ````
+- I390 | DEV visibility and owner release (task #174) | ```` Status checks the declared DEV health JSON (`sha`, optionally `deployed_at` or health-instance `started_at`). ````
+- I391 | DEV visibility and owner release (task #174) | ```` A task's merged SHA comes from TaskQ's explicit `merged_sha` field or a trusted terminal `delivery … as SHA; merge-result CI green` receipt, never from prose or absence in an open snapshot. ````
+- I392 | DEV visibility and owner release (task #174) | ```` Git ancestry proves inclusion. ````
+- I393 | DEV visibility and owner release (task #174) | ```` Report `on DEV since T` when included and the health timestamp is available; otherwise `on DEV since T (first observed)` uses the persisted first positive observation, without claiming actual deployment time. ````
+- I394 | DEV visibility and owner release (task #174) | ```` Report `not yet on DEV` for a proven negative, and unknown for failed health, missing commit or failed Git reads. ````
+- I395 | DEV visibility and owner release (task #174) | ```` Project status includes the same projection for its open tasks, the latest twelve retained task subscriptions and the current main SHA. ````
+- I396 | DEV visibility and owner release (task #174) | ```` Health-instance start and first-observed times are lower bounds, not a reconstructed deployment history. ````
+- I397 | DEV visibility and owner release (task #174) | ```` HTTPS requests have no redirects, a ten-second deadline and a 64 KiB response limit; health URLs are protected configuration, never derived from chat. ````
+- I398 | DEV visibility and owner release (task #174) | ```` Preview runs the configured dry run, pins main and LIVE to full commit identities, and shows target SHA, commit count/authors since LIVE, verified TaskQ task URLs with explicit merged SHAs in that range, migrations yes/no and DEV inclusion. ````
+- I399 | DEV visibility and owner release (task #174) | ```` Missing facts refuse preview rather than showing empty success. ````
+- I400 | DEV visibility and owner release (task #174) | ```` A preview expires after fifteen minutes, supersedes earlier previews in that conversation and binds owner, generation, registration, configuration and source card. ````
+- I401 | DEV visibility and owner release (task #174) | ```` Foreign, stale, repeated or reset confirmations run nothing. ````
+- I402 | DEV visibility and owner release (task #174) | ```` Main advancing does not retarget a preview; LIVE advancing requires a fresh preview. ````
+- I403 | DEV visibility and owner release (task #174) | ```` Before preview and again before dispatch, read every explicitly registered checkout on this host through TaskQ. ````
+- I404 | DEV visibility and owner release (task #174) | ```` A running execution on another checkout with the same Git origin blocks release, naming project, task and attempt; unavailable or incomplete evidence blocks rather than assuming idle. ````
+- I405 | DEV visibility and owner release (task #174) | ```` Do not discover other directories. ````
+- I406 | DEV visibility and owner release (task #174) | ```` The protected configuration names the only release root; never use Tight's checkout for cs. ````
+- I407 | DEV visibility and owner release (task #174) | ```` **Owner answer #174:** when migrations are present, Release also authorizes the configured promotion preflight and LIVE backup, in that order; both must succeed before the pinned release command. ````
+- I408 | DEV visibility and owner release (task #174) | ```` Persist one immutable confirmation intent before any command, then each stage receipt. ````
+- I409 | DEV visibility and owner release (task #174) | ```` Execute without a shell in the registered root only. ````
+- I410 | DEV visibility and owner release (task #174) | ```` Release execution runs outside the model turn, under a fifteen-minute total deadline and a repository lock; planned update drain refuses while it is active. ````
+- I411 | DEV visibility and owner release (task #174) | ```` Revoked access stops remaining stages. ````
+- I412 | DEV visibility and owner release (task #174) | ```` An interrupted/timeout/ambiguous command stays uncertain and is never automatically replayed. ````
+- I413 | DEV visibility and owner release (task #174) | ```` Repeated confirmation cannot repeat prerequisites or release. ````
+- I414 | DEV visibility and owner release (task #174) | ```` Pipeline readback must bind the pinned SHA and report `release`, `smoke`, `backmerge` stages with validated HTTPS links and the LIVE SHA; only all successful stages and matching LIVE SHA prove completion. ````
+- I415 | DEV visibility and owner release (task #174) | ```` Missing or pending evidence stays unknown. ````
+- I416 | DEV visibility and owner release (task #174) | ```` Startup preserves intents and reports uncertain interrupted operations through the existing outbox. ````
+- I417 | DEV visibility and owner release (task #174) | ```` For cs, DEV is `https://dev.cyprus.bz/__health`; commands are `npm run release -- --dry-run`, `npm run release -- {sha}`, `npm run db:promotion:preflight` and `npm run db:live:backup`. ````
+- I418 | DEV visibility and owner release (task #174) | ```` The installation owner supplies the pipeline read adapter and executable paths. ````
+- I419 | DEV visibility and owner release (task #174) | ```` Every executable declares a minimum version in the registration `requirements` map and supports `--version`; Git requires at least 2.25.0. ````
+- I420 | DEV visibility and owner release (task #174) | ```` Doctor checks these alongside §9 host requirements. ````
+- I421 | DEV visibility and owner release (task #174) | ```` That adapter returns JSON `{ "sha": "<pinned SHA>", "live_sha": "<SHA>", "stages": { "release": {"state":"success","url":"https://…"}, "smoke": {…}, "backmerge": {…} } }`; dry run remains the project's existing command. ````
+- I422 | DEV visibility and owner release (task #174) | ```` This does not implement a forge adapter in PilotQ. ````
+- I423 | DEV visibility and owner release (task #174) | ```` PM qualifies the next owner-requested cs release on PDS 18 after release; worker evidence is local/CI only. ````
+- I424 | Installed read commands | ```` **Owner, task #126 (option 1):** add one common executor for operator-approved installed read commands, alongside the existing tools. ````
+- I425 | Installed read commands | ```` This extends the §3/§12 restricted tool boundary without enabling native shell tools or adding direct writes. ````
+- I426 | Installed read commands | ```` The installation owner maintains an owner-only `commands.json` beside `keys.json`; chat and model output cannot edit it. ````
+- I427 | Installed read commands | ```` **Owner, task #126 continuation:** the documented TaskQ read capability permits `taskq status`, not the unsupported `taskq list`; acceptance requires a successful status run through PilotQ. ````
+- I428 | Installed read commands | ```` There is no built-in default allowlist: the operator installs the protected entry below. ````
+- I429 | Installed read commands | ```` Each named entry binds an absolute executable, exact permitted argument arrays, an absolute working directory, a registered project and board, and explicit permitted user IDs. ````
+- I430 | Installed read commands | ```` The caller needs current `chat` and project grants as well as that entry's permission. ````
+- I431 | Installed read commands | ```` Registration must still match the configured board and working directory at dispatch. ````
+- I432 | Installed read commands | ```` Before execution, the configured TaskQ CLI must return a fresh complete snapshot naming that board; verification and execution share the deadline. ````
+- I433 | Installed read commands | ```` Only trusted read-only programs and argument combinations belong here; executable presence alone grants nothing. ````
+- I434 | Installed read commands | ```` The operator vets their file access, credential use and subprocess behavior; this is a capability list, not an OS sandbox for arbitrary programs. ````
+- I435 | Installed read commands | ```` `command_list` exposes only accessible names, descriptions and permitted arguments. ````
+- I436 | Installed read commands | ```` `command_run` selects one name and exact argument array; it never invokes a shell, searches PATH for the executable, accepts environment overrides or changes the working directory from model input. ````
+- I437 | Installed read commands | ```` Both share the CLI/Telegram request, fence, five-call budget and audit path (R13, R17). ````
+- I438 | Installed read commands | ```` Direct command input and clear natural-language requests use the same tools; ambiguity requires clarification. ````
+- I439 | Installed read commands | ```` Output is untrusted data and cannot authorize another action. ````
+- I440 | Installed read commands | ```` Execution receives a cleared environment with a fixed system PATH, the installation owner's HOME for the installed tools' protected stores, and TASKQ_ROOT set to the bound root; TASKQ_ATTEMPT and inherited credentials are absent. ````
+- I441 | Installed read commands | ```` No key values enter the model. ````
+- I442 | Installed read commands | ```` A command has at most ten seconds within the original manager deadline (at most sixty seconds total), and at most 16 KiB combined stdout/stderr. ````
+- I443 | Installed read commands | ```` Stop, revoked grants, timeout and output overflow terminate its process group. ````
+- I444 | Installed read commands | ```` Report exit code, missing executable, timeout, cancellation and output limit distinctly; only exit zero is success. ````
+- I445 | Installed read commands | ```` Persist an audit start before spawn and a scrubbed result afterward. ````
+- I446 | Installed read commands | ```` An interrupted read may be retried only under §4; mutations remain on their existing receipt paths. ````
+- I447 | Installed read commands | ```` Deployment is not authorized by this decision. ````
+- I448 | Administration by request (task #160) | ```` **Owner, 2026-10-30:** expose these tools on the shared CLI/Telegram manager boundary (R13, R15, R17). ````
+- I449 | Administration by request (task #160) | ```` They are an exception to section 5's owner-only comment/label writes, limited to installation metadata, local project roots and forum-topic creation. ````
+- I450 | Administration by request (task #160) | ```` They never create repositories, change host capacity, install services, provision credentials or create a TaskQ claim issue. ````
+- I451 | Administration by request (task #160) | ```` | Tool | Required grants | Operation and limits | ````
+- I452 | Administration by request (task #160) | ```` | `project_register` | `chat`, `projects` | Register an existing repository by its explicit TaskQ board kind, host and repository. ````
+- I453 | Administration by request (task #160) | ```` Create only a named child of `<install>/projects` with `taskq.json`; refuse traversal, symlinks, conflicting configuration or rebinding an existing name. ````
+- I454 | Administration by request (task #160) | ```` A fresh complete `taskq status --json` must match before registration. ````
+- I455 | Administration by request (task #160) | ```` Return repository, root, board and filing readiness; without `create_claim_issue`, filing remains disabled and the owner provisions it through TaskQ. | ````
+- I456 | Administration by request (task #160) | ```` | `user_grant`, `user_revoke` | `chat`, `users` | Change only existing grant types explicitly named in the caller’s own unquoted request for an exact positive Telegram ID explicitly named by the caller or identified by the current verified reply. ````
+- I457 | Administration by request (task #160) | ```` Require evidence that the person was seen in this exact chat/topic: an admitted sender or a Telegram reply sender. ````
+- I458 | Administration by request (task #160) | ```` Names and forwarded messages never select authority. ````
+- I459 | Administration by request (task #160) | ```` Retain the administrator, target and before/after grants atomically with the receipt. ````
+- I460 | Administration by request (task #160) | ```` Protected owner identity cannot be changed. | ````
+- I461 | Administration by request (task #160) | ```` | `topic_open` | `chat`, `users`, access to the bound project (`projects` or `project:NAME`) | Open one forum topic in the originating Telegram supergroup, or the explicitly named group for a CLI request. ````
+- I462 | Administration by request (task #160) | ```` Resolve one registered project named by the caller or current in the conversation; recheck its board/root. ````
+- I463 | Administration by request (task #160) | ```` Require a fresh bot `can_manage_topics` permission and forum capability; otherwise refuse plainly. ````
+- I464 | Administration by request (task #160) | ```` Set isolated route policy by default (shared only when explicitly requested), and bind the new route to that project as its default. ````
+- I465 | Administration by request (task #160) | ```` A route default never grants project access. | ````
+- I466 | Administration by request (task #160) | ```` Each tool shares the five-call limit, original deadline, current admission, run fence and request audit. ````
+- I467 | Administration by request (task #160) | ```` Store one immutable operation per tool per request; a changed argument set in that request is refused. ````
+- I468 | Administration by request (task #160) | ```` Read back local changes before success. ````
+- I469 | Administration by request (task #160) | ```` Duplicate calls return the saved receipt without applying the change again. ````
+- I470 | Administration by request (task #160) | ```` Project preparation persists intent before filesystem writes and can reconcile only the same matching configuration. ````
+- I471 | Administration by request (task #160) | ```` Topic creation has no Bot API idempotency key: persist intent before dispatch and its topic ID immediately on response. ````
+- I472 | Administration by request (task #160) | ```` An interrupted creation without that ID is uncertain and is never automatically repeated; an ID recorded before route binding permits completing only that local binding after grant revalidation. ````
+- I473 | Administration by request (task #160) | ```` Startup preserves unresolved operations and reports their partial or uncertain result. ````
+- I474 | Administration by request (task #160) | ```` Unknown senders still follow R10; the service does not retain ignored message bodies or build profiles to make them grant candidates. ````
+- I475 | Administration by request (task #160) | ```` An administrator may reply to that person's message to supply the verified sender reference. ````
+- I476 | Project registration | ```` An administrator with the `projects` grant can ask PilotQ to create or register a project. ````
+- I477 | Project registration | ```` PilotQ shows the resolved repository, root and board, then applies the request through TaskQ's supported registration path (Add project, [taskq.md](https://github.com/taskqorg/taskq/blob/main/taskq.md) menu M10) and reads it back. ````
+- I478 | Project registration | ```` Repository creation, capacity and worker grants stay owner operations unless a separate grant names them. ````
+- I479 | Project registration | ```` A failed or partial registration stays visible and is never reported as done. ````
+- I480 | Project registration | ```` Step 4 registers through the CLI: `pilotq projects add NAME ROOT` accepts a root whose `taskq.json` names a repository only when a fresh `taskq status --json` under that root reads back the same board, and records who registered it. ````
+- I481 | Project registration | ```` TaskQ's Add project conversation stays the owner's way to create the TaskQ side; #160 additionally prepares a local root for an existing repository, without claiming filing readiness. ````
+- I482 | Project onboarding (task #168) | ```` **Owner, task #168, registered-roots answer:** onboarding covers only explicitly registered roots (§3). ````
+- I483 | Project onboarding (task #168) | ```` Successful `pilotq projects add` and `project_register` queue onboarding; service startup queues registrations without onboarding records, and a changed TaskQ installation/service identity queues a recheck of those roots. ````
+- I484 | Project onboarding (task #168) | ```` A new TaskQ project must first be registered explicitly. ````
+- I485 | Project onboarding (task #168) | ```` No directory discovery or silent enrollment is added. ````
+- I486 | Project onboarding (task #168) | ```` Registration and readiness are separate. ````
+- I487 | Project onboarding (task #168) | ```` After registration run `pilotq doctor --json` and the TaskQ setup check; until taskq#1938 ships use `taskq service status --json`, matching the registered root and board. ````
+- I488 | Project onboarding (task #168) | ```` Require complete evidence with service and per-root observations no older than 120 seconds (at most five seconds in the future), an active service, usable Codex capacity and an explicit effective Codex grant without refusal, plus the existing claim prerequisite. ````
+- I489 | Project onboarding (task #168) | ```` A capacity limit such as 4 never substitutes for a grant. ````
+- I490 | Project onboarding (task #168) | ```` Unavailable checks stay gaps. ````
+- I491 | Project onboarding (task #168) | ```` Setup evidence is not proof of the full first-task scenario or subscription entitlement. ````
+- I492 | Project onboarding (task #168) | ```` **Owner, #168 continuation:** check that each registered project has an `issue_read` key grant usable by the protected owner through both CLI and DM. ````
+- I493 | Project onboarding (task #168) | ```` Project grants and existing owner-wide grants retain §8 semantics; paired CLI/owner-DM route grants also qualify. ````
+- I494 | Project onboarding (task #168) | ```` Read key metadata only, never return values or update last-use time. ````
+- I495 | Project onboarding (task #168) | ```` If suitable issue-tool keys exist but lack scope, show the exact `pilotq keys grant KEY project:NAME` command for each owner-selectable candidate; do not grant automatically. ````
+- I496 | Project onboarding (task #168) | ```` Missing or unreadable key configuration remains a gap with a named protected-CLI provisioning step. ````
+- I497 | Project onboarding (task #168) | ```` Keep the 2026-10-30 fixture: `pilotq-github` permits `issue_read` but is granted to `pilotq` alone; `cyprusbz`, `tight` and `agentq` must each report their missing grant. ````
+- I498 | Project onboarding (task #168) | ```` The protected owner receives one durable Telegram DM card per project. ````
+- I499 | Project onboarding (task #168) | ```` It lists each gap on one plain line with its exact fix command or a named owner step, and offers Recheck. ````
+- I500 | Project onboarding (task #168) | ```` Rechecks edit that card; missing cards may be replaced only in the same DM. ````
+- I501 | Project onboarding (task #168) | ```` CLI registration prints the same findings and returns nonzero when gaps remain, preserving the registered project. ````
+- I502 | Project onboarding (task #168) | ```` `/onboard NAME` rechecks through the bounded control path; the CLI equivalent is `pilotq ask '/onboard NAME'`. ````
+- I503 | Project onboarding (task #168) | ```` Controls share current admission, audit and persisted Telegram cooldowns (R10, R13, R17). ````
+- I504 | Project onboarding (task #168) | ```` Buttons bind to the owner, card, current registration and conversation generation; stale or foreign buttons receive only a toast. ````
+- I505 | Project onboarding (task #168) | ```` Existing §5/§9 authority remains unchanged: installation, capacity, worker grants, credentials and subscription login are owner-only steps, shown with Recheck rather than executable Fix buttons. ````
+- I506 | Project onboarding (task #168) | ```` Any fix within PilotQ's existing authority requires one explicit OK for its displayed scope and the existing durable intent/readback path; this flow adds no host mutation capability. ````
+- I507 | Project onboarding (task #168) | ```` The flow ends either with all checks green or with the named owner-only steps still outstanding. ````
+- I508 | Project onboarding (task #168) | ```` It never calls a project ready with gaps. ````
+- I509 | Project onboarding (task #168) | ```` Before PilotQ starts the first task of an onboarding project, require a passed report bound to its current root and board. ````
+- I510 | Project onboarding (task #168) | ```` Pending, failed or unknown onboarding leaves the launch unsent. ````
+- I511 | Project onboarding (task #168) | ```` The protected owner may write `/onboard NAME override` to bypass only this PilotQ readiness gate; record actor, target and findings, keep readiness false and retain TaskQ's own admission, grant and claim checks. ````
+- I512 | Project onboarding (task #168) | ```` Recheck or changed registration invalidates the override. ````
+- I513 | Project onboarding (task #168) | ```` Existing admitted workers continue. ````
+- I514 | Project onboarding (task #168) | ```` Onboarding and its report survive restart without replaying mutations. ````
+- I515 | Project onboarding (task #168) | ```` An operations board is an explicit server-care project. ````
+- I516 | Project onboarding (task #168) | ```` Project work stays on that project's board. ````
+- I517 | Project onboarding (task #168) | ```` A server-wide overview aggregates tasks; it does not duplicate every issue onto a server board. ````
+- I518 | Project onboarding (task #168) | ```` TaskQ execution continues when PilotQ is down. ````
+- I519 | Project onboarding (task #168) | ```` If TaskQ is unreachable, conversations continue and proposed tasks remain unsent. ````
+- I520 | Project onboarding (task #168) | ```` Status shows the last observation time and unknown freshness. ````
+- I521 | Project onboarding (task #168) | ```` Previously authorized, unchanged submissions can resume when dependencies recover; changed scope or stale grants require revalidation. ````
+- I522 | 6. Memory and agentq | ```` **Proposed:** conversation history, remembered preferences and authoritative task facts are distinct. ````
+- I523 | 6. Memory and agentq | ```` Store route/project preferences with author, scope, source and update time. ````
+- I524 | 6. Memory and agentq | ```` “Usually this project” is a hint; tool invocation still resolves the target. ````
+- I525 | 6. Memory and agentq | ```` Explicit corrections supersede old preferences. ````
+- I526 | 6. Memory and agentq | ```` Shared memory never includes private conversation content without authorization. ````
+- I527 | 6. Memory and agentq | ```` Maintain durable per-person profiles for preferred name, relevant working preferences and explicitly remembered project associations. ````
+- I528 | 6. Memory and agentq | ```` Each fact carries its subject user ID, visibility scope, source and revision. ````
+- I529 | 6. Memory and agentq | ```` Load only facts permitted in the current route; remembering one person across chats does not copy private DM history into a group. ````
+- I530 | 6. Memory and agentq | ```` Profiles survive restart and conversation reset. ````
+- I531 | 6. Memory and agentq | ```` Provide a Telegram flow to inspect, correct and forget remembered facts. ````
+- I532 | 6. Memory and agentq | ```` Users can manage their own non-authoritative preferences; administrators can correct shared profile information within their grant. ````
+- I533 | 6. Memory and agentq | ```` Administration does not implicitly reveal another person's private DM memory. ````
+- I534 | 6. Memory and agentq | ```` Show the applied change and persist it before claiming success. ````
+- I535 | 6. Memory and agentq | ```` Corrected or forgotten facts must not reappear as current facts from an old summary, restored session or automatic extraction. ````
+- I536 | 6. Memory and agentq | ```` Profile deletion and correction are distinct from retention of conversation/audit records; do not claim that forgetting a preference erases every historical record. ````
+- I537 | 6. Memory and agentq | ```` Access rights live in the grant registry and cannot be changed by editing a profile. ````
+- I538 | 6. Memory and agentq | ```` Keep these outside lossy summaries: identities and roles, grants and revocations, active project references, request/operation IDs, task URLs, pending questions, plan revisions, explicit prohibitions and verified effect receipts. ````
+- I539 | 6. Memory and agentq | ```` Fresh TaskQ reads supply task state. ````
+- I540 | 6. Memory and agentq | ```` Start with native runtime compaction as the functional baseline. ````
+- I541 | 6. Memory and agentq | ```` Integrate agentq at the selected runtime's supported tool-result/context boundary. ````
+- I542 | 6. Memory and agentq | ```` Tool-result compression and conversation summarization are separate stages with one owner each; never let two compactors race or compress the same result repeatedly. ````
+- I543 | 6. Memory and agentq | ```` Compression preserves tool-call/result associations, errors, evidence locations and original-data recovery references. ````
+- I544 | 6. Memory and agentq | ```` Recovery authorizes the requesting route before returning content. ````
+- I545 | 6. Memory and agentq | ```` On compression failure, use original data only if it fits the context budget; otherwise fetch a bounded relevant portion or surface a context limit. ````
+- I546 | 6. Memory and agentq | ```` Never silently truncate authorization or replay work to reconstruct a missing result. ````
+- I547 | 6. Memory and agentq | ```` Qualification compares identical scenario sets with agentq off and on. ````
+- I548 | 6. Memory and agentq | ```` Measure correct completion, preserved constraints, exact original recovery, provider input/output/cache tokens where available, latency and interventions. ````
+- I549 | 6. Memory and agentq | ```` Byte reduction alone is not a savings claim. ````
+- I550 | 6. Memory and agentq | ```` A session that survives one compression is not evidence of a long conversation remaining correct. ````
+- I551 | 7. Proposed operating budgets | ```` These are initial acceptance targets, not observed performance or a production SLA. ````
+- I552 | 7. Proposed operating budgets | ```` Tune only from recorded pilot evidence. ````
+- I553 | 7. Proposed operating budgets | ```` | Concern | Initial target | ````
+- I554 | 7. Proposed operating budgets | ```` | Durable receipt | p95 <= 2 seconds from update receipt at PilotQ, under the defined pilot load | ````
+- I555 | 7. Proposed operating budgets | ```` | Telegram acknowledgement | 👀 reaction within 5 seconds when Telegram is reachable; text fallback on reaction failure, one queue notice after 30 seconds | ````
+- I556 | 7. Proposed operating budgets | ```` | Direct action | <= 60 seconds and <= 5 tool calls; longer work is delegated or returned with a bounded result | ````
+- I557 | 7. Proposed operating budgets | ```` | Silent runtime | No useful event for 30 seconds triggers diagnosis; runtime deadline still applies even if it emits tokens indefinitely | ````
+- I558 | 7. Proposed operating budgets | ```` | Cancellation | Acknowledge within 5 seconds when transport is healthy; abort then terminate the isolated process after a 5-second grace period if necessary | ````
+- I559 | 7. Proposed operating budgets | ```` | Runtime recovery | Reconcile interrupted requests within 30 seconds after service readiness; uncertain effects stay blocked | ````
+- I560 | 7. Proposed operating budgets | ```` | Model concurrency | 4 conversations initially, one active run per conversation; round-robin waiting routes | ````
+- I561 | 7. Proposed operating budgets | ```` | Backlog | 50 pending requests per route, 1,000 total; excess gets a recorded busy response, never an untracked promise | ````
+- I562 | 7. Proposed operating budgets | ```` | Dependency retry | At most 3 safe model/read attempts within the original deadline; no retry multiplication across SDK and coordinator | ````
+- I563 | 7. Proposed operating budgets | ```` | Delivery retry | At most 5 attempts per episode, persisted across restart; obey Telegram retry delays, then surface pending delivery | ````
+- I564 | 7. Proposed operating budgets | ```` | Task notifications | Within 15 seconds of observing a fresh TaskQ transition, while Telegram is reachable | ````
+- I565 | 7. Proposed operating budgets | ```` | Health | Separate last successful poll, storage commit, model event, TaskQ observation and delivery; expose age and unknown state | ````
+- I566 | 7. Proposed operating budgets | ```` Storage: SQLite WAL with `synchronous=FULL`, one writer, local disk and bounded transactions. ````
+- I567 | 7. Proposed operating budgets | ```` A healthy process is not evidence of a healthy ingress path. ````
+- I568 | 7. Proposed operating budgets | ```` Run liveness checks outside the model process; use the existing host monitoring path for an outage that prevents Telegram alerts. ````
+- I569 | 7. Proposed operating budgets | ```` Proposed retention: raw conversations 30 days; request audit records (section 8) 365 days for metadata and 90 days for message text; inactive native session files 30 days; request/effect receipts 90 days after reconciliation; diagnostic logs 7 days; temporary attachments 7 days with a 20 MiB per-file cap. ````
+- I570 | 7. Proposed operating budgets | ```` Keep active plans, unresolved effects, unanswered questions and undelivered outcomes until resolved. ````
+- I571 | 7. Proposed operating budgets | ```` Keep minimal deduplication/receipt tombstones beyond content pruning where replay remains possible. ````
+- I572 | 7. Proposed operating budgets | ```` Initial PilotQ disk budget: 2 GiB including its journals, sessions and temporary files. ````
+- I573 | 7. Proposed operating budgets | ```` At 80%, prune only eligible data and alert. ````
+- I574 | 7. Proposed operating budgets | ```` At the hard limit, preserve unresolved records, stop new admission and report pressure through the host channel. ````
+- I575 | 7. Proposed operating budgets | ```` Do not advance the Telegram cursor for an input that could not be stored. ````
+- I576 | 7. Proposed operating budgets | ```` This limit can cause a Telegram retention gap during a prolonged outage; report it. ````
+- I577 | 7. Proposed operating budgets | ```` Back up with SQLite's supported snapshot mechanism; prove restoration separately. ````
+- I578 | 8. Access and observability | ```` **Proposed:** configure explicit Telegram users/routes and action grants. ````
+- I579 | 8. Access and observability | ```` Reading a group or a task does not grant permission to mutate a project. ````
+- I580 | 8. Access and observability | ```` Revalidate authorization at effect dispatch and before delayed delivery. ````
+- I581 | 8. Access and observability | ```` Revocation cancels pending unauthorized effects but cannot erase an already completed operation. ````
+- I582 | 8. Access and observability | ```` Keep credentials in protected host configuration, outside model context and diagnostics. ````
+- I583 | 8. Access and observability | ```` The manager receives only tools granted to its caller and route. ````
+- I584 | Key store | ```` **Proposed:** a key is a named secret in one owner-only file under the install directory (mode 0600 or the Windows equivalent). ````
+- I585 | Key store | ```` Each key records its name, purpose, allowed tools, allowed users or routes and last use; the value is stored once and never returned. ````
+- I586 | Key store | ```` - A tool call names a key; the tool boundary injects the value into the child process environment or request header at dispatch. ````
+- I587 | Key store | ```` - The value never enters model context, the journal, telemetry, logs, replies or task text. ````
+- I588 | Key store | ```` Tool output is scrubbed for known values before the model or Telegram sees it. ````
+- I589 | Key store | ```` - A grant on a key names the person, route or project. ````
+- I590 | Key store | ```` Use is checked at dispatch, like any effect (section 8). ````
+- I591 | Key store | ```` - Keys are added, granted and revoked only through the CLI (owner decision 2026-10-23). ````
+- I592 | Key store | ```` Telegram key entry is not built. ````
+- I593 | Key store | ```` - `pilotq keys list` shows names, grants and last use, never values. ````
+- I594 | Key store | ```` A model's tool choice is a request, not enforcement. ````
+- I595 | Key store | ```` Downloaded content cannot expand grants, switch repositories or redirect private answers. ````
+- I596 | Request audit | ```` **Proposed:** the journal keeps one audit record per request from the CLI or Telegram (R17). ````
+- I597 | Request audit | ```` It is written in the same transaction as the admitted input and updated as the request moves. ````
+- I598 | Request audit | ```` - Who: person ID, display name at that time and the grant set used. ````
+- I599 | Request audit | ```` When: receive, start, each effect and delivery times. ````
+- I600 | Request audit | ```` Where: front end, chat, topic and project. ````
+- I601 | Request audit | ```` - What: the request text, its edits and cancellations, and the reply sent. ````
+- I602 | Request audit | ```` Key values never appear (section 8 Key store). ````
+- I603 | Request audit | ```` - Done: model, version and agentq mode; each tool call and effect with its target and result; TaskQ tasks filed, answered or followed; the final outcome or failure. ````
+- I604 | Request audit | ```` - One request ID joins the audit record, the CoreQ telemetry trace and TaskQ task text, so an investigation can move from a Telegram message to a task attempt and back. ````
+- I605 | Request audit | ```` - Readers: the owner and administrators with an `audit` grant read all records through `pilotq audit`; every person can read their own with `/audit` in a direct message, answered without the model like the section 2 controls. ````
+- I606 | Request audit | ```` In a group or topic `/audit` shows nothing, since it would expose one person's history to the others. ````
+- I607 | Request audit | ```` Reading is itself recorded. ````
+- I608 | Request audit | ```` - Use: service investigation, answers to a person about their history, and self-improvement analysis. ````
+- I609 | Request audit | ```` Analysis exports leave out message text unless the owner approves a specific export. ````
+- I610 | Request audit | ```` - The person learns at admission that their requests are recorded and for how long. ````
+- I611 | Request audit | ```` Local correlated events cover update → request → model turn → tool operation → TaskQ task/attempt → Telegram delivery. ````
+- I612 | Request audit | ```` The runtime adapter reports actual completion/error events. ````
+- I613 | Request audit | ```` Model/provider/version and agentq mode accompany evaluation evidence. ````
+- I614 | Request audit | ```` Use the existing Langfuse installation for optional, bounded telemetry export after capture scope is approved. ````
+- I615 | Request audit | ```` Content capture is opt-in and redacted; operational metadata is enough for delivery and intervention metrics. ````
+- I616 | Request audit | ```` Langfuse failure must not block conversations or become the only copy of a task outcome. ````
+- I617 | Request audit | ```` The proposed metric set lives in [acceptance](docs/acceptance.md#metrics). ````
+- I618 | Command line | ```` **Owner, task #106 (option 1):** deterministic built-in commands never enter the model backlog, including while a chat run is active. ````
+- I619 | Command line | ```` They use the same admission and audit boundary as other requests (R10, R13, R17). ````
+- I620 | Command line | ```` - `/help` lists available controls; `/version` reports this binary's version; `/doctor` runs bounded, read-only setup checks and returns check names and outcomes only. ````
+- I621 | Command line | ```` Unknown commands receive a usage error, not a model turn. ````
+- I622 | Command line | ```` Commands accept Telegram's `@bot` suffix. ````
+- I623 | Command line | ```` - `/model` reads the configured Codex app-server's model catalogue and displays selection buttons; `/model MODEL` selects an exact catalogue name, and `/model default` removes the override. ````
+- I624 | Command line | ```` The catalogue is not proof of subscription entitlement. ````
+- I625 | Command line | ```` Record the requested model separately from the last model reported by Codex. ````
+- I626 | Command line | ```` An unavailable catalogue refuses selection without changing the saved choice. ````
+- I627 | Command line | ```` - A model choice belongs to the existing isolated or shared conversation, requires current `chat` admission, survives restart and `/new`, and applies only to runs claimed after the change. ````
+- I628 | Command line | ```` Buttons bind to the displaying person, conversation generation and latest selector. ````
+- I629 | Command line | ```` Active runs keep their claimed choice. ````
+- I630 | Command line | ```` No automatic model or paid-provider fallback is allowed (R9). ````
+- I631 | Command line | ```` - Unset choices inherit the isolated Codex configuration. ````
+- I632 | Command line | ```` TaskQ worker defaults, inheritance, overrides and host resource admission stay with TaskQ; PilotQ never passes its manager choice to workers or changes running tasks. ````
+- I633 | Command line | ```` Model selection does not change the four-conversation budget (§7). ````
+- I634 | Command line | ```` - `/restart` is owner-only. ````
+- I635 | Command line | ```` The installed service acknowledges immediately, drains through the existing §9 path, and reports completion only after the restarted service writes healthy status. ````
+- I636 | Command line | ```` A failed drain resumes admission and reports failure. ````
+- I637 | Command line | ```` Source runs refuse service restart. ````
+- I638 | Command line | ```` Requests, task subscriptions and delivery receipts survive. ````
+- I639 | Command line | ```` Duplicate updates cannot restart twice. ````
+- I640 | Command line | ```` - `/skills` lists enabled skills; `/skill NAME TEXT` is the invocation syntax. ````
+- I641 | Command line | ```` No native skills are currently approved for the restricted manager. ````
+- I642 | Command line | ```` Both commands explain this without starting a model or enabling native tools; adding an approved skill requires a contract decision under §12. ````
+- I643 | Command line | ```` - The operator can send the same controls through `pilotq ask '/model MODEL'` (R13). ````
+- I644 | Command line | ```` Service restart and setup checks keep their own bounded control worker, independent of chat generation. ````
+- I645 | Command line | ```` **Proposed:** the `pilotq` binary is the service and the operator CLI. ````
+- I646 | Command line | ```` The CLI uses the same journal, grants and audit records as Telegram; the local operator acts as the bootstrap owner identity from protected configuration. ````
+- I647 | Command line | ```` | Command | Purpose | ````
+- I648 | Command line | ```` | `pilotq ask TEXT [--project P]` | One request through the normal manager path; prints the reply or task link | ````
+- I649 | Command line | ```` | `pilotq status [--json]` | Health ages (section 7), pending requests, undelivered outcomes, uncertain effects | ````
+- I650 | Command line | ```` | `pilotq users list\|show\|grant\|revoke\|remember\|forget` | People, profiles and grants (R10, R15); `remember`/`forget` correct one profile fact | ````
+- I651 | Command line | ```` | `pilotq routes list\|set` | Chats, topics and their session and reply policy | ````
+- I652 | Command line | ```` | `pilotq projects list\|add` | Registered projects and the section 5 registration path | ````
+- I653 | Command line | ```` | `pilotq keys list\|add\|grant\|revoke` | Key store; `add` reads the value from stdin | ````
+- I654 | Command line | ```` | `pilotq pilot start\|note\|report [--since T] [--json]` | Seven-day pilot start, intervention and outage notes, gate 4 counts (section 10 step 5) | ````
+- I655 | Command line | ```` | `pilotq audit [--user U] [--route R] [--project P] [--since T] [--request ID] [--json]` | Request audit records (section 8, R17), filtered by who, where, what and when | ````
+- I656 | Command line | ```` | `pilotq service install\|run\|stop\|status` | coreq service unit | ````
+- I657 | Command line | ```` | `pilotq update [--check|--pause|--resume]`, `pilotq selftest`, `pilotq doctor` | coreq update, smoke test and setup check (bot identity, Codex login, TaskQ reachability) | ````
+- I658 | Command line | ```` Every command that writes prints the readback, supports `--json` and returns a nonzero exit code on failure. ````
+- I659 | Command line | ```` `pilotq doctor [--json]` performs read-only setup checks: Telegram `getMe` returns a bot identity, the configured isolated Codex home reports a ChatGPT login, and TaskQ returns a complete snapshot matching its configured board. ````
+- I660 | Command line | ```` It never polls updates, starts a model turn or changes grants. ````
+- I661 | Command line | ```` Missing configuration, failed checks and unavailable dependencies return nonzero; diagnostics expose only check names and outcomes, never dependency output or credentials. ````
+- I662 | Command line | ```` This checks setup, not the full task flow or subscription entitlement (§11). ````
+- I663 | Command line | ```` **Owner, task #120:** also check local voice readiness. ````
+- I664 | Command line | ```` Missing voice configuration, unavailable ffmpeg or recognizer, missing GigaAM model files, or a failed one-second silent WAV decode/recognition probe makes doctor fail with a short reason. ````
+- I665 | Command line | ```` An empty transcript is expected for silence; the recognizer must still return valid result JSON. ````
+- I666 | Command line | ```` The probe uses protected temporary files, a ten-second total deadline and no Telegram input or model turn. ````
+- I667 | Command line | ```` This is setup evidence, not live voice acceptance. ````
+- I668 | Command line | ```` **Owner, task #144:** this supersedes #127's GitHub CLI answer reader and doctor probe. ````
+- I669 | Command line | ```` TaskQ owns board-answer access and trust. ````
+- I670 | Command line | ```` Doctor checks the configured TaskQ board through its CLI; it neither requires nor probes gh. ````
+- I671 | Command line | ```` Selftest remains offline. ````
+- I672 | Command line | ```` CLI failures retain scrubbed operator diagnostics under §8; unreadable answers remain unknown. ````
+- I673 | Command line | ```` Prepare version `0.2.12` for #127. ````
+- I674 | Command line | ```` After merge-result CI and review acceptance, the PM publishes #127 through the existing `live` release workflow, updates the existing FRA service through `pilotq update`, and records source/binary identity, health, selftest, doctor and journal continuity with §12 drain and compatible-schema rollback protections. ````
+- I675 | Command line | ```` The PM records a real authorized person's question answered through TaskQ CLI, the original Telegram card with buttons removed and `Answered by <actor>: <text>`, and a later tap showing the same receipt. ````
+- I676 | Command line | ```` These post-release checks remain required evidence, not inferred from adapter tests. ````
+- I677 | Command line | ```` This grants no Hermes consumer cutover. ````
+- I678 | Host requirements (task #130) | ```` The supported managed host is Linux x86_64. ````
+- I679 | Host requirements (task #130) | ```` The installation owner provisions these tools; PilotQ never runs a package manager, elevates privileges or changes a subscription login. ````
+- I680 | Host requirements (task #130) | ```` Doctor probes the configured binaries and PATH used by the service. ````
+- I681 | Host requirements (task #130) | ```` Installed-release startup, install and manual/scheduled update checks refuse missing, unparseable or older versions, reporting the exact operator step. ````
+- I682 | Host requirements (task #130) | ```` After remediation, rerun `pilotq doctor --json` and the original install/update command. ````
+- I683 | Host requirements (task #130) | ```` Offline selftest remains independent of host setup. ````
+- I684 | Host requirements (task #130) | ```` | Host tool | Minimum | Required by / remediation | ````
+- I685 | Host requirements (task #130) | ```` | Codex CLI | 0.162.0 | Subscription app-server and catalogue; install `@openai/codex@0.162.0` or newer and set the absolute `codex` path; retain the isolated ChatGPT login | ````
+- I686 | Host requirements (task #130) | ```` | TaskQ CLI | 4.6.46 | Task #145 file handoff, operation receipts and task #151 `taskq issue`; update the CLI to 4.6.46 or newer; doctor reads `taskq --version` | ````
+- I687 | Host requirements (task #130) | ```` | TaskQ service | 4.6.40 | Board commands; doctor checks the service version from `service status --json` | ````
+- I688 | Host requirements (task #130) | ```` | ffmpeg | 6.1.0 | Audio decode; install ffmpeg 6.1 or newer and set `voice.ffmpeg` | ````
+- I689 | Host requirements (task #130) | ```` | sherpa-onnx-offline | 2.0.1 | GigaAM recognition; install the static no-TTS 2.0.1 release or newer and set `voice.recognizer` | ````
+- I690 | Host requirements (task #130) | ```` | curl | 7.68.0 | CoreQ release download; install curl 7.68 or newer on service PATH | ````
+- I691 | Host requirements (task #130) | ```` | systemctl (systemd) | 245 | CoreQ Linux user service; provision systemd 245 or newer with a working user service manager | ````
+- I692 | Host requirements (task #130) | ```` | kill (procps-ng) | 3.3.17 | Process-group cleanup on PATH and `/bin/kill`; install procps-ng 3.3.17 or newer on service PATH | ````
+- I693 | Host requirements (task #130) | ```` | `commands.json` executables | Each entry declares `minimum_version` | Approved installed reads (§5); doctor runs the executable with `--version`; an absent minimum or unavailable version fails doctor | ````
+- I694 | Host requirements (task #130) | ```` | hostname | 3.23 | Telemetry host identity; install hostname 3.23 or newer on service PATH | ````
+- I695 | Host requirements (task #130) | ```` **Owner, task #154:** TaskQ CLI 4.6.46 or newer reports its binary version through `taskq --version`, without board or network access. ````
+- I696 | Host requirements (task #130) | ```` Doctor uses that command for `taskq.bin` and `--version` for approved command executables; TaskQ needs no receipt. ````
+- I697 | Host requirements (task #130) | ```` Receipts remain only for tools without a version command: sherpa-onnx-offline 2.0.1 has no CLI version command. ````
+- I698 | Host requirements (task #130) | ```` Its installed executable has an owner-provisioned `<binary>.pilotq-version.json` receipt containing the verified release `version` and executable `sha256`; doctor verifies the bytes before trusting that version. ````
+- I699 | Host requirements (task #130) | ```` The tester guide gives the provisioning step. ````
+- I700 | Host requirements (task #130) | ```` A missing or mismatched receipt fails with an unavailable version. ````
+- I701 | Host requirements (task #130) | ```` A later recognizer with a valid version command can report its version directly. ````
+- I702 | Host requirements (task #130) | ```` There are no separately installed PilotQ shared libraries: SQLite, Rust TLS and CoreQ 0.14.6 are linked into the artifact through Cargo.lock. ````
+- I703 | Host requirements (task #130) | ```` The static recognizer is required; ffmpeg and system tools retain their distribution-managed libraries. ````
+- I704 | Host requirements (task #130) | ```` Doctor's existing silent decode/recognition probe checks the voice runtime and model files in addition to versions. ````
+- I705 | Host requirements (task #130) | ```` Developer/release-only tools (`cargo`, the Rust compiler, `sha256sum`, and shell utilities in download instructions) are not service runtime dependencies. ````
+- I706 | Host requirements (task #130) | ```` Optional unsupported platforms are not qualified by the Linux requirement probes. ````
+- I707 | Host requirements (task #130) | ```` Doctor's operator JSON adds `requirements` with tool, found version, minimum, outcome and fix; only validated version numbers enter this report. ````
+- I708 | Host requirements (task #130) | ```` Missing configuration still reports independently probeable requirements and fails configured ones. ````
+- I709 | Host requirements (task #130) | ```` `/doctor` projects the aggregate `host_tools` outcome without paths, versions or diagnostics (§8). ````
+- I710 | Host requirements (task #130) | ```` Failed subprocesses log command and scrubbed errors to operator stderr; failures remain errors, never successful empty output. ````
+- I711 | Host requirements (task #130) | ```` A new flag/API must retain the listed minimum or raise it with its oldest-version fixture. ````
+- I712 | Update and monitoring | ```` Follow coreq: `releases/<version>`, `current` and `previous` in the install directory; GitHub releases with `SHA256SUMS`; `pilotq update` verifies the checksum and runs `pilotq selftest` before the switch; the launcher returns to `previous` after three unhealthy starts. ````
+- I713 | Update and monitoring | ```` An update waits for the planned-restart drain in section 12. ````
+- I714 | Update and monitoring | ```` **Owner, task #77 (option A):** on the restored version’s first healthy start after a launcher rollback, send one incident to the protected `owner_id` Telegram DM, naming the failed and restored versions only. ````
+- I715 | Update and monitoring | ```` Persist the rollback marker before launcher handoff and enqueue the incident atomically with a failed/restored-version deduplication key in the existing journal. ````
+- I716 | Update and monitoring | ```` The existing outbox records the send receipt and applies bounded retries across restarts (§4, §7); never reroute a failed DM. ````
+- I717 | Update and monitoring | ```` Successful updates produce no failure notice. ````
+- I718 | Update and monitoring | ```` Both the launcher and restored release must include this integration; older releases cannot deliver a new rollback marker. ````
+- I719 | Update and monitoring | ```` No schema change or new notification infrastructure is required. ````
+- I720 | Update and monitoring | ```` **Owner, task #81 (option A):** extend the #77 path to service state; standard simple setup, no new component. ````
+- I721 | Update and monitoring | ```` `/status` adds the version and each non-ok health source with its age. ````
+- I722 | Update and monitoring | ```` Service incidents for `model`, `taskq`, `poll` and an unplanned restart go only to the `owner_id` DM through the outbox: one incident per episode key across restarts, opened after the source stays failed 2 minutes (model: two consecutive failed runs), closed only on a fresh successful observation, at most one message per key per 6 hours and 10 per day. ````
+- I723 | Update and monitoring | ```` Planned updates and drained restarts stay silent. ````
+- I724 | Update and monitoring | ```` On a healthy start after an undrained gap over 5 minutes, send one downtime notice; detection is after the fact. ````
+- I725 | Update and monitoring | ```` Rules and examples: [status and notifications](docs/status-notifications.md). ````
+- I726 | Update and monitoring | ```` An ops chat (stage B) and real-time dead-service detection through DashQ (stage C) wait for evidence. ````
+- I727 | Update and monitoring | ```` `status.json` publishes the section 7 health fields. ````
+- I728 | Update and monitoring | ```` Incident reports follow coreq. ````
+- I729 | Update and monitoring | ```` Telemetry uses the shared CoreQ telemetry store and DashQ connection, so the TaskQ PM sees PilotQ beside the other tools. ````
+- I730 | Update and monitoring | ```` Release and CI follow the shared [release contract](https://github.com/taskqorg/specq/blob/main/engineering/release-contract.md). ````
+- I731 | First release delivery | ```` Releases publish only through the `live` channel. ````
+- I732 | First release delivery | ```` After merge-queue CI accepts a `main` commit, the PM fast-forwards `live` to it; that push builds and verifies the static `linux-x86_64` artifact, creates the `vX.Y.Z` tag and publishes the binary, `SHA256SUMS` and `latest.json` from `taskqorg/pilotq`. ````
+- I733 | First release delivery | ```` Tags alone do not publish. ````
+- I734 | First release delivery | ```` After publishing, the PM updates the test pilot through `pilotq update` and verifies its running source commit, status, selftest, doctor and request continuity. ````
+- I735 | First release delivery | ```` Failure drills simulate failures in PilotQ's own environment only: an empty `CODEX_HOME` drop-in instead of the real Codex login, stopping only what PilotQ calls or waiting for zero workers before stopping TaskQ, and killing only the PilotQ process; afterwards the service configuration is restored and read back. ````
+- I736 | First release delivery | ```` A release authorizes the test pilot update, not production cutover. ````
+- I737 | First release delivery | ```` The installed Linux service checks for releases every five minutes, including at startup when no recent check is recorded. ````
+- I738 | First release delivery | ```` It persists the attempt time before the check so restarts do not reset the retry interval. ````
+- I739 | First release delivery | ```` A separate maintenance thread keeps health reporting and conversations available during downloads. ````
+- I740 | First release delivery | ```` Manual and scheduled updates share one OS-held update lock. ````
+- I741 | First release delivery | ```` A journal drain flag gates both CLI and Telegram claims in their claim transactions, so a new run cannot race the drain. ````
+- I742 | First release delivery | ```` Before activation, stop new manager turns and wait up to 65 seconds for running requests; an incomplete or failed drain refuses activation and preserves the current release. ````
+- I743 | First release delivery | ```` Failed downloads, checksum checks or selftests retain the current release and resume admission. ````
+- I744 | First release delivery | ```` Successful scheduled activation exits the service with code 75; the coreq Linux unit restarts it through the launcher. ````
+- I745 | First release delivery | ```` `pilotq update --pause` and `--resume` persist and read back automatic-update admission; pausing does not stop health or conversations. ````
+- I746 | First release delivery | ```` Manual updates remain available. ````
+- I747 | First release delivery | ```` This release retains coreq `v0.14.6` (locked in `Cargo.lock`) and journal schema 12. ````
+- I748 | First release delivery | ```` It opens existing schemas 0–12 through the current migrations and refuses newer schemas; rollback to a binary that cannot read the resulting schema is unsafe. ````
+- I749 | First release delivery | ```` The installation owner runs the user service and owns its protected configuration. ````
+- I750 | First release delivery | ```` See the [tester guide](docs/tester-guide.md) for installation, checks and current limitations. ````
+- I751 | First release delivery | ```` A published release and successful selftest do not qualify production cutover or the open decisions in section 11. ````
+- I752 | Development | ```` **Owner, tasks #106, #117, #119 and #139:** PilotQ is still in development. ````
+- I753 | Development | ```` The PM installs merged, released builds on the existing live service on PDS 18 (`pds18.ufobe.com`) and verifies them there; no separate installation or bot. ````
+- I754 | Development | ```` This is a scoped exception to the shared release contract's development-host separation, not authorization to install unfinished branches or a Hermes consumer cutover. ````
+- I755 | Development | ```` The installation owner remains the service owner. ````
+- I756 | Development | ```` Record the source commit, running binary identity, health, selftest and journal continuity across restart, with the section 12 drain and compatible-schema rollback protections. ````
+- I757 | Development | ```` Telegram commands, model selection and answer cards need a real authorized person's run: the PM performs one DM/topic run and attaches screenshots. ````
+- I758 | Development | ```` The live answer-card author, button removal and repeated-callback scenario (#117) remains unverified. ````
+- I759 | Development | ```` Worker verification stays local/CI; workers never install live. ````
+- I760 | Development | ```` Communication scope: [Telegram feedback](docs/telegram-feedback.md) under §12. ````
+- I761 | Development | ```` PilotQ has its own TaskQ board. ````
+- I762 | Development | ```` Changes follow the TaskQ flow: spec edit first, held task, worker, reviewer, release. ````
+- I763 | Development | ```` Before each release, run the [automatic management suite](docs/acceptance.md#automatic-management-suite-a40) against the release candidate. ````
+- I764 | Development | ```` Suite tasks use a unique reserved `pilotq-e2e-*` host that no service claims; the runner scripts their worker/reviewer board events without launching ordinary workers. ````
+- I765 | Development | ```` This qualifies the management path, not real implementation or review. ````
+- I766 | Development | ```` All cases and cleanup must pass; a blocked or incomplete run is not release evidence. ````
+- I767 | 10. Adoption sequence | ```` See [adoption sequence](docs/adoption.md#10-adoption-sequence). ````
+- I768 | 11. Decisions still open | ```` See [open decisions](docs/adoption.md#11-decisions-still-open). ````
+- I769 | 12. Proposed lifecycle and feedback protocol | ```` This section translates R5 and R11 into a proposed PilotQ protocol. ````
+- I770 | 12. Proposed lifecycle and feedback protocol | ```` The [mechanism matrix](docs/mechanism-matrix.md) records source evidence and scope choices; [acceptance](docs/acceptance.md#lifecycle-cases) defines the additional checks. ````
+- I771 | 12. Proposed lifecycle and feedback protocol | ```` These are design targets, not implemented guarantees. ````
+- I772 | 12. Proposed lifecycle and feedback protocol | ```` Notification presentation follows [specq](https://github.com/taskqorg/specq/blob/main/caveman/rules/notifications.md). ````
+- I773 | One request, separate observations | ```` Keep the request state from section 4; use a reason/phase field for queued capacity, model startup, tool execution, compaction, provider backoff, quota exhaustion or required login. ````
+- I774 | One request, separate observations | ```` Do not introduce a second task state machine. ````
+- I775 | One request, separate observations | ```` Waiting for a person or for TaskQ is not a hung manager run. ````
+- I776 | One request, separate observations | ```` A delegated request remains linked to the authoritative TaskQ task and its notification subscription. ````
+- I777 | One request, separate observations | ```` Track transport health, request activity and delivery separately. ````
+- I778 | One request, separate observations | ```` A successful empty poll proves transport contact; it does not prove received inputs reached admission. ````
+- I779 | One request, separate observations | ```` A live process or typing indicator proves neither useful progress nor task completion. ````
+- I780 | One request, separate observations | ```` Count accepted/dispatched inputs and pending age as well as successful polls. ````
+- I781 | One request, separate observations | ```` Unknown observation remains unknown. ````
+- I782 | One request, separate observations | ```` The runtime supervisor observes startup/first-event latency, last useful runtime/tool event and the absolute run deadline. ````
+- I783 | One request, separate observations | ```` The first-event watch starts before invoking Codex; it cannot depend on Codex having emitted its first event. ````
+- I784 | One request, separate observations | ```` Typing, polling and periodic status timers never renew useful-progress time. ````
+- I785 | One request, separate observations | ```` Token activity cannot extend the absolute short-action budget. ````
+- I786 | One request, separate observations | ```` Waiting states retain their reason and wake condition without busy retries. ````
+- I787 | One request, separate observations | ```` Use monotonic time within a process; persist deadlines/attempts across restart and handle wall-clock jumps without granting a fresh unlimited budget. ````
+- I788 | Telegram feedback | ```` Contract detail: [Telegram feedback](docs/telegram-feedback.md) holds the owner decisions on manager instructions, worker questions, reply layout, reactions, drafts, images and voice. ````
+- I789 | Telegram feedback | ```` It is binding as part of this section. ````
+- I790 | Input and control edges | ```` During startup, check bot identity, required Telegram permissions/privacy configuration and forum-topic support against the migration manifest. ````
+- I791 | Input and control edges | ```` Do not report readiness solely from login success. ````
+- I792 | Input and control edges | ```` Received but unsupported inputs get the explicit outcome in section 1; unknown senders still follow R10's silent policy. ````
+- I793 | Input and control edges | ```` Preserve message/reply IDs, edits and media-group identities before optional batching. ````
+- I794 | Input and control edges | ```` Never coalesce messages across users, routes or authorization revisions. ````
+- I795 | Input and control edges | ```` A bounded media assembly window cannot swallow a text follow-up or change a running plan. ````
+- I796 | Input and control edges | ```` Recognizing attachments and reporting limits are required; interpreting every media type remains an open cutover decision. ````
+- I797 | Input and control edges | ```` Authorized `/status`, `/stop` and `/new` use a bounded control path outside the normal model backlog. ````
+- I798 | Input and control edges | ```` They do not bypass identity or scope checks. ````
+- I799 | Input and control edges | ```` A reset creates a new conversation generation; old requests and receipts remain queryable, and late old-run events cannot attach to the new conversation. ````
+- I800 | Input and control edges | ```` Reset does not revoke the originating subscriptions to already admitted TaskQ work. ````
+- I801 | Input and control edges | ```` Topic deletion/closure, group migration, bot removal and permission loss become explicit delivery/configuration incidents. ````
+- I802 | Input and control edges | ```` Preserve the original destination and hold affected output. ````
+- I803 | Input and control edges | ```` An administrator must authorize a route change; do not fall back to General, a private DM or another group automatically. ````
+- I804 | Runtime and recovery boundaries | ```` Validate the pinned Codex protocol/capabilities before accepting executable work. ````
+- I805 | Runtime and recovery boundaries | ```` Unknown optional diagnostic events can be retained as metadata; unknown control/terminal semantics cannot be guessed as success. ````
+- I806 | Runtime and recovery boundaries | ```` Parse tools only after a complete validated request; a parseable partial argument stream is not permission to act. ````
+- I807 | Runtime and recovery boundaries | ```` Disable or contain native tools that bypass PilotQ's effect boundary. ````
+- I808 | Runtime and recovery boundaries | ```` An empty useful answer with no verified delegation/action is an explicit outcome to recover or report, not silent success. ````
+- I809 | Runtime and recovery boundaries | ```` Classify auth, quota, transport, protocol and tool failures. ````
+- I810 | Runtime and recovery boundaries | ```` Keep one bounded retry budget per logical operation across layers/restarts; honor server retry times without holding conversation locks or spinning. ````
+- I811 | Runtime and recovery boundaries | ```` Persist account/workspace binding with the native session. ````
+- I812 | Runtime and recovery boundaries | ```` Reauthentication must not silently change that binding, discard the session or fall back to billed API access. ````
+- I813 | Runtime and recovery boundaries | ```` The shared deployment's subscription entitlement remains a separate pre-production qualification. ````
+- I814 | Runtime and recovery boundaries | ```` Use one journal reconciler at startup and on a bounded periodic scan to discover pending inputs, stale runs, uncertain effects, missed TaskQ events and undelivered outcomes. ````
+- I815 | Runtime and recovery boundaries | ```` Timers are wakeups, never the sole copy of work. ````
+- I816 | Runtime and recovery boundaries | ```` Reconcile one request at a time; a failing route cannot stop recovery for the others. ````
+- I817 | Runtime and recovery boundaries | ```` Keep external calls outside database transactions. ````
+- I818 | Runtime and recovery boundaries | ```` On planned restart/update, stop new execution, checkpoint/drain within a bounded grace period, fence and terminate remaining manager process trees, and leave unresolved work in the journal. ````
+- I819 | Runtime and recovery boundaries | ```` TaskQ workers retain their own lifecycle. ````
+- I820 | Runtime and recovery boundaries | ```` Startup validates config and storage, obtains the poller lock, reconciles state and only then reports readiness. ````
+- I821 | Runtime and recovery boundaries | ```` A crash-loop backoff prevents repeated startup from consuming retries or producing alert storms. ````
+- I822 | Runtime and recovery boundaries | ```` An external host monitor handles a dead or blocked PilotQ process; PilotQ cannot promise a Telegram notice while both it and Telegram are unavailable. ````
+- I823 | Runtime and recovery boundaries | ```` Apply the shared [release/service contract](https://github.com/taskqorg/specq/blob/main/engineering/release-contract.md) to the selected Linux service and pinned Codex artifact. ````
+- I824 | Runtime and recovery boundaries | ```` Before implementation, name the service owner, artifact/update source and compatible schema range. ````
+- I825 | Runtime and recovery boundaries | ```` A rollback must preserve accepted work; an incompatible database prevents unsafe downgrade. ````
+- I826 | Runtime and recovery boundaries | ```` No live runtime replacement occurs mid-turn without the drain/reconcile path. ````
+- I827 | Runtime and recovery boundaries | ```` This specification does not authorize installation, model calls, queue activation or replacement of the production Telegram consumer.  ````

@@ -1,6 +1,6 @@
 # Conversation flow
 
-Presentation detail of the [Conversation contract](../pilotq.md#conversation-contract), owner task #165. This table governs both front ends (R13); Telegram message edits and buttons project the same durable receipts. It changes presentation, never grants or TaskQ authority.
+Presentation detail of the [Conversation contract](conversation-contract.md#conversation-contract), owner task #165. This table governs both front ends (R13); Telegram message edits and buttons project the same durable receipts. It changes presentation, never grants or TaskQ authority.
 
 | Stage / trigger | Text in the person's language | Buttons | Press effect | Replacement |
 |---|---|---|---|---|

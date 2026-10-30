@@ -1,6 +1,6 @@
 # Manager runtime and Telegram reliability research
 
-Decision supported: the proposed composition in [pilotq.md](../pilotq.md#3-architecture-and-ownership). Source review: 2026-10-16. Source code and issue reports establish mechanisms and risks; they do not prove a reliability ranking. No new live model or Telegram scenario was run for this specification.
+Decision supported: the proposed composition in [pilotq.md](runtime-contract.md#3-architecture-and-ownership). Source review: 2026-10-16. Source code and issue reports establish mechanisms and risks; they do not prove a reliability ranking. No new live model or Telegram scenario was run for this specification.
 
 Follow-up: the owner now requires Codex-only subscription access and asks whether Pi is needed at all. [Core options](core-options.md) reassesses the initial recommendation below. Neither runtime recommendation is an adopted implementation decision.
 

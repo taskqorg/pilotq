@@ -70,7 +70,7 @@ Run the same scenarios with agentq disabled and enabled. Fix model/provider/sett
 
 ## Lifecycle cases
 
-These twenty scenario families close gaps found in the source review. They supplement U/F/C cases instead of treating typing, retries or an upstream module name as proof of reliability. All are **proposed, not executed**. Root [section 12](../pilotq.md#12-proposed-lifecycle-and-feedback-protocol) owns their behavior.
+These twenty scenario families close gaps found in the source review. They supplement U/F/C cases instead of treating typing, retries or an upstream module name as proof of reliability. All are **proposed, not executed**. Root [section 12](runtime-contract.md#12-proposed-lifecycle-and-feedback-protocol) owns their behavior.
 
 Each trace records initial request/run/effect/delivery state, authorized actor and route, input event, injected fault, expected persisted state, user-visible output and permitted external effects. Use fake clocks, Telegram, Codex and TaskQ for the cheap deterministic suite. Qualify the corresponding real transport, subscription, process and storage behavior separately at release time.
 
@@ -127,7 +127,7 @@ All metrics are **new/proposed** for PilotQ. Langfuse's [evaluation guidance](ht
 
 ## First-slice qualification
 
-Results for the [section 10](../pilotq.md#10-adoption-sequence) step 2 slice, task [#14](https://github.com/taskqorg/pilotq/issues/14). Deterministic traces run in `cargo test --locked` with a fake Bot API (`tests/telegram.rs`), a fake Codex app-server script, journal calls that take explicit times (fake clock) and fixtures. Test names below are in `src/journal.rs` (`journal::`), `tests/telegram.rs` or `tests/update.rs`. Fakes do not qualify real Telegram, Codex, launchd or storage behavior; the live results are recorded separately below.
+Results for the [section 10](adoption.md#10-adoption-sequence) step 2 slice, task [#14](https://github.com/taskqorg/pilotq/issues/14). Deterministic traces run in `cargo test --locked` with a fake Bot API (`tests/telegram.rs`), a fake Codex app-server script, journal calls that take explicit times (fake clock) and fixtures. Test names below are in `src/journal.rs` (`journal::`), `tests/telegram.rs` or `tests/update.rs`. Fakes do not qualify real Telegram, Codex, launchd or storage behavior; the live results are recorded separately below.
 
 ### Step 2 qualifications
 
@@ -207,7 +207,7 @@ Run on 2026-10-22 on one Mac (macOS 27.0.1), pilotq 0.1.0 at commit `56199c9` bu
 
 ## Step 3 qualification
 
-Results for the [section 10](../pilotq.md#10-adoption-sequence) step 3 slice, task [#18](https://github.com/taskqorg/pilotq/issues/18), against the [first TaskQ tool contract](../pilotq.md#first-taskq-tool-contract). Deterministic traces run in `cargo test --locked` with a fake TaskQ CLI (`FAKE_TASKQ` in `tests/telegram.rs`: argument log, op-id receipts, revision-checked answers, board-down and lost-response faults), a fake Codex that makes one complete dynamic tool call per turn, the fake Bot API (messages, edits, typing) and a 1 s board scan. Fakes do not qualify the real board, Codex dynamic tools or Telegram; the live run is listed separately.
+Results for the [section 10](adoption.md#10-adoption-sequence) step 3 slice, task [#18](https://github.com/taskqorg/pilotq/issues/18), against the [first TaskQ tool contract](integration-contract.md#first-taskq-tool-contract). Deterministic traces run in `cargo test --locked` with a fake TaskQ CLI (`FAKE_TASKQ` in `tests/telegram.rs`: argument log, op-id receipts, revision-checked answers, board-down and lost-response faults), a fake Codex that makes one complete dynamic tool call per turn, the fake Bot API (messages, edits, typing) and a 1 s board scan. Fakes do not qualify the real board, Codex dynamic tools or Telegram; the live run is listed separately.
 
 | Case | Deterministic result | Traces |
 |---|---|---|
@@ -232,7 +232,7 @@ Results for the [section 10](../pilotq.md#10-adoption-sequence) step 3 slice, ta
 
 ### Scripted live-board run (A8)
 
-The owner replaced the human test-bot run on 2026-10-23 (root [section 5](../pilotq.md#first-taskq-tool-contract)). `a8_live_board_run` in `tests/telegram.rs` runs the real PilotQ binary with real Codex (PilotQ's own Codex home holding only the subscription login), the real `taskqorg/pilotq` board and TaskQ CLI. Telegram is the local fake Bot API with two synthetic users, 7 (configured owner) and 8. It files and publishes a real task, so it is `#[ignore]` and runs only on request:
+The owner replaced the human test-bot run on 2026-10-23 (root [section 5](integration-contract.md#first-taskq-tool-contract)). `a8_live_board_run` in `tests/telegram.rs` runs the real PilotQ binary with real Codex (PilotQ's own Codex home holding only the subscription login), the real `taskqorg/pilotq` board and TaskQ CLI. Telegram is the local fake Bot API with two synthetic users, 7 (configured owner) and 8. It files and publishes a real task, so it is `#[ignore]` and runs only on request:
 
 ```sh
 PILOTQ_A8_ROOT=<pilotq checkout with create_claim_issue> PILOTQ_A8_TASKQ=<taskq binary> PILOTQ_A8_CODEX_HOME=<logged-in Codex home> \
@@ -257,7 +257,7 @@ Run 1 failed before any board write and exposed a defect. Three requests started
 
 ## Human trial (task #42)
 
-[Contract §5](../pilotq.md#human-trial) records the owner's 2026-10-26 simplification: the two existing FRA users, the owner and Simon, test on the fly with test tasks. No invitation, private-ID exchange or additional readiness gate is required. This supersedes the earlier three-person plan. The owner ended the human trial on 2026-10-29 using available evidence, shortening the planned seven-day observation period; the request-linked report remains and gate 4 stays separate.
+[Contract §5](integration-contract.md#human-trial) records the owner's 2026-10-26 simplification: the two existing FRA users, the owner and Simon, test on the fly with test tasks. No invitation, private-ID exchange or additional readiness gate is required. This supersedes the earlier three-person plan. The owner ended the human trial on 2026-10-29 using available evidence, shortening the planned seven-day observation period; the request-linked report remains and gate 4 stays separate.
 
 ### Testing and feedback
 
@@ -275,7 +275,7 @@ A1 records the current plan in the contract and these cases. The owner's continu
 
 ## Step 4 qualification
 
-Results for the [section 10](../pilotq.md#10-adoption-sequence) step 4 slice, task [#23](https://github.com/taskqorg/pilotq/issues/23), against [direct actions, keys and project switching](../pilotq.md#direct-actions-keys-and-project-switching). Deterministic traces run in `cargo test --locked` with a fake `gh` (`FAKE_GH` in `tests/telegram.rs`: argument log, a token check that never records the token, issues, comments and labels in a state file, an option that makes an issue body echo the token), the fake TaskQ CLI as the registration readback, a fake Codex that makes several dynamic tool calls per turn (`multi`, or `hex` so that the person's text names nothing the calls use), the fake Bot API and the `PILOTQ_FAULT` crash points `before-effect` and `after-effect`. Fakes do not qualify GitHub, real Codex tool choice or Telegram; the live run is listed separately.
+Results for the [section 10](adoption.md#10-adoption-sequence) step 4 slice, task [#23](https://github.com/taskqorg/pilotq/issues/23), against [direct actions, keys and project switching](integration-contract.md#direct-actions-keys-and-project-switching). Deterministic traces run in `cargo test --locked` with a fake `gh` (`FAKE_GH` in `tests/telegram.rs`: argument log, a token check that never records the token, issues, comments and labels in a state file, an option that makes an issue body echo the token), the fake TaskQ CLI as the registration readback, a fake Codex that makes several dynamic tool calls per turn (`multi`, or `hex` so that the person's text names nothing the calls use), the fake Bot API and the `PILOTQ_FAULT` crash points `before-effect` and `after-effect`. Fakes do not qualify GitHub, real Codex tool choice or Telegram; the live run is listed separately.
 
 | Case | Deterministic result | Traces |
 |---|---|---|
@@ -316,7 +316,7 @@ Run 1 failed on the last check and exposed a defect. Every step above passed, bu
 
 ## Step 5 qualification
 
-Results for the [section 10](../pilotq.md#10-adoption-sequence) step 5 slice, task [#26](https://github.com/taskqorg/pilotq/issues/26). The owner decided on 2026-10-23 that the pilot runs on the native compaction baseline: agentq 0.9.0 compresses only Codex shell results (`exec_command`, `shell`), PilotQ starts Codex with the shell tool disabled, and PilotQ's own tools are Codex dynamic tools whose results agentq passes unchanged. agentq qualification follows the adapter task [taskqorg/agentq#167](https://github.com/taskqorg/agentq/issues/167).
+Results for the [section 10](adoption.md#10-adoption-sequence) step 5 slice, task [#26](https://github.com/taskqorg/pilotq/issues/26). The owner decided on 2026-10-23 that the pilot runs on the native compaction baseline: agentq 0.9.0 compresses only Codex shell results (`exec_command`, `shell`), PilotQ starts Codex with the shell tool disabled, and PilotQ's own tools are Codex dynamic tools whose results agentq passes unchanged. agentq qualification follows the adapter task [taskqorg/agentq#167](https://github.com/taskqorg/agentq/issues/167).
 
 Versions: pilotq 0.1.0 (this branch), codex-cli 0.159.3 in PilotQ's own Codex home (subscription login), model `gpt-6.1-sol`, TaskQ CLI 4.6.36-dev on the Mac host, agentq 0.9.0 (installed, its Codex integration detached and its service not running), macOS 27.0.1.
 
@@ -457,7 +457,7 @@ All 62 scenario families at the end of step 5. "Deterministic" names `cargo test
 
 ## Step 5 profile correction follow-up (#28)
 
-Task [#28](https://github.com/taskqorg/pilotq/issues/28) applies R10, R13 and [section 6](../pilotq.md#6-memory-and-agentq): every turn loads the sender's current route-visible profile, with revisions, before the person's request. An empty snapshot after forgetting supersedes earlier conversation and summary values. Profile values remain data, never grants or instructions. The contract is unchanged.
+Task [#28](https://github.com/taskqorg/pilotq/issues/28) applies R10, R13 and [section 6](runtime-contract.md#6-memory-and-agentq): every turn loads the sender's current route-visible profile, with revisions, before the person's request. An empty snapshot after forgetting supersedes earlier conversation and summary values. Profile values remain data, never grants or instructions. The contract is unchanged.
 
 **Before:** #26's C07 live runs failed 3/3: conversation history said Ana after `users remember` set Bea. Inspection on base `6bad757` found no profile read in the manager. The new `c07_current_profiles_reach_each_turn` fake-Codex trace failed because the first turn input was request text rather than a profile snapshot.
 
@@ -626,11 +626,11 @@ After merge and the PM's `live` push, the PM updates FRA through `pilotq update`
 
 ### Task #68 reply-flow checks
 
-The changed presentation follows [§4](../pilotq.md#delivery), [§5](../pilotq.md#direct-actions-keys-and-project-switching) and [§12](../pilotq.md#telegram-feedback). `telegram_reply_delivery_fallbacks` checks private drafts, one-second coalescing, reaction failure, draft failure, rich rejection, HTML entity rejection, final delivery and absence of DM reply quotes. `project_list_is_scoped_and_marks_current` protects registry/grant filtering and revocation. The journal cases protect duplicate receipts, queue notices across restart and ordered fallback receipts. A40’s discussion case now requires a real `project_list` call and reaction receipts without queued-text spam. Per the approved §9 handoff, the PM runs the updated suite after merge on FRA; the owner checks the DM flow. These remain unverified until their run and observation are recorded.
+The changed presentation follows [§4](runtime-contract.md#delivery), [§5](integration-contract.md#direct-actions-keys-and-project-switching) and [§12](runtime-contract.md#telegram-feedback). `telegram_reply_delivery_fallbacks` checks private drafts, one-second coalescing, reaction failure, draft failure, rich rejection, HTML entity rejection, final delivery and absence of DM reply quotes. `project_list_is_scoped_and_marks_current` protects registry/grant filtering and revocation. The journal cases protect duplicate receipts, queue notices across restart and ordered fallback receipts. A40’s discussion case now requires a real `project_list` call and reaction receipts without queued-text spam. Per the approved §9 handoff, the PM runs the updated suite after merge on FRA; the owner checks the DM flow. These remain unverified until their run and observation are recorded.
 
 ### Telegram layout and image input, task #72
 
-The owner’s image decision is in [§1 and §11](../pilotq.md#11-decisions-still-open); presentation follows [§12](../pilotq.md#telegram-feedback). The original rich-delivery regression failed because `rich_message.markdown` was absent. With the former text-only classification temporarily restored, `image_messages_are_input` failed with `other` instead of `image`; restoring the fix passes the same case. The initial image fixture used `Update` deserialization incorrectly; that fixture error is not product failure evidence.
+The owner’s image decision is in [§1 and §11](adoption.md#11-decisions-still-open); presentation follows [§12](runtime-contract.md#telegram-feedback). The original rich-delivery regression failed because `rich_message.markdown` was absent. With the former text-only classification temporarily restored, `image_messages_are_input` failed with `other` instead of `image`; restoring the fix passes the same case. The initial image fixture used `Update` deserialization incorrectly; that fixture error is not product failure evidence.
 
 - `telegram_reply_delivery_fallbacks` and `telegram::rich_markdown_keeps_layout_and_literal_source` protect paragraphs, list/heading/bold Markdown, literal HTML/code, and the retained durable HTML/plain fallback. The plan sample is `tests/fixtures/telegram-plan.md`.
 - `telegram_images_reach_same_session` checks photo/image-document inputs with and without captions, actual local image bytes at the fake model boundary, session resume across restart, duplicate suppression and temporary-file removal.
@@ -657,7 +657,7 @@ This deterministic boundary check does not qualify a systemd restart or live Tel
 
 ### Compact reply formatting, task #82
 
-Presentation follows [§12](../pilotq.md#telegram-feedback). Inspection of the delivery path found three causes of lost layout:
+Presentation follows [§12](runtime-contract.md#telegram-feedback). Inspection of the delivery path found three causes of lost layout:
 
 - Rich Markdown and rich drafts passed a single model line break through unchanged. Markdown treats it as a soft break and renders a space, so status and error lines merged. `telegram::replies_keep_lines_and_compact_fallback` failed before the fix with `Task #12 is doing.\nA worker is on it.` instead of the hard-break form, and passes after it.
 - The HTML fallback rendered headings, bold, code and links only. Bullets, `*italic*`, `__bold__`, Markdown escapes and horizontal rules reached the chat as raw marks. The same test now checks them.
@@ -711,7 +711,7 @@ On FRA on 2026-10-29, `PILOTQ_A8_CODEX_HOME=<subscription home> cargo test --loc
 Observed replies included “Saved locally as **plan revision 1**; nothing was filed or run”, “Created and queued” with a labeled task link and unconfirmed execution, status “**ready**, waiting for a free worker”, and “Привет, я на связи!”. The question preserved both named options, their plus/minus text and `Recommended: short wording, because the linked guide already covers setup.` Only the CLI answer line was removed. These finite cases qualify the model/adapter flow and relay, not every possible reply or visual acceptance in the Telegram client. Production cutover remains unauthorized.
 ### Answered Telegram questions (#94)
 
-Under [§5](../pilotq.md#first-taskq-tool-contract), U94 starts with a delivered question in a forum topic. A trusted, unedited board answer from another surface closes that message in place with the author and answer, removes its buttons and preserves its topic. After restart and a newer question, tapping the old button shows the original accepted answer as a toast and issues no TaskQ answer command. Untrusted and edited entries do not supply receipts; duplicate scans do not enqueue another edit. The parser cases retain literal free text, option answers, question boundaries and attempt fencing.
+Under [§5](integration-contract.md#first-taskq-tool-contract), U94 starts with a delivered question in a forum topic. A trusted, unedited board answer from another surface closes that message in place with the author and answer, removes its buttons and preserves its topic. After restart and a newer question, tapping the old button shows the original accepted answer as a toast and issues no TaskQ answer command. Untrusted and edited entries do not supply receipts; duplicate scans do not enqueue another edit. The parser cases retain literal free text, option answers, question boundaries and attempt fencing.
 
 Before the fix, `cargo test --locked --test telegram u94_answer_elsewhere_closes_question -- --nocapture` failed with `timed out: answered question edited`. After the fix the same check passed. This uses a fake TaskQ, board comments and Bot API; it does not qualify real Telegram delivery or a deployment. TaskQ #1785 has not yet published its snapshot fields; the approved transitional path reads paginated GitHub board comments using TaskQ's trust and edit rules.
 
@@ -721,7 +721,7 @@ Review regression (#94): the post-answer snapshot returns to the older attempt r
 
 Historical evidence below describes #93. Task #165 supersedes its verbose plan rendering; current checks retain the same authorization and recovery boundaries with three-line task summaries.
 
-Owner decision: [§5 Plan discussion and action buttons](../pilotq.md#plan-discussion-and-action-buttons), task #93 option 1. The previous adapter instructed the manager to present every saved revision as a new plan revision and offered no launch button. `u93_draft_display` reproduces the display defect on the unchanged implementation: a saved scope could end with only `Saved.`. The same check passes with the saved title, goal, acceptance, scope and launch affordance rendered from the journal.
+Owner decision: [§5 Plan discussion and action buttons](integration-contract.md#plan-discussion-and-action-buttons), task #93 option 1. The previous adapter instructed the manager to present every saved revision as a new plan revision and offered no launch button. `u93_draft_display` reproduces the display defect on the unchanged implementation: a saved scope could end with only `Saved.`. The same check passes with the saved title, goal, acceptance, scope and launch affordance rendered from the journal.
 
 The executable checks retain these protections:
 
@@ -745,7 +745,7 @@ For semantic qualification, set `PILOTQ_A8_CODEX_HOME` to a subscription-authent
 
 ### Voice input, task #104
 
-The owner's voice decision is in [§1 and §11](../pilotq.md#11-decisions-still-open); the path is in [§12](../pilotq.md#telegram-feedback). With voice temporarily classified as before (`other`), `telegram_voice_becomes_sender_text` failed waiting for answered voice requests; restoring the classification passes it.
+The owner's voice decision is in [§1 and §11](adoption.md#11-decisions-still-open); the path is in [§12](runtime-contract.md#telegram-feedback). With voice temporarily classified as before (`other`), `telegram_voice_becomes_sender_text` failed waiting for answered voice requests; restoring the classification passes it.
 
 - `cargo test --locked --test telegram telegram_voice_becomes_sender_text` sends an OGG/Opus voice note, an MP3 audio file with a caption and an M4A audio document through the fake Bot API, fake ffmpeg and fake recognizer. It checks the marked transcript after the caption at the Codex boundary, journal file identity and transcript, recognizer arguments, temporary-file removal and that no audio, download path or token reaches Codex.
 - `cargo test --locked --test telegram telegram_voice_failures_are_short` covers an undecodable file, a file over 20 MiB, a recording over 5 minutes, missing configuration and an ignored sender: one short localized line, no model turn, no download where admission already decides.
@@ -789,7 +789,7 @@ The candidate doctor on FRA returned all checks `ok`, including `voice`. The mod
 ## Built-in commands and model selection (#106)
 
 The owner selected per-conversation manager models; worker policy remains with
-TaskQ ([§9](../pilotq.md#command-line), R9, R13). FRA requests 37–41 on
+TaskQ ([§9](service-contract.md#command-line), R9, R13). FRA requests 37–41 on
 2026-10-29 sent `/version`, `/model`, `/doctor`, `/help` and `/restart` to Codex;
 the owner reported `/restart` waiting 40 minutes. The deterministic reproduction
 `cargo test --locked u106_commands_bypass_active_chat` failed before the fix
@@ -883,7 +883,7 @@ Local adapters do not qualify this live appearance or model interpretation.
 
 ## Approved installed commands (#126)
 
-Owner-approved capability list: [contract §5](../pilotq.md#installed-read-commands).
+Owner-approved capability list: [contract §5](integration-contract.md#installed-read-commands).
 Before this change, `shell_tool` is disabled and no dynamic tool executes an
 installed read command; `taskq list` and `pwd` have no common dispatch path.
 
@@ -927,7 +927,7 @@ deployment is part of #126.
 
 ### Telegram reply files (#145)
 
-Under [§5](../pilotq.md#5-taskq-integration), photos and documents with optional captions reach TaskQ answer, steer and owner requeue as readable files. Local `reply_files` checks protect identity/caption admission, duplicate and ignored updates, source isolation, bounded HTTP downloads, readable CLI files, original revision and same-operation retry. Existing question/grant/fence checks continue to apply. A refusal or uncertain write retains the reply and explains its reason and fix. The PM executes the [A2 live recipe](reply-files-145.md) after release on PDS 18, recording exact client/TaskQ revisions, a photo, a 20 MB document, mixed text/files and verified worker copies. A2 is not qualified by fake transport or CI.
+Under [§5](integration-contract.md#5-taskq-integration), photos and documents with optional captions reach TaskQ answer, steer and owner requeue as readable files. Local `reply_files` checks protect identity/caption admission, duplicate and ignored updates, source isolation, bounded HTTP downloads, readable CLI files, original revision and same-operation retry. Existing question/grant/fence checks continue to apply. A refusal or uncertain write retains the reply and explains its reason and fix. The PM executes the [A2 live recipe](reply-files-145.md) after release on PDS 18, recording exact client/TaskQ revisions, a photo, a 20 MB document, mixed text/files and verified worker copies. A2 is not qualified by fake transport or CI.
 
 ### Administration by request (#160)
 
@@ -945,7 +945,7 @@ R15 and §5 own the grants and limits. Deterministic component traces use invent
 
 ### Conversation contract (#165)
 
-The [Conversation contract](../pilotq.md#conversation-contract) and [stage table](conversation-flow.md) own presentation. These cases amend the #72/#91/#93/#110 plan/status assertions and #119/#124 footer assertions; they retain authorization, immutable scope, grant, duplicate, receipt, route and recovery protection.
+The [Conversation contract](conversation-contract.md#conversation-contract) and [stage table](conversation-flow.md) own presentation. These cases amend the #72/#91/#93/#110 plan/status assertions and #119/#124 footer assertions; they retain authorization, immutable scope, grant, duplicate, receipt, route and recovery protection.
 
 | Case | Input / condition | Expected observation |
 |---|---|---|
@@ -962,7 +962,7 @@ A7 remains a PM check after merge/release on PDS 18: record exact source/binary 
 
 ### Project onboarding (#168)
 
-Owner-required cases under [§5](../pilotq.md#project-onboarding-task-168):
+Owner-required cases under [§5](integration-contract.md#project-onboarding):
 
 - **O168-1:** register an explicitly supplied root with a matching board and claim,
   Codex limit 4 and no operator grant. Registration remains saved; the CLI exits

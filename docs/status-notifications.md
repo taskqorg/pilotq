@@ -1,6 +1,6 @@
 # Service state and notifications
 
-Research for [task #81](https://github.com/taskqorg/pilotq/issues/81). It proposes how PilotQ shows its own state and notifies about restarts, updates, failures and recovery across several boards and chats. **Owner decision (task #81, option A):** the minimal variant below, built on the #77 rollback DM; [pilotq.md §9](../pilotq.md#update-and-monitoring) records it. Options outside it stay later stages. Notification grammar follows [specq notifications](https://github.com/taskqorg/specq/blob/main/caveman/rules/notifications.md).
+Research for [task #81](https://github.com/taskqorg/pilotq/issues/81). It proposes how PilotQ shows its own state and notifies about restarts, updates, failures and recovery across several boards and chats. **Owner decision (task #81, option A):** the minimal variant below, built on the #77 rollback DM; [pilotq.md §9](service-contract.md#update-and-monitoring) records it. Options outside it stay later stages. Notification grammar follows [specq notifications](https://github.com/taskqorg/specq/blob/main/caveman/rules/notifications.md).
 
 ## Current state (origin/main 93d15dc)
 
