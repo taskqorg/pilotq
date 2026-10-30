@@ -33,14 +33,14 @@ fn version(raw: &str) -> Option<Vec<u64>> {
 }
 
 fn probe(name: &str, bin: Option<&str>, args: &[&str], minimum: &str, prefix: &str, fix: &str) -> Value {
-    let recorded = if name == "sherpa-onnx-offline" || name == "taskq" { bin.and_then(recorded_version) } else { None };
-    let found = recorded.or_else(|| if name == "taskq" { None } else { bin.and_then(|bin|output(Command::new(bin).args(args)).ok()).and_then(|o| {
+    let recorded = if name == "sherpa-onnx-offline" { bin.and_then(recorded_version) } else { None };
+    let found = recorded.or_else(|| bin.and_then(|bin|output(Command::new(bin).args(args)).ok()).and_then(|o| {
         let text = String::from_utf8_lossy(&o.stdout).to_string()+&String::from_utf8_lossy(&o.stderr);
         if name == "taskq_service" {
             return serde_json::from_str::<Value>(&text).ok()?["service"]["version"].as_str().map(str::to_string);
         }
         text.lines().find_map(|l|l.trim().strip_prefix(prefix)?.split_whitespace().next().map(str::to_string))
-    }) });
+    }));
     // Only ffmpeg's distribution package suffix is accepted; prereleases are unqualified.
     let found = found.map(|v| if name == "ffmpeg" { v.split('-').next().unwrap().to_string() } else { v })
         .filter(|v|version(v).is_some());
@@ -64,7 +64,7 @@ pub fn report(c: Option<&crate::Config>) -> Value {
     let voice = c.and_then(|c|c.voice.as_ref());
     let mut checks = vec![
         probe("codex",c.map(|c|c.codex.bin.as_str()),&["--version"],"0.162.0","codex-cli ","Install @openai/codex@0.162.0 or newer; set config.json codex to its absolute path"),
-        probe("taskq",c.and_then(|c|c.taskq.as_ref()).and_then(|t|t.bin.to_str()),&["service","status","--json"],"4.6.44","","Update TaskQ CLI to 4.6.44 or newer; set taskq.bin and create its verified .pilotq-version.json receipt (tester guide)"),
+        probe("taskq",c.and_then(|c|c.taskq.as_ref()).and_then(|t|t.bin.to_str()),&["--version"],"4.6.46","","Update TaskQ CLI to 4.6.46 or newer; set taskq.bin"),
         probe("taskq_service",c.and_then(|c|c.taskq.as_ref()).and_then(|t|t.bin.to_str()),&["service","status","--json"],"4.6.40","","Update the existing TaskQ service to 4.6.40 or newer"),
         probe("ffmpeg",voice.map(|v|v.ffmpeg.as_str()),&["-version"],"6.1.0","ffmpeg version ","Install ffmpeg 6.1 or newer; set voice.ffmpeg"),
         probe("sherpa-onnx-offline",voice.map(|v|v.recognizer.as_str()),&["--version"],"2.0.1","","Install static sherpa-onnx 2.0.1 or newer; set voice.recognizer and create its verified .pilotq-version.json receipt (tester guide)"),
@@ -84,10 +84,10 @@ pub fn report(c: Option<&crate::Config>) -> Value {
         Ok(entries) => for (name,entry) in entries.as_object().unwrap() {
             let minimum=entry["minimum_version"].as_str().filter(|s|version(s).is_some());
             let check=if let Some(minimum)=minimum {
-                let mut v=probe("taskq",entry["executable"].as_str(),&[],minimum,"","Provision the approved executable and its verified .pilotq-version.json receipt (tester guide)");
+                let mut v=probe("taskq",entry["executable"].as_str(),&["--version"],minimum,"","Provision the approved executable with a working --version command");
                 v["tool"]=json!(format!("command:{name}"));v
             } else {
-                json!({"tool":format!("command:{name}"),"found":null,"minimum":null,"outcome":"failed","fix":"Declare minimum_version in the protected commands.json entry and provision its verified binary receipt"})
+                json!({"tool":format!("command:{name}"),"found":null,"minimum":null,"outcome":"failed","fix":"Declare minimum_version in the protected commands.json entry and provision its executable with --version"})
             };
             checks.push(check);
         },
@@ -113,12 +113,17 @@ mod tests {
         let d=std::env::temp_dir().join(format!("pilotq-host-versions-{}",std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let bin=d.join("tool");
-        for (minimum,old) in [("0.162.0","0.161.9"),("4.6.40","4.6.39"),("4.6.44","4.6.43"),("2.45.0","2.9.0"),("6.1.0","6.0.9"),("2.0.1","2.0.0"),("7.68.0","7.67.9"),("245","244"),("3.3.17","3.3.16"),("3.23","3.22")] {
+        for (minimum,old) in [("0.162.0","0.161.9"),("4.6.40","4.6.39"),("4.6.46","4.6.45"),("2.45.0","2.9.0"),("6.1.0","6.0.9"),("2.0.1","2.0.0"),("7.68.0","7.67.9"),("245","244"),("3.3.17","3.3.16"),("3.23","3.22")] {
             for (found,expected) in [(old,"failed"),(minimum,"ok"),("nonsense","failed"),("2.45.0-rc1","failed")] {
                 std::fs::write(&bin,format!("#!/bin/sh\necho 'tool {found}'\n")).unwrap();
                 std::fs::set_permissions(&bin,std::fs::Permissions::from_mode(0o700)).unwrap();
                 assert_eq!(probe("fixture",bin.to_str(),&["--version"],minimum,"tool ","install tool")["outcome"],expected);
             }
+        }
+        // §9 / #154: TaskQ self-updates must not require a checksum receipt.
+        for (found,expected) in [("4.6.45","failed"),("4.6.46","ok")] {
+            std::fs::write(&bin,format!("#!/bin/sh\n[ \"$*\" = --version ] || exit 1\necho '{found}'\n")).unwrap();
+            assert_eq!(probe("taskq",bin.to_str(),&["--version"],"4.6.46","","update taskq")["outcome"],expected);
         }
         // Known SHA-256 for the empty string; a changed executable cannot inherit its release identity.
         std::fs::write(&bin,"").unwrap();
