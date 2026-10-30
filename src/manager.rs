@@ -430,6 +430,7 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
         profile["conversation"] = context.clone();
         profile["conversation"]["attached_images"] = json!(images.iter().map(|(id,_)|*id).collect::<Vec<_>>());
         profile["conversation"]["missing_images"] = json!(r.image_gaps.iter().filter(|id|allowed_image(**id)).collect::<Vec<_>>());
+        j.lock().unwrap().catalogue(r,&tools)?;
         let refresh = j.lock().unwrap().refresh_tools(r)?;
         let mut input = json!([{"type": "text", "text": profile.to_string()}, {"type":"text","text":draft.to_string()}, {"type": "text", "text": r.text}]);
         for (_, path) in images {

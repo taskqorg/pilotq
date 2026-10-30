@@ -331,6 +331,23 @@ mod tests {
     }
     fn tq(bot:Option<teloxide::Bot>) -> Taskq { Taskq{bot,bin:"/unused".into(),root:"/unused".into(),poll:Duration::from_secs(15)} }
 
+    // §4/§8: after grants change, native sessions must receive the newly scoped tools, not their old catalogue.
+    #[test]
+    fn admin_160_catalogue_refresh() {
+        let (mut j,dir,_)=setup();
+        let r=j.ask(7,"hello",1).unwrap();
+        let ordinary=json!([{"name":"project_list"}]);
+        j.catalogue(&r,&ordinary).unwrap();
+        j.finish(&r,Some("invented-native-thread"),None,&crate::manager::Outcome::Answered("hello".into()),2).unwrap();
+        let r=j.ask(7,"administer",3).unwrap();
+        j.catalogue(&r,&ordinary).unwrap();assert!(!j.refresh_tools(&r).unwrap());
+        j.catalogue(&r,&json!(tools())).unwrap();assert!(j.refresh_tools(&r).unwrap());
+        j.rebuild(&r,4).unwrap();
+        j.finish(&r,Some("invented-replacement-thread"),None,&crate::manager::Outcome::Answered("ready".into()),5).unwrap();
+        assert!(!j.refresh_tools(&r).unwrap());
+        let _=std::fs::remove_dir_all(dir);
+    }
+
     // R10/R15/R17: authorization and route identity, atomic audit, no replay after later corrections.
     #[test]
     fn admin_160_grants_trace() {
@@ -378,6 +395,8 @@ mod tests {
         m.lock().unwrap().0.execute_batch("DROP TRIGGER fail_receipt").unwrap();
         assert!(call(&d,&m,&r,"user_grant",&args,end(),None).0);
         drop(m);let mut j=Journal::open(&dir.join("journal.sqlite")).unwrap();recover(&mut j,5).unwrap();assert!(j.has(8,"users").unwrap());
+        let rebuilt=j.rebuild(&r,6).unwrap();
+        assert!(rebuilt["receipts"].as_array().unwrap().iter().any(|e|e["kind"]=="admin" && e["result"].as_str().and_then(|s|serde_json::from_str::<Value>(s).ok()).is_some_and(|v|v["outcome"]=="accepted")),"native recovery must retain administration receipts rather than repeat effects");
         let _=std::fs::remove_dir_all(dir);
     }
 

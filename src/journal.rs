@@ -1592,7 +1592,7 @@ impl Journal {
         drop(q);
         // Retain effect/task evidence beyond the recent-text window, including unresolved outcomes.
         let mut q = tx.prepare("SELECT a.request_id, a.kind, a.target, a.item, a.result FROM audit_events a JOIN requests q ON q.id=a.request_id
-            WHERE q.session=?1 AND EXISTS (SELECT 1 FROM runs x WHERE x.request_id=q.id AND x.generation=?2) AND a.kind IN ('direct','task') ORDER BY a.id").map_err(e)?;
+            WHERE q.session=?1 AND EXISTS (SELECT 1 FROM runs x WHERE x.request_id=q.id AND x.generation=?2) AND a.kind IN ('direct','task','admin','admin_recovery') ORDER BY a.id").map_err(e)?;
         let receipts: Vec<Value> = q.query_map(params![r.session, r.generation], |x| Ok(json!({
             "request": x.get::<_, i64>(0)?, "kind": x.get::<_, String>(1)?, "target": x.get::<_, Option<String>>(2)?,
             "item": x.get::<_, Option<String>>(3)?, "result": x.get::<_, Option<String>>(4)?
@@ -1611,6 +1611,24 @@ impl Journal {
         drop(q);
         tx.commit().map_err(e)?;
         Ok(context)
+    }
+
+    /// §4/§8: native dynamic tools are fixed at thread creation. Grant changes rebuild before reuse.
+    pub fn catalogue(&self, r: &Run, tools: &Value) -> Result<(), String> {
+        use std::hash::{Hash, Hasher};
+        let mut hash=std::collections::hash_map::DefaultHasher::new();
+        tools.to_string().hash(&mut hash);
+        let hash=hash.finish() as i64;
+        let tx=self.0.unchecked_transaction().map_err(|e|e.to_string())?;
+        let key=format!("catalogue:{}",r.session);
+        let previous:Option<i64>=tx.query_row("SELECT value FROM meta WHERE key=?1",[&key],|x|x.get(0)).optional().map_err(|e|e.to_string())?;
+        if previous!=Some(hash) {
+            tx.execute("INSERT INTO meta(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,hash]).map_err(|e|e.to_string())?;
+            if r.thread.is_some() {
+                tx.execute("INSERT OR IGNORE INTO meta(key,value) VALUES (?1,1)",[format!("refresh:{}",r.session)]).map_err(|e|e.to_string())?;
+            }
+        }
+        tx.commit().map_err(|e|e.to_string())
     }
 
     pub fn refresh_tools(&self, r: &Run) -> Result<bool, String> {
