@@ -3391,6 +3391,8 @@ if paths:
         let before=tq_calls(&d).iter().filter(|a|a[0]==cmd).count();
         push(&st,call(id,OWNER,None,OWNER,tool,json!({"project":"pilotq","task":"19","source_request":foreign})));
         wait("foreign file source refused",15,||query(&d,&format!("SELECT count(*) FROM requests WHERE update_id={id} AND state='answered'"))==1);
+        // §4: request completion precedes outbox delivery; observe the refusal separately.
+        wait("foreign file refusal delivered",15,||sent_has(&st,"files must come from your own input in this conversation generation"));
         assert!(sent_has(&st,"files must come from your own input in this conversation generation"));
         assert_eq!(tq_calls(&d).iter().filter(|a|a[0]==cmd).count(),before,"another person's files never authorize dispatch");
     }
