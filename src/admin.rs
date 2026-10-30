@@ -187,9 +187,12 @@ fn register(d: &Direct, j: &Mutex<Journal>, r: &Run, args: &Value, deadline: Ins
     j.add_project(j.sender(r.request)?,project,repo,root.to_str().unwrap(),now())?;
     let saved=j.projects()?.into_iter().find(|p|p.0==project).ok_or("Project registration readback failed")?;
     let config:Value=serde_json::from_str(&std::fs::read_to_string(root.join("taskq.json")).map_err(|_|"Configuration readback failed")?).map_err(|_|"Configuration readback invalid")?;
-    let ready=config["create_claim_issue"].as_i64().is_some_and(|n|n>0);
+    let claim_configured=config["create_claim_issue"].as_i64().is_some_and(|n|n>0);
+    crate::onboarding::queue(&j,project)?;
+    let ready=false;
     let result=json!({"outcome":"accepted","project":saved.0,"repo":saved.1,"root":saved.2,"board":board,"host":host,"filing_ready":ready,
-        "filing_note":if ready {"Claim configured; TaskQ admission still verifies its prerequisites."} else {"Filing disabled: owner must provision create_claim_issue and qualify TaskQ readback; no claim issue was created."}});
+        "onboarding":"pending", "claim_configured":claim_configured,
+        "filing_note":"Registered; setup checks are pending. The owner receives onboarding steps in Telegram. Filing is disabled until checks pass or the owner records a readiness override; claim prerequisites remain required."});
     receipt(&j,r.request,"project_register",&result)?; tx.commit().map_err(err)?; Ok(result)
 }
 
@@ -447,6 +450,30 @@ mod tests {
         drop(m);let mut j=Journal::open(&dir.join("journal.sqlite")).unwrap();recover(&mut j,5).unwrap();assert!(j.has(8,"users").unwrap());
         let rebuilt=j.rebuild(&r,6).unwrap();
         assert!(rebuilt["receipts"].as_array().unwrap().iter().any(|e|e["kind"]=="admin" && e["result"].as_str().and_then(|s|serde_json::from_str::<Value>(s).ok()).is_some_and(|v|v["outcome"]=="accepted")),"native recovery must retain administration receipts rather than repeat effects");
+        let _=std::fs::remove_dir_all(dir);
+    }
+
+    // #168 A4/A5 / §5: a claim and Codex slots do not make an ungranted project ready.
+    #[cfg(unix)]
+    #[test]
+    fn onboarding_168_registration_is_not_readiness() {
+        use std::os::unix::fs::PermissionsExt;
+        let (mut j,dir,d)=setup();
+        let root=d.keys.0.parent().unwrap().join("projects/cyprusbz-board");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("taskq.json"),r#"{"repo":"invented/cyprusbz-board","board":"github","host":"github.com","create_claim_issue":20}"#).unwrap();
+        let bin=dir.join("fake-taskq");
+        let snapshot=json!({"complete":true,"board":{"repo":"invented/cyprusbz-board","kind":"github","host":"github.com"},
+            "capacity":{"limits":{"codex":4},"gate":"open"},"access":[{"runtime":"codex","grant":"none (taskq.json is a request)","refused":"no operator grant"}]});
+        std::fs::write(&bin,format!("#!/bin/sh\nprintf '%s' '{}'\n",snapshot)).unwrap();
+        std::fs::set_permissions(&bin,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let t=Taskq{bin,..tq(None)};
+        let r=run(&mut j,7,1,"register invented/cyprusbz-board as cyprusbz-board");
+        let m=Mutex::new(j);
+        let (ok,out)=call(&d,&m,&r,"project_register",&json!({"project":"cyprusbz-board","repo":"invented/cyprusbz-board","board":"github","host":"github.com"}),end(),Some(&t));
+        assert!(ok,"{out}");
+        let receipt:Value=serde_json::from_str(&out).unwrap();
+        assert_eq!(receipt["filing_ready"],false,"registration must await setup checks, even with a claim and codex limit 4");
         let _=std::fs::remove_dir_all(dir);
     }
 

@@ -57,6 +57,7 @@ fn control(text: Option<&str>) -> Option<&'static str> {
     Some(match cmd {
         "/stop"=>"/stop", "/status"=>"/status", "/new"=>"/new", "/audit"=>"/audit",
         "/help"=>"/help", "/version"=>"/version", "/model"=>"/model", "/model-button"=>"/model-button",
+        "/onboard"=>"/onboard", "/onboard-button"=>"/onboard-button",
         "/doctor"=>"/doctor", "/restart"=>"/restart", "/skills"=>"/skills", "/skill"=>"/skill",
         _=>"/unknown",
     })
@@ -90,7 +91,7 @@ fn brief(language: Option<&str>, reason: &str) -> &'static str {
 /// Admits one request; its row is the audit record (§ 8 Request audit), so who, where, the display name at that time and the
 /// grant set used commit with the input.
 #[allow(clippy::too_many_arguments)]
-fn insert(tx: &Connection, update: i64, front: &str, chat: i64, topic: Option<i64>, sender: i64, name: Option<&str>, message: i64, kind: &str, text: Option<&str>, state: &str, at: i64, session: &str, reply_to: Option<i64>) -> Result<i64, String> {
+pub(crate) fn insert(tx: &Connection, update: i64, front: &str, chat: i64, topic: Option<i64>, sender: i64, name: Option<&str>, message: i64, kind: &str, text: Option<&str>, state: &str, at: i64, session: &str, reply_to: Option<i64>) -> Result<i64, String> {
     let grants = grants_of(tx, sender)?.join(",");
     tx.execute(
         "INSERT INTO requests(update_id, front, chat, topic, sender, name, grants, message, kind, text, state, received_at, session, reply_to) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
@@ -247,7 +248,7 @@ pub(crate) fn chunks(text: &str) -> Vec<String> {
 
 /// Queues a reply as one outbox row per chunk, in order; each chunk has its own receipt, so recovery resends only what is missing.
 #[allow(clippy::too_many_arguments)]
-fn outbox(tx: &Connection, request: i64, chat: i64, topic: Option<i64>, reply_to: Option<i64>, html: Option<&str>, text: &str, at: i64) -> Result<(), String> {
+pub(crate) fn outbox(tx: &Connection, request: i64, chat: i64, topic: Option<i64>, reply_to: Option<i64>, html: Option<&str>, text: &str, at: i64) -> Result<(), String> {
     let parts = chunks(text);
     // Every one-part message renders as HTML, so links are labeled and paths are code (#82).
     // ponytail: a split reply goes as plain text
@@ -396,7 +397,22 @@ fn finish_builtin(tx:&Connection,id:i64,text:&str,ok:bool,at:i64)->Result<(),Str
     let language:Option<String>=tx.query_row("SELECT language FROM requests WHERE id=?1",[id],|r|r.get(0)).map_err(e)?;
     let reply=crate::builtins::localized(text,language.as_deref(),!ok);
     let changed=tx.execute("UPDATE requests SET state=?2,reply=?3,error=?4 WHERE id=?1 AND state IN ('queued','waiting')",params![id,if ok {"answered"} else {"failed"},reply,if ok {None} else {Some(text)}]).map_err(e)?;
-    if changed>0 && front=="telegram" { outbox(tx,id,chat,topic,(chat!=sender).then_some(message),None,&reply,at)?; }
+    if changed>0 && front=="telegram" {
+        let input:String=tx.query_row("SELECT coalesce(text,'') FROM requests WHERE id=?1",[id],|r|r.get(0)).map_err(e)?;
+        let onboarding=input.split_whitespace().next().is_some_and(|c|matches!(c.split('@').next(),Some("/onboard"|"/onboard-button")));
+        let callback:Option<Vec<u8>>=tx.query_row("SELECT value FROM meta WHERE key=?1",[format!("callback:{id}")],|r|r.get(0)).optional().map_err(e)?;
+        if onboarding && callback.is_some() {
+            let callback=String::from_utf8(callback.unwrap()).map_err(|_|"Invalid callback identity")?;
+            let toast=if ok {"Setup updated."} else {text};
+            let acknowledged:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM outbox WHERE request_id=?1 AND kind LIKE 'toast:%')",[id],|r|r.get(0)).map_err(e)?;
+            if !acknowledged {
+                outbox(tx,id,chat,topic,None,None,toast,at)?;
+                tx.execute("UPDATE outbox SET kind=?2 WHERE id=?1",params![tx.last_insert_rowid(),format!("toast:{callback}")]).map_err(e)?;
+            }
+        } else if !onboarding || !ok || input.ends_with(" override") {
+            outbox(tx,id,chat,topic,(chat!=sender).then_some(message),None,&reply,at)?;
+        }
+    }
     Ok(())
 }
 
@@ -420,7 +436,7 @@ fn answer_control(tx: &Connection, session: &str, cmd: &str, request: i64, chat:
             "/unknown" => "Unknown command; use /help.".into(),
             "/restart" if meta(tx,"owner")? != Some(sender) => "Only the configured owner can restart PilotQ.".into(),
             "/restart" => "Restart requested; waiting for active requests to drain.".into(),
-            "/doctor" => "Checking setup.".into(),
+            "/doctor" | "/onboard" | "/onboard-button" => "Checking setup.".into(),
             "/model" | "/model-button" => "Checking model catalogue.".into(),
             // a group or topic would show one person's history to everyone in it
             "/audit" if chat != sender => "Use /audit in a direct message with PilotQ; it shows only your own requests.".into(),
@@ -867,7 +883,7 @@ impl Journal {
         let tx=self.0.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e|e.to_string())?;
         let update:i64=tx.query_row("SELECT min(coalesce(min(update_id),0),0)-1 FROM requests",[],|r|r.get(0)).map_err(|e|e.to_string())?;
         let session=format!("cli:{sender}");
-        let deferred=matches!(cmd,"/model"|"/doctor"|"/restart") && (cmd!="/restart" || meta(&tx,"owner")?==Some(sender));
+        let deferred=matches!(cmd,"/model"|"/doctor"|"/onboard"|"/onboard-button"|"/restart") && (cmd!="/restart" || meta(&tx,"owner")?==Some(sender));
         let failed=matches!(cmd,"/unknown"|"/skill"|"/restart") && !deferred;
         let id=insert(&tx,update,"cli",sender,None,sender,None,0,if deferred {"builtin"} else {"control"},Some(text),if deferred {"queued"} else if failed {"failed"} else {"answered"},at,&session,None)?;
         tx.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?1,coalesce((SELECT generation FROM conversations WHERE session=?2),0))",params![format!("builtin-generation:{id}"),session]).map_err(|e|e.to_string())?;
@@ -1014,7 +1030,7 @@ impl Journal {
                         route >= ROUTE_BACKLOG || total >= TOTAL_BACKLOG
                     };
                     // The independent read-control queue is bounded too; immediate recovery controls stay available.
-                    let builtin_busy=matches!(cmd,Some("/model"|"/model-button"|"/doctor"|"/restart")) && {
+                    let builtin_busy=matches!(cmd,Some("/model"|"/model-button"|"/doctor"|"/onboard"|"/onboard-button"|"/restart")) && {
                         let (route,total):(i64,i64)=tx.query_row("SELECT count(*) FILTER(WHERE chat=?1 AND topic IS ?2),count(*) FROM requests WHERE kind='builtin' AND state IN ('queued','waiting')",params![i.chat,i.topic],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|e.to_string())?;
                         route>=ROUTE_BACKLOG || total>=TOTAL_BACKLOG
                     };
@@ -1028,7 +1044,7 @@ impl Journal {
                     };
                     let (kind, state) = match (cmd, i.kind) {
                         (Some(_), _) if builtin_busy => ("control", "failed"),
-                        (Some("/model" | "/model-button" | "/doctor"), _) => ("builtin", "queued"),
+                        (Some("/model" | "/model-button" | "/doctor" | "/onboard" | "/onboard-button"), _) => ("builtin", "queued"),
                         (Some("/restart"), _) if meta(&tx,"owner")? == Some(sender) => ("builtin", "queued"),
                         (Some("/unknown" | "/skill" | "/restart"), _) => ("control", "failed"),
                         (Some(_), _) => ("control", "answered"),
@@ -1090,7 +1106,7 @@ impl Journal {
                         // §12: accepted text gets a reaction obligation below, without a text acknowledgement.
                         None => String::new(),
                     };
-                    let text=if matches!(cmd,Some("/help"|"/version"|"/model"|"/model-button"|"/doctor"|"/restart"|"/skills"|"/skill"|"/unknown")) {
+                    let text=if matches!(cmd,Some("/help"|"/version"|"/model"|"/model-button"|"/doctor"|"/onboard"|"/onboard-button"|"/restart"|"/skills"|"/skill"|"/unknown")) {
                         crate::builtins::localized(&text,i.language.as_deref(),state=="failed")
                     } else {text};
                     // § 8: a person learns at admission that their requests are recorded, and for how long
@@ -1114,7 +1130,7 @@ impl Journal {
                             tx.execute("UPDATE outbox SET kind=?2 WHERE id=?1",params![tx.last_insert_rowid(),format!("toast:{callback}")]).map_err(|e|e.to_string())?;
                         }
                     }
-                    if !text.is_empty() && !(i.kind=="action" && i.callback.is_some()) {
+                    if !text.is_empty() && !(i.kind=="action" && i.callback.is_some()) && (builtin_busy || !matches!(cmd,Some("/onboard"|"/onboard-button"))) {
                         outbox(&tx, id, i.chat, i.topic, (i.chat != sender).then_some(i.message), Some(&crate::telegram::html(&text)), &text, at)?;
                     }
                     admitted += 1;
@@ -1171,6 +1187,7 @@ impl Journal {
                 &format!(
                     "SELECT id, chat, topic, reply_to, html, text, attempts, CASE WHEN kind='status' THEN (SELECT s.sent_message FROM outbox s WHERE s.request_id=o.request_id AND s.chat=o.chat AND s.topic IS o.topic
                         AND s.kind='status' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
+                        WHEN kind='onboarding' THEN (SELECT s.sent_message FROM outbox s WHERE s.request_id=o.request_id AND s.kind='onboarding' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
                         WHEN kind='choice_answered' THEN o.reply_to
                         WHEN kind='question_answered' THEN (SELECT s.sent_message FROM outbox s WHERE s.task=o.task AND s.project=o.project AND s.chat=o.chat AND s.topic IS o.topic
                         AND s.kind='question' AND s.revision=o.revision AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
@@ -2089,6 +2106,8 @@ impl Journal {
 
     /// Durable source of buttons, shared by rich delivery and the last HTML/plain fallback part.
     pub fn card_buttons(&self, delivery: i64) -> Result<Vec<(String,String)>,String> {
+        let onboarding=crate::onboarding::buttons(self,delivery)?;
+        if !onboarding.is_empty() {return Ok(onboarding); }
         let card: Option<(i64,Option<i64>,Option<String>,Option<String>)> = self.0.query_row(
             "SELECT c.id,c.plan_id,c.options,q.language FROM cards c JOIN outbox o ON o.request_id=c.request_id JOIN requests q ON q.id=c.request_id
             WHERE o.id=?1 AND c.used_request IS NULL AND q.state='answered' AND (o.kind='rich' OR (o.kind='rich_part' AND o.id=(SELECT max(id) FROM outbox WHERE request_id=o.request_id AND kind='rich_part')))",
@@ -2808,7 +2827,7 @@ impl Journal {
 
     /// Appends the ended request's CoreQ event, keyed by request ID. Metadata only: no request or reply text, so no key value
     /// can reach telemetry (§ 8). A telemetry failure is reported and never blocks the request.
-    fn trace(&self, request: i64, at: i64) {
+    pub(crate) fn trace(&self, request: i64, at: i64) {
         let event = || -> Result<Event, String> {
             let (front, state, received, runs, model): (String, String, i64, i64, Option<String>) = self
                 .0

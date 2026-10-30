@@ -959,3 +959,32 @@ The [Conversation contract](../pilotq.md#conversation-contract) and [stage table
 `conversation` component filters cover snapshots, durable edits, grouped task states, progress and problem controls. The Telegram `u165_` filters cover the service/adapters, `/status`, elapsed-time edits and Retry/Cancel; updated existing route/recovery filters keep their authority and receipt assertions. These are local/CI checks, not live appearance qualification.
 
 A7 remains a PM check after merge/release on PDS 18: record exact source/binary identity, then compare a plan, launch, cancel, complete worker question and failure/recovery to the fixture cards using an existing authorized test route/project. Verify same-message edits, button removal, stale toast, elapsed-time liveness and Retry/Cancel. Attach screenshots and receipt evidence under §9/§12. Workers do not install or replace the running service.
+
+### Project onboarding (#168)
+
+Owner-required cases under [§5](../pilotq.md#project-onboarding-task-168):
+
+- **O168-1:** register an explicitly supplied root with a matching board and claim,
+  Codex limit 4 and no operator grant. Registration remains saved; the CLI exits
+  nonzero, readiness is false and the owner DM lists the exact project grant command.
+- **O168-2:** resolve the grant outside PilotQ and tap Recheck. Re-run doctor and the
+  TaskQ fallback, edit the same DM card and remove buttons when all checks pass.
+  Neither check runs the manager, polls Telegram updates or changes host policy.
+- **O168-3:** missing, incomplete, stale, mismatched or failed checks remain gaps.
+  Block add/start before board effects; preserve this gate and its report on restart.
+  The protected owner's written override bypasses only PilotQ readiness, keeps
+  failed findings, and is invalidated by recheck or registration changes.
+- **O168-4:** foreign, duplicate, old-generation and superseded buttons authorize
+  no check or mutation and receive only a toast. Lost/deleted cards can be replaced
+  only in the original owner DM. Failed delivery stays in the existing outbox.
+
+- **O168-5:** with `pilotq-github` permitting `issue_read` but granted to `pilotq`
+  alone, report a key gap for each of `cyprusbz`, `tight` and `agentq`, with the
+  exact `pilotq keys grant pilotq-github project:NAME` fix. Grant one externally
+  and Recheck; only that project clears. Preserve existing owner-wide and route
+  grant semantics, never expose values or update last use, and keep unreadable
+  stores unknown. Existing onboarding reports without this check are rechecked
+  at service startup.
+
+Local regression: `cargo test --locked onboarding_168`. This covers the CLI and a
+simulated Bot API; a live owner Telegram run remains separate target evidence.
