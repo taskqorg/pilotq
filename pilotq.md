@@ -97,7 +97,7 @@ Registered DEV/LIVE release is an exception to §2 deployment delegation and §5
 DEV visibility names one highest proved task delivery stage: closed from board state, merged from the trusted merge commit, on DEV from the deploy job, DEV smoke from the smoke jobs of the first main pipeline containing it, or on LIVE from LIVE branch ancestry.
 
 Read jobs through the protected project release adapter; name source failures. Worker notes never override pipeline facts; only a successful containing main pipeline proves CI passed. Report failed smoke job links and first failing checks, plus whether a later containing pipeline passed. Keep DEV health timing separate.
-Internal recovery progress stays in audit.
+Internal recovery progress stays in audit. Merge identity: TaskQ's trusted merge receipt, else for a GitLab hand merge the first main first-parent commit containing the latest trusted `taskq: result` SHA (that SHA when fast-forwarded); squashed heads stay unknown.
 
 Preview pins main/LIVE SHAs, range/authors, verified task URLs, migrations and DEV inclusion; unavailable facts refuse. Expiry is fifteen minutes. Inspect every registered same-origin checkout through TaskQ before preview and dispatch; a running attempt or incomplete evidence blocks. Main advancement never retargets; LIVE advancement requires another preview.
 
