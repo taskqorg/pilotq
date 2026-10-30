@@ -56,13 +56,26 @@ fn call_at(d: &Direct, j: &Mutex<Journal>, r: &Run, args: &Value, deadline: Inst
             };
             tokio::time::timeout(left,read(base,&id,&secret,&active)).await.map_err(|_|"Asana read timed out".to_string())?
         });
-        let text=d.keys.scrub(&match &out { Ok(v)=>v.to_string(), Err(e)=>e.clone() });
+        // §8 / R16: scrub decoded strings before JSON escaping can hide a key.
+        let text=match &out {
+            Ok(v)=>{ let mut v=v.clone(); scrub_value(&d.keys,&mut v); v.to_string() },
+            Err(e)=>d.keys.scrub(e),
+        };
         let j=j.lock().unwrap();
         j.direct_event(r.request,&project,&format!("asana_read {id}"),Some(&key),&text,crate::now() as i64)?;
         if j.fenced(r)? { return Err("Asana read cancelled".into()); }
         out.map(|_|text)
     })();
     match result { Ok(t)=>(true,t), Err(e)=>(false,d.keys.scrub(&e)) }
+}
+
+fn scrub_value(keys: &crate::keys::Keys, value: &mut Value) {
+    match value {
+        Value::String(s)=>*s=keys.scrub(s),
+        Value::Array(values)=>values.iter_mut().for_each(|v|scrub_value(keys,v)),
+        Value::Object(values)=>values.values_mut().for_each(|v|scrub_value(keys,v)),
+        _=>{},
+    }
 }
 
 async fn get(client: &reqwest::Client, url: &str, secret: &str) -> Result<Value,String> {
@@ -128,7 +141,7 @@ mod tests {
         let base=format!("http://{}/api/1.0",listener.local_addr().unwrap());
         let denied=call_at(&d,&j,&r,&args,Instant::now()+Duration::from_secs(2),&base);
         assert!(!denied.0 && denied.1.contains("no key"),"{denied:?}");
-        let secret="invented-asana-secret";
+        let secret="invented-asana-\"secret\\value";
         d.keys.add("asana","invented",&["asana_read".into()],secret).unwrap();
         d.keys.grant("asana",&["7".into()]).unwrap();
         let other=j.lock().unwrap().ask(8,"Read pilotq https://app.asana.com/0/123/456",2).unwrap();
@@ -162,6 +175,8 @@ mod tests {
         assert_eq!(v["due_on"],"2026-10-31"); assert_eq!(v["completed"],false);
         assert_eq!(v["attachment_names"],json!(["design.pdf"])); assert_eq!(v["comments_more"],true);
         assert!(v["notes"].as_str().unwrap().chars().count()<=4001);
+        assert!(!v["notes"].as_str().unwrap().contains(secret));
+        assert_eq!(v["comments"][0]["text"], "[key asana]");
         assert!(!text.contains(secret) && text.contains("[key asana]"));
         for expected in ["not found or inaccessible (404)","API error HTTP 500"] {
             let (ok,text)=call_at(&d,&j,&r,&args,Instant::now()+Duration::from_secs(5),&base);
@@ -171,6 +186,13 @@ mod tests {
         for link in ["https://evil.invalid/0/123/456","https://app.asana.com@evil.invalid/0/123/456","http://app.asana.com/0/123/456","https://app.asana.com/0/123/abc"] { assert!(task_id(link).is_err()); }
         let audit=json!(j.lock().unwrap().audit(7,&crate::journal::Filter::default(),2).unwrap()).to_string();
         assert!(!audit.contains(secret) && audit.contains("asana_read"));
+        let decoded_audit: Value = serde_json::from_str(&audit).unwrap();
+        let receipt=decoded_audit.as_array().unwrap().iter()
+            .flat_map(|record|record["direct"].as_array().unwrap())
+            .filter_map(|event|event["result"].as_str())
+            .find_map(|result|serde_json::from_str::<Value>(result).ok()).unwrap();
+        assert_eq!(receipt["comments"][0]["text"], "[key asana]");
+        assert!(!receipt["notes"].as_str().unwrap().contains(secret));
         drop(j); std::fs::remove_dir_all(dir).unwrap();
     }
 }
