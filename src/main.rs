@@ -1,5 +1,6 @@
 //! PilotQ service and operator CLI on coreq (pilotq.md § 9).
 
+mod admin;
 mod builtins;
 mod direct;
 mod asana;
@@ -302,6 +303,7 @@ fn service_run(t: &Tool) -> ! {
     }
     // § 12: reconcile runs a dead process left behind before anything new starts
     journal.reconcile(now() as i64).unwrap_or_else(|e| t.die(&e));
+    admin::recover(&mut journal, now() as i64).unwrap_or_else(|e| t.die(&e));
     journal.builtin_recover(now() as i64).unwrap_or_else(|e| t.die(&e));
     // #81 U1: read the previous stop before this process clears the drain or records itself alive
     journal.service_started(now() as i64).unwrap_or_else(|e| t.die(&e));

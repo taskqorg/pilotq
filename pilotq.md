@@ -30,7 +30,7 @@ Supporting documents, README, instructions, tests and code follow this contract.
 - **R12 Least effort:** build the simplest agent that serves TaskQ work. Reuse proven mechanisms from known projects and the shared TaskQ system instead of inventing new ones.
 - **R13 Two front ends:** offer a command-line interface and a Telegram gateway over the same request, grant and audit path.
 - **R14 Operated like our tools:** PilotQ is monitored, updates itself through releases and is developed spec-first through its own TaskQ board.
-- **R15 Administration by request:** an authorized administrator can tell PilotQ to remember a person with given rights and to create or register projects.
+- **R15 Administration by request:** an authorized administrator can tell PilotQ to remember a person with given rights and to create or register projects and open project-bound forum topics through the scoped administration tools in section 5.
 - **R16 Keys:** tools can use credentials on an authorized person's behalf; the model never sees a credential value.
 - **R17 Request audit and telemetry:** every request leaves one durable record of who asked, when, where, what was asked, what PilotQ did and the outcome, joined to CoreQ telemetry. The record answers later service investigations, a person's questions about their own history and PilotQ self-improvement analysis.
 
@@ -71,7 +71,7 @@ Direct work must satisfy all of these conditions:
 - A read-only operation or a small mutation with an explicit grant and a verifiable outcome.
 - Execution fits the short-action budget in section 7.
 
-Examples: inspect one service, read a bounded log interval, look up a ticket or explain an error. The only direct writes are the owner's board comments and labels ([section 5](#direct-actions-keys-and-project-switching)). A fast action can still be consequential: deployment, money, permissions or deletion do not become direct-safe because they take seconds.
+Examples: inspect one service, read a bounded log interval, look up a ticket or explain an error. Apart from the scoped administration operations in section 5, the only direct writes are the owner's board comments and labels ([section 5](#direct-actions-keys-and-project-switching)). A fast action can still be consequential: deployment, money, permissions or deletion do not become direct-safe because they take seconds.
 
 Multi-file implementation, long research, broad audits, repeated experiments, deployment work and uncertain-duration work go to TaskQ. On reaching a direct-action budget, preserve observations and completed effects; propose the remaining task. Reuse existing authorization if it covers the delegation. Never describe a task as created until board readback identifies it.
 
@@ -217,7 +217,7 @@ This human feedback supplements the 2026-10-23 scripted-run evidence above. Keep
 
 ### Direct actions, keys and project switching
 
-**Owner decision 2026-10-23 (option B, task #23, section 10 step 4):** direct actions are reads. Only the owner (`owner_id` from protected configuration) may write directly, and only a comment or a label on an issue of the `taskqorg/pilotq` board; there are no other direct writes. Keys enter only through the CLI.
+**Owner decision 2026-10-23 (option B, task #23, section 10 step 4):** direct actions are reads. Only the owner (`owner_id` from protected configuration) may write directly, and only a comment or a label on an issue of the `taskqorg/pilotq` board; the administration exception below is the only additional direct-write scope. Keys enter only through the CLI.
 
 The manager gets these tools beside the TaskQ tools, checked at dispatch like them:
 
@@ -253,11 +253,23 @@ Each named entry binds an absolute executable, exact permitted argument arrays, 
 
 Execution receives a cleared environment with a fixed system PATH, the installation owner's HOME for the installed tools' protected stores, and TASKQ_ROOT set to the bound root; TASKQ_ATTEMPT and inherited credentials are absent. No key values enter the model. A command has at most ten seconds within the original manager deadline (at most sixty seconds total), and at most 16 KiB combined stdout/stderr. Stop, revoked grants, timeout and output overflow terminate its process group. Report exit code, missing executable, timeout, cancellation and output limit distinctly; only exit zero is success. Persist an audit start before spawn and a scrubbed result afterward. An interrupted read may be retried only under §4; mutations remain on their existing receipt paths. Deployment is not authorized by this decision.
 
+### Administration by request (task #160)
+
+**Owner, 2026-10-30:** expose these tools on the shared CLI/Telegram manager boundary (R13, R15, R17). They are an exception to section 5's owner-only comment/label writes, limited to installation metadata, local project roots and forum-topic creation. They never create repositories, change host capacity, install services, provision credentials or create a TaskQ claim issue.
+
+| Tool | Required grants | Operation and limits |
+|---|---|---|
+| `project_register` | `chat`, `projects` | Register an existing repository by its explicit TaskQ board kind, host and repository. Create only a named child of `<install>/projects` with `taskq.json`; refuse traversal, symlinks, conflicting configuration or rebinding an existing name. A fresh complete `taskq status --json` must match before registration. Return repository, root, board and filing readiness; without `create_claim_issue`, filing remains disabled and the owner provisions it through TaskQ. |
+| `user_grant`, `user_revoke` | `chat`, `users` | Change only existing grant types explicitly named in the caller’s own unquoted request for an exact positive Telegram ID explicitly named by the caller or identified by the current verified reply. Require evidence that the person was seen in this exact chat/topic: an admitted sender or a Telegram reply sender. Names and forwarded messages never select authority. Retain the administrator, target and before/after grants atomically with the receipt. Protected owner identity cannot be changed. |
+| `topic_open` | `chat`, `users`, access to the bound project (`projects` or `project:NAME`) | Open one forum topic in the originating Telegram supergroup, or the explicitly named group for a CLI request. Resolve one registered project named by the caller or current in the conversation; recheck its board/root. Require a fresh bot `can_manage_topics` permission and forum capability; otherwise refuse plainly. Set isolated route policy by default (shared only when explicitly requested), and bind the new route to that project as its default. A route default never grants project access. |
+
+Each tool shares the five-call limit, original deadline, current admission, run fence and request audit. Store one immutable operation per tool per request; a changed argument set in that request is refused. Read back local changes before success. Duplicate calls return the saved receipt without applying the change again. Project preparation persists intent before filesystem writes and can reconcile only the same matching configuration. Topic creation has no Bot API idempotency key: persist intent before dispatch and its topic ID immediately on response. An interrupted creation without that ID is uncertain and is never automatically repeated; an ID recorded before route binding permits completing only that local binding after grant revalidation. Startup preserves unresolved operations and reports their partial or uncertain result. Unknown senders still follow R10; the service does not retain ignored message bodies or build profiles to make them grant candidates. An administrator may reply to that person's message to supply the verified sender reference.
+
 ### Project registration
 
 An administrator with the `projects` grant can ask PilotQ to create or register a project. PilotQ shows the resolved repository, root and board, then applies the request through TaskQ's supported registration path (Add project, [taskq.md](https://github.com/taskqorg/taskq/blob/main/taskq.md) menu M10) and reads it back. Repository creation, capacity and worker grants stay owner operations unless a separate grant names them. A failed or partial registration stays visible and is never reported as done.
 
-Step 4 registers through the CLI: `pilotq projects add NAME ROOT` accepts a root whose `taskq.json` names a repository only when a fresh `taskq status --json` under that root reads back the same board, and records who registered it. TaskQ's Add project conversation stays the owner's way to create the TaskQ side.
+Step 4 registers through the CLI: `pilotq projects add NAME ROOT` accepts a root whose `taskq.json` names a repository only when a fresh `taskq status --json` under that root reads back the same board, and records who registered it. TaskQ's Add project conversation stays the owner's way to create the TaskQ side; #160 additionally prepares a local root for an existing repository, without claiming filing readiness.
 
 An operations board is an explicit server-care project. Project work stays on that project's board. A server-wide overview aggregates tasks; it does not duplicate every issue onto a server board.
 
@@ -428,7 +440,7 @@ The installed Linux service checks for releases every five minutes, including at
 
 **PM, task #84 continuation:** the 0.2.6 TaskQ drill sent no incident because an idle scan never read the board. Release `0.2.7` with that fix (PR #88) in this task through the same merge-queue and `live` path, update FRA through `pilotq update`, rerun the TaskQ drill and record its DM on #84. Production cutover remains unauthorized.
 
-This release retains coreq `v0.14.6` (locked in `Cargo.lock`) and journal schema 11. It opens existing schemas 0–11 through the current migrations and refuses newer schemas; rollback to a binary that cannot read the resulting schema is unsafe. The installation owner runs the user service and owns its protected configuration. See the [tester guide](docs/tester-guide.md) for installation, checks and current limitations. A published release and successful selftest do not qualify production cutover or the open decisions in section 11.
+This release retains coreq `v0.14.6` (locked in `Cargo.lock`) and journal schema 12. It opens existing schemas 0–12 through the current migrations and refuses newer schemas; rollback to a binary that cannot read the resulting schema is unsafe. The installation owner runs the user service and owns its protected configuration. See the [tester guide](docs/tester-guide.md) for installation, checks and current limitations. A published release and successful selftest do not qualify production cutover or the open decisions in section 11.
 
 ### Development
 

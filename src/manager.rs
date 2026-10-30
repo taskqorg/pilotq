@@ -398,6 +398,18 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
     }
     use crate::direct;
     let mut tools = direct::tools();
+    // §8 / R15: advertise administration only within current authority; dispatch still rechecks it.
+    {
+        let j=j.lock().unwrap();
+        let user=j.sender(r.request)?;
+        let users=j.has(user,"users")?;
+        let projects=j.has(user,"projects")?;
+        let grants=j.grants(user)?;
+        let scoped=projects || j.projects()?.iter().any(|p|grants.contains(&format!("project:{}",p.0)));
+        tools.retain(|t|match t["name"].as_str().unwrap_or("") {
+            "project_register"=>projects, "user_grant"|"user_revoke"=>users, "topic_open"=>users && scoped, _=>true,
+        });
+    }
     let instructions = match tq {
         Some(_) => {
             tools.extend(crate::taskq::tools().as_array().cloned().unwrap_or_default());
@@ -418,6 +430,7 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
         profile["conversation"] = context.clone();
         profile["conversation"]["attached_images"] = json!(images.iter().map(|(id,_)|*id).collect::<Vec<_>>());
         profile["conversation"]["missing_images"] = json!(r.image_gaps.iter().filter(|id|allowed_image(**id)).collect::<Vec<_>>());
+        j.lock().unwrap().catalogue(r,&tools)?;
         let refresh = j.lock().unwrap().refresh_tools(r)?;
         let mut input = json!([{"type": "text", "text": profile.to_string()}, {"type":"text","text":draft.to_string()}, {"type": "text", "text": r.text}]);
         for (_, path) in images {
@@ -460,6 +473,7 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
                 }
                 let (ok, out) = match tq {
                     _ if name == "asana_read" => crate::asana::call(d,j,r,args,command_deadline),
+                    _ if crate::admin::NAMES.contains(&name) => crate::admin::call(d,j,r,name,args,command_deadline,tq),
                     _ if crate::commands::NAMES.contains(&name) => crate::commands::call(d,j,r,name,args,command_deadline,tq),
                     _ if direct::NAMES.contains(&name) => direct::call(d, j, r, name, args, tq),
                     Some(tq) => crate::taskq::call(tq, j, r, name, args),
