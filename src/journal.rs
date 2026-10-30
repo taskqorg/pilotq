@@ -2553,10 +2553,11 @@ impl Journal {
         tx.commit().map_err(e)
     }
 
-    /// Effects whose write may have happened without a receipt: (op, tool, repo, issue, value, state).
-    pub fn intents(&self) -> Result<Vec<(String, String, String, i64, String, String)>, String> {
-        let mut q = self.0.prepare("SELECT op_id, tool, repo, issue, value, state FROM effects WHERE state IN ('intent','pending') ORDER BY id").map_err(|e| e.to_string())?;
-        q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).and_then(Iterator::collect).map_err(|e| e.to_string())
+    /// Effects whose write may have happened without a receipt: (op, tool, repo, issue, value, state, key, request).
+    #[allow(clippy::type_complexity)]
+    pub fn intents(&self) -> Result<Vec<(String, String, String, i64, String, String, String, i64)>, String> {
+        let mut q = self.0.prepare("SELECT op_id, tool, repo, issue, value, state, key, request_id FROM effects WHERE state IN ('intent','pending') ORDER BY id").map_err(|e| e.to_string())?;
+        q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?))).and_then(Iterator::collect).map_err(|e| e.to_string())
     }
 
     /// Telegram routes with a running turn started within `window` seconds: they show typing (§ 12, L02).

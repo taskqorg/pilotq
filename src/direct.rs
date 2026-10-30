@@ -291,13 +291,21 @@ fn settle(j: &Journal, op: &str, tool: &str, repo: &str, n: i64, value: &str, re
 }
 
 /// Startup reconciliation (§4, #151): pending effects repeat with their own op id; pre-#151 effects stay uncertain.
-pub fn reconcile(tq: Option<&Taskq>, j: &Journal) -> Result<(), String> {
-    for (op, tool, repo, n, value, state) in j.intents()? {
+pub fn reconcile(d: &Direct, tq: Option<&Taskq>, j: &Journal) -> Result<(), String> {
+    for (op, tool, repo, n, value, state, key, request) in j.intents()? {
         if state == "intent" {
             j.settle(&op,"uncertain",None,Some(&format!("After restart, {tool} on {repo}#{n} remains uncertain: it predates TaskQ operation IDs. It is not repeated automatically.")),now())?;
             continue;
         }
         let project = j.projects()?.into_iter().find(|p| p.1 == repo).map(|p| p.0);
+        // § 8: revalidate at dispatch; a revoked owner or key grant cancels the retry, though the write may already exist
+        let user = j.sender(request)?;
+        let grant = if j.owner()? != Some(user) { Err(format!("{user} is no longer the owner")) }
+            else { d.keys.take(Some(&key), &tool, user, &j.route(request)?, project.as_deref().unwrap_or(""), now()).map(|_| ()) };
+        if let Err(e) = grant {
+            j.settle(&op,"uncertain",None,Some(&format!("After restart, {tool} on {repo}#{n} was not retried: {e}. It may already be written; it is not repeated automatically.")),now())?;
+            continue;
+        }
         let bound = match (tq, project) {
             (Some(tq), Some(p)) => tq.registered(j, &p).map(|b| b.0),
             _ => Err(format!("{repo} has no registered TaskQ project")),
@@ -365,10 +373,11 @@ mod context_tests {
         let mut j=Journal::open(&dir.join("journal.sqlite")).unwrap();j.bootstrap(7,0).unwrap();
         let r=j.ask(7,"Comment on pilotq",1).unwrap();
         j.intent(&r,"pilotq","issue_comment",WRITABLE,5,"note","absent","intent",2).unwrap();
-        reconcile(None,&j).unwrap();assert!(j.intents().unwrap().is_empty());
+        let direct=Direct{keys:Keys(dir.join("absent"))};
+        reconcile(&direct,None,&j).unwrap();assert!(j.intents().unwrap().is_empty());
         drop(j);
         let mut j=Journal::open(&dir.join("journal.sqlite")).unwrap();
-        reconcile(None,&j).unwrap();
+        reconcile(&direct,None,&j).unwrap();
         let audit=j.audit(7,&crate::journal::Filter::default(),3).unwrap();
         assert_eq!(audit[0]["direct"][0]["result"],"uncertain");
         drop(j);std::fs::remove_dir_all(dir).unwrap();
@@ -425,10 +434,10 @@ esac
         let (ok,text)=call(&d,&j,&r,"issue_comment",&json!({"issue":"5","body":"second"}),Some(&tq));
         assert!(!ok && text.contains("unconfirmed") && log().matches("second").count()==1,"{text}");
         let mut j=j.into_inner().unwrap();
-        reconcile(Some(&tq),&j).unwrap();
+        reconcile(&d,Some(&tq),&j).unwrap();
         assert_eq!(j.intents().unwrap().len(),1,"still unknown after restart: stays pending");
         std::fs::remove_file(dir.join("unknown")).unwrap();
-        reconcile(Some(&tq),&j).unwrap();
+        reconcile(&d,Some(&tq),&j).unwrap();
         assert!(j.intents().unwrap().is_empty());
         assert_eq!(log().matches("second").count(),1,"restart retry added nothing twice");
         let audit=j.audit(7,&crate::journal::Filter::default(),3).unwrap();
@@ -449,6 +458,17 @@ esac
         let j=Mutex::new(j);
         let (ok,text)=call(&d,&j,&r,"issue_read",&json!({"issue":"5","project":"tight"}),Some(&tq));
         assert!(ok && text.contains("gitlab.example/gradus/tight/-/issues/5"),"{text}");
+        // § 8: a key grant revoked before restart cancels the same-id retry; the effect stays uncertain, never done
+        let r={let mut j=j.lock().unwrap();j.ask(7,"Comment on pilotq #5",6).unwrap()};
+        std::fs::write(dir.join("unknown"),"").unwrap();
+        assert!(!call(&d,&j,&r,"issue_comment",&json!({"issue":"5","project":"pilotq","body":"third"}),Some(&tq)).0);
+        std::fs::remove_file(dir.join("unknown")).unwrap();
+        d.keys.revoke("issues",&["7".into()]).unwrap();
+        let mut j=j.into_inner().unwrap();
+        reconcile(&d,Some(&tq),&j).unwrap();
+        assert!(j.intents().unwrap().is_empty());
+        let audit=json!(j.audit(7,&crate::journal::Filter::default(),7).unwrap()).to_string();
+        assert!(audit.matches("done: ").count()==3 && audit.contains("uncertain"),"{audit}");
         drop(j);std::fs::remove_dir_all(dir).unwrap();
     }
 
