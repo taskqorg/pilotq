@@ -858,6 +858,22 @@ A8 remains a post-release live FRA check. In the owner DM/topic, ask “What is
 the task status for Pilot Q?”, then “Make a task so this works”; verify fresh
 board status and a local `pilotq` draft without another project question. Check
 an ambiguous two-project request asks for the project and writes nothing.
+
+## Answering the project question (#157)
+
+Contract §5 owns this behavior. Root cause: `target_inner` propagated
+`context_project`'s “Which project” error even when the call named an explicit
+project, and the person's answer “1” named no project, so the history stayed
+ambiguous and `task_plan` was refused again.
+
+The boundary now records its own question options for the request. The
+person's next message may answer with a bare number, counted in the order the
+reply listed them, or by name.
+
+Retained check: `numbered_answer_selects_project` failed before the fix at the
+answer step. It covers a bare “1” with no open question (refused), earlier own
+mentions of `pilotq` and `tight` (question, no draft), the answer “1” (draft on
+`pilotq`) and a later bare number after the question closed (refused).
 Record the exact running build and Telegram screenshots showing footer spacing.
 Local adapters do not qualify this live appearance or model interpretation.
 

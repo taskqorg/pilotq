@@ -1482,6 +1482,26 @@ impl Journal {
         q.query_map(params![r.session,r.generation,r.request],|x|x.get(0)).and_then(Iterator::collect).map_err(|e|e.to_string())
     }
 
+    /// #157: records the boundary's own "which project" options for this request.
+    pub fn project_question(&self, r: &Run, options: &[String]) -> Result<(), String> {
+        self.0.execute("INSERT INTO audit_events(request_id,at,kind,item) VALUES (?1,?2,'project_question',?3)",
+            params![r.request, crate::now() as i64, serde_json::to_string(options).map_err(|e|e.to_string())?]).map(drop).map_err(|e|e.to_string())
+    }
+
+    /// #157: the caller's previous request in this generation, if it ended with PilotQ's own project question:
+    /// the recorded options and the reply the person saw.
+    pub fn open_project_question(&self, r: &Run) -> Result<Option<(Vec<String>,String)>,String> {
+        let row: Option<(Option<String>,Option<String>)> = self.0.query_row("SELECT (SELECT item FROM audit_events WHERE request_id=q.id AND kind='project_question'
+            ORDER BY id DESC LIMIT 1),q.reply FROM requests q
+            WHERE q.session=?1 AND q.sender=(SELECT sender FROM requests WHERE id=?3) AND q.id<?3
+            AND EXISTS(SELECT 1 FROM runs x WHERE x.request_id=q.id AND x.generation=?2)
+            ORDER BY q.id DESC LIMIT 1",params![r.session,r.generation,r.request],|x|Ok((x.get(0)?,x.get(1)?))).optional().map_err(|e|e.to_string())?;
+        Ok(match row {
+            Some((Some(options),Some(reply))) => Some((serde_json::from_str(&options).map_err(|e|e.to_string())?,reply)),
+            _ => None,
+        })
+    }
+
     /// §2 / #92: source material for semantic message linking, never a new authorization.
     /// Same generation and current admission/project grants bound what reaches a resumed or rebuilt model.
     pub fn conversation_context(&self, r: &Run) -> Result<Value, String> {

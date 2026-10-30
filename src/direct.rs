@@ -95,6 +95,43 @@ fn named_own(text: &str, name: &str) -> bool {
     })
 }
 
+// §5 / #157: only numbered items define the mapping; introductory mentions do not.
+fn numbered_project(reply: &str, options: &[String], answer: usize) -> Option<String> {
+    let bytes = reply.as_bytes();
+    let mut markers = Vec::new();
+    for (at, c) in reply.char_indices() {
+        if !c.is_ascii_digit() || (at > 0 && !bytes[at-1].is_ascii_whitespace()) { continue; }
+        let end = at + bytes[at..].iter().take_while(|b| b.is_ascii_digit()).count();
+        if end + 1 < bytes.len() && matches!(bytes[end], b'.' | b')') && bytes[end+1].is_ascii_whitespace() {
+            markers.push((at, end+1, reply[at..end].parse::<usize>().ok()?));
+        }
+    }
+    if markers.len() != options.len() { return None; }
+    let mut shown = Vec::new();
+    for (i, &(_, start, number)) in markers.iter().enumerate() {
+        if number != i+1 { return None; }
+        let end = markers.get(i+1).map_or(reply.len(), |m| m.0);
+        let matches: Vec<_> = options.iter().filter(|p| named_own(&reply[start..end], p)).collect();
+        if matches.len() != 1 || shown.contains(matches[0]) { return None; }
+        shown.push(matches[0].clone());
+    }
+    answer.checked_sub(1).and_then(|i| shown.get(i)).cloned()
+}
+
+#[test]
+fn project_option_numbers_ignore_introductory_mentions() {
+    let options = vec!["pilotq".into(), "tight".into()];
+    for (reply, expected) in [
+        ("For pilotq or tight: 1. tight; 2. pilotq", Some("tight")),
+        ("Which project?\n1. pilotq\n2. tight", Some("pilotq")),
+        ("1. pilotq or tight; 2. pilotq", None),
+        ("1. tight; 1. pilotq", None),
+        ("pilotq, tight", None),
+    ] {
+        assert_eq!(numbered_project(reply, &options, 1).as_deref(), expected, "{reply}");
+    }
+}
+
 pub(crate) fn context_project(j: &Journal, r: &Run, user: i64) -> Result<Option<String>, String> {
     let projects: Vec<_> = j.projects()?.into_iter().filter(|p| allowed(j,user,&p.0).is_ok()).collect();
     let select = |texts: &[String]| -> Result<Option<String>,String> {
@@ -102,10 +139,19 @@ pub(crate) fn context_project(j: &Journal, r: &Run, user: i64) -> Result<Option<
         match matches.as_slice() {
             [] => Ok(None),
             [one] => Ok(Some(one.clone())),
-            many => Err(format!("Which project: {}? Nothing was done.", many.join(", "))),
+            many => {
+                j.project_question(r,many)?;
+                Err(format!("Which project: {}? Nothing was done.", many.join(", ")))
+            }
         }
     };
     if let Some(p) = select(&[r.text.clone()])? { return Ok(Some(p)); }
+    // #157: a bare number answers PilotQ's own question from this person's previous request, numbered as its reply listed them.
+    if let Ok(k) = own_text(&r.text).trim().trim_end_matches(['.',')']).parse::<usize>()
+        && let Some((options, reply)) = j.open_project_question(r)? {
+        if let Some(p) = numbered_project(&reply, &options, k)
+            && projects.iter().any(|x| x.0 == p) { return Ok(Some(p)); }
+    }
     select(&j.own_project_inputs(r)?)
 }
 

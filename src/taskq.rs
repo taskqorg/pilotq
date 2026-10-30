@@ -1060,6 +1060,60 @@ print(json.dumps(dict(task=19,op_id=op,outcome='accepted',state='doing',revision
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    // #157 / §5: an explicit project could not override ambiguous earlier mentions, and the person's
+    // answer "1" to PilotQ's own question named nothing, so task_plan stayed refused.
+    #[cfg(unix)]
+    #[test]
+    fn numbered_answer_selects_project() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("pilotq-project-answer-{}",std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("taskq.json"),r#"{"repo":"taskqorg/pilotq","create_claim_issue":1}"#).unwrap();
+        let bin = dir.join("taskq");
+        std::fs::write(&bin,"#!/bin/sh\n[ \"$1 $2\" = \"status --json\" ] || exit 99\ncat snapshot.json\n").unwrap();
+        std::fs::set_permissions(&bin,std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(dir.join("snapshot.json"),json!({"complete":true,"board":{"repo":BOARD},"tasks":[]}).to_string()).unwrap();
+        let mut journal = Journal::open(&dir.join("journal.sqlite")).unwrap();
+        journal.bootstrap(7,0).unwrap();
+        journal.add_project(7,"pilotq",BOARD,&dir.to_string_lossy(),0).unwrap();
+        journal.add_project(7,"tight","gradus/tight","/invented/tight",0).unwrap();
+        let tq = Taskq { bot: None, bin, root: dir.clone(), poll: Duration::from_secs(15) };
+        let plan = json!({"project":"pilotq","tickets":[{"title":"Fix answers","goal":"Select the project","acceptance":["Draft saved"]}]});
+        // A bare number with no open question names nothing.
+        let r = journal.ask(7,"1",1).unwrap();
+        let j = Mutex::new(journal);
+        assert!(dispatch(&tq,&j,&r,"task_plan",&plan).is_err(),"a bare 1 without PilotQ's question is refused");
+        let mut journal = j.into_inner().unwrap();
+        journal.finish(&r,None,None,&crate::manager::Outcome::Answered("ok".into()),2).unwrap();
+        for (text,at) in [("compare pilotq",3),("and tight",5)] {
+            let r = journal.ask(7,text,at).unwrap();
+            journal.finish(&r,None,None,&crate::manager::Outcome::Answered("ok".into()),at+1).unwrap();
+        }
+        let r = journal.ask(7,"make a task",7).unwrap();
+        let j = Mutex::new(journal);
+        assert!(dispatch(&tq,&j,&r,"task_plan",&plan).unwrap_err().contains("Which project"),"ambiguity asks, writes nothing");
+        assert!(j.lock().unwrap().plan_target(&r.session,None).is_err());
+        let mut journal = j.into_inner().unwrap();
+        journal.finish(&r,None,None,&crate::manager::Outcome::Answered("For pilotq or tight: 1. tight; 2. pilotq".into()),8).unwrap();
+        let r = journal.ask(7,"1",9).unwrap();
+        assert_eq!(crate::direct::context_project(&journal,&r,7).unwrap().as_deref(),Some("tight"));
+        journal.finish(&r,None,None,&crate::manager::Outcome::Answered("ok".into()),10).unwrap();
+        let r = journal.ask(7,"make a task",11).unwrap();
+        assert!(crate::direct::context_project(&journal,&r,7).is_err());
+        journal.finish(&r,None,None,&crate::manager::Outcome::Answered("Which project?\n1. pilotq\n2. tight".into()),12).unwrap();
+        let r = journal.ask(7,"1",13).unwrap();
+        let j = Mutex::new(journal);
+        dispatch(&tq,&j,&r,"task_plan",&plan).unwrap();
+        assert_eq!(j.lock().unwrap().plan_target(&r.session,None).unwrap().1,"pilotq");
+        let mut journal = j.into_inner().unwrap();
+        journal.finish(&r,None,None,&crate::manager::Outcome::Answered("ok".into()),14).unwrap();
+        // The answered question is closed: a later bare number selects nothing.
+        let r = journal.ask(7,"2",15).unwrap();
+        assert!(crate::direct::context_project(&journal,&r,7).is_err());
+        drop(journal);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     // §5 / A40: TaskQ start removes q-held before adding taskq. A complete list can
     // omit the just-filed task in that interval; it must not end its subscription.
     #[cfg(unix)]
