@@ -101,7 +101,7 @@ impl Taskq {
         self.cli_checked(args, |out| Ok(out.to_string()))
     }
 
-    fn cli_checked<T>(&self, args: &[String], validate: impl FnOnce(&str) -> Result<T, String>) -> Result<T, String> {
+    pub(crate) fn cli_checked<T>(&self, args: &[String], validate: impl FnOnce(&str) -> Result<T, String>) -> Result<T, String> {
         let o = Command::new(&self.bin)
             .args(args)
             .env("TASKQ_ROOT", &self.root)
@@ -125,7 +125,7 @@ impl Taskq {
     }
 
     /// One write with `--op-id` and `--json`: its receipt `{task, op_id, outcome, state, revision, reason, next}`.
-    fn write(&self, mut args: Vec<String>, op: &str) -> Result<Value, String> {
+    pub(crate) fn write(&self, mut args: Vec<String>, op: &str) -> Result<Value, String> {
         args.extend(["--op-id".into(), op.into(), "--json".into()]);
         self.cli_checked(&args, |out| serde_json::from_str(out.trim())
             .map_err(|e| format!("taskq {} returned no receipt: invalid JSON: {e}", args[0])))
@@ -176,7 +176,7 @@ impl Taskq {
         })
     }
 
-    fn registered(&self, j: &Journal, project: &str) -> Result<(Self, String), String> {
+    pub(crate) fn registered(&self, j: &Journal, project: &str) -> Result<(Self, String), String> {
         let (_, board, root, ..) = j.projects()?.into_iter().find(|p| p.0 == project).ok_or(format!("{project} is not a registered project; nothing was done"))?;
         let tq = Self { bot: self.bot.clone(), bin: self.bin.clone(), root: root.into(), poll: self.poll };
         tq.check(&board)?;
@@ -1173,7 +1173,7 @@ esac
         let tq=Taskq{bot:None,bin,root:dir.clone(),poll:Duration::from_secs(1)};
         let text=dispatch(&tq,&j,&r,"task_status",&json!({"task":task_url})).unwrap();
         assert!(text.contains(task_url) && text.contains("working") && !text.contains("github.com"),"{text}");
-        let projects=crate::direct::call(&crate::direct::Direct{keys:crate::keys::Keys(dir.join("absent"))},&j,&r,"project_list",&json!({}));
+        let projects=crate::direct::call(&crate::direct::Direct{keys:crate::keys::Keys(dir.join("absent"))},&j,&r,"project_list",&json!({}),None);
         assert!(projects.0 && projects.1.contains("tight") && projects.1.contains("pilotq"));
         let text=dispatch(&tq,&j,&r,"project_status",&json!({"project":"tight"})).unwrap();
         assert!(text.contains("gradus/tight/-/boards"));

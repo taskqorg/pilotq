@@ -460,7 +460,7 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
                 }
                 let (ok, out) = match tq {
                     _ if crate::commands::NAMES.contains(&name) => crate::commands::call(d,j,r,name,args,command_deadline,tq),
-                    _ if direct::NAMES.contains(&name) => direct::call(d, j, r, name, args),
+                    _ if direct::NAMES.contains(&name) => direct::call(d, j, r, name, args, tq),
                     Some(tq) => crate::taskq::call(tq, j, r, name, args),
                     None => (false, "TaskQ is not configured".into()),
                 };

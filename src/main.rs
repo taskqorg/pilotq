@@ -306,7 +306,7 @@ fn service_run(t: &Tool) -> ! {
     journal.service_started(now() as i64).unwrap_or_else(|e| t.die(&e));
     // F04: an effect written without a receipt is read back, never repeated
     if let Some(c) = &cfg
-        && let Err(e) = direct::reconcile(&c.direct, &journal)
+        && let Err(e) = direct::reconcile(&c.direct, c.taskq.as_ref(), &journal)
     {
         eprintln!("effects: {e}");
     }
