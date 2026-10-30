@@ -2518,10 +2518,10 @@ impl Journal {
         tx.commit().map_err(e)
     }
 
-    /// Fixture for pre-cutover direct effects; runtime no longer creates these (#144).
-    #[cfg(test)]
+    /// Persists a direct effect before its write (§ 5 Effects). `pending` effects go through `taskq issue --op-id` and are
+    /// repeated with the same ID (#151); `intent` is the pre-#151 state, never repeated.
     #[allow(clippy::too_many_arguments)]
-    pub fn intent(&self, r: &Run, project: &str, tool: &str, repo: &str, issue: i64, value: &str, key: &str, at: i64) -> Result<String, String> {
+    pub fn intent(&self, r: &Run, project: &str, tool: &str, repo: &str, issue: i64, value: &str, key: &str, state: &str, at: i64) -> Result<String, String> {
         let inst = self.instance()?;
         if self.fenced(r)? {
             return Err("this run was stopped; nothing was written".into());
@@ -2530,11 +2530,11 @@ impl Journal {
         let op = format!("pilotq-{inst}-r{}-e{n}", r.request);
         self.0
             .execute(
-                "INSERT INTO effects(request_id, op_id, tool, repo, issue, value, key, state, at) VALUES (?1,?2,?3,?4,?5,?6,?7,'intent',?8)",
-                params![r.request, op, tool, repo, issue, value, key, at],
+                "INSERT INTO effects(request_id, op_id, tool, repo, issue, value, key, state, at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                params![r.request, op, tool, repo, issue, value, key, state, at],
             )
             .map_err(|e| e.to_string())?;
-        self.direct_event(r.request, project, &format!("{tool} {repo}#{issue}"), Some(&op), "intent", at)?;
+        self.direct_event(r.request, project, &format!("{tool} {repo}#{issue}"), Some(&op), state, at)?;
         Ok(op)
     }
 
@@ -2553,9 +2553,9 @@ impl Journal {
         tx.commit().map_err(e)
     }
 
-    /// Effects whose write may have happened without a receipt: (op, tool, repo, issue, value, key).
+    /// Effects whose write may have happened without a receipt: (op, tool, repo, issue, value, state).
     pub fn intents(&self) -> Result<Vec<(String, String, String, i64, String, String)>, String> {
-        let mut q = self.0.prepare("SELECT op_id, tool, repo, issue, value, key FROM effects WHERE state='intent' ORDER BY id").map_err(|e| e.to_string())?;
+        let mut q = self.0.prepare("SELECT op_id, tool, repo, issue, value, state FROM effects WHERE state IN ('intent','pending') ORDER BY id").map_err(|e| e.to_string())?;
         q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).and_then(Iterator::collect).map_err(|e| e.to_string())
     }
 

@@ -53,7 +53,7 @@ for name, args, reply in [
     tool.chmod(0o700)
     if name == 'taskq':
         tool.with_name(tool.name + '.pilotq-version.json').write_text(json.dumps({
-            'version': '4.6.43', 'sha256': hashlib.sha256(tool.read_bytes()).hexdigest()}))
+            'version': '4.6.44', 'sha256': hashlib.sha256(tool.read_bytes()).hexdigest()}))
 install = work / 'install'
 install.mkdir()
 config = install / 'config.json'
