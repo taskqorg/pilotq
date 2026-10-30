@@ -988,3 +988,9 @@ Owner-required cases under [§5](../pilotq.md#project-onboarding-task-168):
 
 Local regression: `cargo test --locked onboarding_168`. This covers the CLI and a
 simulated Bot API; a live owner Telegram run remains separate target evidence.
+
+### Task status facts and research routing (#170)
+
+Under R8, R13 and §5, `src/fixtures/status-170.json` is a synthetic fixture for the owner’s cyprusbz#540 case: closed, diagnosis accepted, report `docs/research/540.md`, fix #541 doing. `status_research_170` retains the report and trusted verdict, separates proposed references from observed task existence, and checks English/Russian diagnosis and investigation mapping through saved plans and `add --type research` arguments. Untrusted close comments and missing snapshots remain unknown. `gitlab_registry_status_and_urls` checks the CLI dispatch boundary, including an absent open-board task, issue readback and mismatched issue refusal.
+
+These deterministic checks do not qualify live model wording or Telegram. Per the owner’s #170 answer, the PM runs the #540 status question on PDS 18 after release and posts the actual reply text on #170 (A4).
