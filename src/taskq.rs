@@ -398,6 +398,7 @@ fn dispatch(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Value) -
             if !create {
                 return Err("task creation is disabled: create_claim_issue is not configured for the resolved board, and plain add is never used. Nothing was filed.".into());
             }
+            crate::onboarding::gate(&j.lock().unwrap(),&project)?;
             // #110: filing and starting run in the service after this turn (`launch`), never inside the model's deadline
             let run = j.lock().unwrap().authorize(r, rev, sender, LEASE, now())?;
             if j.lock().unwrap().launch_run(r.request)? != Some(run) {
@@ -643,6 +644,10 @@ pub fn submit(tq: &Taskq, j: &Mutex<Journal>, id: i64, notify: bool) -> String {
         _ => return end(&run, "failed", Some("registration changed or unavailable"), "Plan submission blocked: registration changed or unavailable".into()),
     };
     let tq = &bound;
+    let onboarding=crate::onboarding::gate(&j.lock().unwrap(),&run.project);
+    if let Err(e)=onboarding {
+        return end(&run,"failed",Some(&e),e.clone());
+    }
     let _=j.lock().unwrap().launch_phase(run.id,"creating",at);
     // grants are rechecked before every retry (§ 5)
     let ok = allowed(&j.lock().unwrap(), run.actor, &run.project, true);

@@ -208,3 +208,25 @@ To admit a person, an administrator with `users` replies to that person's messag
 To open a project topic, ask from the forum supergroup and name the registered project. The caller needs `users` and project access; the bot needs `can_manage_topics`. Topics default to isolated conversations; ask explicitly for a “shared topic” or “shared conversation” (Russian: “общую тему” or “общий разговор”) to select it. An ambiguous or negated request is refused for clarification. Grant changes require each exact grant name in the caller’s own unquoted message; naming the person alone cannot authorize additional rights. The route's project default does not grant project access. The operator may use `pilotq ask` with an explicit group ID (or `CHAT:TOPIC` for grant operations) through the same tools.
 
 An uncertain topic creation is never repeated automatically. Inspect the forum and request audit before asking for another topic. A partial registration retains its root without overwriting an existing configuration; inspect the TaskQ readback failure before submitting a new registration request. Schema 12 preserves these operations; a schema-11 binary refuses downgrade. Use the §12 drain and compatible-schema rollback path for a later release; this task does not authorize installation.
+
+### Project onboarding
+
+`pilotq projects add NAME ROOT` registers the explicitly supplied TaskQ root, runs
+PilotQ doctor and the TaskQ service-status fallback, and prints the setup findings.
+A nonzero exit with an onboarding report preserves registration but means the
+project is not ready. Registration does not grant worker access or capacity
+([contract §5](../pilotq.md#project-onboarding-task-168)).
+
+The installation owner receives a Telegram DM card with one line per gap and a
+Recheck button. Follow the displayed owner steps outside PilotQ, then tap Recheck;
+the same card shows the new findings. Host installation, credentials, capacity and
+worker grants remain owner operations. For example, four Codex slots without a
+Codex grant must show the project-scoped grant command, not a ready result.
+
+Use `/onboard NAME` in Telegram, or `pilotq ask '/onboard NAME'`, to recheck a
+registered project. Only the protected owner may write `/onboard NAME override` to
+bypass PilotQ's readiness gate; the gaps remain visible and TaskQ still enforces
+its own grants, admission and claim prerequisites. Rechecking clears the override.
+A pending or failed setup does not start the first task. Existing workers continue.
+New TaskQ projects require explicit PilotQ registration before onboarding; there
+is no directory discovery.

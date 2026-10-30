@@ -880,6 +880,15 @@ const FAKE_TASKQ: &str = r#"#!/usr/bin/env python3
 import json, os, sys, fcntl, time
 d = os.path.dirname(os.path.abspath(__file__))
 a = sys.argv[1:]
+# Read-only setup fallback is distinct from service pause; it must never mutate fixture admission.
+if a == ["--version"]:
+    print("4.6.47"); sys.exit(0)
+if a == ["service", "status", "--json"]:
+    probe = os.path.join(d, "setup-service.json")
+    v = json.load(open(probe)) if os.path.exists(probe) else {"service": {"version": "4.6.47"}}
+    v["service"]["at"] = int(time.time())
+    for p in v.get("projects", []): p["status"]["at"] = int(time.time())
+    print(json.dumps(v)); sys.exit(0)
 with open(os.path.join(d, "taskq.log"), "a") as f:
     f.write(json.dumps({"args": a, "root": os.environ.get("TASKQ_ROOT"), "attempt": os.environ.get("TASKQ_ATTEMPT")}) + "\n")
 if a[0] in ("add", "start") and os.path.exists(os.path.join(d, "slow-writes")):
@@ -1052,6 +1061,12 @@ fn tq_setup(tag: &str, claim: bool) -> (PathBuf, State) {
     let mut c: Value = serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
     c["taskq"] = json!({"bin": taskq, "root": d.join("root"), "poll": 1});
     fs::write(&cfg, c.to_string()).unwrap();
+    // These management scenarios start after onboarding; #168 tests the setup boundary separately.
+    let out=cli(&d,&["projects","list","--json"]);assert!(out.status.success());
+    let db=rusqlite::Connection::open(d.join("journal.sqlite")).unwrap();
+    let record=json!({"board":"taskqorg/pilotq","root":d.join("root"),"pending":false,"ready":true,"epoch":1,
+        "report":{"ready":true,"gaps":[],"source":"invented completed-onboarding fixture"}});
+    db.execute("INSERT OR REPLACE INTO meta(key,value) VALUES ('onboarding:pilotq',?1)",[record.to_string()]).unwrap();
     (d, st)
 }
 
@@ -1469,6 +1484,20 @@ fn ok(o: std::process::Output) -> Value {
     serde_json::from_slice(&o.stdout).unwrap_or(Value::Null)
 }
 
+// These cases qualify management/direct tools, not host setup. Exercise the owner's explicit
+// readiness override when their intentionally incomplete fixture cannot pass doctor (#168 A4).
+fn registered_for_scenario(d:&Path,name:&str,root:&Path)->Value {
+    let out=cli(d,&["projects","add",name,root.to_str().unwrap(),"--json"]);
+    let result:Value=serde_json::from_slice(&out.stdout).unwrap_or_else(|_|panic!("registration readback missing: {}",String::from_utf8_lossy(&out.stderr)));
+    assert_eq!(result["name"],name);
+    if !out.status.success() {
+        assert_eq!(result["onboarding"]["ready"],false);
+        let receipt=ok(cli(d,&["ask",&format!("/onboard {name} override"),"--json"]));
+        assert_eq!(receipt["state"],"answered");
+    }
+    result
+}
+
 /// The TaskQ install plus a fake `gh`, two registered projects (`pilotq` and a read-only `other`) and the key `github`, held by
 /// the owner, for every direct tool.
 fn direct_setup(tag: &str) -> (PathBuf, State) {
@@ -1483,9 +1512,9 @@ fn direct_setup(tag: &str) -> (PathBuf, State) {
     fs::write(&cfg, c.to_string()).unwrap();
     fs::create_dir_all(d.join("other-root")).unwrap();
     fs::write(d.join("other-root/taskq.json"), r#"{"board": "github", "repo": "taskqorg/other"}"#).unwrap();
-    let p = ok(cli(&d, &["projects", "add", "pilotq", d.join("root").to_str().unwrap(), "--json"]));
+    let p = registered_for_scenario(&d,"pilotq",&d.join("root"));
     assert_eq!((p["repo"].as_str(), p["by"].as_i64()), (Some("taskqorg/pilotq"), Some(OWNER)), "registration reads back: {p}");
-    ok(cli(&d, &["projects", "add", "other", d.join("other-root").to_str().unwrap()]));
+    registered_for_scenario(&d,"other",&d.join("other-root"));
     let k = ok(cli_in(&d, &["keys", "add", "github", "GitHub API", "issue_read", "issue_comment", "issue_label", "--json"], &format!("{TOKEN}\n")));
     assert!(k.get("value").is_none() && !k.to_string().contains(TOKEN), "{k}");
     ok(cli(&d, &["keys", "grant", "github", &OWNER.to_string()]));
@@ -1529,16 +1558,16 @@ fn project_list_is_scoped_and_marks_current() {
     ok(cli(&d,&["users","grant","8","chat","project:other"]));
     let c=spawn(&d,None);
     push(&st,call(1,8,None,8,"project_use",json!({"project":"other"})));
-    wait("switch",15,||query(&d,"SELECT count(*) FROM requests WHERE state='answered'")==1);
+    wait("switch",15,||query(&d,"SELECT count(*) FROM requests WHERE front='telegram' AND state='answered'")==1);
     push(&st,call(2,8,None,8,"project_list",json!({})));
-    wait("list",15,||query(&d,"SELECT count(*) FROM requests WHERE state='answered'")==2);
-    let answer=query_text(&d,"SELECT reply FROM requests WHERE id=2");
+    wait("list",15,||query(&d,"SELECT count(*) FROM requests WHERE front='telegram' AND state='answered'")==2);
+    let answer=query_text(&d,"SELECT reply FROM requests WHERE update_id=2 AND front='telegram'");
     assert!(answer.contains("other") && answer.contains("(current)") && !answer.contains("pilotq"),"{answer}");
     assert!(gh_calls(&d).is_empty(),"no key or GitHub call");
     ok(cli(&d,&["users","revoke","8","project:other"]));
     push(&st,call(3,8,None,8,"project_list",json!({})));
-    wait("empty list after revoke",15,||query(&d,"SELECT count(*) FROM requests WHERE state='answered'")==3);
-    assert!(query_text(&d,"SELECT reply FROM requests WHERE id=3").contains("No accessible projects."));
+    wait("empty list after revoke",15,||query(&d,"SELECT count(*) FROM requests WHERE front='telegram' AND state='answered'")==3);
+    assert!(query_text(&d,"SELECT reply FROM requests WHERE update_id=3 AND front='telegram'").contains("No accessible projects."));
     stop(c,d);
 }
 
@@ -1600,8 +1629,8 @@ fn u04_f04_owner_comment_and_label_once_and_crash_readback() {
     push(&st,call(4,OWNER,None,OWNER,"issue_label",json!({"project":"pilotq","issue":"5","label":"ready"})));
     wait("label",15,||sent_has(&st,"re: ok: TaskQ confirmed the label ready on taskqorg/pilotq#5 once"));
     let writes=|| tq_calls(&d).into_iter().filter(|c| c[0]=="issue" && c.len()>3).collect::<Vec<_>>();
-    let op=query_text(&d,"SELECT op_id FROM effects WHERE request_id=3");
-    assert_eq!(writes(),[vec!["issue","5","--comment","note","--op-id",&op,"--json"],vec!["issue","5","--label","ready","--op-id",&query_text(&d,"SELECT op_id FROM effects WHERE request_id=4"),"--json"]]);
+    let op=query_text(&d,"SELECT op_id FROM effects WHERE request_id=(SELECT id FROM requests WHERE update_id=3 AND front='telegram')");
+    assert_eq!(writes(),[vec!["issue","5","--comment","note","--op-id",&op,"--json"],vec!["issue","5","--label","ready","--op-id",&query_text(&d,"SELECT op_id FROM effects WHERE request_id=(SELECT id FROM requests WHERE update_id=4 AND front='telegram')"),"--json"]]);
 
     // the write lands but its receipt is lost; the crash leaves it pending, and startup retries the same op id once
     fs::write(d.join("lose-issue"),"").unwrap();
@@ -1651,11 +1680,11 @@ fn u09_f09_f10_switch_ambiguity_redirect_and_revoke() {
     let named = "project pilotq was not named in the person's message and is not this conversation's current project; nothing was done";
     wait("redirect refused",15,||sent_has(&st,&format!("re: refused: {named} | refused: the person did not name project pilotq")));
     push(&st, call(4, OWNER, None, OWNER, "issue_read", json!({"project": "pilotq", "issue": "3"})));
-    wait("named read", 15, || query(&d,"SELECT count(*) FROM requests WHERE id=4 AND state='answered'")==1);
+    wait("named read", 15, || query(&d,"SELECT count(*) FROM requests WHERE update_id=4 AND front='telegram' AND state='answered'")==1);
     assert_eq!(query_text(&d, "SELECT project FROM conversations WHERE session='dm:7'"), "other", "a named read does not switch");
 
     push(&st, call(5, 8, None, 8, "issue_read", json!({"project": "other", "issue": "4"})));
-    wait("granted read", 15, || query(&d,"SELECT count(*) FROM requests WHERE id=5 AND state='answered'")==1);
+    wait("granted read", 15, || query(&d,"SELECT count(*) FROM requests WHERE update_id=5 AND front='telegram' AND state='answered'")==1);
     ok(cli(&d, &["users", "revoke", "8", "project:other"]));
     push(&st, call(6, 8, None, 8, "issue_read", json!({"project": "other", "issue": "4"})));
     wait("revoked", 15, || sent_has(&st, "re: refused: 8 has no project:other grant; nothing was done"));
@@ -1682,8 +1711,8 @@ fn u11_l05_budget_and_deadline_keep_evidence() {
     push(&st, u);
     wait("deadline", 20, || sent_has(&st, "Результат действия неизвестен; автоматического повтора не будет."));
     assert!(sent_has(&st,"Доступные проекты: other, pilotq"), "§5/U11: readable observations must survive the deadline");
-    assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE id=2 AND state='uncertain'"), 1);
-    let diagnostic = query_text(&d, "SELECT error FROM requests WHERE id=2");
+    assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE update_id=2 AND front='telegram' AND state='uncertain'"), 1);
+    let diagnostic = query_text(&d, "SELECT error FROM requests WHERE update_id=2 AND front='telegram'");
     // §7: context preparation consumes the same deadline, so Codex gets only the remaining budget.
     let seconds = diagnostic.strip_prefix("Codex did not finish within ")
         .and_then(|s| s.strip_suffix(" s"))
@@ -1709,8 +1738,8 @@ fn a2_budget_holds_across_a_retry() {
     wait("retry answered",15,||sent_has(&st,"Could not finish the action; its result is not confirmed yet."));
     assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='reply_diagnostic'"),1,"#165 raw budget refusals remain in audit");
     assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='direct'"), 5, "five reads in total across both runs");
-    assert_eq!(query(&d, "SELECT count(*) FROM runs WHERE request_id=1"), 2, "the request was retried");
-    assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE request_id=1 AND kind='call'"), 5, "a refused call records nothing");
+    assert_eq!(query(&d, "SELECT count(*) FROM runs WHERE request_id=(SELECT id FROM requests WHERE update_id=1 AND front='telegram')"), 2, "the request was retried");
+    assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE request_id=(SELECT id FROM requests WHERE update_id=1 AND front='telegram') AND kind='call'"), 5, "a refused call records nothing");
     stop(c, d);
 }
 
@@ -1928,8 +1957,8 @@ fn a7_live_direct_run() {
     fs::write(&cfg, c.to_string()).unwrap();
     fs::create_dir_all(d.join("specq-root")).unwrap();
     fs::write(d.join("specq-root/taskq.json"), r#"{"board": "github", "repo": "taskqorg/specq"}"#).unwrap();
-    ok(cli(&d, &["projects", "add", "pilotq", root.to_str().unwrap()]));
-    ok(cli(&d, &["projects", "add", "specq", d.join("specq-root").to_str().unwrap()]));
+    registered_for_scenario(&d,"pilotq",&root);
+    registered_for_scenario(&d,"specq",&d.join("specq-root"));
     let token = String::from_utf8(Command::new("gh").args(["auth", "token"]).output().unwrap().stdout).unwrap().trim().to_string();
     ok(cli_in(&d, &["keys", "add", "github", "GitHub API for direct tools", "issue_read", "issue_comment", "issue_label"], &token));
     ok(cli(&d, &["keys", "grant", "github", "7", "8"]));
@@ -2143,7 +2172,7 @@ fn c_live_context_runs() {
         let mut c: Value = serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
         c["taskq"] = json!({"bin": std::env::var("PILOTQ_A8_TASKQ").unwrap(), "root": root, "poll": 15});
         fs::write(&cfg, c.to_string()).unwrap();
-        ok(cli(&d, &["projects", "add", "pilotq", root.to_str().unwrap()]));
+        registered_for_scenario(&d,"pilotq",&root);
         ok(cli_in(&d, &["keys", "add", "github", "GitHub API for direct tools", "issue_read", "issue_comment", "issue_label"], &token));
         ok(cli(&d, &["keys", "grant", "github", "7"]));
         for u in ["8", "9", "10", "11"] {
@@ -2307,13 +2336,13 @@ fn c06_resume_failure_rebuilds_without_replaying_effects() {
     let c = spawn(&d, None);
     push(&st, call(1, OWNER, None, OWNER, "task_steer", json!({"project": "pilotq", "task": "19", "text": "remember this receipt"})));
     wait("effect completed", 20, || try_query(&d, "SELECT count(*) FROM task_effects WHERE receipt IS NOT NULL") == Some(1));
-    wait("first answered", 10, || try_query(&d, "SELECT count(*) FROM requests WHERE state='answered'") == Some(1));
+    wait("first answered", 10, || try_query(&d, "SELECT count(*) FROM requests WHERE front='telegram' AND state='answered'") == Some(1));
     let calls = tq_calls(&d).len();
     fs::write(d.join("damaged"), "").unwrap();
     push(&st, text(2, OWNER, None, OWNER, "recall earlier result without tools"));
-    wait("rebuilt answer", 20, || try_query(&d, "SELECT count(*) FROM requests WHERE state='answered'") == Some(2));
+    wait("rebuilt answer", 20, || try_query(&d, "SELECT count(*) FROM requests WHERE front='telegram' AND state='answered'") == Some(2));
     push(&st, text(3, OWNER, None, OWNER, "follow up without tools"));
-    wait("replacement resumed", 15, || try_query(&d, "SELECT count(*) FROM requests WHERE state='answered'") == Some(3));
+    wait("replacement resumed", 15, || try_query(&d, "SELECT count(*) FROM requests WHERE front='telegram' AND state='answered'") == Some(3));
     wait("notice delivered", 10, || sent_has(&st, "Restoring the conversation"));
     assert_eq!(tq_calls(&d).len(), calls, "recovery never calls GitHub");
     assert_eq!(query(&d, "SELECT count(*) FROM task_effects"), 1);
@@ -2347,7 +2376,7 @@ fn c_live_context_runs_c06() {
         let mut config: Value = serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
         config["taskq"] = json!({"bin": std::env::var("PILOTQ_A8_TASKQ").unwrap(), "root": root, "poll": 15});
         fs::write(cfg, config.to_string()).unwrap();
-        ok(cli(&d, &["projects", "add", "pilotq", root.to_str().unwrap()]));
+        registered_for_scenario(&d,"pilotq",&root);
         ok(cli_in(&d, &["keys", "add", "github", "GitHub for C06", "issue_comment"], &token));
         ok(cli(&d, &["keys", "grant", "github", "7"]));
         let svc = spawn(&d, None);
@@ -2392,7 +2421,7 @@ fn u39_registered_boards_steer_requeue_and_stale_answer() {
     // One CLI binary, independent board state selected by the registered root.
     let fake = FAKE_TASKQ.replace("d = os.path.dirname(os.path.abspath(__file__))", "d = os.path.dirname(os.environ['TASKQ_ROOT'])");
     fs::write(d.join("fake-taskq"), fake).unwrap();
-    ok(cli(&d, &["projects", "add", "other", second.join("root").to_str().unwrap()]));
+    registered_for_scenario(&d,"other",&second.join("root"));
     ok(cli(&d, &["users", "grant", "8", "chat", "taskq", "project:pilotq"]));
     let c = spawn(&d, None);
     push(&st, call(1, OWNER, None, OWNER, "task_status", json!({"task":"19"})));
@@ -3147,6 +3176,9 @@ fn u108_registration_failure() {
 #[test]
 fn doctor_voice_readiness() {
     let (d, st) = tq_setup("doctor-voice", true);
+    // Doctor starts without a journal; the management fixture's empty registry setup is not an admitted input.
+    assert_eq!(query(&d,"SELECT count(*) FROM requests"),0);
+    fs::remove_file(d.join("journal.sqlite")).unwrap();
     let cfg = d.join("config.json");
     host_support::provision(&d,&cfg);
     let mut c: Value = serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
@@ -3340,7 +3372,7 @@ fn u126_installed_commands_share_frontends() {
 [ -z "${GH_TOKEN+x}" ] && [ -z "${TASKQ_ATTEMPT+x}" ] || exit 3
 printf 'fixture task #42 ready\n'"#);
     let root=d.join("root");
-    ok(cli(&d,&["projects","add","pilotq",root.to_str().unwrap()]));
+    registered_for_scenario(&d,"pilotq",&root);
     let entry=|bin:&Path,args:Value|json!({"description":"invented read capability","executable":bin,"cwd":root,"project":"pilotq","board":"taskqorg/pilotq","users":[OWNER],"args":args});
     fs::write(d.join("commands.json"),json!({"taskq":entry(&installed,json!([["status"]])),"pwd":entry(Path::new("/bin/pwd"),json!([[]]))}).to_string()).unwrap();
     fs::set_permissions(d.join("commands.json"),fs::Permissions::from_mode(0o600)).unwrap();
@@ -3352,7 +3384,7 @@ printf 'fixture task #42 ready\n'"#);
     let c=spawn(&d,None);
     push(&st,text(1,OWNER,None,OWNER,"Покажи список задач установленной командой taskq status"));
     wait("installed command through Telegram",15,||sent_has(&st,"fixture task #42 ready"));
-    assert_eq!(query(&d,"SELECT count(DISTINCT front) FROM requests WHERE state='answered'"),2);
+    assert_eq!(query(&d,"SELECT count(DISTINCT front) FROM requests WHERE state='answered' AND front IN ('cli','telegram')"),2);
     assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE target='command_run taskq' AND result LIKE 'start %'"),2);
     push(&st,call(2,OWNER,None,OWNER,"command_run",json!({"command":"taskq","args":["service","pause"]})));
     wait("unapproved argv refused",15,||sent_has(&st,"command arguments are not approved"));
@@ -3466,4 +3498,57 @@ if paths:
         assert_eq!(tq_calls(&d).iter().filter(|a|a[0]==cmd).count(),before,"another person's files never authorize dispatch");
     }
     stop(c,d);
+}
+
+// #168 / §5 / R13/R17: real CLI registration -> doctor + TaskQ fallback -> durable Telegram
+// card -> owner-only remedy -> Recheck edits that card. No model or permission mutation.
+#[test]
+fn onboarding_168_cli_telegram_recheck() {
+    let (d,st)=tq_setup("onboarding-168",true);
+    let config=d.join("config.json");
+    let mut c:Value=serde_json::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
+    c["codex"]=json!(script(&d,"onboard-codex","if [ \"$*\" = --version ]; then echo 'codex-cli 0.162.0'; else echo 'Logged in using ChatGPT'; fi"));
+    let ffmpeg=script(&d,"onboard-decode",r#"if [ "$1" = -version ]; then echo 'ffmpeg version 6.1.0'; exit; fi
+while [ "$1" != -i ]; do shift; done; input=$2; for a; do out=$a; done; cp "$input" "$out""#);
+    let recognizer=script(&d,"onboard-recognize",r#"if [ "$1" = --version ]; then echo 2.0.1; else echo '{"text":""}'; fi"#);
+    let model=d.join("model");fs::create_dir_all(&model).unwrap();
+    for f in ["tokens.txt","encoder.int8.onnx","decoder.onnx","joiner.onnx"] {fs::write(model.join(f),"invented").unwrap();}
+    c["voice"]=json!({"ffmpeg":ffmpeg,"recognizer":recognizer,"model":model});
+    fs::write(&config,c.to_string()).unwrap();
+    host_support::provision(&d,&config);
+    // Retain the full fallback projection, rather than the host-version-only stub.
+    fs::write(d.join("fake-taskq"),FAKE_TASKQ).unwrap();
+    fs::write(d.join("root/taskq.json"),json!({"repo":"invented/cyprusbz-board","create_claim_issue":20}).to_string()).unwrap();
+    let db=rusqlite::Connection::open(d.join("journal.sqlite")).unwrap();
+    db.execute("DELETE FROM projects",[]).unwrap();db.execute("DELETE FROM meta WHERE key LIKE 'onboarding:%'",[]).unwrap();drop(db);
+    let mut svc=json!({"schema":"taskq.service/1","service":{"version":"4.6.47","state":"running","fresh":true,"instance":"invented","started":"invented"},
+        "projects":[{"root":d.join("root"),"status":{"complete":true,"capacity":{"limits":{"codex":4},"gate":"open"},
+        "access":[{"runtime":"codex","grant":"none (taskq.json is a request)","effective":"legacy","refused":"no operator grant"}]}}]});
+    fs::write(d.join("setup-service.json"),svc.to_string()).unwrap();
+    let out=Command::new(env!("CARGO_BIN_EXE_pilotq")).env("PILOTQ_INSTALL",&d).env("PATH",format!("{}:{}",d.display(),std::env::var("PATH").unwrap_or_default()))
+        .args(["projects","add","cyprusbz-board",d.join("root").to_str().unwrap(),"--json"]).output().unwrap();
+    let v:Value=serde_json::from_slice(&out.stdout).unwrap_or_else(|_|panic!("{}",String::from_utf8_lossy(&out.stderr)));
+    assert!(!out.status.success(),"a missing grant must fail the setup command while preserving registration");
+    assert_eq!(v["onboarding"]["ready"],false);
+    assert!(v["onboarding"]["gaps"].as_array().unwrap().iter().any(|g|g["check"]=="codex_grant" && g["fix"].as_str().unwrap().contains("service permissions --runtime codex --mode workspace --scope project")),"{v}");
+    assert_eq!(query(&d,"SELECT count(*) FROM projects WHERE name='cyprusbz-board'"),1);
+    let process=spawn(&d,None);
+    wait("onboarding card",15,|| sent_has(&st,"cyprusbz-board: not ready"));
+    wait("onboarding checks settled",15,|| try_query(&d,"SELECT count(*) FROM meta WHERE key='onboarding:cyprusbz-board' AND json_extract(value,'$.pending')=0")==Some(1));
+    wait("latest onboarding card delivered",15,||try_query(&d,"SELECT count(*) FROM outbox o JOIN meta m ON m.key='onboarding:cyprusbz-board' WHERE o.kind='onboarding' AND o.revision=json_extract(m.value,'$.epoch') AND o.state='delivered'")==Some(1));
+    let card=sent(&st).into_iter().rev().find(|m|m["text"].as_str().is_some_and(|s|s.contains("cyprusbz-board: not ready"))).unwrap();
+    let message=card["id"].as_i64().unwrap();
+    let callback=card["reply_markup"]["inline_keyboard"][0][0]["callback_data"].as_str().unwrap().to_string();
+    // Only the owner supplies the grant externally; PilotQ never calls the grant command.
+    svc["projects"][0]["status"]["access"][0]=json!({"runtime":"codex","grant":"workspace (project) rev 1 by invented","effective":"workspace","refused":null});
+    fs::write(d.join("setup-service.json"),svc.to_string()).unwrap();
+    push(&st,press(91,OWNER,None,OWNER,message,&callback));
+    wait("setup passed",20,||sent(&st).iter().any(|m|m["edit"]==true && m["message_id"]==message && m["text"].as_str().is_some_and(|s|s.contains("cyprusbz-board: setup passed"))));
+    assert_eq!(query(&d,"SELECT count(*) FROM meta WHERE key='onboarding:cyprusbz-board' AND json_extract(value,'$.ready')=1"),1);
+    let pass=sent(&st).into_iter().find(|m|m["edit"]==true && m["message_id"]==message && m["text"].as_str().is_some_and(|s|s.contains("setup passed"))).unwrap();
+    assert_eq!(pass["reply_markup"]["inline_keyboard"],json!([]));
+    assert_eq!(query(&d,"SELECT count(*) FROM requests WHERE update_id=91 AND kind='builtin' AND state='answered'"),1,"the callback, not a background scan, must complete the recheck");
+    assert!(!tq_calls(&d).iter().any(|a|a[0]=="start" || a[0]=="permissions"));
+    assert!(!d.join("codex.log").exists(),"setup controls never start the manager");
+    stop(process,d);
 }

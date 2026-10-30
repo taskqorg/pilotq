@@ -4,7 +4,7 @@ use coreq::Tool;
 use serde_json::Value;
 use std::time::{Duration, Instant};
 
-pub const HELP:&str="/help — available controls\n/version — running PilotQ version\n/status — observed health and this conversation\n/model — Codex catalogue and model buttons\n/model MODEL — save for the next run in this conversation\n/model default — inherit Codex configuration\n/doctor — bounded read-only setup checks\n/stop — fence this conversation's manager run\n/new — reset conversation; keep task links and model choice\n/audit — your history, in DM only\n/restart — owner-only service drain and restart\n/skills — enabled skills (currently none)\n/skill NAME TEXT — unavailable until a skill is approved\nTaskQ workers keep TaskQ's model and resource policy.";
+pub const HELP:&str="/help — available controls\n/version — running PilotQ version\n/status — observed health and this conversation\n/model — Codex catalogue and model buttons\n/model MODEL — save for the next run in this conversation\n/model default — inherit Codex configuration\n/doctor — bounded read-only setup checks\n/onboard NAME — owner project setup and Recheck\n/stop — fence this conversation's manager run\n/new — reset conversation; keep task links and model choice\n/audit — your history, in DM only\n/restart — owner-only service drain and restart\n/skills — enabled skills (currently none)\n/skill NAME TEXT — unavailable until a skill is approved\nTaskQ workers keep TaskQ's model and resource policy.";
 
 pub struct Request { pub id:i64, pub session:String, pub sender:i64, pub text:String }
 
@@ -46,6 +46,10 @@ pub fn execute(t:&Tool,j:&Shared,r:&Request,installed:bool) -> Result<(),String>
     let cmd=r.text.split_whitespace().next().unwrap_or("").split('@').next().unwrap_or("");
     let result=(|| {
         match cmd {
+            "/onboard"|"/onboard-button"=> {
+                crate::onboarding::control(t,j,r)?;
+                return Ok(None);
+            }
             "/model"|"/model-button"=> {
                 let config=crate::config(t)?.ok_or("PilotQ configuration unavailable")?;
                 let models=config.codex.models()?;
@@ -110,7 +114,7 @@ pub fn cli(t:&Tool,j:Journal,id:i64,text:&str)->Result<Value,String> {
         let request=j.lock().unwrap().builtin_take(id)?;
         if let Some(r)=request { execute(t,&j,&r,false)?; }
     }
-    let end=Instant::now()+Duration::from_secs(if restart {140} else {25});
+    let end=Instant::now()+Duration::from_secs(if restart {140} else if text.starts_with("/onboard") {65} else {25});
     loop {
         let (state,reply,error)=j.lock().unwrap().request(id)?;
         if !matches!(state.as_str(),"queued"|"waiting") || Instant::now()>=end {

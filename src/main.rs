@@ -1,6 +1,7 @@
 //! PilotQ service and operator CLI on coreq (pilotq.md § 9).
 
 mod admin;
+mod onboarding;
 mod builtins;
 mod direct;
 mod asana;
@@ -315,6 +316,7 @@ fn service_run(t: &Tool) -> ! {
         eprintln!("effects: {e}");
     }
     // a drain left by an update applies to the process it restarted, not to this one
+    onboarding::startup(&journal).unwrap_or_else(|e| t.die(&e));
     journal.draining(false).unwrap_or_else(|e| t.die(&e));
     let _ = std::fs::remove_file(t.install.join(DRAIN));
     let j: telegram::Shared = Arc::new(Mutex::new(journal));
@@ -327,6 +329,8 @@ fn service_run(t: &Tool) -> ! {
         });
         let (bj,bt)=(j.clone(),tool());
         std::thread::spawn(move || builtins::serve(bt,bj,installed));
+        let (oj,ot)=(j.clone(),tool());
+        std::thread::spawn(move || onboarding::serve(ot,oj));
         let mut bot = teloxide::Bot::new(c.token);
         if let Some(u) = c.api_url {
             bot = bot.set_api_url(u);
@@ -396,6 +400,7 @@ fn ask(t: &Tool, text: &str) -> Result<Value, (Value, String)> {
     let mut j = journal::Journal::open(&t.install.join("journal.sqlite")).map_err(plain)?;
     j.bootstrap(cfg.owner, now() as i64).map_err(plain)?;
     initial_project(&j, &cfg).map_err(plain)?;
+    onboarding::startup(&j).map_err(plain)?;
     if let Some(id)=j.builtin_cli(cfg.owner,text,now() as i64).map_err(plain)? {
         let v=builtins::cli(t,j,id,text).map_err(plain)?;
         return if v["state"]=="answered" {Ok(v)} else {Err((v,"built-in command did not complete successfully".into()))};
@@ -500,9 +505,14 @@ fn admin(t: &Tool, a: &[&str]) -> Result<Value, String> {
             if !board.eq_ignore_ascii_case(repo) {
                 return Err(format!("taskq reads board {board} under {}, not {repo}; nothing was registered", root.display()));
             }
+            let tx=j.0.unchecked_transaction().map_err(|e|e.to_string())?;
             j.add_project(me, name, repo, &root.to_string_lossy(), at)?;
+            onboarding::queue(&j,name)?;
+            tx.commit().map_err(|e|e.to_string())?;
             let p = j.projects()?.into_iter().find(|p| p.0 == *name).ok_or("registration did not read back")?;
-            json!({"name": p.0, "repo": p.1, "root": p.2, "by": p.3, "at": p.4})
+            let shared=Arc::new(Mutex::new(j));
+            let result=onboarding::check(t,&shared,name)?;
+            return Ok(json!({"name": p.0, "repo": p.1, "root": p.2, "by": p.3, "at": p.4,"onboarding":result}));
         }
         ["routes", "list"] => j.routes()?.iter().map(|r| json!({"chat": r.chat, "topic": r.topic, "session": if r.shared { "shared" } else { "isolated" }, "by": r.by, "at": r.at})).collect(),
         ["routes", "set", route, policy @ ("shared" | "isolated")] => {
@@ -554,6 +564,9 @@ fn keys(t: &Tool, a: &[&str]) -> Result<Value, String> {
 fn show(v: &Value) {
     let one = |v: &Value| {
         if v.get("repo").is_some() {
+            if let Some(report)=v.get("onboarding") {
+                println!("{}",onboarding::summary(v["name"].as_str().unwrap_or("project"),report));
+            }
             return println!("{} {} {} (registered by {})", v["name"].as_str().unwrap_or(""), v["repo"].as_str().unwrap_or(""), v["root"].as_str().unwrap_or(""), v["by"]);
         }
         if v.get("purpose").is_some() || v.get("removed").is_some() {
@@ -664,6 +677,7 @@ fn main() {
             let rest: Vec<&str> = a.iter().copied().filter(|x| *x != "--json").collect();
             let v = if *cmd == "keys" { keys(&t, &rest) } else { admin(&t, &rest) }.unwrap_or_else(|e| t.die(&format!("{cmd}: {e}")));
             if json { println!("{v}") } else { show(&v) }
+            if v.get("onboarding").is_some_and(|r|r["ready"]!=true) { std::process::exit(1); }
         }
         ["pilot", "report", rest @ ..] => {
             let args: Vec<&str> = rest.iter().copied().filter(|x| *x != "--json").collect();
