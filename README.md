@@ -34,3 +34,12 @@ stores request/run IDs, time, tool name, bytes, PilotQ version and the Codex
 initialization user-agent (or `unknown` if absent), without arguments or result
 content. An empty window has no tool rows; a missing journal is an error.
 This measures bytes, not tokens or savings (§ 6, R17).
+
+Read an Asana task link with `asana_read` under a registered project and the caller’s project grant. On the host, add a read-capable Asana personal access token from protected stdin (never paste it in Telegram):
+
+```sh
+pilotq keys add asana "Asana task reads" asana_read < /protected/asana-token
+pilotq keys grant asana project:pilotq
+```
+
+`/protected/asana-token` is a placeholder for an owner-only file. The tool reads task details, up to 20 comments and 20 attachment names; it reports truncation and never downloads files. See [§5](pilotq.md#asana-task-reads).

@@ -459,6 +459,7 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
                     Err(e) => return (false, format!("the tool-call budget could not be read ({e}); nothing was done")),
                 }
                 let (ok, out) = match tq {
+                    _ if name == "asana_read" => crate::asana::call(d,j,r,args,command_deadline),
                     _ if crate::commands::NAMES.contains(&name) => crate::commands::call(d,j,r,name,args,command_deadline,tq),
                     _ if direct::NAMES.contains(&name) => direct::call(d, j, r, name, args, tq),
                     Some(tq) => crate::taskq::call(tq, j, r, name, args),
