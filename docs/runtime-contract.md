@@ -153,6 +153,8 @@ remembered project associations. Each fact carries its subject user ID, visibili
 revision. Load only facts permitted in the current route; remembering one person across chats does
 not copy private DM history into a group. Profiles survive restart and conversation reset.
 
+Telegram `/profile` lists the sender’s current facts with visibility, source and revision in DM only. `/profile set KEY VALUE` stores a private own preference; `/profile forget KEY` removes the own key and explains that audit/history remain. Keys are 1–64 ASCII letters, digits, underscores, dots or hyphens; values are nonempty and at most 1024 bytes. `/access` lists only the sender’s current grants and directs grant changes/revocation to an administrator. No subject argument is supported, even for administrators; groups/topics receive a DM instruction without facts or grants. These controls run atomically during admission, without the model, with durable replies and update deduplication. Reset/restart preserve facts and grants; the fresh complete profile snapshot supersedes stale history.
+
 Provide a Telegram flow to inspect, correct and forget remembered facts. Users can manage their own
 non-authoritative preferences; administrators can correct shared profile information within their
 grant. Administration does not implicitly reveal another person's private DM memory. Show the

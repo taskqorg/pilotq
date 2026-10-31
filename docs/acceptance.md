@@ -1060,3 +1060,15 @@ PM checklist for A6, after the merged release on pds18 (§9; no worker installat
    reply destination, and confirm existing cards retain edits and remove used buttons.
 
 Local adapter/model tests do not qualify Telegram rendering or replace this PM evidence (R19).
+
+### Scoped profile and access self-service (#196)
+
+R10/R13 and §6: an admitted person uses `/profile`, `/profile set KEY VALUE`,
+`/profile forget KEY` and `/access` in their own DM without a model turn. Inspect
+returns current visibility/source/revision; correction and deletion return durable
+readback. Foreign subject arguments refuse; group/topic replies contain only DM
+guidance. Restart/reset retain current facts and grants; forgotten/superseded facts
+stay absent from the fresh model profile, even when history contains them. Profile
+edits never grant access, and revoked people remain ignored. The local executable
+trace and its before/after evidence are in [profile-196-evidence.md](profile-196-evidence.md).
+Real Telegram presentation remains PM qualification under §9.
