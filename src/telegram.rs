@@ -376,6 +376,15 @@ pub(crate) fn options(question: &serde_json::Value) -> Vec<(String, String)> {
 /// A small safe Markdown subset for Telegram HTML. Raw HTML always stays literal; unsupported Markdown stays readable.
 /// ponytail: headings, bullets, bold, italic, escapes, code and HTTP(S) links; a full Markdown parser only when the subset needs to grow.
 pub(crate) fn html(text: &str) -> String {
+    // #222: recognized speech is literal, collapsed in HTML, quoted in plain fallback.
+    if text.starts_with("> ") {
+        let (quote,answer)=text.split_once("\n\n").unwrap_or((text,""));
+        if quote.lines().all(|line|line.starts_with("> ")) {
+            let speech=quote.lines().map(|line|&line[2..]).collect::<Vec<_>>().join("\n");
+            let speech=speech.replace('&',"&amp;").replace('<',"&lt;").replace('>',"&gt;");
+            return format!("<blockquote expandable>{speech}</blockquote>{}{}",if answer.is_empty(){""}else{"\n\n"},html(answer));
+        }
+    }
     let text = &tidy(text);
     fn escape(s: &str) -> String { s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;") }
     fn inline(mut s: &str) -> String {
@@ -447,6 +456,8 @@ pub(crate) fn html(text: &str) -> String {
 /// Native rich Markdown also accepts HTML. Escape raw tags/entities outside code, once at the output boundary (§4).
 /// A single line break inside a paragraph is a Markdown soft break that renders as a space; it becomes a hard break (#82).
 fn markdown(text: &str) -> String {
+    // Generated escaped HTML preserves literal speech and the expandable attribute in rich Markdown.
+    if text.starts_with("> 🎤 ") {return html(text);}
     // a line that starts its own block never needs a hard break before it
     fn block(l: &str) -> bool {
         if l == "\u{a0}\n" { return false; } // #141: the footer spacer needs hard breaks on both sides

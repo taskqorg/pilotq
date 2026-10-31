@@ -244,9 +244,49 @@ const CHUNK: usize = 4096;
 const ROUTE_BACKLOG: i64 = 50;
 const TOTAL_BACKLOG: i64 = 1000;
 
-/// Splits `text` into ordered parts within CHUNK, at a newline when one falls in the second half of a part, never inside a
-/// character (§ 4 Delivery, L11).
+// #222: quote speech literally; captions are deliberately outside this display.
+fn voice_quote(transcript: &str, text: &str) -> String {
+    format!("> 🎤 {}\n\n{text}", transcript.replace('\n', "\n> "))
+}
+
+fn stored_voice(tx: &Connection, request: i64) -> Result<Option<String>, String> {
+    tx.query_row("SELECT item FROM audit_events WHERE request_id=?1 AND kind='transcript' ORDER BY id LIMIT 1", [request], |r|r.get(0))
+        .optional().map_err(|e|e.to_string())
+}
+
+// Select speech only for its original authorized Telegram route, once per delivery obligation.
+fn reply_voice(tx: &Connection, request: i64, chat: i64, topic: Option<i64>) -> Result<Option<(String,i64)>,String> {
+    tx.query_row("SELECT a.item,q.message FROM requests q JOIN audit_events a ON a.request_id=q.id AND a.kind='transcript'
+        WHERE q.id=?1 AND q.front='telegram' AND q.chat=?2 AND q.topic IS ?3
+        AND NOT EXISTS(SELECT 1 FROM outbox WHERE request_id=q.id AND text LIKE '> 🎤 %') ORDER BY a.id LIMIT 1",
+        params![request,chat,topic],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(|e|e.to_string())
+}
+
+/// Splits ordered delivery parts within the UTF-16 cap (§4, L11), preserving quoted speech.
 pub(crate) fn chunks(text: &str) -> Vec<String> {
+    if let Some((quote, answer)) = text.strip_prefix("> 🎤 ").and_then(|s|s.split_once("\n\n")) {
+        let speech=quote.replace("\n> ","\n");
+        // Reserve prefix space on every part, including a split through a long spoken line.
+        let mut parts=Vec::new();
+        let mut part=String::from("> 🎤 ");
+        let mut units=part.encode_utf16().count();
+        for c in speech.chars() {
+            let cost=if c=='\n' {3} else {c.len_utf16()};
+            if units+cost>CHUNK {
+                parts.push(part);
+                part=String::from("> "); units=2;
+            }
+            part.push(c);
+            if c=='\n' {part.push_str("> ");}
+            units+=cost;
+        }
+        let suffix=format!("\n\n{answer}");
+        if units+suffix.encode_utf16().count()<=CHUNK {part+=&suffix;parts.push(part);} else {
+            parts.push(part);
+            if !answer.is_empty() {parts.extend(chunks(answer));}
+        }
+        return parts;
+    }
     let mut out = vec![];
     let mut rest = text;
     while !rest.is_empty() {
@@ -275,7 +315,11 @@ pub(crate) fn chunks(text: &str) -> Vec<String> {
 /// Queue complete source content; the shared delivery path persists fallback parts and receipts.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn outbox(tx: &Connection, request: i64, chat: i64, topic: Option<i64>, reply_to: Option<i64>, html: Option<&str>, text: &str, at: i64) -> Result<(), String> {
-    let html = html.map(str::to_string).unwrap_or_else(|| crate::telegram::html(text));
+    let speech=reply_voice(tx,request,chat,topic)?;
+    let decorated=speech.as_ref().filter(|_| !text.is_empty() && !text.starts_with("> 🎤 ")).map(|(speech,_)|voice_quote(speech,text));
+    let reply_to=if decorated.is_some() {speech.map(|(_,message)|message)} else {reply_to};
+    let html=if let Some(text)=&decorated {crate::telegram::html(text)} else {html.map(str::to_string).unwrap_or_else(|| crate::telegram::html(text))};
+    let text=decorated.as_deref().unwrap_or(text);
     tx.execute("INSERT INTO outbox(request_id, chat, topic, reply_to, html, text, next_at) VALUES (?1,?2,?3,?4,?5,?6,?7)", params![request,chat,topic,reply_to,html,text,at]).map_err(|e|e.to_string())?;
     Ok(())
 }
@@ -300,6 +344,10 @@ fn plan_receipt(tx: &Connection, request: i64, receipt: &str, at: i64) -> Result
 
 /// Final content and fallback parts commit together (§4), reserving their delivery order.
 fn final_outbox(tx: &Connection, request: i64, chat: i64, topic: Option<i64>, reply_to: Option<i64>, text: &str, at: i64) -> Result<(), String> {
+    let speech=reply_voice(tx,request,chat,topic)?;
+    let decorated=speech.as_ref().map(|(speech,_)|voice_quote(speech,text));
+    let text=decorated.as_deref().unwrap_or(text);
+    let reply_to=if decorated.is_some() {speech.map(|(_,message)|message)} else {reply_to};
     let rich = text.encode_utf16().count() <= 32768;
     if rich {
         outbox(tx, request, chat, topic, reply_to, None, "", at)?;
@@ -482,6 +530,11 @@ fn answer_control(tx: &Connection, session: &str, cmd: &str, request: i64, chat:
                 // the fence bump is the verified stop: the old run can no longer record a reply or effect
                 tx.execute("UPDATE requests SET state='cancelled', error='stopped by /stop' WHERE id=?1", [id]).map_err(e)?;
                 tx.execute("UPDATE conversations SET fence=fence+1 WHERE session=?1", [session]).map_err(e)?;
+                if stored_voice(tx,id)?.is_some() {
+                    let (chat,topic,message)=tx.query_row("SELECT chat,topic,message FROM requests WHERE id=?1",[id],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,Option<i64>>(1)?,r.get::<_,i64>(2)?))).map_err(e)?;
+                    final_outbox(tx,id,chat,topic,Some(message),"Stopped; queued follow-ups stay queued.",at)?;
+                    return Ok((String::new(),Some(id)));
+                }
                 return Ok(("Stopped; queued follow-ups stay queued.".into(), Some(id)));
             }
             "/profile" | "/access" => profile_control(tx,request,chat,sender,cmd,at)?,
@@ -1396,6 +1449,17 @@ impl Journal {
 
     /// Prepare content independently of card authority; callers resolve buttons before sending.
     fn prepare_delivery(&self,d:&mut Delivery)->Result<(),String> {
+        // Editing an answer/plan card must not erase the speech retained on that card.
+        if let Some(message)=d.edit {
+            let source:Option<String>=self.0.query_row("SELECT text FROM outbox WHERE chat=?1 AND topic IS ?2 AND sent_message=?3 AND text LIKE '> %' AND EXISTS(SELECT 1 FROM audit_events WHERE request_id=outbox.request_id AND kind='transcript') ORDER BY id LIMIT 1",params![d.chat,d.topic,message],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
+            if let Some(source)=source {
+                let quote=source.split_once("\n\n").map_or(source.as_str(),|s|s.0);
+                if !d.text.starts_with(quote) {
+                    d.text=format!("{quote}\n\n{}",d.text);
+                    d.html=Some(crate::telegram::html(&d.text));
+                }
+            }
+        }
         d.rich = d.kind=="rich";
         if shared_message(&d.kind) && !matches!(d.kind.as_str(),"rich"|"rich_part") {
             let key=format!("delivery:{}",d.id);
@@ -1809,6 +1873,13 @@ impl Journal {
         Ok(text)
     }
 
+    // #222: video speech remains file source material, not the sender's own text.
+    pub fn video_transcript(&self, r: &Run, speech: &str, at: i64) -> Result<(),String> {
+        if self.fenced(r)? || !has(&self.0,self.sender(r.request)?,"chat")? {return Err("conversation access revoked".into());}
+        self.0.execute("INSERT INTO audit_events(request_id,at,kind,item) VALUES (?1,?2,'transcript',?3)",params![r.request,at,speech]).map_err(|e|e.to_string())?;
+        Ok(())
+    }
+
     /// #124 / §5: project references come only from the caller in this generation.
     pub fn own_project_inputs(&self, r: &Run) -> Result<Vec<String>,String> {
         let mut q = self.0.prepare("SELECT coalesce(q.text,'') FROM requests q
@@ -2015,7 +2086,7 @@ impl Journal {
     }
 
     pub fn previews(&self) -> Result<Vec<(i64,i64,Option<i64>,String)>, String> {
-        let mut q = self.0.prepare("SELECT p.run,r.chat,r.topic,p.text FROM previews p JOIN runs u ON u.id=p.run JOIN requests r ON r.id=u.request_id JOIN conversations c ON c.session=u.session
+        let mut q = self.0.prepare("SELECT p.run,r.chat,r.topic,CASE WHEN EXISTS(SELECT 1 FROM audit_events WHERE request_id=r.id AND kind='transcript') THEN '> 🎤 ' || replace((SELECT item FROM audit_events WHERE request_id=r.id AND kind='transcript' ORDER BY id LIMIT 1),char(10),char(10) || '> ') || char(10) || char(10) || p.text ELSE p.text END FROM previews p JOIN runs u ON u.id=p.run JOIN requests r ON r.id=u.request_id JOIN conversations c ON c.session=u.session
             WHERE u.state='running' AND r.state='running' AND r.front='telegram' AND r.chat=r.sender AND c.fence=u.fence AND c.generation=u.generation
             AND EXISTS (SELECT 1 FROM grants g WHERE g.user=r.sender AND g.name='chat')").map_err(|e|e.to_string())?;
         q.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).and_then(Iterator::collect).map_err(|e|e.to_string())
@@ -3285,6 +3356,121 @@ mod tests {
         assert!(!j.fenced(&r).unwrap());
         j.revoke(7,7,&["chat".into()],2).unwrap();
         assert!(j.fenced(&r).unwrap());
+        drop(j);std::fs::remove_dir_all(p).unwrap();
+    }
+
+    // #222 / R5, R13, §12: speech must survive every terminal outcome and card
+    // rendering, without captions or repeated quoting on transport retry/recovery.
+    #[test]
+    fn voice_222_replies() {
+        use crate::manager::Outcome;
+        for (index,kind) in ["voice","video"].iter().enumerate() {
+            for mode in ["answer","plan","choice","failure","restart","stop","recognition_failure"] {
+                let (mut j,p)=journal(&format!("voice-222-{index}-{mode}"));
+                let mut input=msg(7,7,42).unwrap();
+                input.kind=if *kind=="video" {"document"}else{"voice"}; input.text=Some("caption stays outside".into());
+                input.voice=Some("invented-file".into());
+                j.admit(&[(1,Some(input))],0).unwrap();
+                let r=j.claim_next(1,1).unwrap().remove(0);
+                // Admission notifications predate recognition, and cannot claim speech.
+                j.0.execute("UPDATE outbox SET state='delivered'",[]).unwrap();
+                if mode!="recognition_failure" {
+                    if *kind=="video" {
+                        j.video_transcript(&r,"Что значит <тест> & **слово**?",2).unwrap();
+                        assert_eq!(j.request(r.request).unwrap().1,None);
+                    } else {j.transcript(&r,"Что значит <тест> & **слово**?",2).unwrap();}
+                    // A secondary notification destination must never acquire private speech.
+                    outbox(&j.0,r.request,99,None,None,None,"operator notice",2).unwrap();
+                    let other:String=j.0.query_row("SELECT text FROM outbox WHERE chat=99",[],|r|r.get(0)).unwrap();
+                    assert_eq!(other,"operator notice");
+                    j.0.execute("UPDATE outbox SET state='delivered' WHERE chat=99",[]).unwrap();
+                    j.preview(&r,"draft answer").unwrap();
+                    assert!(j.previews().unwrap()[0].3.starts_with("> 🎤 Что значит"));
+                }
+                match mode {
+                    "plan"=>{
+                        j.save_draft(&r,&json!([{"title":"Invented plan"}]),"pilotq","taskqorg/pilotq","",3).unwrap();
+                        j.finish(&r,None,None,&Outcome::Answered("saved".into()),4).unwrap();
+                    },
+                    "choice"=>{
+                        j.save_choices(&r,"Which target?",&["First".into(),"Second".into()]).unwrap();
+                        j.finish(&r,None,None,&Outcome::Answered("Choose".into()),4).unwrap();
+                    },
+                    "failure"|"recognition_failure"=>{j.finish(&r,None,None,&Outcome::Failed("voice failed".into()),4).unwrap();},
+                    "restart"=>{drop(j);j=Journal::open(&p.join("journal.sqlite")).unwrap();j.reconcile(4).unwrap();},
+                    "stop"=>{let mut stop=msg(7,7,43).unwrap();stop.text=Some("/stop".into());j.admit(&[(2,Some(stop))],4).unwrap();},
+                    _=>{j.finish(&r,None,None,&Outcome::Answered("answer".into()),4).unwrap();}
+                }
+                let (d,_)=j.due(5).unwrap();let mut d=d.unwrap();
+                if mode=="recognition_failure" {assert!(!d.text.contains("🎤"));} else {
+                    assert_eq!(d.reply_to,Some(42));
+                    assert!(d.text.starts_with("> 🎤 Что значит <тест> & **слово**?\n\n"),"{mode}: {}",d.text);
+                    assert!(!d.text.contains("caption stays outside"));
+                    assert!(d.rich,"voice preserves the rich-first delivery path");
+                    if matches!(mode,"plan"|"choice") {assert_eq!(d.buttons.len(),2,"voice card lost its controls");}
+                    j.record(d.id,&Sent::RichFallback,5).unwrap();
+                    d=j.due(5).unwrap().0.unwrap();
+                    assert!(d.html.as_ref().unwrap().starts_with("<blockquote expandable>🎤 Что значит &lt;тест&gt; &amp; **слово**?</blockquote>"));
+                    assert!(!d.rich);
+                    if matches!(mode,"plan"|"choice") {assert_eq!(d.buttons.len(),2);}
+                    // A repeat read and a format rejection reuse the saved quote.
+                    let again=j.due(5).unwrap().0.unwrap();assert_eq!(d.text,again.text);
+                    j.record(d.id,&Sent::Plain,5).unwrap();
+                    let plain=j.due(6).unwrap().0.unwrap();
+                    assert!(plain.html.is_none());assert_eq!(plain.text,d.text);
+                    drop(j);j=Journal::open(&p.join("journal.sqlite")).unwrap();
+                    assert_eq!(j.due(6).unwrap().0.unwrap().text,plain.text);
+                    assert!(j.pending_voice(r.request).unwrap().is_none());
+                    j.record(d.id,&Sent::Ok(90),6).unwrap();
+                    assert!(j.due(7).unwrap().0.is_none(),"{mode}: extra transcript message");
+                    if mode=="plan" {
+                        let mut edit=Delivery{id:999,chat:7,topic:None,reply_to:None,html:None,text:"Cancelled.".into(),attempts:0,edit:Some(90),kind:"plan_answered".into(),buttons:vec![],rich:false};
+                        j.prepare_delivery(&mut edit).unwrap();
+                        assert!(edit.text.starts_with("> 🎤 Что значит"),"card edit erased speech");
+                        assert!(edit.text.ends_with("Cancelled."));
+                        assert_eq!(edit.text.matches("🎤").count(),1);
+                    }
+                }
+                drop(j);std::fs::remove_dir_all(p).unwrap();
+            }
+        }
+    }
+
+    // #222 A5: long Unicode speech stays complete, ordered before the answer,
+    // and quoted even when a single spoken line exceeds Telegram's UTF-16 cap.
+    #[test]
+    fn voice_222_long_split() {
+        let speech="Я 🦀 <&> **тест** ".repeat(900);
+        let text=format!("> 🎤 {speech}\n\nanswer");
+        let parts=chunks(&text);
+        assert!(parts.len()>2);
+        assert!(parts.iter().all(|p|p.encode_utf16().count()<=4096));
+        assert!(parts.last().unwrap().ends_with("answer"));
+        let restored=parts.iter().enumerate().filter_map(|(i,p)|{
+            if p=="answer" {return None;}
+            assert!(crate::telegram::html(p).starts_with("<blockquote expandable>"));
+            let quote=p.strip_prefix(if i==0 {"> 🎤 "}else{"> "}).unwrap();
+            Some(quote.strip_suffix("\n\nanswer").unwrap_or(quote))
+        }).collect::<String>();
+        assert_eq!(restored,speech);
+        let (mut j,p)=journal("voice-222-long-delivery");
+        j.admit(&[(1,msg(7,7,42))],0).unwrap();
+        let r=j.claim_next(1,1).unwrap().remove(0);
+        j.0.execute("UPDATE outbox SET state='delivered'",[]).unwrap();
+        j.transcript(&r,&speech,2).unwrap();
+        j.finish(&r,None,None,&crate::manager::Outcome::Answered("answer".into()),3).unwrap();
+        let rich=j.due(4).unwrap().0.unwrap();
+        j.record(rich.id,&Sent::RichFallback,4).unwrap();
+        let mut delivered=Vec::new();
+        while let Some(d)=j.due(5).unwrap().0 {
+            assert_eq!(d.reply_to,Some(42));
+            delivered.push(d.text.clone());
+            j.record(d.id,&Sent::Ok(100+delivered.len() as i64),5).unwrap();
+            // Individual chunk receipts survive reopening without replaying earlier parts.
+            drop(j);j=Journal::open(&p.join("journal.sqlite")).unwrap();
+        }
+        assert_eq!(delivered,parts);
+        assert_eq!(delivered.join("").matches("🎤").count(),1);
         drop(j);std::fs::remove_dir_all(p).unwrap();
     }
 
