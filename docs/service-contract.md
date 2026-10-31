@@ -30,9 +30,11 @@ They use the same admission and audit boundary as other requests (R10, R13, R17)
   existing §9 path, and reports completion only after the restarted service writes healthy status. A
   failed drain resumes admission and reports failure. Source runs refuse service restart. Requests,
   task subscriptions and delivery receipts survive. Duplicate updates cannot restart twice.
-- `/skills` lists enabled skills; `/skill NAME TEXT` is the invocation syntax. No native skills are
-  currently approved for the restricted manager. Both commands explain this without starting a model
-  or enabling native tools; adding an approved skill requires a contract decision under §12.
+- `/skills` and `/skill NAME TEXT` retain deterministic explanations without starting a model.
+  The owner-installed PM pack is a route binding, loaded automatically rather than invoked as a native skill;
+  `/help operations` shows its binding. Other native skills remain unapproved. The PM pack and durable notes
+  follow [the root contract](../pilotq.md#9-cli-releases-and-service-operations); operator setup and the separate
+  PM shadow stage are in [the qualification checklist](pm-221-live.md).
 - The operator can send the same controls through `pilotq ask '/model MODEL'` (R13). Service restart
   and setup checks keep their own bounded control worker, independent of chat generation.
 

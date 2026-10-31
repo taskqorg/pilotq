@@ -44,6 +44,7 @@ pub fn tools() -> Vec<Value> {
     tools.extend(crate::commands::tools());
     tools.extend(crate::admin::tools());
     tools.extend(crate::loops::tools());
+    tools.extend(crate::pm::tools());
     tools
 }
 

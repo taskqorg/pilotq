@@ -14,6 +14,7 @@ mod instructions;
 mod keys;
 mod manager;
 mod loops;
+mod pm;
 mod footer;
 mod conversation;
 mod taskq;
@@ -30,7 +31,9 @@ const USAGE: &str = "usage: pilotq service install|run|stop|status | status [--j
   users list | users show ID | users grant ID GRANT.. | users revoke ID [GRANT..] | users remember ID KEY VALUE [--private] | users forget ID KEY
   routes list | routes set CHAT[:TOPIC] shared|isolated | projects list | projects add NAME ROOT | projects release NAME FILE
   keys list | keys add NAME PURPOSE TOOL.. (value on stdin) | keys grant NAME ID|route:CHAT[:TOPIC]|project:NAME.. | keys revoke NAME [WHO..]
-  (users, routes, projects and keys accept --json)
+  pm install NAME FILE | pm bind ROUTE NAME [PROJECT] | pm unbind ROUTE
+  pm notes ROUTE list|set ID FACT WHY|forget ID
+  (users, routes, projects, keys and pm accept --json)
   audit [--user ID] [--route cli|CHAT[:TOPIC]] [--project P] [--since UNIX_SECONDS] [--request ID] [--json]
   pilot start | pilot note intervention|outage TEXT | pilot report [--since UNIX_SECONDS] [--until UNIX_SECONDS] (pilot accepts --json)";
 /// A status.json older than this reads unknown (coreq.md § status.json).
@@ -528,6 +531,7 @@ fn admin(t: &Tool, a: &[&str]) -> Result<Value, String> {
     };
     let owned = |g: &[&str]| g.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     Ok(match a {
+        ["pm", rest @ ..] => crate::pm::cli(&j,me,rest,&crate::keys::Keys(t.install.join("keys.json")),at)?,
         ["users", "list"] => j.users()?.into_iter().map(|(u, g)| json!({"id": u, "grants": g})).collect(),
         ["users", "show", u] => user(&j, id(u)?)?,
         ["users", "grant", u, g @ ..] if !g.is_empty() => {
@@ -747,7 +751,7 @@ fn main() {
             let v=project_command(&t,action,&args).unwrap_or_else(|e|t.die(&e));
             if json {println!("{v}");} else {println!("{}",v["reply"].as_str().unwrap_or(""));}
         }
-        [cmd @ ("users" | "routes" | "projects" | "keys"), ..] => {
+        [cmd @ ("users" | "routes" | "projects" | "keys" | "pm"), ..] => {
             let json = a.contains(&"--json");
             let rest: Vec<&str> = a.iter().copied().filter(|x| *x != "--json").collect();
             let v = if *cmd == "keys" { keys(&t, &rest) } else { admin(&t, &rest) }.unwrap_or_else(|e| t.die(&format!("{cmd}: {e}")));

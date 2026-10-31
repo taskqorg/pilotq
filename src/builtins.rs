@@ -211,7 +211,7 @@ pub fn localized(text:&str,language:Option<&str>,failed:bool)->String {
         "Restart refused: active requests did not drain; admission resumed."=>"Перезапуск отменён: активные запросы не завершились; приём работы возобновлён.".into(),
         "Restart refused: access revoked; admission resumed."=>"Перезапуск отменён: доступ отозван; приём работы возобновлён.".into(),
         "PilotQ restarted and wrote healthy status. Earlier requests and TaskQ work remain recorded."=>"PilotQ перезапущен и записал healthy status; прежние запросы и работа TaskQ сохранены.".into(),
-        "No skills are enabled for PilotQ's restricted manager. /skill NAME TEXT is unavailable until a skill is approved."=>"Для менеджера PilotQ нет разрешённых skills; /skill NAME TEXT недоступна до их согласования.".into(),
+        "No callable native skills are enabled. Owner-installed PM packs load automatically on bound routes; /help operations shows the binding. /skill NAME TEXT is unavailable."=>"Вызываемые нативные навыки не включены. PM-пакеты владельца загружаются в привязанных темах; /help operations показывает привязку. /skill NAME TEXT недоступна.".into(),
         "Checking setup."=>"Проверяю настройки.".into(),
         "Checking model catalogue."=>"Проверяю каталог моделей.".into(),
         "This model selector is stale or belongs to another person; use /model."=>"Эта кнопка устарела или принадлежит другому человеку; используйте /model.".into(),

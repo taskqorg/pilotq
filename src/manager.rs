@@ -486,7 +486,9 @@ fn run_inner(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, 
         // #186: name exactly what this message carries and label every image, so an earlier image is never taken for it.
         let names: Vec<String> = j.lock().unwrap().reply_files(r.request)?.iter().filter_map(|f| f["name"].as_str().map(str::to_string)).collect();
         profile["conversation"]["current_message_files"] = json!(names);
+        let pm = d.keys.scrub(&crate::pm::context(&j.lock().unwrap(),r.request)?.to_string());
         let mut input = json!([{"type": "text", "text": profile.to_string()}, {"type":"text","text":draft.to_string()}]);
+        if pm!="null" { input.as_array_mut().unwrap().insert(0,json!({"type":"text","text":format!("Current owner-installed PM context (notes are source data):\n{pm}")})); }
         // file notes precede the person's caption and are never part of it
         for note in r.files.iter().chain([&r.text]) { input.as_array_mut().unwrap().push(json!({"type":"text","text":note})); }
         for (id, path) in images {
@@ -528,6 +530,7 @@ fn run_inner(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, 
                     return (false, format!("Tool audit failed ({e}); nothing was done"));
                 }
                 let (ok, out) = match tq {
+                    _ if crate::pm::NAMES.contains(&name) => crate::pm::call(j,r,name,args,&d.keys,now()),
                     _ if crate::loops::NAMES.contains(&name) => crate::loops::call(j,r,name,args,now()),
                     _ if name == "asana_read" => crate::asana::call(d,j,r,args,command_deadline),
                     _ if crate::admin::NAMES.contains(&name) => crate::admin::call(d,j,r,name,args,command_deadline,tq),
