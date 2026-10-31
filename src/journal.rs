@@ -858,9 +858,19 @@ pub enum Sent {
 }
 
 /// The journal connection, the CoreQ telemetry store path beside it and that store, opened on first use.
-pub struct Journal(pub(crate) Connection, PathBuf, std::sync::OnceLock<Result<Store, String>>);
+pub struct Journal(pub(crate) Connection, PathBuf, std::sync::OnceLock<Result<Store, String>>, std::collections::HashMap<(i64, Option<i64>), std::sync::Weak<tokio::sync::Mutex<()>>>);
 
 impl Journal {
+    /// §2 / #229: drafts and stop receipts share a route barrier across network awaits.
+    /// Weak entries retain no route history once sends finish; other routes use independent locks.
+    pub(crate) fn delivery_barrier(&mut self, chat: i64, topic: Option<i64>) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+        self.3.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock)=self.3.get(&(chat,topic)).and_then(std::sync::Weak::upgrade) { return lock; }
+        let lock=std::sync::Arc::new(tokio::sync::Mutex::new(()));
+        self.3.insert((chat,topic),std::sync::Arc::downgrade(&lock));
+        lock
+    }
+
     pub fn open(path: &Path) -> Result<Journal, String> {
         let c = Connection::open(path).map_err(|e| format!("journal {}: {e}", path.display()))?;
         // R5 / #205: startup may hold the writer; install the bounded wait before any PRAGMA or DDL.
@@ -1008,7 +1018,7 @@ impl Journal {
         let salt = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as i64) ^ ((std::process::id() as i64) << 40);
         c.execute("INSERT INTO meta(key, value) VALUES ('instance', ?1) ON CONFLICT(key) DO NOTHING", [salt & i64::MAX]).map_err(|e| e.to_string())?;
         up("CREATE TEMP TABLE previews(run INTEGER PRIMARY KEY, text TEXT NOT NULL);")?;
-        Ok(Journal(c, path.with_file_name("telemetry.sqlite"), std::sync::OnceLock::new()))
+        Ok(Journal(c, path.with_file_name("telemetry.sqlite"), std::sync::OnceLock::new(), std::collections::HashMap::new()))
     }
 
     /// R17, § 6: metadata only, measured after scrubbing; no arguments or result content enter this record.

@@ -441,6 +441,89 @@ mod tests {
             drop(j);std::fs::remove_dir_all(p).unwrap();
         }
     }
+    // #229 A3 / §2, R5/R11: a delayed Bot API draft must complete before either stop receipt.
+    // Exercise actual independent draft/outbox loops; journal-only fencing misses this race.
+    #[tokio::test]
+    async fn loop_229_delayed_draft_stop_receipt() {
+        use std::io::{BufRead, Read, Write};
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+        for (plain,rich) in [(false,true),(true,true),(false,false),(true,false)] {
+            let (mut j,p)=journal("delayed-draft");
+            let dm=|text:&str| {let mut i=input(1,7,text);i.chat=7;i.topic=None;i};
+            j.admit(&[(1,Some(dm("/loop 1m inspect")))],0).unwrap();
+            fire(&mut j,60).unwrap();
+            let run=j.claim_next(4,60).unwrap().remove(0);
+            j.preview(&run,"tick preview").unwrap();
+            // Discard setup receipts so the only outbox send is the stop acknowledgement.
+            j.0.execute("UPDATE outbox SET state='sent'",[]).unwrap();
+            let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url=format!("http://{}/",listener.local_addr().unwrap());
+            let entered=Arc::new(tokio::sync::Notify::new());
+            let release=Arc::new((Mutex::new(false),std::sync::Condvar::new()));
+            let events=Arc::new(Mutex::new(Vec::new()));
+            let (entered2,release2,events2)=(entered.clone(),release.clone(),events.clone());
+            // Reject rich drafts for the HTML fallback case, then delay the accepted draft.
+            let server=std::thread::spawn(move || {
+                let mut handlers=Vec::new();
+                for stream in listener.incoming().take(if rich {2} else {3}) {
+                    let (entered,release,events)=(entered2.clone(),release2.clone(),events2.clone());
+                    handlers.push(std::thread::spawn(move || {
+                        let mut stream=stream.unwrap();
+                        let mut reader=std::io::BufReader::new(stream.try_clone().unwrap());
+                        let mut line=String::new();reader.read_line(&mut line).unwrap();
+                        let draft=line.to_lowercase().contains("draft");
+                        let reject=!rich && line.to_lowercase().contains("sendrichmessagedraft");
+                        let mut len=0;
+                        loop {line.clear();reader.read_line(&mut line).unwrap();if line.trim().is_empty(){break;}
+                            if let Some(n)=line.to_lowercase().strip_prefix("content-length:"){len=n.trim().parse().unwrap();}}
+                        let mut body=vec![0;len];reader.read_exact(&mut body).unwrap();
+                        if reject {
+                            let body=r#"{"ok":false,"error_code":400,"description":"unsupported rich draft"}"#;
+                            write!(stream,"HTTP/1.1 400 X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+                            return;
+                        }
+                        if draft {
+                            entered.notify_one();
+                            let (lock,ready)=&*release;let mut go=lock.lock().unwrap();
+                            while !*go {go=ready.wait(go).unwrap();}
+                        }
+                        events.lock().unwrap().push(if draft {"draft"} else {"stop"});
+                        let body=r#"{"ok":true,"result":{"message_id":123}}"#;
+                        write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+                    }));
+                }
+                for h in handlers {h.join().unwrap();}
+            });
+            let bot=teloxide::Bot::new("123:invented").set_api_url(url.parse().unwrap());
+            let j=Arc::new(Mutex::new(j));
+            let drafts=tokio::spawn(crate::telegram::drafts(bot.clone(),j.clone()));
+            tokio::time::timeout(Duration::from_secs(3),entered.notified()).await.unwrap();
+            {
+                let mut j=j.lock().unwrap();
+                j.admit(&[(2,Some(dm(if plain {"stop the loop"} else {"/loop stop"})))],61).unwrap();
+                if plain {
+                    let request=j.0.query_row("SELECT id FROM requests WHERE update_id=2",[],|r|r.get::<_,i64>(0)).unwrap();
+                    let receipt=apply(&j.0,request,"loop_stop",&json!({}),61).unwrap();
+                    j.0.execute("UPDATE outbox SET state='delivered' WHERE request_id=?1",[request]).unwrap();
+                    crate::journal::outbox(&j.0,request,7,None,None,None,&receipt,61).unwrap();
+                }
+            }
+            let delivery=tokio::spawn(crate::telegram::deliver(bot,j.clone(),Arc::new(tokio::sync::Notify::new())));
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let early=events.lock().unwrap().clone();
+            {let (lock,ready)=&*release;*lock.lock().unwrap()=true;ready.notify_all();}
+            tokio::time::timeout(Duration::from_secs(3),async {
+                while events.lock().unwrap().len()<2 {tokio::time::sleep(Duration::from_millis(10)).await;}
+            }).await.unwrap();
+            drafts.abort();delivery.abort();let _=drafts.await;let _=delivery.await;
+            server.join().unwrap();
+            assert!(early.is_empty(),"stop acknowledged while draft in flight: {early:?}, plain={plain}, rich={rich}");
+            assert_eq!(*events.lock().unwrap(),["draft","stop"]);
+            assert!(j.lock().unwrap().previews().unwrap().is_empty());
+            drop(j);std::fs::remove_dir_all(p).unwrap();
+        }
+    }
     // A2/A4/R13: common CLI and Telegram boundary, syntax limits, dynamic delay, authority and stale decisions.
     #[test]
     fn loop_220_controls_and_dynamic() {
