@@ -87,6 +87,7 @@ fn brief(language: Option<&str>, reason: &str) -> &'static str {
         ("ru", "image_failed") => "Не удалось прочитать изображение; отправьте его ещё раз.",
         ("ru", "voice_limit") => "Голосовое сообщение слишком большое; отправьте запись до 5 минут и 20 МиБ.",
         ("ru", "voice_failed") => "Не удалось распознать голосовое сообщение; отправьте его ещё раз или текстом.",
+        ("ru", "document_timeout") => "Время разбора документа истекло.",
         ("ru", "limit") => "Лимит запроса исчерпан; попросите продолжить с сохранённого результата.",
         ("ru", "uncertain") => "Результат действия неизвестен; автоматического повтора не будет.",
         ("ru", _) => "Не удалось завершить запрос; попробуйте ещё раз или проверьте /status.",
@@ -97,6 +98,7 @@ fn brief(language: Option<&str>, reason: &str) -> &'static str {
         (_, "image_failed") => "The image could not be read; send it again.",
         (_, "voice_limit") => "The voice message is too large; send a recording up to 5 minutes and 20 MiB.",
         (_, "voice_failed") => "The voice message could not be recognized; send it again or as text.",
+        (_, "document_timeout") => "Document parsing timed out.",
         (_, "limit") => "The request reached its limit; ask to continue from the saved result.",
         (_, "uncertain") => "The action’s outcome is uncertain; it will not be repeated automatically.",
         _ => "The request failed; try again or check /status.",
@@ -1846,7 +1848,7 @@ impl Journal {
             _ if self.fenced(r)? => ("fenced", String::new(), None),
             Outcome::Fenced => ("fenced", String::new(), None),
             Outcome::Answered(a) => ("answered", a.clone(), None),
-            Outcome::Failed(x) => ("failed", brief(language.as_deref(), if x.starts_with("voice") { if x.contains("20 MiB") || x.contains("5 minutes") { "voice_limit" } else { "voice_failed" } } else if x.contains("20 MiB") { "image_limit" } else if x.starts_with("image") || x.contains("image") { "image_failed" } else if x.contains("within") || x.contains("budget") { "limit" } else { "failed" }).into(), Some(x)),
+            Outcome::Failed(x) => ("failed", brief(language.as_deref(), if x == "document parsing timed out" { "document_timeout" } else if x.starts_with("voice") { if x.contains("20 MiB") || x.contains("5 minutes") { "voice_limit" } else { "voice_failed" } } else if x.contains("20 MiB") { "image_limit" } else if x.starts_with("image") || x.contains("image") { "image_failed" } else if x.contains("within") || x.contains("budget") { "limit" } else { "failed" }).into(), Some(x)),
             Outcome::Uncertain(x) => ("uncertain", brief(language.as_deref(), "uncertain").into(), Some(x)),
         };
         if let Some(reason)=error.filter(|reason|reason.starts_with("Codex sent no")) {
@@ -3499,6 +3501,31 @@ mod tests {
         assert_eq!(sessions(&j), [(7, "dm:7".to_string())]);
         drop(j);
         let _ = std::fs::remove_dir_all(p);
+    }
+
+    // #195 A2 / §1: parser timeout must survive failure projection into the durable reply and Telegram outbox.
+    #[test]
+    fn document_timeout_reply_195() {
+        use crate::manager::Outcome;
+        for (language, expected) in [
+            ("en", "Document parsing timed out."),
+            ("ru", "Время разбора документа истекло."),
+        ] {
+            let (mut j, p) = journal(&format!("document-timeout-{language}"));
+            let mut input = msg(7, 7, 1).unwrap();
+            input.language = Some(language.into());
+            j.admit(&[(1, Some(input))], 0).unwrap();
+            let r = j.claim_next(1, 0).unwrap().remove(0);
+            j.finish(&r, None, None, &Outcome::Failed("document parsing timed out".into()), 1).unwrap();
+            assert_eq!(j.request(r.request).unwrap(), ("failed".into(), Some(expected.into()), Some("document parsing timed out".into())));
+            let text: String = j.0.query_row("SELECT text FROM outbox WHERE request_id=?1 AND kind='rich'", [r.request], |x| x.get(0)).unwrap();
+            assert_eq!(text, expected);
+            drop(j);
+            let reopened = Journal::open(&p.join("journal.sqlite")).unwrap();
+            assert_eq!(reopened.request(r.request).unwrap().1.as_deref(), Some(expected));
+            drop(reopened);
+            std::fs::remove_dir_all(p).unwrap();
+        }
     }
 
     // #190 A6 replaces replay; R5 still fences stopped runs and preserves /new generation boundaries.
