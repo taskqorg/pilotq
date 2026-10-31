@@ -2672,6 +2672,12 @@ impl Journal {
             (true,_)=>"Не удалось запустить план.",
             (false,_)=>"Could not launch the plan.",
         }.to_string();
+        // #236 / R11: submission can encounter a closed gate after authorization.
+        // Only the typed setup refusal replaces the summary; task receipts remain visible.
+        if state=="failed" {
+            let refusal:Option<String>=self.0.query_row("SELECT result FROM audit_events WHERE request_id=?1 AND kind='plan_gate_refusal' AND target=?2 ORDER BY id DESC LIMIT 1",params![request,id.to_string()],|x|x.get(0)).optional().map_err(|e|e.to_string())?;
+            if let Some(refusal)=refusal {text=refusal;}
+        }
         let run=self.plan_run(id)?;
         for ticket in run.tickets {
             let Some(n)=ticket.task else { continue };

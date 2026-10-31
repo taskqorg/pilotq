@@ -516,6 +516,39 @@ mod tests {
         }
     }
 
+    // #236 A1 / R11, §5: setup can close after authorization; the durable
+    // receipt must retain the localized remedy through finish and chat delivery.
+    #[test]
+    fn onboarding_236_gate_closes_after_authorization() {
+        for lang in ["en","ru"] {
+            let (mut j,dir,tq)=setup(&format!("236-late-{lang}"));
+            let mut input=press(1,7,0,0);input.callback=None;input.reply_to=None;input.text=Some("plan cyprusbz-board".into());
+            j.admit(&[(1,Some(input))],1).unwrap();
+            let draft=j.claim_next(4,1).unwrap().remove(0);
+            j.save_plan(&draft,&json!([{"title":"Invented task"}]),"cyprusbz-board","invented/cyprusbz-board",dir.to_str().unwrap(),1).unwrap();
+            j.finish(&draft,None,None,&crate::manager::Outcome::Answered("Prepared".into()),2).unwrap();
+            let mut input=press(2,7,0,0);input.callback=None;input.reply_to=None;input.text=Some("run plan".into());
+            j.admit(&[(2,Some(input))],3).unwrap();
+            let launch=j.claim_next(4,3).unwrap().remove(0);
+            j.0.execute("UPDATE requests SET language=?2 WHERE id=?1",params![launch.request,lang]).unwrap();
+            assert!(gate(&j,"cyprusbz-board").is_ok());
+            j.authorize(&launch,1,7,30,3).unwrap();
+            queue(&j,"cyprusbz-board").unwrap();
+            let expected=refusal(&j,"cyprusbz-board",Some(lang)).unwrap().unwrap();
+            let shared=std::sync::Mutex::new(j);
+            let reply=crate::taskq::launch(&tq,&shared,&launch).unwrap().unwrap();
+            assert_eq!(reply,expected,"late gate refusal lost at launch");
+            let j=shared.into_inner().unwrap();
+            j.finish(&launch,None,None,&crate::manager::Outcome::Answered(reply),4).unwrap();
+            assert_eq!(j.request(launch.request).unwrap().1.unwrap(),expected);
+            let delivered:String=j.0.query_row("SELECT text FROM outbox WHERE request_id=?1 AND kind='plan_problem'",[launch.request],|r|r.get(0)).unwrap();
+            assert!(delivered.contains(&expected),"{delivered}");
+            let filed:i64=j.0.query_row("SELECT count(*) FROM tickets WHERE task IS NOT NULL",[],|r|r.get(0)).unwrap();
+            assert_eq!(filed,0);
+            drop(j);let _=std::fs::remove_dir_all(dir);
+        }
+    }
+
     // #236 A2 / §5: a saved hold must recover without owner intervention; unrelated gaps,
     // stale evidence, changed roots and revoked grants must still block launch.
     #[cfg(unix)]

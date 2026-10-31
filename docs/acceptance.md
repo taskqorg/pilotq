@@ -1007,6 +1007,12 @@ of the setup refusal. Both now pass. Disabling automatic refresh makes the recov
 at `admission/open`; restoring it passes. Existing `onboarding_168` checks retain owner-only
 overrides, registration fencing and CLI/simulated Telegram recovery coverage.
 
+The late-closure regression authorizes a ready plan, closes setup, then runs submission,
+finish and source-card delivery in English and Russian. Before the correction, launch returned
+`Could not launch the plan.`; afterward the durable launch receipt and delivered plan problem
+retain the project and owner Recheck remedy, with no filed ticket. Existing fenced and
+uncertain-outcome handling remains unchanged.
+
 A4 remains PM target qualification after release (§9): in the PilotQ TEST cyprus.bz topic,
 request a plan and press Run plan; record the release identity, both audit IDs, displayed
 readiness/refusal and launch outcome here. The worker neither installs live nor claims this replay.

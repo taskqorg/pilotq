@@ -800,6 +800,8 @@ pub fn submit(tq: &Taskq, j: &Mutex<Journal>, id: i64, notify: bool) -> String {
     let language=j.lock().unwrap().language(run.request).ok().flatten();
     let onboarding=crate::onboarding::launch_gate(tq,j,&run.project,language.as_deref(),std::time::Instant::now()+Duration::from_secs(10));
     if let Err(e)=onboarding {
+        if let Err(error)=j.lock().unwrap().0.execute("INSERT INTO audit_events(request_id,at,kind,target,result) VALUES (?1,?2,'plan_gate_refusal',?3,?4)",
+            rusqlite::params![run.request,at,run.id.to_string(),e]) {return format!("Could not record setup refusal: {error}");}
         return end(&run,"failed",Some(&e),e.clone());
     }
     let _=j.lock().unwrap().launch_phase(run.id,"creating",at);
