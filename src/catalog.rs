@@ -264,7 +264,11 @@ mod behavior_tests {
         j.add_project(7,"demo","invented/demo","/invented/demo",0).unwrap();
         let start=render(&j,8,None,Some("ru"),&keys,"cli").unwrap();
         assert!(start.contains("PilotQ помогает") && start.contains("/help projects"));
-        assert!(!start.contains("/help people"));
+        // #196/R10: own people controls are accessible; administrator capabilities remain hidden.
+        assert!(start.contains("/help people"));
+        let people=render(&j,8,Some("people"),Some("en"),&keys,"cli").unwrap();
+        assert!(people.contains("/profile") && people.contains("/access"));
+        assert!(!people.contains("grant_change") && !people.contains("pilotq users"));
         let projects=render(&j,8,Some("projects"),Some("en"),&keys,"cli").unwrap();
         assert!(projects.contains("project_current") && projects.contains("project_status"));
         assert!(!projects.contains("project_disconnect") && !projects.contains("project_register"));

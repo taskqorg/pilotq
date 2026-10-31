@@ -9,3 +9,5 @@ The same trace exercises admitted Telegram updates and durable replies: own set/
 These are local journal/Telegram ingress traces, not a live Bot API or model qualification. Live DM/topic presentation remains PM qualification under §9; no deployment or production cutover is authorized.
 
 After connection: `cargo test --locked profile_196_telegram_trace` passed (1 test). The trace also checks a private fact survives reset, durable DM outbox content, all inputs staying deterministic controls, and revoked-user admission producing no request. Tests use invented preferences and IDs only.
+
+The candidate gate exposed an old help assumption that ordinary users have no people capabilities. Under #196/R10, the help assertion now requires self-service visibility while retaining administrator-capability hiding; its filtered check failed before and passed after. `scripts/check-contract.sh` and offline selftest passed. The parallel full suite twice reported the existing command overflow fixture as `timeout` instead of `output_limit`; that unchanged check passed in isolation. This is an unresolved local parallel-run limitation, not proof that the normal gate passed.
