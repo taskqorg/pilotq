@@ -7,6 +7,14 @@ use crate::taskq::Taskq;
 use serde_json::{Value, json};
 use std::sync::Mutex;
 
+/// §5: product aliases, resolved only against registered projects and current grants.
+pub(crate) const PROJECT_ALIASES: &[(&str, &str)] = &[("cs", "cyprusbz")];
+
+pub(crate) fn alias_instructions() -> String {
+    let aliases = PROJECT_ALIASES.iter().map(|(alias,name)|format!("{alias} = {name}")).collect::<Vec<_>>().join(", ");
+    format!("Project aliases: {aliases}. Use the canonical registered project name in tools; do not ask what an alias means. Registration and current grants still apply.")
+}
+
 /// The only board that takes direct writes (owner decision 2026-10-23).
 const WRITABLE: &str = crate::taskq::BOARD;
 pub const NAMES: [&str; 6] = ["project_list", "project_current", "project_use", "issue_read", "issue_comment", "issue_label"];
@@ -80,7 +88,7 @@ pub(crate) fn own_url(text: &str, url: &str) -> bool {
 
 fn named_own(text: &str, name: &str) -> bool {
     let own=own_text(text);
-    if named(&own,name) { return true; }
+    if named(&own,name) || PROJECT_ALIASES.iter().any(|(alias,canonical)| name.eq_ignore_ascii_case(canonical) && named(&own,alias)) { return true; }
     // Spaced product spelling, e.g. "Pilot Q", matches the registered "pilotq".
     let words: Vec<String> = own.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w|!w.is_empty()).map(str::to_string).collect();
     let name = name.to_lowercase();
@@ -367,6 +375,31 @@ pub fn reconcile(d: &Direct, tq: Option<&Taskq>, j: &Journal) -> Result<(), Stri
 #[cfg(test)]
 mod context_tests {
     use super::*;
+
+    // #205 A1 / §5: aliases select the same authorized registered target, never quoted or revoked access.
+    #[test]
+    fn live_gaps_205_alias() {
+        let dir = std::env::temp_dir().join(format!("pilotq-alias205-{}",std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut j = Journal::open(&dir.join("journal.sqlite")).unwrap();
+        j.bootstrap(7,0).unwrap();
+        j.add_project(7,"cyprusbz","invented/cyprusbz","/invented/cyprusbz",0).unwrap();
+        j.add_project(7,"other","invented/other","/invented/other",0).unwrap();
+        for text in ["is cs #541 on DEV?", "is cyprusbz #541 on DEV?"] {
+            let r=j.ask(7,text,1).unwrap();
+            assert_eq!(context_project(&j,&r,7).unwrap().as_deref(),Some("cyprusbz"));
+            assert_eq!(target_context(&j,&r,7,&json!({"issue":"541","project":"cyprusbz"})).unwrap().0,"cyprusbz");
+            j.finish(&r,None,None,&crate::manager::Outcome::Answered("ok".into()),2).unwrap();
+        }
+        assert!(!named_own("> cs\n`cs`\n\"cs\"","cyprusbz"));
+        assert!(!named_own("discs","cyprusbz"));
+        assert!(alias_instructions().contains("cs = cyprusbz"));
+        j.revoke(7,7,&["projects".into()],3).unwrap();
+        let r=j.ask(7,"is cs #541 on DEV?",4).unwrap();
+        assert!(target_context(&j,&r,7,&json!({"issue":"541","project":"cyprusbz"})).is_err());
+        drop(j);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     // #124 / §5: context must resolve without repeating a name, while ambiguity,
     // quoted material, other authors and reset generations cannot select a board.

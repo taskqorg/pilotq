@@ -731,12 +731,14 @@ pub struct Journal(pub(crate) Connection, PathBuf, std::sync::OnceLock<Result<St
 impl Journal {
     pub fn open(path: &Path) -> Result<Journal, String> {
         let c = Connection::open(path).map_err(|e| format!("journal {}: {e}", path.display()))?;
+        // R5 / #205: startup may hold the writer; install the bounded wait before any PRAGMA or DDL.
+        c.busy_timeout(std::time::Duration::from_secs(30)).map_err(|e| e.to_string())?;
         let version: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0)).map_err(|e| e.to_string())?;
         if version > SCHEMA {
             return Err(format!("journal schema {version} is newer than {SCHEMA}; refusing to downgrade"));
         }
         c.execute_batch(&format!(
-            "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
+            "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
             CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS updates(update_id INTEGER PRIMARY KEY, disposition TEXT NOT NULL, request_id INTEGER, at INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS requests(id INTEGER PRIMARY KEY, update_id INTEGER NOT NULL UNIQUE, chat INTEGER NOT NULL, topic INTEGER,

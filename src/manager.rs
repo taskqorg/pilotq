@@ -81,7 +81,7 @@ impl Proc {
 
 /// `--` ends options: procps-ng 4.0.4 reads `kill -9 -1301449` as `kill(-1, SIGKILL)` and kills every process of the user.
 /// Found on the Linux host, where each Codex stop killed the whole service user.
-fn group_kill_args(pid: u32) -> [String; 3] {
+pub(crate) fn group_kill_args(pid: u32) -> [String; 3] {
     ["-9".into(), "--".into(), format!("-{pid}")]
 }
 
@@ -89,7 +89,7 @@ impl Drop for Proc {
     fn drop(&mut self) {
         // ponytail: `kill` on the process group; a pidfd/cgroup supervisor if children escape the group
         #[cfg(unix)]
-        let _ = crate::host::output(Command::new("kill").args(group_kill_args(self.child.id())));
+        let _ = crate::host::kill_group(self.child.id());
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -454,7 +454,7 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
     } else {
         "Native shell and live web are unavailable for this principal. Use only the granted PilotQ tools. Refuse a native shell request in one plain line in the person's language."
     };
-    let instructions = format!("{}\n{authority}\n{instructions} {CONVERSATION} Owner decision #190 overrides earlier direct-work restrictions: task work uses TaskQ tools first and board state only through TaskQ; other requested work uses native shell, network and web search only when this principal is authorized above. There is no total turn or tool-call cap. Preserve recorded outcomes before a restart; interrupted actions are never automatically replayed.", crate::instructions::policy());
+    let instructions = format!("{}\n{}\n{authority}\n{instructions} {CONVERSATION} Owner decision #190 overrides earlier direct-work restrictions: task work uses TaskQ tools first and board state only through TaskQ; other requested work uses native shell, network and web search only when this principal is authorized above. There is no total turn or tool-call cap. Preserve recorded outcomes before a restart; interrupted actions are never automatically replayed.", crate::instructions::policy(), direct::alias_instructions());
     let tools = Value::Array(tools);
     // Read on every turn, including resumed threads and empty profiles after forget (§ 6, R10, R13).
     // Keep the person's text separate: neither profile values nor old summaries are authorization.

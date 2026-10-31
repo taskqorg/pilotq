@@ -24,6 +24,21 @@ pub fn output_with_budget(c: &mut Command, budget: Duration) -> Result<std::proc
     result
 }
 
+/// §5 / #205: cleanup of an exited group is already complete.
+#[cfg(unix)]
+pub(crate) fn kill_group(pid: u32) -> Result<(), String> {
+    if pid == 0 || pid > i32::MAX as u32 { return Err("invalid process group".into()); }
+    let mut command = Command::new("/bin/kill");
+    command.args(crate::manager::group_kill_args(pid)).env("LC_ALL", "C").stdin(Stdio::null());
+    let result = coreq::process::output("pilotq.cleanup", &mut command, Duration::from_secs(3));
+    match result {
+        Ok(_) => Ok(()),
+        // procps/BSD kill renders ESRCH in the fixed C locale. Do not suppress other failures.
+        Err(coreq::process::Failure::Exit(o)) if String::from_utf8_lossy(&o.stderr).trim_end().ends_with(": No such process") => Ok(()),
+        Err(e) => { let error=e.to_string(); log("process-group cleanup", &error); Err(error) }
+    }
+}
+
 pub(crate) fn version(raw: &str) -> Option<Vec<u64>> {
     let v = raw.trim().trim_start_matches('v');
     if v.is_empty() || !v.bytes().all(|b|b.is_ascii_digit() || b == b'.') { return None; }
@@ -113,6 +128,13 @@ pub fn gate(t: &coreq::Tool) -> Result<(),String> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    // #205 A2 / R5: ESRCH during cleanup must succeed without host-error logging.
+    #[test]
+    fn live_gaps_205_missing_group() {
+        // Linux PIDs cannot reach i32::MAX; this must not target an existing group.
+        assert!(kill_group(i32::MAX as u32).is_ok());
+    }
+
     // §9 / #130: numeric ordering, oldest supported versions and unreadable identities must fail closed.
     #[test]
     fn host_requirement_versions_and_receipts() {

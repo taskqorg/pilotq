@@ -487,6 +487,33 @@ fn cli(d: &Path, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_pilotq")).args(args).env("PILOTQ_INSTALL", d).output().unwrap()
 }
 
+// #205 A3 / R5,R13: the real CLI waits for a restart writer, then durably answers through the shared path.
+#[test]
+fn live_gaps_205_cli_store_lock() {
+    let (d,_)=setup("lock205",vec![]);
+    let codex=script(&d,"fake-codex",FAKE);
+    use_codex(&d,&codex);
+    ok(cli(&d,&["ask","/version","--json"]));
+    let writer=rusqlite::Connection::open(d.join("journal.sqlite")).unwrap();
+    writer.execute_batch("BEGIN EXCLUSIVE; UPDATE meta SET value=value WHERE key='owner';").unwrap();
+    let mut child=Command::new(env!("CARGO_BIN_EXE_pilotq"))
+        .args(["ask","after restart","--json"]).env("PILOTQ_INSTALL",&d)
+        .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    // Hold beyond the old five-second timeout; the request must still be waiting.
+    std::thread::sleep(Duration::from_millis(5500));
+    assert!(child.try_wait().unwrap().is_none(),"CLI failed instead of waiting for the writer");
+    writer.execute_batch("COMMIT").unwrap();
+    let out=child.wait_with_output().unwrap();
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("host tool:"),"{}",String::from_utf8_lossy(&out.stderr));
+    let reply=ok(out);
+    assert_eq!(reply["state"],"answered");
+    assert!(reply["reply"].as_str().unwrap().contains("after restart"));
+    assert_eq!(query(&d,"SELECT count(*) FROM requests WHERE front='cli' AND text='after restart' AND state='answered'"),1);
+    let log=fs::read_to_string(d.join("codex.log")).unwrap();
+    assert!(log.contains("cs = cyprusbz"),"manager must receive the code-owned alias table");
+    drop(writer);fs::remove_dir_all(d).unwrap();
+}
+
 // U18 through the CLI and the running service: a stranger is ignored silently; `users grant` admits only new requests;
 // revoke ignores them again. Writes print a readback, --json parses, and a refused write exits nonzero.
 #[test]
