@@ -2042,6 +2042,11 @@ impl Journal {
         self.0.execute("INSERT INTO audit_events(request_id,run_id,at,kind,result) VALUES (?1,?2,?3,'kept_finding',?4)",params![r.request,r.id,at,text]).map(drop).map_err(|e|e.to_string())
     }
 
+    /// A code-owned project-list projection; classify atomically with the durable finding (R5/R17).
+    pub fn keep_project_finding(&self, r: &Run, text: &str, at: i64) -> Result<(),String> {
+        self.0.execute("INSERT INTO audit_events(request_id,run_id,at,kind,result,item) VALUES (?1,?2,?3,'kept_finding',?4,'project_list')",params![r.request,r.id,at,text]).map(drop).map_err(|e|e.to_string())
+    }
+
     /// Record every typed call before dispatch (R17); #190 removes the call-count cap.
     pub fn spend(&self, r: &Run, tool: &str, at: i64) -> Result<(), String> {
         self.0.execute("INSERT INTO audit_events(request_id,run_id,at,kind,target) VALUES (?1,?2,?3,'call',?4)",
@@ -2151,14 +2156,16 @@ impl Journal {
                 _ => ("failed", "PilotQ restarted during the run"),
             };
             let language: Option<String> = tx.query_row("SELECT language FROM requests WHERE id=?1",[request],|x|x.get(0)).map_err(e)?;
-            let mut q=tx.prepare("SELECT DISTINCT result FROM audit_events WHERE request_id=?1 AND kind='kept_finding' ORDER BY id").map_err(e)?;
-            let findings:Vec<String>=q.query_map([request],|r|r.get(0)).and_then(Iterator::collect).map_err(e)?;
+            let mut q=tx.prepare("SELECT DISTINCT result, coalesce(item,'') FROM audit_events WHERE request_id=?1 AND kind='kept_finding' ORDER BY id").map_err(e)?;
+            let findings:Vec<(String,String)>=q.query_map([request],|r|Ok((r.get(0)?,r.get(1)?))).and_then(Iterator::collect).map_err(e)?;
             let mut pending=tx.prepare("SELECT target FROM audit_events WHERE request_id=?1 AND kind='tool' AND result IS NULL ORDER BY id").map_err(e)?;
             let pending:Vec<String>=pending.query_map([request],|r|r.get(0)).and_then(Iterator::collect).map_err(e)?;
+            let safe=findings.iter().filter(|(_,source)|source=="project_list").map(|(text,_)|text.as_str()).collect::<Vec<_>>().join("; ");
+            let hidden=findings.iter().filter(|(_,source)|source!="project_list").count();
             let mut text = if language.as_deref().unwrap_or("en").starts_with("ru") {
-                format!("PilotQ перезапущен. Завершено: {}. Не завершено: итоговый ответ прерван; неподтверждённые действия не повторяются.",if findings.is_empty(){"нет записанного подтверждения".into()}else{format!("записанных результатов: {} (подробности в журнале)",findings.len())})
+                format!("PilotQ перезапущен. Завершено: {}. Не завершено: итоговый ответ прерван; неподтверждённые действия не повторяются.",if !safe.is_empty(){safe.clone()}else if hidden==0{"нет записанного подтверждения".into()}else{format!("записанных результатов: {hidden} (подробности в журнале)")})
             } else {
-                format!("PilotQ restarted. Finished: {}. Unfinished: the final answer was interrupted; unconfirmed actions will not be repeated.",if findings.is_empty(){"no recorded completion".into()}else{format!("{} recorded results (details in audit)",findings.len())})
+                format!("PilotQ restarted. Finished: {}. Unfinished: the final answer was interrupted; unconfirmed actions will not be repeated.",if !safe.is_empty(){safe.clone()}else if hidden==0{"no recorded completion".into()}else{format!("{hidden} recorded results (details in audit)")})
             };
             if !pending.is_empty() {
                 text.push_str(&format!("\n{}: {}",if language.as_deref().unwrap_or("en").starts_with("ru") {"Не подтверждено"} else {"Unconfirmed"},if language.as_deref().unwrap_or("en").starts_with("ru") {format!("действий: {}; результат неизвестен",pending.len())} else {format!("{} actions; outcomes unknown",pending.len())}));
@@ -3463,10 +3470,13 @@ mod tests {
                 let observed=f.render(Some("model"),None,120);
                 j.0.execute("INSERT INTO audit_events(request_id,run_id,at,kind,result,item) VALUES (?1,?2,120,'runtime_status',?3,'0')",params![r.request,r.id,observed]).unwrap();
                 j.keep_finding(&r,"rg -n /invented/root: completed",1).unwrap();
+                let safe=if lang=="ru" {"Доступные проекты: other, pilotq"} else {"Accessible projects: other, pilotq"};
+                j.keep_project_finding(&r,safe,1).unwrap();
                 j.tool(&r,"pwd /invented/root","native",None,1).unwrap();
                 j.save_draft(&r,&json!([{"title":"Failed"}]),"pilotq","taskqorg/pilotq","",1).unwrap();
                 j.reconcile(121).unwrap();
                 let reply=j.request(r.request).unwrap().1.unwrap();
+                assert!(reply.contains(safe),"R5/§5: completed project result missing: {reply}");
                 assert!(!reply.contains("/invented/root") && !reply.contains("rg -n") && !reply.contains("pwd"),"{reply}");
                 assert!(reply.contains(if lang=="ru" {"Не завершено"} else {"Unfinished"}),"{reply}");
                 assert_eq!(j.request(r.request).unwrap().0,"uncertain");

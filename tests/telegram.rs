@@ -1783,7 +1783,7 @@ fn a2_restart_preserves_reads_without_replay() {
     drop(c);
     let c = spawn(&d, None);
     wait("restart summary",15,||sent_has(&st,"PilotQ restarted. Finished:"));
-    assert!(sent_has(&st,"recorded results (details in audit)"),"#212 A3: recovery summarizes findings without raw bodies");
+    assert!(sent_has(&st,"Accessible projects: other, pilotq"),"R5/§5: recovery delivers completed project-list findings");
     assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='kept_finding' AND result LIKE '%Accessible projects: other, pilotq%'"),4,"R17: completed reads remain in audit");
     assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='direct'"),4);
     assert_eq!(query(&d,"SELECT count(*) FROM runs WHERE request_id=(SELECT id FROM requests WHERE update_id=1 AND front='telegram')"),1);

@@ -541,7 +541,10 @@ fn run_inner(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, 
             if ok {
                 let language=j.lock().unwrap().language(r.request).ok().flatten();
                 if let Some(finding)=crate::conversation::finding(name,&out,language.as_deref()) {
-                    let _=j.lock().unwrap().keep_finding(r,&finding,now());
+                    let guard=j.lock().unwrap();
+                    // Issue bodies and native tool text remain audit-only; project names are validated.
+                    if name=="project_list" { let _=guard.keep_project_finding(r,&finding,now()); }
+                    else { let _=guard.keep_finding(r,&finding,now()); }
                 }
             }
             if let Err(e) = j.lock().unwrap().tool_size(r, name, out.len(), version, now()) {
