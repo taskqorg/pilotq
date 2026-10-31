@@ -40,6 +40,10 @@ mod tests {
         assert!(policy.contains("PilotQ does not perform queued task work or choose answers on the owner's"));
         assert!(policy.contains("Each display offers Launch and Cancel"));
         assert!(policy.contains("immutable task scope and durable receipt rules remain in force"));
-        assert!(policy.contains("No need to survive as a long-running job"));
+        // #190 / §5: a recovered session must not reload the superseded direct-work restrictions.
+        assert!(policy.contains("Other authorized work is done directly"));
+        for obsolete in ["No need to survive as a long-running job", "only direct\nwrites", "short-action budget"] {
+            assert!(!policy.contains(obsolete), "superseded instruction: {obsolete}");
+        }
     }
 }

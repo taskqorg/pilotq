@@ -129,7 +129,7 @@ its acknowledgement separate from its later healthy-start receipt. During the
 drain, active requests finish and other controls remain available; queued work
 and TaskQ subscriptions stay recorded. A failed drain resumes admission.
 `/skills` currently reports no enabled skills; `/skill NAME TEXT` returns an
-explicit refusal. Native skills cannot bypass the restricted tool boundary.
+explicit refusal. Adding a native manager skill requires a contract decision (§9).
 
 The operator uses the same path with, for example,
 `pilotq ask '/model default' --json`. Setup diagnostics and model catalogue reads
@@ -189,8 +189,8 @@ The manager clarifies ambiguity rather than constructing an unapproved command.
 The child inherits no credential environment, uses `/usr/bin:/bin` as PATH and
 uses the installation owner's HOME for installed tools' protected stores. Only
 approved programs may read those stores. No keys are injected by this executor.
-The request retains its five-call budget; execution stops at ten seconds or the
-original manager deadline, and retains at most 16 KiB of output bytes. The result
+Each typed installed read stops at ten seconds within the remaining operation budget
+and retains at most 16 KiB of output bytes; manager turns have no fixed duration or call cap (§7). The result
 separates stdout, stderr, exit code, missing executable, timeout, cancellation and
 output overflow. A nonzero exit is a failure. Output remains untrusted material.
 

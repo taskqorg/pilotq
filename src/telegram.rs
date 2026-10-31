@@ -261,9 +261,8 @@ fn failed(e: RequestError, backoff: i64) -> Sent {
 
 /// A bare URL becomes a short labeled link and a repository file path becomes code, so a reply shows no long URL and
 /// Telegram does not auto-link `docs/x.md` as a `.md` domain (#82). Code, fences and written `[label](url)` links stay as they are.
-// ponytail: word-level scan with a fixed extension list; a Markdown tokenizer only if labels or paths need more cases.
+// Repository file paths are independent of their extension; keep commands, repository identities, links and code intact (#82).
 fn tidy(text: &str) -> String {
-    const FILES: [&str; 15] = ["md", "rs", "sh", "py", "json", "toml", "yml", "yaml", "txt", "lock", "js", "ts", "html", "css", "sql"];
     fn label(u: &url::Url) -> String {
         u.host_str().unwrap_or("source").trim_start_matches("www.").to_string()
     }
@@ -276,8 +275,15 @@ fn tidy(text: &str) -> String {
         if let Some(u) = url::Url::parse(core).ok().filter(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some()) {
             return format!("{head}[{}]({core}){tail}", label(&u));
         }
-        let path = core.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && FILES.contains(&ext))
-            && core.chars().all(|c| c.is_ascii_alphanumeric() || "_-./".contains(c));
+        let file = core.split(':').next().unwrap_or(core);
+        // Dotted filenames are not limited to known extensions. Leave versions and abbreviations such as e.g. alone.
+        let dotted = file.rsplit_once('.').is_some_and(|(_, ext)| ext.chars().any(char::is_alphabetic))
+            && !matches!(file, "e.g" | "i.e");
+        // A repository identity is not a local path; slash controls have no directory.
+        let rooted = file.split_once('/').is_some_and(|(dir, name)|
+            !dir.is_empty() && dir != "taskqorg" && !name.is_empty());
+        let path = (dotted || rooted)
+            && core.chars().all(|c| c.is_alphanumeric() || " _-./:".contains(c));
         if path { format!("{head}`{core}`{tail}") } else { w.to_string() }
     }
     let mut out = String::new();
@@ -291,11 +297,29 @@ fn tidy(text: &str) -> String {
         for (k, part) in body.split('`').enumerate() {
             if k > 0 { out.push('`'); }
             if k % 2 == 1 { out += part; continue; }
-            for (i, w) in part.split(' ').enumerate() {
+            let words: Vec<_> = part.split(' ').collect();
+            let mut i = 0;
+            while i < words.len() {
                 if i > 0 { out.push(' '); }
-                // a word inside or next to a written link keeps its source
-                if label_open || w.contains(['[', ']']) { out += w; } else { out += &word(w); }
+                let w = words[i];
+                // An unquoted path with spaces ends at its filename. Do not join prose after
+                // an already complete filename, or consume written links/code as path text.
+                let mut last = i;
+                if !label_open && !w.contains(['[', ']']) && w.contains('/') && !w.contains("://")
+                    && !w.rsplit('/').next().unwrap_or(w).contains('.') {
+                    for (j, next) in words.iter().enumerate().skip(i + 1) {
+                        if next.is_empty() || matches!(*next, "and" | "or" | "then" | "for" | "in" | "with" | "see") || next.contains(['[', ']', '/', ':', '!', '?']) { break; }
+                        if next.trim_end_matches(['.', ',', ';', ':', '!', '?', ')', '"', '*']).rsplit_once('.').is_some_and(|(_, ext)| ext.chars().any(char::is_alphabetic)) {
+                            last = j;
+                            break;
+                        }
+                    }
+                }
+                let candidate = words[i..=last].join(" ");
+                // A word inside or next to a written link keeps its source.
+                if label_open || w.contains(['[', ']']) { out += w; } else { out += &word(&candidate); }
                 label_open = (label_open || w.contains('[')) && !w.contains(']');
+                i = last + 1;
             }
         }
         out += end;
@@ -791,6 +815,18 @@ mod tests {
         assert_eq!(super::tidy(kept),kept);
         assert_eq!(super::tidy("[see docs/a.md here](https://x.invalid) e.g. v0.2.5."),"[see docs/a.md here](https://x.invalid) e.g. v0.2.5.");
         assert_eq!(super::tidy("https://github.com/taskqorg/pilotq/blob/abc/docs/acceptance.md"),"[github.com](https://github.com/taskqorg/pilotq/blob/abc/docs/acceptance.md)");
+        // #191: #82 applies to every repository path, not a fixed extension allowlist.
+        for path in ["ui/App.vue", "src/main.go:42", "docs/схема.diagram", "images/plot.svg", "include/header.hpp", "report.pdf", "schema.avsc", "a.c", "src/Makefile", "docs/my file.md", "docs/My file.md", "crates/Makefile"] {
+            assert_eq!(super::markdown(path), format!("`{path}`"));
+            assert_eq!(html(path), format!("<code>{path}</code>"));
+        }
+        for path in ["docs/my file.md", "docs/My file.md"] {
+            assert_eq!(super::markdown(&format!("Read {path}.")), format!("Read `{path}`."));
+            assert_eq!(html(&format!("Read {path}.")), format!("Read <code>{path}</code>."));
+        }
+        assert_eq!(super::tidy("Check /status for taskqorg/pilotq."), "Check /status for taskqorg/pilotq.");
+        assert_eq!(super::tidy("Read src/Makefile and pilotq.md."), "Read `src/Makefile` and `pilotq.md`.");
+        assert_eq!(super::tidy("Read docs/my file.md, then /status."), "Read `docs/my file.md`, then /status.");
         let card="Task #19 asks:\nDone: drafted\nProblem: pick\n1. short, see [spec](https://x.invalid) ★\n2. long\n5. not an option";
         assert_eq!(super::options(card),[("answer:1".into(),"1. short, see spec ★".into()),("answer:2".into(),"2. long".into())]);
     }
