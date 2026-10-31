@@ -45,10 +45,12 @@ fn audit(c: &Connection, request:i64, at:i64, kind:&str, value:&str)->Result<(),
     c.execute("INSERT INTO audit_events(request_id,at,kind,item) VALUES (?1,?2,?3,?4)",params![request,at,kind,value]).map(drop).map_err(err)
 }
 fn cancel_pending(c:&Connection,l:&Loop)->Result<(),String> {
-    c.execute("UPDATE requests SET state='cancelled',error='route loop stopped or replaced' WHERE state='queued' AND id IN (SELECT request_id FROM audit_events WHERE kind='loop_tick' AND item=?1)",[l.revision.to_string()]).map(drop).map_err(err)
+    c.execute("UPDATE requests SET state=CASE WHEN state='running' AND EXISTS(SELECT 1 FROM runs r WHERE r.request_id=requests.id AND r.tool=1) THEN 'uncertain' ELSE 'cancelled' END,error='route loop stopped or replaced; unfinished work was not replayed' WHERE state IN ('queued','running') AND id IN (SELECT request_id FROM audit_events WHERE kind='loop_tick' AND item=?1)",[l.revision.to_string()]).map(drop).map_err(err)
 }
 fn remove(c:&Connection,l:&Loop,at:i64,reason:&str)->Result<(),String> {
     cancel_pending(c,l)?;
+    c.execute("UPDATE outbox SET state='superseded' WHERE state<>'delivered' AND request_id IN (SELECT request_id FROM audit_events WHERE kind='loop_tick' AND item=?1)",[l.revision.to_string()]).map_err(err)?;
+    c.execute("DELETE FROM previews WHERE run IN (SELECT id FROM runs WHERE request_id IN (SELECT request_id FROM audit_events WHERE kind='loop_tick' AND item=?1))",[l.revision.to_string()]).map_err(err)?;
     c.execute("DELETE FROM meta WHERE key=?1",[key(&l.front,l.chat,l.topic)]).map_err(err)?;
     audit(c,l.source,at,"loop_stopped",reason)
 }
@@ -82,12 +84,22 @@ fn apply(c:&Connection,request:i64,name:&str,args:&Value,at:i64)->Result<String,
         let revision:String=c.query_row("SELECT item FROM audit_events WHERE request_id=?1 AND kind='loop_tick'",[request],|r|r.get(0)).map_err(err)?;
         if old.as_ref().is_none_or(|l|l.author!=user || l.revision.to_string()!=revision) {return Err("Loop was stopped or replaced.".into());}
     }
+    let language:Option<String>=c.query_row("SELECT language FROM requests WHERE id=?1",[request],|r|r.get(0)).map_err(err)?;
+    let ru=language.as_deref().unwrap_or("en").starts_with("ru");
     match name {
-        "loop_status" => Ok(old.map(|l|format!("Loop: {} · next Unix time {} · {}",l.interval.map(|s|format!("fixed {s}s")).unwrap_or("dynamic (300s fallback)".into()),l.next,l.prompt)).unwrap_or("No loop in this route.".into())),
+        "loop_status" => Ok(old.map(|l| {
+            let mode=match (ru,l.interval) {
+                (true,Some(s))=>format!("каждые {s} с"),(false,Some(s))=>format!("every {s}s"),
+                (true,None)=>"динамический (резерв: 300 с)".into(),(false,None)=>"dynamic (fallback: 300 s)".into(),
+            };
+            let delay=l.next.saturating_sub(at).max(0);
+            if ru {format!("Цикл: {mode} · следующий запуск через {delay} с · {}",l.prompt)}
+            else {format!("Loop: {mode} · next run in {delay} s · {}",l.prompt)}
+        }).unwrap_or(if ru {"В этом диалоге нет цикла."} else {"No loop in this route."}.into())),
         "loop_stop" => {
             c.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?1,?2)",params![fence_key,request]).map_err(err)?;
             if let Some(l)=old {remove(c,&l,at,"requested stop")?;}
-            Ok("Loop stopped.".into())
+            Ok(if ru {"Цикл остановлен."} else {"Loop stopped."}.into())
         },
         "loop_next" => {
             let mut l=old.ok_or("No loop in this route.")?;
@@ -115,7 +127,13 @@ fn apply(c:&Connection,request:i64,name:&str,args:&Value,at:i64)->Result<String,
             let l=Loop{front,chat,topic,author:user,session:session.clone(),generation:generation(c,&session)?,prompt:prompt.into(),interval,next:at+interval.unwrap_or(300),revision:request,source:request,pending:None,watches};
             save(c,&l)?;
             c.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?1,?2)",params![fence_key,request]).map_err(err)?;
-            Ok(format!("Loop started: {}. Use /loop stop to stop.",interval.map(|s|format!("every {s}s")).unwrap_or("dynamic; 300s fallback until the model sets 60..3600s".into())))
+            let mode=match (ru,interval) {
+                (true,Some(s))=>format!("каждые {s} с"),(false,Some(s))=>format!("every {s}s"),
+                (true,None)=>"динамический; резервный интервал 300 с, пока модель не выберет 60–3600 с".into(),
+                (false,None)=>"dynamic; 300 s fallback until the model sets 60–3600 s".into(),
+            };
+            Ok(if ru {format!("Цикл запущен: {mode}. Остановить: /loop stop.")}
+                else {format!("Loop started: {mode}. Use /loop stop to stop.")})
         },
         _=>Err("Unknown loop tool".into()),
     }
@@ -276,6 +294,29 @@ fn collect(bound:Result<(crate::taskq::Taskq,String),String>,j:&std::sync::Mutex
 
 }
 
+/// One observation pass; collection failures keep the binding and baseline for subsequent passes.
+fn observer_pass(tq:&crate::taskq::Taskq,j:&std::sync::Mutex<Journal>,w:&Watch,failures:&mut u32)->Option<u64> {
+    let selected={
+        let guard=j.lock().unwrap();
+        match all(&guard.0) {
+            Ok(ls)=>ls.iter().find_map(|l|l.watches.iter().find(|x|x.board==w.board && watching(&guard.0,l,x).unwrap_or(false)).cloned())
+                .map(|current|(tq.registered(&guard,&current.project),current)),
+            Err(_)=>None,
+        }
+    };
+    let (bound,current)=selected?;
+    match collect(bound,j,&current) {
+        Ok(())=>*failures=0,
+        Err(e)=>{
+            *failures=failures.saturating_add(1);
+            crate::host::log("loop board observer",&e);
+            let guard=j.lock().unwrap();
+            for l in all(&guard.0).unwrap_or_default() {if l.watches.iter().any(|x|x.board==w.board) {let _=audit(&guard.0,l.source,crate::now() as i64,"loop_board_unknown",&w.board);}}
+        }
+    }
+    Some(if *failures==0 {5} else {(5u64 << failures.saturating_sub(1).min(4)).min(60)})
+}
+
 /// A concrete board has one collector, shared by every route; slow boards never hold journal locks or other boards.
 pub fn watch_boards(tq:std::sync::Arc<crate::taskq::Taskq>,j:crate::telegram::Shared) {
     let mut observers=std::collections::HashMap::<String,std::thread::JoinHandle<()>>::new();
@@ -293,23 +334,11 @@ pub fn watch_boards(tq:std::sync::Arc<crate::taskq::Taskq>,j:crate::telegram::Sh
             for (k,w) in watches {
                 observers.entry(k).or_insert_with(||{
                     let tq=tq.clone();let j=j.clone();
-                    std::thread::spawn(move || loop {
-                        let selected={
-                            let guard=j.lock().unwrap();
-                            match all(&guard.0) {
-                                Ok(ls)=>ls.iter().find_map(|l|l.watches.iter().find(|x|x.board==w.board && watching(&guard.0,l,x).unwrap_or(false)).cloned())
-                                    .map(|current|(tq.registered(&guard,&current.project),current)),
-                                Err(_)=>None,
-                            }
-                        };
-                        let Some((bound,current))=selected else {break};
-                        let result=collect(bound,&j,&current);
-                        if let Err(e)=result {
-                            crate::host::log("loop board observer",&e);
-                            let guard=j.lock().unwrap();
-                            for l in all(&guard.0).unwrap_or_default() {if l.watches.iter().any(|x|x.board==w.board) {let _=audit(&guard.0,l.source,crate::now() as i64,"loop_board_unknown",&w.board);}}
+                    std::thread::spawn(move || {
+                        let mut failures=0;
+                        while let Some(delay)=observer_pass(&tq,&j,&w,&mut failures) {
+                            std::thread::sleep(std::time::Duration::from_secs(delay));
                         }
-                        std::thread::sleep(std::time::Duration::from_secs(5));
                     })
                 });
             }
@@ -335,6 +364,83 @@ mod tests {
         j.0.query_row("SELECT id FROM requests WHERE update_id=?1",[update],|r|r.get(0)).unwrap()
     }
     fn pending(j:&Journal)->i64 { j.0.query_row("SELECT count(*) FROM requests WHERE state='queued' AND id IN (SELECT request_id FROM audit_events WHERE kind='loop_tick')",[],|r|r.get(0)).unwrap() }
+    // #229 A1/A2/R11/R13: receipts must survive model paraphrasing; both languages show a readable delay.
+    #[test]
+    fn loop_229_receipt_and_listing() {
+        for (lang,expected) in [("en","fallback"),("ru","резерв")] {
+            let (mut j,p)=journal(lang);
+            let id=admitted(&mut j,1,1,7,"start a dynamic loop",0);
+            j.0.execute("UPDATE requests SET language=?2 WHERE id=?1",params![id,lang]).unwrap();
+            let r=j.claim_next(1,0).unwrap().remove(0);
+            let mutex=std::sync::Mutex::new(j);
+            let (ok,receipt)=call(&mutex,&r,"loop_start",&json!({"prompt":"inspect"}),0);
+            assert!(ok);
+            assert!(receipt.contains(expected),"{receipt}");
+            let j=mutex.lock().unwrap();
+            j.finish(&r,None,None,&crate::manager::Outcome::Answered("OK".into()),1).unwrap();
+            let reply=j.request(id).unwrap().1.unwrap();
+            assert!(reply.contains("300") && reply.contains(expected),"{reply}");
+            let listing=apply(&j.0,id,"loop_status",&json!({}),0).unwrap();
+            assert!(!listing.contains("Unix"),"{listing}");
+            assert!(listing.contains(if lang=="ru" {"через"} else {"in "}),"{listing}");
+            drop(j);drop(mutex);std::fs::remove_dir_all(p).unwrap();
+        }
+    }
+    // #229 A4/R5: actual first status timeout must retain the watch, retry with backoff and later wake.
+    #[cfg(unix)]
+    #[test]
+    fn loop_229_observer_timeout_recovery() {
+        use std::os::unix::fs::PermissionsExt;
+        let (mut j,p)=journal("observer-timeout");
+        std::fs::write(p.join("taskq.json"),r#"{"repo":"invented/alpha","create_claim_issue":1}"#).unwrap();
+        let bin=p.join("taskq");
+        std::fs::write(&bin,"#!/bin/sh\nif test -f timeout; then sleep 30; fi\ncat snapshot.json\n").unwrap();
+        std::fs::set_permissions(&bin,std::fs::Permissions::from_mode(0o700)).unwrap();
+        j.0.execute("INSERT INTO projects(name,repo,root,by,at) VALUES ('alpha','invented/alpha',?1,7,0)",[p.to_str().unwrap()]).unwrap();
+        let tq=crate::taskq::Taskq{bot:None,bin,root:p.clone(),poll:std::time::Duration::from_secs(5)};
+        let id=admitted(&mut j,1,1,7,"watch alpha in a loop",0);
+        apply(&j.0,id,"loop_start",&json!({"prompt":"inspect","projects":["alpha"]}),0).unwrap();
+        let w=all(&j.0).unwrap()[0].watches[0].clone();let mutex=std::sync::Mutex::new(j);
+        let snapshot=|tasks:Value|std::fs::write(p.join("snapshot.json"),json!({"complete":true,"board":{"repo":"invented/alpha"},"tasks":tasks}).to_string()).unwrap();
+        std::fs::write(p.join("timeout"),"").unwrap();
+        let mut failures=0;
+        assert_eq!(observer_pass(&tq,&mutex,&w,&mut failures),Some(5));
+        assert_eq!(failures,1,"the first real CLI read timed out");
+        assert_eq!(all(&mutex.lock().unwrap().0).unwrap()[0].watches.len(),1);
+        assert_eq!(pending(&mutex.lock().unwrap()),0,"an unknown observation invents no wake");
+        std::fs::remove_file(p.join("timeout")).unwrap();
+        std::fs::write(p.join("snapshot.json"),"{}").unwrap();
+        assert_eq!(observer_pass(&tq,&mutex,&w,&mut failures),Some(10));
+        snapshot(json!([{"n":1,"state":"doing","revision":1}]));
+        assert_eq!(observer_pass(&tq,&mutex,&w,&mut failures),Some(5));assert_eq!(failures,0);
+        snapshot(json!([{"n":1,"state":"failed","revision":2}]));
+        assert_eq!(observer_pass(&tq,&mutex,&w,&mut failures),Some(5));
+        assert_eq!(pending(&mutex.lock().unwrap()),1,"the recovered observer still wakes its route");
+        drop(mutex);std::fs::remove_dir_all(p).unwrap();
+    }
+    // #229 A3/R5: a running tick and its already queued output cannot speak after either stop path.
+    #[test]
+    fn loop_229_stop_in_flight() {
+        for plain in [false,true] {
+            let (mut j,p)=journal("stop-in-flight");
+            admitted(&mut j,1,1,7,"/loop 1m inspect",0);
+            fire(&mut j,60).unwrap();
+            let r=j.claim_next(4,60).unwrap().remove(0);
+            crate::journal::outbox(&j.0,r.request,-100,Some(1),None,None,"tick progress",60).unwrap();
+            let delivery=j.0.last_insert_rowid();
+            j.tool(&r,"native","invented in-flight effect",None,60).unwrap();
+            let stop=admitted(&mut j,2,1,7,if plain {"stop the loop"} else {"/loop stop"},61);
+            if plain {apply(&j.0,stop,"loop_stop",&json!({}),61).unwrap();}
+            assert_eq!(j.request(r.request).unwrap().0,"uncertain","unfinished native work must retain uncertainty");
+            // A send already in flight may return a retry after stop; its receipt must not revive output.
+            j.record(delivery,&crate::journal::Sent::Retry{after:1,ambiguous:true,error:"invented timeout".into()},62).unwrap();
+            j.finish(&r,None,None,&crate::manager::Outcome::Answered("late tick".into()),62).unwrap();
+            let count:i64=j.0.query_row("SELECT count(*) FROM outbox WHERE request_id=?1 AND state IN ('pending','standby')",[r.request],|x|x.get(0)).unwrap();
+            assert_eq!(count,0,"stopped tick must never post");
+            assert!(all(&j.0).unwrap().is_empty());
+            drop(j);std::fs::remove_dir_all(p).unwrap();
+        }
+    }
     // A2/A4/R13: common CLI and Telegram boundary, syntax limits, dynamic delay, authority and stale decisions.
     #[test]
     fn loop_220_controls_and_dynamic() {
