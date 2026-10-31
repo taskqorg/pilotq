@@ -48,6 +48,20 @@ pub fn refusal(j:&Journal,project:&str,language:Option<&str>)->Result<Option<Str
     } else {format!("Project {project} setup is not ready{why}. The owner must tap Recheck. Nothing started.")}))
 }
 
+/// #245: members receive a factual refusal and a durable owner escalation, without owner remedies.
+pub(crate) fn member_refusal(j:&Journal,r:&crate::journal::Run,project:&str,language:Option<&str>)->Result<Option<String>,String> {
+    let Some(reason)=refusal(j,project,language)? else {return Ok(None)};
+    Ok(Some(setup_refusal(j,r.request,project,language,&reason)?))
+}
+
+pub(crate) fn setup_refusal(j:&Journal,request:i64,project:&str,language:Option<&str>,reason:&str)->Result<String,String> {
+    if j.owner()?==Some(j.sender(request)?) {return Ok(reason.into());}
+    let ru=language.unwrap_or("en").starts_with("ru");
+    let notice=crate::direct::queue_blocker(j,request,project,reason).unwrap_or_else(|_|if ru {"Не удалось поставить сообщение владельцу в очередь; доставка не подтверждена.".into()} else {"The owner notice could not be queued; delivery is not confirmed.".into()});
+    Ok(if ru {format!("{project}: настройка не завершена. Ничего не запущено. {notice}")}
+        else {format!("Project {project} setup is not ready. Nothing started. {notice}")})
+}
+
 fn service_gap(g:&Value)->bool {
     matches!(g["check"].as_str(),Some("service"|"admission"|"codex_grant"|"codex_access"|"codex_capacity"))
 }

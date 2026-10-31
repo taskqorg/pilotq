@@ -178,7 +178,7 @@ pub(crate) fn execute_bounded(mut command: Command, end: Instant, active: impl F
     stdout.truncate(cap);
     stderr.truncate(cap-stdout.len());
     if status != "success" { crate::host::log(&diagnostic,&format!("{status}: {}",String::from_utf8_lossy(&stderr))); }
-    json!({"status":status,"exit_code":exit.and_then(|c|c.code()),"stdout":String::from_utf8_lossy(&stdout),"stderr":String::from_utf8_lossy(&stderr)})
+    json!({"status":status,"exit_code":exit.and_then(|c|c.code()),"stdout":String::from_utf8_lossy(&stdout),"stdout_utf8":std::str::from_utf8(&stdout).is_ok(),"stderr":String::from_utf8_lossy(&stderr)})
 }
 
 #[cfg(all(test,unix))]

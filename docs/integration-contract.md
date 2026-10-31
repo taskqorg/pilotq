@@ -114,7 +114,7 @@ step 6). See the [trial cases](acceptance.md#human-trial-task-42).
 
 Direct actions are reads. Only the owner (`owner_id` from protected configuration) may write
 directly, and only a comment or a label on an issue of the `taskqorg/pilotq` board; the
-administration and owner-confirmed registered release exceptions below are the only additional
+administration, durable member blocker notices and owner-confirmed registered release exceptions below are the only additional
 direct-write scopes. Keys enter only through the CLI.
 
 The manager gets these tools beside the TaskQ tools, checked at dispatch like them:
@@ -123,7 +123,9 @@ The manager gets these tools beside the TaskQ tools, checked at dispatch like th
 |---|---|---|
 | `project_list` | current caller’s project grants | Reads registered project names and boards accessible to the caller, marking the conversation’s current project; no key or board call |
 | `project_use` | project scope | Sets the conversation's current project. The project must be registered and named in the person's own message |
-| `issue_read` | project scope and a key granted for the tool | Reads one issue of a registered project through `taskq issue N --json`: title, state, labels, canonical URL, a bounded body excerpt, the latest comments as bounded excerpts and the read time |
+| `issue_read` | project scope and a key granted for the tool | Reads one issue of a registered project through `taskq issue N --json`: title, state, labels, canonical URL, a bounded body excerpt, the latest comments as bounded excerpts, full trusted closing report, open dependents from a complete typed snapshot and the read time |
+| `project_file_read` | chat and project scope | Read a capped default-branch blob under the [member tools boundary](taskq-tool-contract.md#member-reports-and-blockers) |
+| `member_blocker` | chat and project scope | Queue a scoped owner notice under the [member tools boundary](taskq-tool-contract.md#member-reports-and-blockers) |
 | `issue_comment` | owner, a key | Adds one comment to a `taskqorg/pilotq` issue |
 | `issue_label` | owner, a key | Adds one label to a `taskqorg/pilotq` issue |
 
