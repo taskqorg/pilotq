@@ -66,6 +66,19 @@ impl Footer {
     }
 }
 
+// Runtime observations have numeric duration tokens; leave model slugs intact.
+pub fn russian_units(text: &str) -> String {
+    text.split_inclusive(char::is_whitespace).map(|part| {
+        let token=part.trim_end();
+        let suffix=token.chars().last().unwrap_or(' ');
+        let number=&token[..token.len().saturating_sub(suffix.len_utf8())];
+        let digits=number.strip_prefix('<').unwrap_or(number);
+        let unit=match suffix {'m'=>"мин",'h'=>"ч",'d'=>"д",_=>return part.to_string()};
+        if digits.is_empty() || !digits.bytes().all(|b|b.is_ascii_digit()) {return part.to_string();}
+        format!("{number} {unit}{}", &part[token.len()..])
+    }).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

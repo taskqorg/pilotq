@@ -521,7 +521,7 @@ fn answer_control(tx: &Connection, session: &str, cmd: &str, request: i64, chat:
                 {
                     let observation:Option<(String,i64)>=tx.query_row("SELECT a.result,a.at FROM audit_events a JOIN requests q ON q.id=a.request_id JOIN runs r ON r.id=a.run_id JOIN conversations c ON c.session=q.session WHERE q.session=?1 AND a.kind='runtime_status' AND r.generation=c.generation AND CAST(a.item AS INTEGER)=coalesce((SELECT value FROM meta WHERE key='model-epoch:' || q.session),0) ORDER BY a.id DESC LIMIT 1",[session],|x|Ok((x.get(0)?,x.get(1)?))).optional().map_err(e)?;
                     let measured=observation.map(|(text,seen)| {
-                        let text=if ru {text.replace("requested","запрошена").replace("model unavailable","модель недоступна").replace("context","контекст").replace("quota","квота").replace("unavailable","недоступно").replace("stale","устарело").replace("left","осталось")} else {text};
+                        let text=if ru {crate::footer::russian_units(&text).replace("requested","запрошена").replace("model unavailable","модель недоступна").replace("context","контекст").replace("quota","квота").replace("unavailable","недоступно").replace("stale","устарело").replace("left","осталось")} else {text};
                         if ru {format!("{text} (наблюдалось {} с назад)",at.saturating_sub(seen).max(0))} else {format!("{text} (observed {} s ago)",at.saturating_sub(seen).max(0))}
                     }).unwrap_or_else(||if ru {"Модель/контекст/квота: нет данных."} else {"Model/context/quota: unavailable."}.into());
                     let model_failed:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM health WHERE source='model' AND state='failed')",[],|x|x.get(0)).map_err(e)?;
@@ -2156,12 +2156,12 @@ impl Journal {
             let mut pending=tx.prepare("SELECT target FROM audit_events WHERE request_id=?1 AND kind='tool' AND result IS NULL ORDER BY id").map_err(e)?;
             let pending:Vec<String>=pending.query_map([request],|r|r.get(0)).and_then(Iterator::collect).map_err(e)?;
             let mut text = if language.as_deref().unwrap_or("en").starts_with("ru") {
-                format!("PilotQ перезапущен. Завершено: {}. Не завершено: итоговый ответ прерван; неподтверждённые действия не повторяются.",if findings.is_empty(){"нет записанного подтверждения".into()}else{findings.join("\n")})
+                format!("PilotQ перезапущен. Завершено: {}. Не завершено: итоговый ответ прерван; неподтверждённые действия не повторяются.",if findings.is_empty(){"нет записанного подтверждения".into()}else{format!("записанных результатов: {} (подробности в журнале)",findings.len())})
             } else {
-                format!("PilotQ restarted. Finished: {}. Unfinished: the final answer was interrupted; unconfirmed actions will not be repeated.",if findings.is_empty(){"no recorded completion".into()}else{findings.join("\n")})
+                format!("PilotQ restarted. Finished: {}. Unfinished: the final answer was interrupted; unconfirmed actions will not be repeated.",if findings.is_empty(){"no recorded completion".into()}else{format!("{} recorded results (details in audit)",findings.len())})
             };
             if !pending.is_empty() {
-                text.push_str(&format!("\n{}: {}",if language.as_deref().unwrap_or("en").starts_with("ru") {"Не подтверждено"} else {"Unconfirmed"},pending.join("\n")));
+                text.push_str(&format!("\n{}: {}",if language.as_deref().unwrap_or("en").starts_with("ru") {"Не подтверждено"} else {"Unconfirmed"},if language.as_deref().unwrap_or("en").starts_with("ru") {format!("действий: {}; результат неизвестен",pending.len())} else {format!("{} actions; outcomes unknown",pending.len())}));
             }
             discard_failed_drafts(&tx,*request,at)?;
             tx.execute("UPDATE requests SET state=?2, error=?3, reply=?4 WHERE id=?1", params![request, state, why, text]).map_err(e)?;
@@ -3446,6 +3446,45 @@ mod tests {
         }
     }
 
+    // #212 A3/A4/A7, R5/R17: restart never publishes native diagnostics;
+    // measured controls localize units while retaining audit and no-replay evidence.
+    #[test]
+    fn replies_212_restart_and_measured_status() {
+        for lang in ["en", "ru"] {
+            for reset in [3599, 3600, 86400] {
+                let (mut j,p)=journal(&format!("restart-212-{lang}-{reset}"));
+                let mut i=msg(7,7,1).unwrap(); i.language=Some(lang.into());
+                j.admit(&[(1,Some(i))],0).unwrap();
+                let r=j.claim_next(1,0).unwrap().remove(0);
+                let mut f=crate::footer::Footer::default();
+                f.context(&json!({"last":{"inputTokens":20},"modelContextWindow":100}),0);
+                f.quota(&json!({"primary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":reset+120}}),0);
+                f.context(&json!({}),120);
+                let observed=f.render(Some("model"),None,120);
+                j.0.execute("INSERT INTO audit_events(request_id,run_id,at,kind,result,item) VALUES (?1,?2,120,'runtime_status',?3,'0')",params![r.request,r.id,observed]).unwrap();
+                j.keep_finding(&r,"rg -n /invented/root: completed",1).unwrap();
+                j.tool(&r,"pwd /invented/root","native",None,1).unwrap();
+                j.save_draft(&r,&json!([{"title":"Failed"}]),"pilotq","taskqorg/pilotq","",1).unwrap();
+                j.reconcile(121).unwrap();
+                let reply=j.request(r.request).unwrap().1.unwrap();
+                assert!(!reply.contains("/invented/root") && !reply.contains("rg -n") && !reply.contains("pwd"),"{reply}");
+                assert!(reply.contains(if lang=="ru" {"Не завершено"} else {"Unfinished"}),"{reply}");
+                assert_eq!(j.request(r.request).unwrap().0,"uncertain");
+                assert_eq!(count(&j,"SELECT count(*) FROM plans"),0);
+                assert_eq!(count(&j,"SELECT count(*) FROM audit_events WHERE result LIKE '%/invented/root%' OR target LIKE '%/invented/root%'"),2);
+                assert_eq!(j.reconcile(122).unwrap(),0);
+                assert!(j.claim_next(1,122).unwrap().is_empty());
+                let mut i=msg(7,7,2).unwrap(); i.text=Some("/status".into()); i.language=Some(lang.into());
+                j.admit(&[(2,Some(i))],123).unwrap();
+                let status=j.request(2).unwrap().1.unwrap();
+                let unit=match (lang,reset) {("ru",3599)=>"<1 ч",("ru",3600)=>"1 ч",("ru",_)=>"1 д",(_,3599)=>"<1h",(_,3600)=>"1h",_=>"1d"};
+                assert!(status.contains(unit),"{status}");
+                assert!(status.contains(if lang=="ru" {"устарело 2 мин"} else {"stale 2m"}),"{status}");
+                drop(j);std::fs::remove_dir_all(p).unwrap();
+            }
+        }
+    }
+
     // R10/R13, §6: Telegram controls must reach durable own data, never another subject.
     #[test]
     fn profile_196_telegram_trace() {
@@ -4127,7 +4166,7 @@ mod tests {
         assert_eq!(j.request(1).unwrap().0, "failed", "interrupted model turns end explicitly");
         assert_eq!(j.request(2).unwrap().0, "uncertain", "a run that started a tool is never replayed");
         let summary=j.request(2).unwrap().1.unwrap();
-        assert!(summary.contains("disk usage: completed") && summary.contains("Unfinished:"),"{summary}");
+        assert!(summary.contains("1 recorded results") && summary.contains("Unfinished:") && !summary.contains("disk usage: completed"),"{summary}");
         assert_eq!(j.reconcile(3).unwrap(),0,"restart summaries are not duplicated");
         assert!(j.claim_next(4,3).unwrap().is_empty());
 
