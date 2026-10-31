@@ -309,7 +309,7 @@ fn tidy(text: &str) -> String {
                     && !w.rsplit('/').next().unwrap_or(w).contains('.') {
                     for (j, next) in words.iter().enumerate().skip(i + 1) {
                         if next.is_empty() || matches!(*next, "and" | "or" | "then" | "for" | "in" | "with" | "see") || next.contains(['[', ']', '/', ':', '!', '?']) { break; }
-                        if next.rsplit_once('.').is_some_and(|(_, ext)| ext.chars().any(char::is_alphabetic)) {
+                        if next.trim_end_matches(['.', ',', ';', ':', '!', '?', ')', '"', '*']).rsplit_once('.').is_some_and(|(_, ext)| ext.chars().any(char::is_alphabetic)) {
                             last = j;
                             break;
                         }
@@ -819,6 +819,10 @@ mod tests {
         for path in ["ui/App.vue", "src/main.go:42", "docs/схема.diagram", "images/plot.svg", "include/header.hpp", "report.pdf", "schema.avsc", "a.c", "src/Makefile", "docs/my file.md", "docs/My file.md", "crates/Makefile"] {
             assert_eq!(super::markdown(path), format!("`{path}`"));
             assert_eq!(html(path), format!("<code>{path}</code>"));
+        }
+        for path in ["docs/my file.md", "docs/My file.md"] {
+            assert_eq!(super::markdown(&format!("Read {path}.")), format!("Read `{path}`."));
+            assert_eq!(html(&format!("Read {path}.")), format!("Read <code>{path}</code>."));
         }
         assert_eq!(super::tidy("Check /status for taskqorg/pilotq."), "Check /status for taskqorg/pilotq.");
         assert_eq!(super::tidy("Read src/Makefile and pilotq.md."), "Read `src/Makefile` and `pilotq.md`.");
