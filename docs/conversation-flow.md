@@ -14,7 +14,7 @@ A failed request produces one plain localized failure line, with no commands, pa
 |---|---|---|---|---|
 | Accepted input | 👀 reaction; existing bounded receipt fallback | None | None | Final answer; one queue notice after 30 seconds |
 | Discussion | Answer or one concrete question with complete numbered choices | Two to four choices when needed | Record the person's answer; no launch | Same question, no buttons, one chosen-option-and-actor line |
-| Plan saved or revised | Per task: title, “We will: …”, “Done when: …” | Launch, Cancel | Launch authorizes the displayed immutable scope; Cancel closes without board effect or model call | New display removes old buttons; launch/cancel edits source with one outcome line |
+| Plan saved or revised | Per task: title, “We will: …”, “Done when: …” | Launch when setup is ready; otherwise project setup reason and owner Recheck step. Cancel remains available | Launch authorizes the displayed immutable scope; Cancel closes without board effect or model call | New display removes old buttons; launch/cancel edits source with one outcome line |
 | Launch accepted | Verified task links; distinguish held, queued and working | None | None | Same plan receives launch outcome; one status card tracks the launch |
 | Queued | Last confirmed waiting state, observation age and verified links | None | None | Edit status card on fresh working/question/done observation |
 | Working | Last confirmed working state, observation age and verified links | None | None | Edit status card; never infer execution from admission |

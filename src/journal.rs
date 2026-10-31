@@ -2176,9 +2176,12 @@ impl Journal {
         let active:bool=tx.query_row("SELECT state='running' FROM runs WHERE id=?1",[r.id],|x|x.get(0)).map_err(e)?;
         if !active { return Ok(false); }
         let language: Option<String> = tx.query_row("SELECT language FROM requests WHERE id=?1",[r.request],|x|x.get(0)).map_err(e)?;
+        // #236 / R11,R13: a setup refusal is a handled result, shared by CLI, text and button paths.
+        let gate_refusal:Option<String>=tx.query_row("SELECT result FROM audit_events WHERE run_id=?1 AND kind='plan_gate_refusal' AND NOT EXISTS(SELECT 1 FROM plan_runs WHERE request_id=?2) ORDER BY id DESC LIMIT 1",params![r.id,r.request],|r|r.get(0)).optional().map_err(e)?;
         let (state, mut text, error) = match outcome {
             _ if self.fenced(r)? => ("fenced", String::new(), None),
             Outcome::Fenced => ("fenced", String::new(), None),
+            _ if gate_refusal.is_some() && !matches!(outcome,Outcome::Uncertain(_)) => ("answered",gate_refusal.unwrap(),None),
             Outcome::Answered(a) => ("answered", a.clone(), None),
             Outcome::Failed(x) => ("failed", brief(language.as_deref(), if x == "document parsing timed out" { "document_timeout" } else if x.starts_with("voice") { if x.contains("20 MiB") || x.contains("5 minutes") { "voice_limit" } else { "voice_failed" } } else if x.contains("20 MiB") { "image_limit" } else if x.starts_with("image") || x.contains("image") { "image_failed" } else if x.contains("within") || x.contains("budget") { "limit" } else { "failed" }).into(), Some(x)),
             Outcome::Uncertain(x) => ("uncertain", brief(language.as_deref(), "uncertain").into(), Some(x)),
@@ -2197,10 +2200,11 @@ impl Journal {
             let plan: Option<(i64,String,String)> = tx.query_row(
                 "SELECT id,project,tickets FROM plans WHERE request_id=?1 ORDER BY revision DESC LIMIT 1", [r.request],
                 |x|Ok((x.get(0)?,x.get(1)?,x.get(2)?))).optional().map_err(e)?;
-            if let Some((plan,_project,tickets)) = plan {
+            if let Some((plan,project,tickets)) = plan {
                 tx.execute("INSERT INTO cards(request_id,generation,plan_id) VALUES (?1,?2,?3) ON CONFLICT(request_id) DO UPDATE SET plan_id=excluded.plan_id",params![r.request,r.generation,plan]).map_err(e)?;
                 let tickets: Value = serde_json::from_str(&tickets).map_err(|e|e.to_string())?;
                 text = crate::conversation::plan(&tickets, language.as_deref());
+                if let Some(reason)=crate::onboarding::refusal(self,&project,language.as_deref())? {text.push_str(&format!("\n\n{reason}"));}
             }
             let question: Option<(String,String)> = tx.query_row("SELECT question,options FROM cards WHERE request_id=?1 AND question IS NOT NULL",[r.request],|x|Ok((x.get(0)?,x.get(1)?))).optional().map_err(e)?;
             if let Some((question,options)) = question {
@@ -2565,9 +2569,12 @@ impl Journal {
             }
         }
         if let Some((id,plan,options,language))=card {
-            if plan.is_some() {
+            if let Some(plan)=plan {
                 let ru=language.as_deref().unwrap_or("en").starts_with("ru");
-                buttons.push((format!("plan:{id}"),if ru {"Запустить план"} else {"Run plan"}.into()));
+                let project:String=self.0.query_row("SELECT project FROM plans WHERE id=?1",[plan],|r|r.get(0)).map_err(|e|e.to_string())?;
+                if crate::onboarding::gate(self,&project).is_ok() {
+                    buttons.push((format!("plan:{id}"),if ru {"Запустить план"} else {"Run plan"}.into()));
+                }
                 buttons.push((format!("cancel:{id}"),if ru {"Отменить"} else {"Cancel"}.into()));
             }
             if let Some(options)=options {
@@ -2665,6 +2672,12 @@ impl Journal {
             (true,_)=>"Не удалось запустить план.",
             (false,_)=>"Could not launch the plan.",
         }.to_string();
+        // #236 / R11: submission can encounter a closed gate after authorization.
+        // Only the typed setup refusal replaces the summary; task receipts remain visible.
+        if state=="failed" {
+            let refusal:Option<String>=self.0.query_row("SELECT result FROM audit_events WHERE request_id=?1 AND kind='plan_gate_refusal' AND target=?2 ORDER BY id DESC LIMIT 1",params![request,id.to_string()],|x|x.get(0)).optional().map_err(|e|e.to_string())?;
+            if let Some(refusal)=refusal {text=refusal;}
+        }
         let run=self.plan_run(id)?;
         for ticket in run.tickets {
             let Some(n)=ticket.task else { continue };
