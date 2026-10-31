@@ -50,7 +50,8 @@ mod tests {
         assert!(policy.contains("naming who acts"));
         assert!(policy.contains("only when the person's question concerns release"));
         assert!(policy.contains("PilotQ does not perform queued task work or choose answers on the owner's"));
-        assert!(policy.contains("Each display offers Launch and Cancel"));
+        // #236 A3: load the approved readiness condition while retaining Cancel.
+        assert!(policy.contains("Each display offers Cancel and, when project readiness permits, Launch"));
         assert!(policy.contains("immutable task scope and durable receipt rules remain in force"));
         // #190 / §5: a recovered session must not reload the superseded direct-work restrictions.
         assert!(policy.contains("Other authorized work is done directly"));

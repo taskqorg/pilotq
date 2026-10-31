@@ -994,6 +994,23 @@ Owner-required cases under [§5](integration-contract.md#project-onboarding):
 Local regression: `cargo test --locked onboarding_168`. This covers the CLI and a
 simulated Bot API; a live owner Telegram run remains separate target evidence.
 
+### Plan setup refusals (#236)
+
+Under R11, R13 and §5, `cargo test --locked onboarding_236` protects A1–A3:
+English/Russian setup refusals survive tool-to-final-reply rendering; closed-gate plan cards
+name the project and owner Recheck step and retain Cancel without Run plan. Saved admission
+and service gaps refresh through read-only TaskQ service status. Stale or unavailable service
+evidence, missing grants, mismatched roots and unrelated key findings still block launch.
+Before the fix the card check failed with `closed setup offered Run plan`; after correcting
+that path, the reply check exposed `The request failed; try again or check /status.` instead
+of the setup refusal. Both now pass. Disabling automatic refresh makes the recovery case fail
+at `admission/open`; restoring it passes. Existing `onboarding_168` checks retain owner-only
+overrides, registration fencing and CLI/simulated Telegram recovery coverage.
+
+A4 remains PM target qualification after release (§9): in the PilotQ TEST cyprus.bz topic,
+request a plan and press Run plan; record the release identity, both audit IDs, displayed
+readiness/refusal and launch outcome here. The worker neither installs live nor claims this replay.
+
 ### Task status facts and research routing (#170)
 
 Under R8, R13 and §5, `src/fixtures/status-170.json` is a synthetic fixture for the owner’s cyprusbz#540 case: closed, diagnosis accepted, report `docs/research/540.md`, fix #541 doing. `status_research_170` retains the report and trusted verdict, separates proposed references from observed task existence, and checks English/Russian diagnosis and investigation mapping through saved plans and `add --type research` arguments. Untrusted close comments and missing snapshots remain unknown. `gitlab_registry_status_and_urls` checks the CLI dispatch boundary, including an absent open-board task, issue readback and mismatched issue refusal.

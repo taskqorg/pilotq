@@ -505,6 +505,8 @@ fn dispatch_until(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Va
         "project_release_preview" => crate::release::preview(tq,j,r,&project),
         "task_plan" => {
             allowed(&j.lock().unwrap(), sender, &project, false)?;
+            let language=j.lock().unwrap().language(r.request)?;
+            let _=crate::onboarding::launch_gate(tq,j,&project,language.as_deref(),turn_end);
             let t = tickets(args)?;
             let rev = j.lock().unwrap().save_draft(r, &t, &project, &board, &tq.root.to_string_lossy(), now())?;
             let list: Vec<String> = t.as_array().unwrap().iter().enumerate().map(|(i, x)| format!("{}. {}", i + 1, x["title"].as_str().unwrap_or(""))).collect();
@@ -516,7 +518,12 @@ fn dispatch_until(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Va
             if !create {
                 return Err("task creation is disabled: create_claim_issue is not configured for the resolved board, and plain add is never used. Nothing was filed.".into());
             }
-            crate::onboarding::gate(&j.lock().unwrap(),&project)?;
+            let language=j.lock().unwrap().language(r.request)?;
+            if let Err(reason)=crate::onboarding::launch_gate(tq,j,&project,language.as_deref(),turn_end) {
+                j.lock().unwrap().0.execute("INSERT INTO audit_events(request_id,run_id,at,kind,result) VALUES (?1,?2,?3,'plan_gate_refusal',?4)",
+                    rusqlite::params![r.request,r.id,now(),reason]).map_err(|e|e.to_string())?;
+                return Err(reason);
+            }
             // #110: filing and starting run in the service after this turn (`launch`), never inside the model's deadline
             let run = j.lock().unwrap().authorize(r, rev, sender, LEASE, now())?;
             if j.lock().unwrap().launch_run(r.request)? != Some(run) {
@@ -790,7 +797,8 @@ pub fn submit(tq: &Taskq, j: &Mutex<Journal>, id: i64, notify: bool) -> String {
         _ => return end(&run, "failed", Some("registration changed or unavailable"), "Plan submission blocked: registration changed or unavailable".into()),
     };
     let tq = &bound;
-    let onboarding=crate::onboarding::gate(&j.lock().unwrap(),&run.project);
+    let language=j.lock().unwrap().language(run.request).ok().flatten();
+    let onboarding=crate::onboarding::launch_gate(tq,j,&run.project,language.as_deref(),std::time::Instant::now()+Duration::from_secs(10));
     if let Err(e)=onboarding {
         return end(&run,"failed",Some(&e),e.clone());
     }
