@@ -1764,8 +1764,9 @@ fn u11_l05_unlimited_calls_and_inactivity_keep_evidence() {
     let mut u = text(2, OWNER, None, OWNER, &format!("multi {}", json!({"calls": [["project_list", {}]], "sleep": 8})));
     u["message"]["from"]["language_code"] = json!("ru");
     push(&st, u);
+    // §4: the uncertain state commits with its outbox row; Telegram delivery follows asynchronously, so wait for the send itself.
     wait("inactivity",20,||query(&d,"SELECT count(*) FROM requests WHERE update_id=2 AND state='uncertain'")==1);
-    assert!(sent_has(&st,"Результат действия неизвестен"),"#212 A3: localized uncertainty without tool diagnostics");
+    wait("#212 A3: localized uncertainty without tool diagnostics",15,||sent_has(&st,"Результат действия неизвестен"));
     assert!(!sent_has(&st,"Codex sent no event for 2 s"),"#212 A3: diagnostic stays in audit");
     assert_eq!(query(&d,"SELECT count(*) FROM audit_events a JOIN requests q ON q.id=a.request_id WHERE q.update_id=2 AND a.kind='kept_finding' AND a.result LIKE '%Доступные проекты: other, pilotq%'"),1,"read findings survive inactivity in audit");
     assert_eq!(query(&d,"SELECT count(*) FROM requests WHERE update_id=2 AND state='uncertain'"),1);
