@@ -88,7 +88,7 @@ pub(crate) fn own_url(text: &str, url: &str) -> bool {
     own_text(text).split_whitespace().any(|word| word.trim_matches(['(',')',',',';','.']) == url)
 }
 
-fn named_own(text: &str, name: &str) -> bool {
+pub(crate) fn named_own(text: &str, name: &str) -> bool {
     let own=own_text(text);
     if named(&own,name) || PROJECT_ALIASES.iter().any(|(alias,canonical)| name.eq_ignore_ascii_case(canonical) && named(&own,alias)) { return true; }
     // Spaced product spelling, e.g. "Pilot Q", matches the registered "pilotq".

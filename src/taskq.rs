@@ -412,6 +412,16 @@ fn dispatch(tq:&Taskq,j:&Mutex<Journal>,r:&Run,name:&str,args:&Value)->Result<St
     dispatch_until(tq,j,r,name,args,std::time::Instant::now()+Duration::from_secs(60))
 }
 
+fn project_status_read(tq:&Taskq,j:&Mutex<Journal>,r:&Run,project:&str,board:&str,release:bool,turn_end:std::time::Instant)->Result<Value,String> {
+    let end=turn_end.min(std::time::Instant::now()+Duration::from_secs(10));
+    let s=tq.snapshot_for(board)?;
+    if !s["tasks"].is_array() {return Err("board snapshot has no task list; status unknown".into());}
+    j.lock().unwrap().task_event(r.request,&format!("{board} project status"),"read",now())?;
+    let mut result=json!({"project":project,"board":board,"read_at":now(),"observed":s["observed"],"source":s["board"],"tasks":s["tasks"]});
+    if release {result["dev"]=crate::release::project_status_dev(tq,j,project,&s["tasks"],end);}
+    Ok(result)
+}
+
 fn dispatch_until(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Value,turn_end:std::time::Instant) -> Result<String, String> {
     let sender = {
         let j = j.lock().unwrap();
@@ -443,6 +453,41 @@ fn dispatch_until(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Va
         j.lock().unwrap().task_event(r.request, "service pause", "accepted", now())?;
         let running = tq.snapshot().map(|s| s["tasks"].as_array().into_iter().flatten().filter(|t| t["state"] == "doing").map(|t| format!("#{}", t["n"])).collect::<Vec<_>>().join(", ")).unwrap_or("unknown".into());
         return Ok(format!("TaskQ admission is paused on this host; no new task starts. Running workers continue. Still running: {running}."));
+    }
+    // #242 / §5: a broad status read has a set of concrete authorized targets,
+    // not an ambiguous single-task target. Historical context cannot narrow it.
+    if name == "project_status" && args["include_release"] != true {
+        let projects = {
+            let guard=j.lock().unwrap();
+            let projects=guard.projects()?.into_iter().filter(|p|allowed(&guard,sender,&p.0,false).is_ok()).collect::<Vec<_>>();
+            let named=projects.iter().any(|p|crate::direct::named_own(&r.text,&p.0) || crate::direct::named_own(&r.text,&p.1));
+            if guard.current_project(&r.session)?.is_none() && !named {Some(projects)} else {None}
+        };
+        if let Some(projects)=projects {
+            if projects.is_empty() {return Err("No accessible registered board; status unavailable".into());}
+            let mut boards=Vec::new();
+            let mut seen=std::collections::HashSet::new();
+            for (project,board, ..) in projects {
+                if !seen.insert(board.clone()) {continue;}
+                let result=(|| {
+                    let bound={
+                        let guard=j.lock().unwrap();
+                        if guard.fenced(r)? || !guard.has(sender,"chat")? {return Err("this run was stopped or access was revoked".into());}
+                        allowed(&guard,sender,&project,false)?;
+                        tq.registered(&guard,&project)?.0
+                    };
+                    project_status_read(&bound,j,r,&project,&board,false,turn_end)
+                })();
+                boards.push(match result {
+                    Ok(status)=>status,
+                    Err(reason)=>{
+                        j.lock().unwrap().task_event(r.request,&format!("{board} project status"),&format!("unavailable: {reason}"),now())?;
+                        json!({"project":project,"board":board,"unavailable":reason})
+                    },
+                });
+            }
+            return Ok(json!({"boards":boards}).to_string());
+        }
     }
     let saved = if name == "task_run_plan" {
         Some(j.lock().unwrap().plan_target(&r.session, args["revision"].as_i64())?)
@@ -565,13 +610,7 @@ fn dispatch_until(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Va
         }
         "project_status" => {
             allowed(&j.lock().unwrap(), sender, &project, false)?;
-            let end=turn_end.min(std::time::Instant::now()+Duration::from_secs(10));
-            let s = tq.snapshot_for(&board)?;
-            if !s["tasks"].is_array() { return Err("board snapshot has no task list; status unknown".into()); }
-            j.lock().unwrap().task_event(r.request,&format!("{board} project status"),"read",now())?;
-            let mut result=json!({"project":project,"board":board,"read_at":now(),"observed":s["observed"],"source":s["board"],"tasks":s["tasks"]});
-            if release_question {result["dev"]=crate::release::project_status_dev(tq,j,&project,&s["tasks"],end);}
-            Ok(result.to_string())
+            Ok(project_status_read(tq,j,r,&project,&board,release_question,turn_end)?.to_string())
         }
         "task_status" => {
             allowed(&j.lock().unwrap(), sender, &project, false)?;
@@ -1309,6 +1348,9 @@ print(json.dumps(dict(task=19,op_id=op,outcome='accepted',state='doing',revision
         let prior = journal.ask(7,"What is the task status for Pilot Q?",1).unwrap();
         journal.finish(&prior,None,None,&crate::manager::Outcome::Answered("ok".into()),2).unwrap();
         let r = journal.ask(7,"Make a task so this works",3).unwrap();
+        // #242: this fixture protects a bound single-board read; unbound lists
+        // intentionally ignore historical project selection (covered below).
+        journal.use_project(&r,"pilotq",7,3).unwrap();
         let j = Mutex::new(journal);
         let tq = Taskq { bot: None, bin, root: dir.clone(), poll: Duration::from_secs(15) };
         let tasks = json!([{"n":124,"state":"doing","runtime":"codex","session":"invented-session"}]);
@@ -1334,6 +1376,58 @@ print(json.dumps(dict(task=19,op_id=op,outcome='accepted',state='doing',revision
         assert!(dispatch(&tq,&j,&r,"project_status",&json!({"project":"pilotq"})).is_err());
         drop(j);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // #242 / R13, R17, §5: broad unbound reads must not turn historical
+    // project mentions or a model-guessed argument into a clarification/subset.
+    #[cfg(unix)]
+    #[test]
+    fn unbound_242_board_list() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir=std::env::temp_dir().join(format!("pilotq-unbound-242-{}",std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin=dir.join("taskq");
+        std::fs::write(&bin,"#!/bin/sh\n[ \"$1 $2\" = \"status --json\" ] || exit 99\necho read >> reads\ncat snapshot.json\n").unwrap();
+        std::fs::set_permissions(&bin,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut journal=Journal::open(&dir.join("journal.sqlite")).unwrap();journal.bootstrap(7,0).unwrap();
+        for project in ["cyprusbz","pilotq","tight"] {
+            let root=dir.join(project);std::fs::create_dir_all(&root).unwrap();
+            let board=format!("invented/{project}");
+            std::fs::write(root.join("taskq.json"),json!({"repo":board}).to_string()).unwrap();
+            std::fs::write(root.join("snapshot.json"),json!({"complete":true,"board":{"repo":board},"observed":1,"tasks":[{"n":1,"title":project,"state":"doing"}]}).to_string()).unwrap();
+            journal.add_project(7,project,&board,root.to_str().unwrap(),0).unwrap();
+        }
+        let prior=journal.ask(7,"Projects: cyprusbz, pilotq, tight",1).unwrap();
+        journal.finish(&prior,None,None,&crate::manager::Outcome::Answered("ok".into()),2).unwrap();
+        let r=journal.ask(7,"сделай таскью-лист",3).unwrap();let j=Mutex::new(journal);
+        let tq=Taskq{bot:None,bin,root:dir.clone(),poll:Duration::from_secs(1)};
+        // Exact failing #253 tool arguments, with ambiguous own history.
+        let text=dispatch(&tq,&j,&r,"project_status",&json!({"project":"pilotq"})).unwrap();
+        let result:Value=serde_json::from_str(&text).unwrap();
+        assert_eq!(result["boards"].as_array().unwrap().len(),3);
+        for project in ["cyprusbz","pilotq","tight"] {
+            assert_eq!(std::fs::read_to_string(dir.join(project).join("reads")).unwrap(),"read\n");
+            assert!(result["boards"].as_array().unwrap().iter().any(|b|b["project"]==project && b["tasks"][0]["title"]==project));
+        }
+        let guard=j.lock().unwrap();
+        let count:i64=guard.0.query_row("SELECT count(*) FROM audit_events WHERE request_id=?1 AND kind='task' AND result='read'",[r.request],|row|row.get(0)).unwrap();assert_eq!(count,3);
+        let questions:i64=guard.0.query_row("SELECT count(*) FROM audit_events WHERE request_id=?1 AND kind='project_question'",[r.request],|row|row.get(0)).unwrap();assert_eq!(questions,0);
+        drop(guard);
+        // A board outage is explicit, while other successful reads survive.
+        std::fs::write(dir.join("tight/snapshot.json"),"{}").unwrap();
+        let text=dispatch(&tq,&j,&r,"project_status",&json!({})).unwrap();
+        let result:Value=serde_json::from_str(&text).unwrap();
+        assert!(result["boards"].as_array().unwrap().iter().any(|b|b["project"]=="tight" && b["unavailable"].is_string() && b["tasks"].is_null()));
+        j.lock().unwrap().revoke(7,7,&["projects".into()],4).unwrap();
+        assert!(dispatch(&tq,&j,&r,"project_status",&json!({})).is_err());
+        j.lock().unwrap().grant(7,7,&["project:pilotq".into()],5).unwrap();
+        let text=dispatch(&tq,&j,&r,"project_status",&json!({})).unwrap();
+        let result:Value=serde_json::from_str(&text).unwrap();
+        assert_eq!(result["boards"].as_array().unwrap().len(),1);
+        assert_eq!(result["boards"][0]["project"],"pilotq");
+        // Selection remains unset; broad reads never switch a route.
+        assert!(j.lock().unwrap().current_project(&r.session).unwrap().is_none());
+        drop(j);std::fs::remove_dir_all(dir).unwrap();
     }
 
     // #157 / §5: an explicit project could not override ambiguous earlier mentions, and the person's
