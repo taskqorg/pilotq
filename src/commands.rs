@@ -172,7 +172,7 @@ pub(crate) fn execute_bounded(mut command: Command, end: Instant, active: impl F
         }
     };
     #[cfg(unix)]
-    let _ = crate::host::output(Command::new("/bin/kill").args(["-9","--",&format!("-{}",child.id())]));
+    let _ = crate::host::kill_group(child.id());
     let _ = child.kill();
     let _ = child.wait();
     stdout.truncate(cap);
