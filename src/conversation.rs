@@ -22,6 +22,26 @@ pub fn reply(text: &str, language: Option<&str>) -> String {
     } else { clean }
 }
 
+/// #212 A6: classify diagnostics; never interpolate tool commands or paths into status.
+pub fn model_failure(reason: Option<&str>, language: Option<&str>) -> &'static str {
+    let ru=language.unwrap_or("en").starts_with("ru");
+    let reason=reason.unwrap_or("").to_lowercase();
+    match (ru,reason.as_str()) {
+        (true,r) if r.contains("login") || r.contains("auth") => "нужен вход в Codex",
+        (false,r) if r.contains("login") || r.contains("auth") => "Codex sign-in required",
+        (true,r) if r.contains("quota") || r.contains("rate limit") || r.contains("usage limit") => "лимит модели исчерпан",
+        (false,r) if r.contains("quota") || r.contains("rate limit") || r.contains("usage limit") => "model usage limit reached",
+        (true,r) if r.contains("timeout") || r.contains("timed out") || r.contains("inactiv") || r.contains("no event") => "модель не ответила вовремя",
+        (false,r) if r.contains("timeout") || r.contains("timed out") || r.contains("inactiv") || r.contains("no event") => "model response timed out",
+        (true,r) if r.contains("connect") || r.contains("stream") || r.contains("network") => "потеряна связь с моделью",
+        (false,r) if r.contains("connect") || r.contains("stream") || r.contains("network") => "model connection lost",
+        (true,r) if r.contains("without an answer") || r.contains("no useful") => "модель не вернула ответ",
+        (false,r) if r.contains("without an answer") || r.contains("no useful") => "model returned no answer",
+        (true,_) => "причина сбоя модели неизвестна",
+        (false,_) => "model failure reason unavailable",
+    }
+}
+
 pub fn refusal(language: Option<&str>) -> &'static str {
     if language.unwrap_or("en").starts_with("ru") {"Ответ не сохранён; проверьте актуальный вопрос и права."}
     else {"Reply not saved; check the current question and access."}
@@ -54,7 +74,7 @@ pub fn task_state(state: &str, closed: bool, language: Option<&str>) -> &'static
     let ru = language.unwrap_or("en").starts_with("ru");
     if closed { return if ru { "Задача закрыта; результат по ссылке" } else { "Task closed; see the result" }; }
     match (ru, state) {
-        (true, "held") => "Создана, ещё не в очереди",
+        (true, "held") => "Ожидает менеджера проекта",
         (true, "ready") => "В очереди к исполнителю",
         (true, "doing") => "Исполнитель работает",
         (true, "ask") => "Ожидает вашего ответа",
@@ -63,7 +83,7 @@ pub fn task_state(state: &str, closed: bool, language: Option<&str>) -> &'static
         (true, "later") => "Отложена",
         (true, "failed") => "Попытка завершилась без результата",
         (true, _) => "Состояние неизвестно",
-        (false, "held") => "Created; not queued yet",
+        (false, "held") => "Waiting for the project manager",
         (false, "ready") => "Queued for a worker",
         (false, "doing") => "Worker is working",
         (false, "ask") => "Waiting for your answer",

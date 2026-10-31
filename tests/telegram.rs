@@ -1199,7 +1199,7 @@ fn u06_plan_revisions_then_held_create_start_and_one_status_message() {
     assert!(tq_calls(&d).is_empty(), "an older revision files nothing");
 
     push(&st, call(5, OWNER, None, OWNER, "task_run_plan", json!({"revision": 3})));
-    wait("filed and started", 15, || sent_has(&st, "Tasks submitted:") && sent_has(&st,"TaskQ · pilotq#19 · Draft three"));
+    wait("filed and started", 15, || sent_has(&st, "Tasks submitted:") && sent_has(&st,"pilotq#19 — Draft three"));
     let calls = tq_calls(&d);
     assert_eq!((calls.len(), calls[0][0].as_str(), calls[0][1].as_str(), calls[1][0].as_str(), calls[1][1].as_str()), (2, "add", "Draft three", "start", "19"), "{calls:?}");
     let op = calls[0].iter().skip_while(|a| *a != "--op-id").nth(1).unwrap().clone();
@@ -1271,7 +1271,7 @@ fn u15_network_loss_after_ticket_two_reconciles_the_same_ids() {
     assert!(adds.iter().filter(|o| o.ends_with("-t2")).count() >= 2 && adds.iter().filter(|o| o.ends_with("-t1")).count() == 1, "{adds:?}");
     let first_start = calls.iter().position(|c| c[0] == "start").unwrap();
     assert!(calls[first_start..].iter().all(|c| c[0] == "start") && calls[first_start..].len() == 3, "start only after every create: {calls:?}");
-    assert!(sent_has(&st,"TaskQ · pilotq#20 · Two") && sent_has(&st,"TaskQ · pilotq#21 · Three"),"{:?}",texts(&st));
+    assert!(sent_has(&st,"pilotq#20 — Two") && sent_has(&st,"pilotq#21 — Three"),"{:?}",texts(&st));
     stop(c, d);
 }
 
@@ -1386,14 +1386,14 @@ fn u82_ask_buttons_and_labeled_links() {
     wait("plan", 15, || sent_has(&st, "We will:"));
     push(&st, call(2, -100, topic, OWNER, "task_run_plan", json!({"revision": 1})));
     wait("status", 15, || sent_has(&st, "Queued for a worker"));
-    assert!(sent_has(&st,"Tasks submitted:") && sent_has(&st,"TaskQ · pilotq#19 · Docs"),"{:?}",texts(&st));
+    assert!(sent_has(&st,"Tasks submitted:") && sent_has(&st,"pilotq#19 — Docs"),"{:?}",texts(&st));
     set_task(&d, 19, |t| {
         t["state"] = json!("ask");
         t["card"] = json!("Done: drafted\nProblem: pick a wording, see [the spec](https://github.com/taskqorg/pilotq/blob/main/pilotq.md)\n1. short - + quick; - less detail ★\n2. long - + detail; - slower\nTo answer: `taskq answer 19.K` or comment `K` or the option text");
     });
     wait("question", 15, || sent_has(&st, "\n⚑"));
     let q = sent(&st).into_iter().find(|s| s["text"].as_str().unwrap().contains("\n⚑")).unwrap();
-    assert_eq!(q["rich_message"]["markdown"].as_str().unwrap().replace("  \n", "\n"), format!("? [TaskQ · pilotq#19 · Docs]({issue})\n✓ drafted\n⚑ pick a wording, see [the spec](https://github.com/taskqorg/pilotq/blob/main/pilotq.md)\n1. short ★\n\\+ quick; - less detail\n2. long\n\\+ detail; - slower"));
+    assert_eq!(q["rich_message"]["markdown"].as_str().unwrap().replace("  \n", "\n"), format!("? [pilotq#19 — Docs]({issue})\n✓ drafted\n⚑ pick a wording, see [the spec](https://github.com/taskqorg/pilotq/blob/main/pilotq.md)\n1. short ★\n\\+ quick; - less detail\n2. long\n\\+ detail; - slower"));
     assert_eq!(q["reply_markup"]["inline_keyboard"], json!([[{"text": "1. short ★", "callback_data": "answer:1"}], [{"text": "2. long", "callback_data": "answer:2"}]]));
     push(&st, press(3, -100, topic, OWNER, q["id"].as_i64().unwrap(), "answer:2"));
     wait("press answers", 15, || sent_has(&st, "Answered by") && sent_has(&st, "2. long") && sent_has(&st,"Worker is working"));
@@ -1749,7 +1749,7 @@ fn u09_f09_f10_switch_ambiguity_redirect_and_revoke() {
 }
 
 // #190 A5 replaces the five-call and total-deadline guards; retained risk: every read remains audited,
-// and inactivity terminates a stalled action while preserving its findings.
+// and inactivity terminates a stalled action while preserving its findings in audit (#212 A3).
 #[test]
 fn u11_l05_unlimited_calls_and_inactivity_keep_evidence() {
     let (d, st) = direct_setup("u11");
@@ -1764,8 +1764,10 @@ fn u11_l05_unlimited_calls_and_inactivity_keep_evidence() {
     let mut u = text(2, OWNER, None, OWNER, &format!("multi {}", json!({"calls": [["project_list", {}]], "sleep": 8})));
     u["message"]["from"]["language_code"] = json!("ru");
     push(&st, u);
-    wait("inactivity",20,||sent_has(&st,"Codex sent no event for 2 s"));
-    assert!(sent_has(&st,"Доступные проекты: other, pilotq"),"read findings survive inactivity");
+    wait("inactivity",20,||query(&d,"SELECT count(*) FROM requests WHERE update_id=2 AND state='uncertain'")==1);
+    assert!(sent_has(&st,"Результат действия неизвестен"),"#212 A3: localized uncertainty without tool diagnostics");
+    assert!(!sent_has(&st,"Codex sent no event for 2 s"),"#212 A3: diagnostic stays in audit");
+    assert_eq!(query(&d,"SELECT count(*) FROM audit_events a JOIN requests q ON q.id=a.request_id WHERE q.update_id=2 AND a.kind='kept_finding' AND a.result LIKE '%Доступные проекты: other, pilotq%'"),1,"read findings survive inactivity in audit");
     assert_eq!(query(&d,"SELECT count(*) FROM requests WHERE update_id=2 AND state='uncertain'"),1);
     stop(c,d);
 }
@@ -2474,7 +2476,7 @@ fn u39_registered_boards_steer_requeue_and_stale_answer() {
     push(&st, call(2, OWNER, None, OWNER, "task_plan", p));
     wait("other plan", 15, || sent_has(&st, "We will:"));
     push(&st, call(3, OWNER, None, OWNER, "task_run_plan", json!({"revision":1})));
-    wait("other start", 15, || sent_has(&st, "Tasks submitted:") && sent_has(&st,"TaskQ · other#19 · Other docs"));
+    wait("other start", 15, || sent_has(&st, "Tasks submitted:") && sent_has(&st,"other#19 — Other docs"));
     wait("other held start", 15, || board(&second)["tasks"]["19"]["state"] == "ready");
     set_task(&second, 19, |t| t["state"] = json!("doing"));
     push(&st, call(4, OWNER, None, OWNER, "task_steer", json!({"project":"other", "task":"19", "text":"Keep the scope; $(false) is literal."})));
@@ -2726,9 +2728,9 @@ fn u95_cases(live: bool) {
             if name == 'task_plan':
                 text = 'Saved locally only: plan revision 1.\nReview the tester guide wording; ask me to run revision 1.'
             elif name == 'task_run_plan':
-                text = 'Queued for a worker: [TaskQ · pilotq#19 · Tester guide](https://github.com/taskqorg/pilotq/issues/19).\nWait for the worker result.'
+                text = 'Queued for a worker: [pilotq#19 — Tester guide](https://github.com/taskqorg/pilotq/issues/19).\nWait for the worker result.'
             else:
-                text = 'The task is queued for a worker.\n[TaskQ · pilotq#19 · Tester guide](https://github.com/taskqorg/pilotq/issues/19)'
+                text = 'The task is queued for a worker.\n[pilotq#19 — Tester guide](https://github.com/taskqorg/pilotq/issues/19)'
         else:
             text = 'Привет! Готов обсудить задачу.'"#);
         fs::write(d.join("fake-codex"), fake).unwrap();
@@ -2866,7 +2868,7 @@ fn u93_draft_buttons_through_service() {
         // §12/#91: admission has no worker evidence; preserve truthful queue text and saved title.
         let reply=sent(&st).into_iter().find(|m|m["text"].as_str().is_some_and(|t|t.contains("Tasks submitted:"))).unwrap();
         let text=reply["text"].as_str().unwrap();
-        assert!(text.contains("queued for a worker") && !text.contains("started") && text.contains("TaskQ · pilotq#19 · Reply improvements"),"admission must not claim execution and must name the saved task: {text}");
+        assert!(text.contains("queued for a worker") && !text.contains("started") && text.contains("pilotq#19 — Reply improvements"),"admission must not claim execution and must name the saved task: {text}");
         let calls=tq_calls(&d);
         assert_eq!(calls.len(),2,"one add and one start: {calls:?}");
         assert_eq!(calls[0][1],"Reply improvements");
@@ -2973,7 +2975,7 @@ fn u110_one_draft_launch_states_and_cancel() {
     let reply = query_text(&d, "SELECT reply FROM requests WHERE update_id=35");
     assert!(reply.starts_with("Tasks submitted:"), "{reply}");
     for (n, title) in titles.iter().enumerate() {
-        assert!(reply.contains(&format!("[TaskQ · pilotq#{} · {title}](https://github.com/taskqorg/pilotq/issues/{}): queued for a worker", 19 + n, 19 + n)), "{reply}");
+        assert!(reply.contains(&format!("[pilotq#{} — {title}](https://github.com/taskqorg/pilotq/issues/{}): queued for a worker", 19 + n, 19 + n)), "{reply}");
     }
     assert!(!reply.contains("doing") && !reply.contains("in work") && !reply.contains("did not finish"), "{reply}");
     assert!(!texts(&st).iter().any(|t| t.contains("did not finish")));

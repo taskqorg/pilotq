@@ -44,8 +44,8 @@
     {
       "state": "held",
       "closed": false,
-      "en": "Created; not queued yet",
-      "ru": "Создана, ещё не в очереди"
+      "en": "Waiting for the project manager",
+      "ru": "Ожидает менеджера проекта"
     },
     {
       "state": "ready",
@@ -108,21 +108,44 @@
   },
   "cards": {
     "cancelled": "**Clear replies**\nWe will: Simplify the conversation\nDone when: Every stage has a clear card\n\nPlan cancelled.",
-    "launched": "**Clear replies**\nWe will: Simplify the conversation\nDone when: Every stage has a clear card\n\nTasks submitted: - TaskQ · pilotq#19 · Clear replies: queued for a worker",
+    "launched": "**Clear replies**\nWe will: Simplify the conversation\nDone when: Every stage has a clear card\n\nTasks submitted: - pilotq#19 — Clear replies: queued for a worker",
     "failed": "**Clear replies**\nWe will: Simplify the conversation\nDone when: Every stage has a clear card\n\nCould not submit the whole plan.",
     "question": "Choose\n\nWhich style?\n1. Compact\n2. Detailed",
     "chosen": "Choose\n\nWhich style?\n1. Compact\n2. Detailed\n\nChosen by 7: 2. Detailed",
     "progress": "**Clear replies**\nWe will: Simplify the conversation\nDone when: Every stage has a clear card\n\nCreating tasks · 3 s",
-    "problem": "**Clear replies**\nWe will: Simplify the conversation\nDone when: Every stage has a clear card\n\nCould not launch the plan. - TaskQ · pilotq#19 · Clear replies: created; not queued yet",
+    "problem": "**Clear replies**\nWe will: Simplify the conversation\nDone when: Every stage has a clear card\n\nCould not launch the plan. - pilotq#19 — Clear replies: waiting for the project manager",
     "launch_cancelled": "**Clear replies**\nWe will: Simplify the conversation\nDone when: Every stage has a clear card\n\nFurther launch steps cancelled; earlier effects are preserved."
   },
   "worker_question": {
-    "question": {"parsed": true, "text": "Done: checked\nProblem: Choose retention\n1. Keep - + history; - disk space ★\n2. Drop - + disk space; - history\nTo answer: taskq answer 97.K",
-      "done": "checked", "problem": "Choose retention", "evidence": [],
-      "choices": [{"id": 1, "text": "Keep - + history; - disk space", "label": "Keep", "detail": "+ history; - disk space", "recommended": true, "consequential": false},
-        {"id": 2, "text": "Drop - + disk space; - history", "label": "Drop", "detail": "+ disk space; - history", "recommended": false, "consequential": false}],
-      "limits": {"chars": 240}},
-    "snapshot": "? [TaskQ · pilotq#97 · Ask layout](https://forge.invalid/task/97)\n✓ checked\n⚑ Choose retention\n1. Keep ★\n\\+ history; - disk space\n2. Drop\n\\+ disk space; - history"
+    "question": {
+      "parsed": true,
+      "text": "Done: checked\nProblem: Choose retention\n1. Keep - + history; - disk space ★\n2. Drop - + disk space; - history\nTo answer: taskq answer 97.K",
+      "done": "checked",
+      "problem": "Choose retention",
+      "evidence": [],
+      "choices": [
+        {
+          "id": 1,
+          "text": "Keep - + history; - disk space",
+          "label": "Keep",
+          "detail": "+ history; - disk space",
+          "recommended": true,
+          "consequential": false
+        },
+        {
+          "id": 2,
+          "text": "Drop - + disk space; - history",
+          "label": "Drop",
+          "detail": "+ disk space; - history",
+          "recommended": false,
+          "consequential": false
+        }
+      ],
+      "limits": {
+        "chars": 240
+      }
+    },
+    "snapshot": "? [pilotq#97 — Ask layout](https://forge.invalid/task/97)\n✓ checked\n⚑ Choose retention\n1. Keep ★\n\\+ history; - disk space\n2. Drop\n\\+ disk space; - history"
   },
   "progress": [
     {
@@ -145,10 +168,10 @@
     }
   ],
   "launch_status": {
-    "queued": "Queued for a worker · confirmed 0 s ago · TaskQ · pilotq#19 · First\nQueued for a worker · confirmed 0 s ago · TaskQ · pilotq#20 · Second",
-    "doing": "Worker is working · confirmed 0 s ago · TaskQ · pilotq#19 · First\nQueued for a worker · confirmed 3 s ago · TaskQ · pilotq#20 · Second",
-    "ask": "Worker is working · confirmed 2 s ago · TaskQ · pilotq#19 · First\nWaiting for your answer · confirmed 0 s ago · TaskQ · pilotq#20 · Second",
-    "closed": "Task closed; see the result · TaskQ · pilotq#19 · First\nChanged: Replies preserve line breaks.\nOpen: Live check pending.\nWaiting for your answer · confirmed 2 s ago · TaskQ · pilotq#20 · Second"
+    "queued": "Queued for a worker · confirmed 0 s ago · pilotq#19 — First\n\nQueued for a worker · confirmed 0 s ago · pilotq#20 — Second",
+    "doing": "Worker is working · confirmed 0 s ago · pilotq#19 — First\n\nQueued for a worker · confirmed 3 s ago · pilotq#20 — Second",
+    "ask": "Worker is working · confirmed 2 s ago · pilotq#19 — First\n\nWaiting for your answer · confirmed 0 s ago · pilotq#20 — Second",
+    "closed": "Task closed; see the result · pilotq#19 — First\n\nChanged: Replies preserve line breaks.\nOpen: Live check pending.\n\nWaiting for your answer · confirmed 2 s ago · pilotq#20 — Second"
   },
   "recovered_refusal": {
     "en": "Reply not saved; check the current question and access.",

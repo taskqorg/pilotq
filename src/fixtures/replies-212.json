@@ -1,0 +1,62 @@
+[
+  {
+    "language": "en",
+    "request": "Make a plan",
+    "tickets": [
+      {
+        "title": "Clear replies",
+        "goal": "Simplify replies",
+        "done_when": "Replies are readable",
+        "acceptance": [
+          "Replies are readable"
+        ],
+        "scope": [
+          "Invented fixture"
+        ]
+      },
+      {
+        "title": "Local checks",
+        "goal": "Simplify replies",
+        "done_when": "Replies are readable",
+        "acceptance": [
+          "Replies are readable"
+        ],
+        "scope": [
+          "Invented fixture"
+        ]
+      }
+    ],
+    "plan": "**Clear replies**\nWe will: Simplify replies\nDone when: Replies are readable\n\n**Local checks**\nWe will: Simplify replies\nDone when: Replies are readable",
+    "cancelled": "Plan cancelled."
+  },
+  {
+    "language": "ru",
+    "request": "Составь план",
+    "tickets": [
+      {
+        "title": "Понятные ответы",
+        "goal": "Упростить ответы",
+        "done_when": "Ответы понятны",
+        "acceptance": [
+          "Ответы понятны"
+        ],
+        "scope": [
+          "Invented fixture"
+        ]
+      },
+      {
+        "title": "Локальные проверки",
+        "goal": "Упростить ответы",
+        "done_when": "Ответы понятны",
+        "acceptance": [
+          "Ответы понятны"
+        ],
+        "scope": [
+          "Invented fixture"
+        ]
+      }
+    ],
+    "plan": "**Понятные ответы**\nСделаем: Упростить ответы\nГотово, когда: Ответы понятны\n\n**Локальные проверки**\nСделаем: Упростить ответы\nГотово, когда: Ответы понятны",
+    "cancelled": "План отменён."
+  }
+]

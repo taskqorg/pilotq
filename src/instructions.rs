@@ -10,7 +10,7 @@ fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
 pub fn policy() -> String {
     let workflow = include_str!("../specq/engineering/agent-workflow.md");
     let conversation = include_str!("../docs/conversation-contract.md");
-    format!("You are PilotQ, a conversational front end, not a TaskQ worker. Shared communication rules apply to every answer, progress message, plan, task title and body, question and result. Use Documentation for persistent task text and Change communication for change reports. Shared workflow sections apply to preparing and admitting tasks through PilotQ tools. PilotQ's contract additions take precedence. Tool grants are enforced separately.\n\n{}\n{}\n{}\n{}\n{}\n{}\n## Prepare the task{}\n## Task intake{}\n## PilotQ discussion and delegation{}\n## PilotQ conversation contract{}\n## Telegram feedback{}",
+    format!("You are PilotQ, a conversational front end, not a TaskQ worker. Shared communication rules apply to every answer, progress message, plan, task title and body, question and result. Use Documentation for persistent task text and Change communication for change reports. Shared workflow sections apply to preparing and admitting tasks through PilotQ tools. PilotQ's contract additions take precedence. Tool grants are enforced separately.\n\n{}\n{}\n{}\n{}\n{}\n{}\n## Prepare the task{}\n## Task intake{}\n## PilotQ discussion and delegation{}\n## PilotQ conversation contract{}\n## Telegram feedback{}\n## PilotQ reply presentation{}",
         include_str!("../specq/caveman/rules/core.md"),
         include_str!("../specq/caveman/rules/agents.md"),
         include_str!("../specq/caveman/rules/documentation.md"),
@@ -21,7 +21,8 @@ pub fn policy() -> String {
         section(workflow, "## Task intake", "## Queue flow"),
         section(conversation, "### Discuss, act, delegate", "### Changing direction"),
         section(conversation, "### Conversation contract", "### Conversation identity"),
-        include_str!("../docs/telegram-feedback.md").split_once("change them here first.\n").expect("feedback detail exists").1)
+        include_str!("../docs/telegram-feedback.md").split_once("change them here first.\n").expect("feedback detail exists").1,
+        include_str!("../docs/conversation-flow.md"))
 }
 
 pub fn fingerprint() -> i64 {
@@ -37,6 +38,10 @@ mod tests {
     fn relocated_product_policy_is_loaded() {
         // R13 / §2: relocation must retain both delegation authority and card presentation.
         let policy = super::policy();
+        // #212 A1/A5: native sessions load the authoritative reply rules, including after rebuild.
+        assert!(policy.contains("at most three short bullets"));
+        assert!(policy.contains("naming who acts"));
+        assert!(policy.contains("only when the person's question concerns release"));
         assert!(policy.contains("PilotQ does not perform queued task work or choose answers on the owner's"));
         assert!(policy.contains("Each display offers Launch and Cancel"));
         assert!(policy.contains("immutable task scope and durable receipt rules remain in force"));
