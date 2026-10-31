@@ -92,9 +92,13 @@ pub fn call(j:&std::sync::Mutex<Journal>,r:&Run,name:&str,args:&Value,keys:&crat
         let operation=format!("{name}:{}",args["id"].as_str().unwrap_or(""));
         // Validate before receipts/audit, so rejected credentials never enter PM storage.
         let out=note(&mut b,name,args,keys)?;
+        if name=="pm_note_read" {
+            j.0.execute("INSERT INTO audit_events(request_id,at,kind,item) VALUES (?1,?2,?3,?4)",params![r.request,at,name,route]).map_err(err)?;
+            tx.commit().map_err(err)?;return Ok(out.to_string());
+        }
         let old:Option<(String,String)>=j.0.query_row("SELECT args,receipt FROM admin_ops WHERE request=?1 AND tool=?2",params![r.request,operation],|x|Ok((x.get(0)?,x.get(1)?))).optional().map_err(err)?;
         if let Some((before,out))=old {if before!=signature {return Err("PM note arguments changed in one request.".into());}return Ok(out);}
-        if name!="pm_note_read" {save(&j,&route,&b)?;}
+        save(&j,&route,&b)?;
         let out=out.to_string();
         j.0.execute("INSERT INTO admin_ops(request,tool,args,receipt) VALUES (?1,?2,?3,?4)",params![r.request,operation,signature,out]).map_err(err)?;
         j.0.execute("INSERT INTO audit_events(request_id,at,kind,item) VALUES (?1,?2,?3,?4)",params![r.request,at,name,route]).map_err(err)?;
@@ -224,6 +228,19 @@ mod tests {
         assert_eq!(context(&j,tick).unwrap()["notes"][0]["id"],"release");
         j.revoke(7,8,&["project:example".into()],62).unwrap();assert!(context(&j,id).unwrap().is_null());
         j.0.execute("DELETE FROM projects WHERE name='example'",[]).unwrap();assert!(context(&j,tick).unwrap().is_null());
+        std::fs::remove_dir_all(p).unwrap();
+    }
+
+    // A3/A4 / R5,R13: a read is an observation, not a mutation receipt; CLI corrections must be visible immediately.
+    #[test]
+    fn pm_221_note_reads_follow_cli_correction() {
+        let (mut j,p,keys)=setup();cli(&j,7,&["bind","cli","pm"],&keys,0).unwrap();
+        let r=j.ask(7,"inspect notes",1).unwrap();let mutex=std::sync::Mutex::new(j);
+        assert!(call(&mutex,&r,"pm_note_write",&json!({"id":"fact","fact":"Old fact.","why":"Original reason."}),&keys,2).0);
+        assert!(call(&mutex,&r,"pm_note_read",&json!({"id":"fact"}),&keys,3).1.contains("Old fact."));
+        cli(&mutex.lock().unwrap(),7,&["notes","cli","set","fact","Corrected fact.","Corrected reason."],&keys,4).unwrap();
+        let read=call(&mutex,&r,"pm_note_read",&json!({"id":"fact"}),&keys,5);
+        assert!(read.0 && read.1.contains("Corrected fact."),"note reads must observe the CLI correction: {read:?}");
         std::fs::remove_dir_all(p).unwrap();
     }
 
