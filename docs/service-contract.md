@@ -212,3 +212,7 @@ use a unique reserved `pilotq-e2e-*` host that no service claims; the runner scr
 worker/reviewer board events without launching ordinary workers. This qualifies the management path,
 not real implementation or review. All cases and cleanup must pass; a blocked or incomplete run is
 not release evidence.
+
+### Loop controls
+
+`/loop`, including Telegram bot suffixes and CLI `ask`, uses the deterministic admission/audit path under [the route-loop protocol](conversation-contract.md#route-loops-and-board-wakes) (R13). The capability catalog owns help and manager-tool descriptions. The protected owner and shell grantees may use loop controls; other admitted callers receive a scoped refusal. `/new` stops the destination's loop. Restart and update drain retain armed and pending loops without replaying interrupted native effects. [PM TEST qualification](loop-220-live.md) remains separate from local/CI checks and installation authority (§9).

@@ -379,3 +379,7 @@ the drain/reconcile path.
 
 This specification does not authorize installation, model calls, queue activation or replacement of
 the production Telegram consumer.
+
+### Route-loop scheduling
+
+[The route-loop protocol](conversation-contract.md#route-loops-and-board-wakes) owns #220's durable timer and board-wake rules (R5, R10, R13, R17). Loop state and concrete board/root observation cursors are JSON records in the existing SQLite `meta` table; no schema migration or downgrade boundary changes. A single transaction writes the synthetic request, audit origin, pending pointer and next time. The ordinary request queue owns execution; the update drain fences enqueue and claim, not the persisted timer. Native interrupted ticks retain the normal no-replay rule. Loop tool receipts use the existing request-scoped administration receipt table. This is conversational scheduling, never a separate TaskQ worker scheduler.

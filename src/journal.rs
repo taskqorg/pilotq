@@ -484,6 +484,10 @@ fn answer_control(tx: &Connection, session: &str, cmd: &str, request: i64, chat:
                 tx.execute("UPDATE conversations SET fence=fence+1 WHERE session=?1", [session]).map_err(e)?;
                 return Ok(("Stopped; queued follow-ups stay queued.".into(), Some(id)));
             }
+            "/loop" => {
+                let text:String=tx.query_row("SELECT text FROM requests WHERE id=?1",[request],|r|r.get(0)).map_err(e)?;
+                match crate::loops::command(tx,request,&text,at) {Ok(s)=>s,Err(s)=>{tx.execute("UPDATE requests SET state='failed',error=?2 WHERE id=?1",params![request,s]).map_err(e)?;s}}
+            },
             "/profile" | "/access" => profile_control(tx,request,chat,sender,cmd,at)?,
             "/version" => format!("PilotQ {}", env!("CARGO_PKG_VERSION")),
             "/help" => String::new(),
@@ -536,8 +540,9 @@ fn answer_control(tx: &Connection, session: &str, cmd: &str, request: i64, chat:
             _ => {
                 tx.execute("INSERT INTO conversations(session, generation) VALUES (?1, 1) ON CONFLICT(session) DO UPDATE SET generation=generation+1, thread=NULL", [session])
                     .map_err(e)?;
+                let loop_stopped=crate::loops::reset(tx,request,at)?;
                 let selected: Option<String> = tx.query_row("SELECT CAST(value AS TEXT) FROM meta WHERE key=?1", [format!("model:{session}")], |r|r.get(0)).optional().map_err(e)?;
-                format!("New conversation started. Model: {}.", selected.as_deref().unwrap_or("default (Codex configuration)"))
+                format!("New conversation started. Model: {}.{}", selected.as_deref().unwrap_or("default (Codex configuration)"),if loop_stopped {" Loop stopped."} else {""})
             }
         },
         None,
@@ -1340,7 +1345,7 @@ impl Journal {
         self.0.execute("UPDATE outbox SET state='superseded' WHERE kind='turn_progress' AND state='pending'
             AND request_id IN (SELECT id FROM requests WHERE state<>'running')",[]).map_err(|e|e.to_string())?;
         self.0.execute("INSERT INTO outbox(request_id,chat,topic,reply_to,text,next_at,kind)
-            SELECT q.id,q.chat,q.topic,q.message,
+            SELECT q.id,q.chat,q.topic,nullif(q.message,0),
                 CASE WHEN q.language='ru' THEN 'Работаю · ' ELSE 'Working · ' END || (?1-r.started_at) || ' s',?1,'turn_progress'
             FROM requests q JOIN runs r ON r.request_id=q.id
             WHERE q.front='telegram' AND q.state='running' AND r.state='running' AND r.started_at<=?1-30
@@ -1360,7 +1365,7 @@ impl Journal {
         // Timers only wake this scan; the request and one-notice disposition are durable across restart.
         self.0.execute("INSERT INTO outbox(request_id,chat,topic,reply_to,text,next_at,kind)
             SELECT r.id,r.chat,r.topic,CASE WHEN r.chat<>r.sender THEN r.message END,'Queued behind ' || (SELECT count(*) FROM requests p WHERE p.session=r.session AND p.id<r.id AND p.state IN ('queued','running')) || '.',?1,'queued'
-            FROM requests r WHERE r.front='telegram' AND r.state='queued' AND r.kind<>'builtin' AND r.received_at<?1-30
+            FROM requests r WHERE r.front='telegram' AND r.state='queued' AND r.kind<>'builtin' AND r.received_at<?1-30 AND NOT EXISTS(SELECT 1 FROM audit_events WHERE request_id=r.id AND kind='loop_tick')
             AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.request_id=r.id AND o.kind='queued')", [now]).map_err(|e|e.to_string())?;
         self.0.execute("UPDATE outbox SET state='superseded' WHERE kind='queued' AND state='pending' AND request_id IN (SELECT id FROM requests WHERE state<>'queued')", []).map_err(|e|e.to_string())?;
         let heads = "FROM outbox o WHERE state='pending'
@@ -1749,6 +1754,9 @@ impl Journal {
         if tx.query_row("SELECT EXISTS(SELECT 1 FROM meta WHERE key='draining' AND value=1)", [], |r| r.get::<_, bool>(0)).map_err(|e| e.to_string())? {
             return Err("update drain in progress; retry after restart".into());
         }
+        // R13 / #220: synchronous CLI calls cannot claim beside a service-owned route tick.
+        let busy:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM requests WHERE session=?1 AND state='running' AND id IN (SELECT request_id FROM audit_events WHERE kind='loop_tick'))",[format!("cli:{sender}")],|r|r.get(0)).map_err(|e|e.to_string())?;
+        if busy { return Err("CLI conversation is running; retry after it completes or use /stop.".into()); }
         // ponytail: CLI requests take negative synthetic update IDs, so Telegram's positive IDs never collide
         let update: i64 = tx.query_row("SELECT min(coalesce(min(update_id), 0), 0) - 1 FROM requests", [], |r| r.get(0)).map_err(|e| e.to_string())?;
         let id = insert(&tx, update, "cli", sender, None, sender, None, 0, "text", Some(text), "queued", at, &format!("cli:{sender}"), None)?;
@@ -1763,20 +1771,31 @@ impl Journal {
         if tx.query_row("SELECT EXISTS(SELECT 1 FROM meta WHERE key='draining' AND value=1)", [], |r| r.get::<_, bool>(0)).map_err(|e| e.to_string())? {
             return Ok(vec![]);
         }
+        crate::loops::maintain(&tx,at)?;
         let revoked = revalidate(&tx)?;
-        let running: i64 = tx.query_row("SELECT count(*) FROM requests WHERE state='running' AND front='telegram'", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+        let running: i64 = tx.query_row("SELECT count(*) FROM requests WHERE state='running' AND (front='telegram' OR id IN (SELECT request_id FROM audit_events WHERE kind='loop_tick'))", [], |r| r.get(0)).map_err(|e| e.to_string())?;
         let free = (limit as i64 - running).max(0);
         let ids: Vec<i64> = {
             let mut q = tx
                 .prepare(
-                    "SELECT min(id) FROM requests r WHERE state='queued' AND front='telegram' AND kind IN ('text','image','document','voice','choice','launch','cancel','launch_control')
-                    AND NOT EXISTS (SELECT 1 FROM requests p WHERE p.session=r.session AND p.state='running') GROUP BY session ORDER BY 1 LIMIT ?1",
+                    "SELECT r.id FROM requests r WHERE state='queued' AND (front='telegram' OR id IN (SELECT request_id FROM audit_events WHERE kind='loop_tick')) AND kind IN ('text','image','document','voice','choice','launch','cancel','launch_control')
+                    AND NOT EXISTS (SELECT 1 FROM requests p WHERE p.state='running' AND
+                        (p.session=r.session OR (p.front=r.front AND p.chat=r.chat AND p.topic IS r.topic AND EXISTS(SELECT 1 FROM audit_events WHERE kind='loop_tick' AND request_id IN (r.id,p.id)))))
+                    AND NOT EXISTS (SELECT 1 FROM requests p WHERE p.session=r.session AND p.state='queued' AND p.id<r.id AND p.kind<>'builtin')
+                    AND (NOT EXISTS(SELECT 1 FROM audit_events WHERE request_id=r.id AND kind='loop_tick') OR
+                        (SELECT count(*) FROM requests p WHERE p.state='running' AND p.id IN (SELECT request_id FROM audit_events WHERE kind='loop_tick')) < ?2)
+                    ORDER BY EXISTS(SELECT 1 FROM audit_events WHERE request_id=r.id AND kind='loop_tick'),r.id LIMIT ?1",
                 )
                 .map_err(|e| e.to_string())?;
-            q.query_map([free], |r| r.get(0)).and_then(Iterator::collect).map_err(|e| e.to_string())?
+            q.query_map(params![free,limit.saturating_sub(1) as i64], |r| r.get(0)).and_then(Iterator::collect).map_err(|e| e.to_string())?
         };
         let mut runs = vec![];
         for id in ids {
+            let loop_tick:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM audit_events WHERE request_id=?1 AND kind='loop_tick')",[id],|r|r.get(0)).map_err(|e|e.to_string())?;
+            let active:i64=tx.query_row("SELECT count(*) FROM requests WHERE state='running' AND id IN (SELECT request_id FROM audit_events WHERE kind='loop_tick')",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+            if loop_tick && active>=limit.saturating_sub(1) as i64 {continue;}
+            let route_busy:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM requests p JOIN requests q ON q.id=?1 WHERE p.state='running' AND (p.session=q.session OR (p.front=q.front AND p.chat=q.chat AND p.topic IS q.topic AND EXISTS(SELECT 1 FROM audit_events WHERE kind='loop_tick' AND request_id IN (p.id,q.id)))))",[id],|r|r.get(0)).map_err(|e|e.to_string())?;
+            if route_busy {continue;}
             runs.extend(claim(&tx, id, at)?);
         }
         tx.commit().map_err(|e| e.to_string())?;
@@ -1945,7 +1964,9 @@ impl Journal {
 
     /// True when a stop or a later claim has retired this run's fence.
     pub fn fenced(&self, r: &Run) -> Result<bool, String> {
-        self.0.query_row("SELECT fence<>?2 OR NOT EXISTS(SELECT 1 FROM requests q JOIN grants g ON g.user=q.sender AND g.name='chat' WHERE q.id=?3 AND q.state='running') FROM conversations WHERE session=?1", params![r.session, r.fence,r.request], |x| x.get(0)).map_err(|e| e.to_string())
+        self.0.query_row("SELECT fence<>?2 OR generation<>?4 OR NOT EXISTS(SELECT 1 FROM requests q JOIN grants g ON g.user=q.sender AND g.name='chat' WHERE q.id=?3 AND q.state='running')
+            OR (EXISTS(SELECT 1 FROM audit_events WHERE request_id=?3 AND kind='loop_tick') AND NOT EXISTS(SELECT 1 FROM requests q WHERE q.id=?3 AND (q.sender=(SELECT value FROM meta WHERE key='owner') OR EXISTS(SELECT 1 FROM grants g WHERE g.user=q.sender AND g.name='shell'))))
+            FROM conversations WHERE session=?1", params![r.session, r.fence,r.request,r.generation], |x| x.get(0)).map_err(|e| e.to_string())
     }
 
     /// Rebuild context only from this conversation generation. Historical text and receipts are data, never new authority (§ 4).
@@ -2125,7 +2146,7 @@ impl Journal {
                 tx.execute("UPDATE outbox SET kind=?2 WHERE id=?1",params![tx.last_insert_rowid(),format!("toast:{callback}")]).map_err(e)?;
             } else {
                 let sender = self.sender(r.request)?;
-                final_outbox(&tx, r.request, dest.1, dest.2, (dest.1 != sender).then_some(dest.3), &text, at)?;
+                final_outbox(&tx, r.request, dest.1, dest.2, (dest.1 != sender && dest.3>0).then_some(dest.3), &text, at)?;
             }
         }
         if dest.0=="telegram" && self.launch_run(r.request)?.is_some() {

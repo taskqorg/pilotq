@@ -1232,6 +1232,7 @@ dependencies = [
  "lopdf",
  "reqwest",
  "rusqlite",
+ "serde",
  "serde_json",
  "teloxide",
  "tokio",

@@ -1,6 +1,6 @@
 # PilotQ product contract
 
-PilotQ is the conversational front end for work on a shared server: it answers in Telegram or the CLI, performs authorized actions and manages substantial work through TaskQ. It has no worker scheduler, autonomous goal engine, reviewer, separate task board or general plugin marketplace. Accepted requests must survive a lost model connection without authorizing repeated external effects.
+PilotQ is the conversational front end for work on a shared server: it answers in Telegram or the CLI, performs authorized actions and manages substantial work through TaskQ. It has no worker scheduler, reviewer, separate task board or general plugin marketplace. Owner and explicit shell-grant routes may run authorized conversational loops under §2. Accepted requests must survive a lost model connection without authorizing repeated external effects.
 
 ## Rules
 
@@ -32,7 +32,7 @@ Accept text, replies, task links, inline decisions, photos and image documents w
 
 Other documents up to 20 MiB reach the turn as PDF text, ZIP listing or plain text, else the exact reason; videos and video notes as frames plus recognized speech. Larger files get one short file-limit line; other input one unsupported-input line, both in the chat's language.
 
-Recurring execution stays with the existing scheduler or TaskQ. PilotQ's local inbox schedules only conversation handling and delivery. Detailed media, retention and admission protections are in §§2, 5, 7 and 12.
+Recurring task execution stays with TaskQ or the existing scheduler. For the owner and explicit shell grantees, PilotQ also schedules route-local conversational loops and TaskQ board wakes under §2. Detailed media, retention and admission protections are in §§2, 5, 7 and 12.
 
 ## 2. Conversation, admission and authorization
 
@@ -49,6 +49,8 @@ Discussion never executes a plan. A direct request authorizes its requested work
 Keep one open draft per conversation. Each display offers Launch and Cancel; old, foreign, repeated and superseded callbacks cannot authorize new work. Edit source cards with factual outcomes and verified links. One durable launch status card projects TaskQ state; retain trusted closing findings and limitations.
 
 Persist follow-ups immediately and process them in order after the active turn. Relate them by meaning, without time windows or required reply syntax; steer a matching doing task after a fresh read. Ambiguity requires a target question. Supply the current generation's latest twelve handled inputs plus the current input, saved plan and scoped subscriptions, retaining image bytes and explicit gaps.
+
+**Owner decision, [task #220](https://github.com/taskqorg/pilotq/issues/220):** “PilotQ works like the PM Claude session: a loop timer to start/stop, task follow-up, telemetry, moving tasks, in several topics at once.” This authorizes route-local loops only for the configured owner and explicit shell grantees; it does not authorize worker scheduling, automatic answers to owner questions or production cutover. [Loop protocol](docs/conversation-contract.md#route-loops-and-board-wakes) defines durable ticks, dynamic delay, scoped board observation and recovery. CLI and Telegram share this boundary (R13, R18).
 
 Plain-language controls are primary. `/status`, `/stop` and `/new` remain available outside the model backlog. Reset fences old runs without erasing task links, subscriptions, grants or receipts. Resolve stop scope explicitly; a manager stop, task park and queue pause differ.
 

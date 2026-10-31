@@ -1102,3 +1102,7 @@ no claimable change request. The same command passes all three after the fix.
 `cargo test --locked --bin pilotq route_delivery_failure_holds_later_output` and
 `cargo test --locked service_messages_are_not_input` also pass. The retained tests
 protect route identity and service-event admission rather than requiring new model calls.
+
+## Route loops and board wakes (#220)
+
+The [owner decision and protocol](conversation-contract.md#route-loops-and-board-wakes) bind these cases (R5, R10, R13, R17). `loop_220_cli_route_exclusion` protects both directions of CLI/tick mutual exclusion. `loop_220_board_adapter_shared_cursor` protects bounded installed-CLI readback, confirmed closure and shared board cursors. `loop_220_controls_and_dynamic` protects fixed/dynamic bounds, bot suffixes, CLI/Telegram common admission, refusal and stale tick decisions. `loop_220_restart_drain_coalesce_revoke` protects durable armed/pending timers, restart/drain, queued coalescing, revocation and reset. `loop_220_running_reset_and_revocation_fence` protects immediate fencing of running ticks after reset or shell revocation. `loop_220_three_routes_boards_and_human` protects independent boards, baseline/deduplicated wakes, review options, failure/closure, drain-held events, human priority and route context/reply isolation. Adapter collection and target-platform timing require their own evidence; [the PM checklist](loop-220-live.md) covers real Codex and Telegram TEST qualification without authorizing worker installation.

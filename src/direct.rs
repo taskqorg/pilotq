@@ -43,6 +43,7 @@ pub fn tools() -> Vec<Value> {
     tools.push(crate::asana::tool());
     tools.extend(crate::commands::tools());
     tools.extend(crate::admin::tools());
+    tools.extend(crate::loops::tools());
     tools
 }
 
