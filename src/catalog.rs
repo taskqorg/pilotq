@@ -108,6 +108,7 @@ pub fn render(j: &Journal,user:i64,area:Option<&str>,language:Option<&str>,keys:
         }
     } else {
         lines.push(if ru {"PilotQ помогает обсуждать работу, читать данные и управлять задачами TaskQ.\nПишите обычным языком; /команды — быстрые действия.\nНапример: какие проекты мне доступны? · покажи задачи pilotq · составь план для pilotq"} else {"PilotQ discusses work, reads authorized resources and manages TaskQ tasks.\nAsk in plain language; /commands are deterministic controls.\nExamples: which projects can I use? · show pilotq tasks · plan work for pilotq"}.into());
+        lines.extend(visible.iter().filter(|c|c.name.starts_with('/')).map(|c|format!("{} — {}",c.name,if ru {c.ru} else {c.purpose})));
         for (area,en,ru_label) in [("conversation","Conversation and model controls","Диалог и выбор модели"),("projects","List, current, switch, status, connect and disconnect","Список, текущий проект, переключение, статус, подключение и отключение"),("tasks","Plan and manage TaskQ work","Планы и управление задачами TaskQ"),("reads","Read issues, Asana and approved commands","Чтение задач, Asana и разрешённые команды"),("people","People, grants and topics","Люди, права и темы"),("operations","Health and operator commands","Состояние и команды оператора")] {
             if visible.iter().any(|c|c.area==area) { lines.push(format!("/help {area} — {}",if ru {ru_label} else {en})); }
         }
@@ -235,16 +236,28 @@ pub fn taskq_help(bin:Option<&std::path::Path>,language:Option<&str>)->String {
 #[cfg(test)]
 mod behavior_tests {
     use super::*;
-    fn fixture()->(Journal,std::path::PathBuf,crate::keys::Keys) {
-        let path=std::env::temp_dir().join(format!("pilotq-catalog-{}-{}",std::process::id(),crate::now()));
+    fn fixture(name:&str)->(Journal,std::path::PathBuf,crate::keys::Keys) {
+        let path=std::env::temp_dir().join(format!("pilotq-catalog-{name}-{}-{}",std::process::id(),crate::now()));
         std::fs::create_dir_all(&path).unwrap();
         let mut j=Journal::open(&path.join("journal.sqlite")).unwrap();j.bootstrap(7,0).unwrap();
         let keys=crate::keys::Keys(path.join("keys.json"));(j,path,keys)
     }
+    // #189 A5 / §9: both languages keep overview command help within one rich message.
+    #[test]
+    fn rich_189_short_help_languages() {
+        let (j,path,keys)=fixture("rich-189");
+        for lang in ["en","ru"] {
+            let text=render(&j,7,None,Some(lang),&keys,"cli").unwrap();
+            assert!(text.encode_utf16().count()<=32768);
+            assert!(text.contains("/status") && text.contains("/help tasks"));
+            assert!(!text.contains("\"commands\""),"TaskQ catalog belongs only in tasks help");
+        }
+        drop(j);std::fs::remove_dir_all(path).unwrap();
+    }
     // A4 / R10: area help respects current grants, key grants and language; revoked rights disappear immediately.
     #[test]
     fn command_163_help_scope_and_language() {
-        let (mut j,path,keys)=fixture();
+        let (mut j,path,keys)=fixture("scope-163");
         j.grant(7,8,&["chat".into(),"project:demo".into()],0).unwrap();
         j.add_project(7,"demo","invented/demo","/invented/demo",0).unwrap();
         let start=render(&j,8,None,Some("ru"),&keys,"cli").unwrap();

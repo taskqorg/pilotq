@@ -156,7 +156,7 @@ fn handle(stream: std::net::TcpStream, st: &State) {
     }
     if method == "sendrichmessage" && f.rich_reject { return respond(&mut out,400,r#"{"ok":false,"error_code":400,"description":"Bad Request: rich messages not supported"}"#); }
     let mut body = body;
-    if method == "sendrichmessage" {
+    if method == "sendrichmessage" || (method == "editmessagetext" && body.get("rich_message").is_some()) {
         // Telegram shows a Markdown hard break as a plain line break (#82)
         body["text"] = json!(body["rich_message"]["markdown"].as_str().unwrap().replace("  \n", "\n"));
     }
@@ -457,6 +457,8 @@ fn f05_delivery_faults_are_bounded() {
     {
         let mut f = st.lock().unwrap();
         f.sent.clear();
+        // #189: exercise HTML/plain faults after an explicit rich rejection.
+        f.rich_reject = true;
         f.faults = VecDeque::from(["drop", "forbidden", "parse", "429", "down"]);
         for (id, chat) in [(9, 31), (10, 32)] {
             let mut u = update(id, chat, OWNER);
@@ -594,7 +596,7 @@ fn telegram_reply_delivery_fallbacks() {
         let drafts:Vec<_>=f.api.iter().filter(|a|a.0.ends_with("draft")).collect();
         assert!(!drafts.is_empty());
         for pair in drafts.windows(2) { assert!(pair[1].2.duration_since(pair[0].2)>=Duration::from_secs(1)); }
-        let rich=f.api.iter().find(|a|a.0=="sendrichmessage").unwrap();
+        let rich=f.api.iter().find(|a|a.0=="sendrichmessage" && a.1["rich_message"]["markdown"].as_str().is_some_and(|s|s.contains("**Hello**"))).unwrap();
         let markup=rich.1["rich_message"]["markdown"].as_str().expect("#72: rich layout uses Markdown so newlines remain blocks");
         assert!(markup.contains("**Hello**") && markup.contains("&lt;raw> &amp; world"),"{markup}");
         assert!(markup.contains("\n\n## Plan\n1. **Inspect** the screenshot.\n2. Preserve &lt;raw> &amp; source text.\n\n"));
@@ -1346,7 +1348,7 @@ fn u82_ask_buttons_and_labeled_links() {
     });
     wait("question", 15, || sent_has(&st, "\n⚑"));
     let q = sent(&st).into_iter().find(|s| s["text"].as_str().unwrap().contains("\n⚑")).unwrap();
-    assert_eq!(q["text"], format!("? <a href=\"{issue}\">TaskQ · pilotq#19 · Docs</a>\n✓ drafted\n⚑ pick a wording, see <a href=\"https://github.com/taskqorg/pilotq/blob/main/pilotq.md\">the spec</a>\n1. short ★\n+ quick; - less detail\n2. long\n+ detail; - slower"));
+    assert_eq!(q["rich_message"]["markdown"].as_str().unwrap().replace("  \n", "\n"), format!("? [TaskQ · pilotq#19 · Docs]({issue})\n✓ drafted\n⚑ pick a wording, see [the spec](https://github.com/taskqorg/pilotq/blob/main/pilotq.md)\n1. short ★\n\\+ quick; - less detail\n2. long\n\\+ detail; - slower"));
     assert_eq!(q["reply_markup"]["inline_keyboard"], json!([[{"text": "1. short ★", "callback_data": "answer:1"}], [{"text": "2. long", "callback_data": "answer:2"}]]));
     push(&st, press(3, -100, topic, OWNER, q["id"].as_i64().unwrap(), "answer:2"));
     wait("press answers", 15, || sent_has(&st, "Answered by") && sent_has(&st, "2. long") && sent_has(&st,"Worker is working"));

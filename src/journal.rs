@@ -263,18 +263,11 @@ pub(crate) fn chunks(text: &str) -> Vec<String> {
     out
 }
 
-/// Queues a reply as one outbox row per chunk, in order; each chunk has its own receipt, so recovery resends only what is missing.
+/// Queue complete source content; the shared delivery path persists fallback parts and receipts.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn outbox(tx: &Connection, request: i64, chat: i64, topic: Option<i64>, reply_to: Option<i64>, html: Option<&str>, text: &str, at: i64) -> Result<(), String> {
-    let parts = chunks(text);
-    // Every one-part message renders as HTML, so links are labeled and paths are code (#82).
-    // ponytail: a split reply goes as plain text
     let html = html.map(str::to_string).unwrap_or_else(|| crate::telegram::html(text));
-    let html = Some(html).filter(|_| parts.len() == 1);
-    for part in &parts {
-        tx.execute("INSERT INTO outbox(request_id, chat, topic, reply_to, html, text, next_at) VALUES (?1,?2,?3,?4,?5,?6,?7)", params![request, chat, topic, reply_to, html, part, at])
-            .map_err(|e| e.to_string())?;
-    }
+    tx.execute("INSERT INTO outbox(request_id, chat, topic, reply_to, html, text, next_at) VALUES (?1,?2,?3,?4,?5,?6,?7)", params![request,chat,topic,reply_to,html,text,at]).map_err(|e|e.to_string())?;
     Ok(())
 }
 
@@ -709,6 +702,12 @@ pub struct Delivery {
     pub edit: Option<i64>,
     pub kind: String,
     pub buttons: Vec<(String, String)>,
+    pub rich: bool,
+}
+
+/// §4: content kinds share rich/HTML/plain delivery; native feedback has no message body.
+pub(crate) fn shared_message(kind:&str)->bool {
+    !matches!(kind,"reaction"|"draft_closed") && !kind.starts_with("toast:")
 }
 
 /// What one send attempt established.
@@ -1215,15 +1214,40 @@ impl Journal {
                         WHEN kind IN ('draft_closed','plan_answered','plan_progress','plan_problem') THEN (SELECT s.sent_message FROM outbox s JOIN cards c ON c.id=o.revision WHERE ((s.request_id=c.request_id AND s.kind IN ('rich','rich_part')) OR (s.revision=c.id AND s.kind IN ('plan_answered','plan_progress','plan_problem'))) AND s.state='delivered' ORDER BY s.id DESC LIMIT 1) END, kind {heads} AND next_at<=?1 AND coalesce((SELECT value FROM meta WHERE key='telegram-cooldown:' || o.chat),0)<=?1 ORDER BY (kind='reaction') DESC,id LIMIT 1"
                 ),
                 [now],
-                |r| Ok(Delivery { id: r.get(0)?, chat: r.get(1)?, topic: r.get(2)?, reply_to: r.get(3)?, html: r.get(4)?, text: r.get(5)?, attempts: r.get(6)?, edit: r.get(7)?, kind: r.get(8)?, buttons: vec![] }),
+                |r| Ok(Delivery { id: r.get(0)?, chat: r.get(1)?, topic: r.get(2)?, reply_to: r.get(3)?, html: r.get(4)?, text: r.get(5)?, attempts: r.get(6)?, edit: r.get(7)?, kind: r.get(8)?, buttons: vec![], rich: false }),
             )
             .optional()
             .map_err(|e| e.to_string())?;
         if let Some(d) = &mut row {
-            d.buttons = self.card_buttons(d.id)?;
+            d.buttons = if d.kind=="question" {crate::telegram::options(&d.text)} else {self.card_buttons(d.id)?};
+            self.prepare_delivery(d)?;
         }
         let next = self.0.query_row(&format!("SELECT min(next_at) {heads}"), [], |r| r.get(0)).map_err(|e| e.to_string())?;
         Ok((row, next))
+    }
+
+    /// Prepare content independently of card authority; callers resolve buttons before sending.
+    fn prepare_delivery(&self,d:&mut Delivery)->Result<(),String> {
+        d.rich = d.kind=="rich";
+        if shared_message(&d.kind) && !matches!(d.kind.as_str(),"rich"|"rich_part") {
+            let key=format!("delivery:{}",d.id);
+            let stored:Option<String>=self.0.query_row("SELECT value FROM meta WHERE key=?1",[&key],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
+            let progress:Value=if let Some(stored)=stored {serde_json::from_str(&stored).map_err(|e|format!("delivery progress: {e}"))?} else {
+                let progress=json!({"mode":if d.html.is_none() && d.attempts>0 {"plain"} else if d.text.encode_utf16().count()<=32768 {"rich"} else {"html"},"parts":chunks(&d.text),"index":0,"receipts":[]});
+                self.0.execute("INSERT INTO meta(key,value) VALUES (?1,?2)",params![key,progress.to_string()]).map_err(|e|e.to_string())?;
+                progress
+            };
+            if !matches!(progress["mode"].as_str(),Some("rich"|"html"|"plain")) {return Err("invalid delivery mode".into());}
+            d.rich=progress["mode"]=="rich";
+            if !d.rich {
+                let index=progress["index"].as_u64().ok_or("invalid delivery index")? as usize;
+                d.text=progress["parts"][index].as_str().ok_or("missing delivery chunk")?.into();
+                d.html=if progress["mode"]=="plain" {None} else {Some(crate::telegram::html(&d.text))};
+                if index>0 {d.edit=None;}
+                if index+1<progress["parts"].as_array().ok_or("invalid delivery parts")?.len() {d.buttons.clear();}
+            }
+        }
+        Ok(())
     }
 
     /// Records one send attempt. Retries stop at `ATTEMPTS`; the row stays for operator recovery, never deleted.
@@ -1238,6 +1262,29 @@ impl Journal {
             }
         }
         let tx = self.0.transaction().map_err(|e| e.to_string())?;
+        let key=format!("delivery:{id}");
+        let progress:Option<String>=tx.query_row("SELECT value FROM meta WHERE key=?1",[&key],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
+        if let Some(progress)=progress {
+            let mut progress:Value=serde_json::from_str(&progress).map_err(|e|e.to_string())?;
+            if matches!(sent,Sent::RichFallback|Sent::Plain) {
+                progress["mode"]=json!(if matches!(sent,Sent::Plain) {"plain"} else {"html"});
+                tx.execute("UPDATE meta SET value=?2 WHERE key=?1",params![key,progress.to_string()]).map_err(|e|e.to_string())?;
+                tx.execute("UPDATE outbox SET next_at=?2,error='format rejected; fallback' WHERE id=?1",params![id,now]).map_err(|e|e.to_string())?;
+                if matches!(sent,Sent::RichFallback) {return tx.commit().map_err(|e|e.to_string());}
+            }
+            if let Sent::Ok(message)=sent {
+                if progress["mode"]!="rich" {
+                    let index=progress["index"].as_u64().ok_or("invalid delivery index")? as usize;
+                    progress["receipts"].as_array_mut().ok_or("invalid delivery receipts")?.push(json!(message));
+                    progress["index"]=json!(index+1);
+                    tx.execute("UPDATE meta SET value=?2 WHERE key=?1",params![key,progress.to_string()]).map_err(|e|e.to_string())?;
+                    if index+1<progress["parts"].as_array().ok_or("invalid delivery parts")?.len() {
+                        tx.execute("UPDATE outbox SET next_at=?2,attempts=0,possible_duplicate=0 WHERE id=?1",params![id,now]).map_err(|e|e.to_string())?;
+                        return tx.commit().map_err(|e|e.to_string());
+                    }
+                }
+            }
+        }
         if matches!(sent, Sent::RichFallback | Sent::Receipt) {
             if matches!(sent, Sent::RichFallback) {
                 tx.execute("UPDATE outbox SET state='pending' WHERE kind='rich_part' AND state='standby' AND request_id=(SELECT request_id FROM outbox WHERE id=?1)", [id]).map_err(|e|e.to_string())?;
@@ -3737,6 +3784,77 @@ mod tests {
         j.revoke(7,7,&["chat".into()],36).unwrap();
         assert!(j.previews().unwrap().is_empty());
         drop(j); let _=std::fs::remove_dir_all(p);
+    }
+
+    // #189 A4 / §4: every outbox content kind enters shared rich delivery, including
+    // SQL-created notices and future kinds; native signals and stored HTML fallback are explicit.
+    #[test]
+    fn rich_189_all_outbox_kinds_share_delivery() {
+        let (mut j,p)=journal("rich-189-kinds");
+        j.admit(&[(1,msg(7,7,1))],0).unwrap();
+        j.0.execute("DELETE FROM outbox",[]).unwrap();
+        for kind in ["reply","receipt","queued","status","question","final","question_answered",
+            "choice_answered","plan_answered","plan_progress","plan_problem","onboarding",
+            "release_preview","release_result","rich","rich_part","reaction","draft_closed",
+            "toast:invented","future_content_kind"] {
+            outbox(&j.0,1,7,Some(4),Some(9),None,"**Example**",1).unwrap();
+            let id=j.0.last_insert_rowid();
+            let mut d=Delivery{id,chat:7,topic:Some(4),reply_to:Some(9),html:Some(crate::telegram::html("**Example**")),text:"**Example**".into(),attempts:0,edit:None,kind:kind.into(),buttons:vec![],rich:false};
+            j.prepare_delivery(&mut d).unwrap();
+            assert_eq!(d.rich,!matches!(kind,"rich_part"|"reaction"|"draft_closed"|"toast:invented"),"{kind} bypassed rich delivery");
+        }
+        drop(j);let _=std::fs::remove_dir_all(p);
+    }
+
+    // #189 / R5 / §4: fallback persists each receipt and never replays a received chunk on restart.
+    #[test]
+    fn rich_189_notice_fallback_restart_and_ambiguity() {
+        let (mut j,p)=journal("rich-189-fallback");
+        j.admit(&[(1,msg(7,7,1))],0).unwrap();
+        j.0.execute("DELETE FROM outbox",[]).unwrap();
+        let text="😀".repeat(3000);
+        outbox(&j.0,1,7,Some(4),Some(9),None,&text,1).unwrap();
+        let d=j.due(1).unwrap().0.unwrap();assert!(d.rich);assert_eq!(d.text,text);
+        j.record(d.id,&Sent::RichFallback,1).unwrap();
+        let first=j.due(1).unwrap().0.unwrap();assert!(!first.rich);assert!(first.html.is_some());
+        assert!(first.text.encode_utf16().count()<=4096);
+        j.record(first.id,&Sent::Ok(101),1).unwrap();
+        drop(j);
+        let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
+        let second=j.due(2).unwrap().0.unwrap();assert_eq!(first.text.clone()+&second.text,text);
+        assert_eq!((second.chat,second.topic,second.reply_to),(7,Some(4),Some(9)));
+        j.record(second.id,&Sent::Plain,2).unwrap();
+        assert!(j.due(2).unwrap().0.unwrap().html.is_none());
+        j.record(second.id,&Sent::Ok(102),2).unwrap();
+        assert!(j.due(2).unwrap().0.is_none());
+        // The limit is UTF-16, not bytes or Unicode scalar count. Oversized notices skip rich.
+        let oversized="😀".repeat(16385);
+        outbox(&j.0,1,7,None,None,None,&oversized,3).unwrap();
+        let mut received=String::new();
+        while let Some(d)=j.due(3).unwrap().0 {
+            assert!(!d.rich && d.html.is_some());
+            assert!(d.text.encode_utf16().count()<=4096);
+            received+=&d.text;
+            j.record(d.id,&Sent::Ok(200),3).unwrap();
+        }
+        assert_eq!(received,oversized);
+        outbox(&j.0,1,7,None,None,None,"uncertain",3).unwrap();
+        let d=j.due(3).unwrap().0.unwrap();
+        j.record(d.id,&Sent::Retry{after:1,ambiguous:true,error:"lost".into()},3).unwrap();
+        j.record(d.id,&Sent::RichFallback,4).unwrap();
+        assert!(j.due(5).unwrap().0.unwrap().rich,"ambiguous rich send cannot switch methods");
+        drop(j);let _=std::fs::remove_dir_all(p);
+    }
+
+    // #189 / §4: ordinary notices must retain rich content instead of splitting plain.
+    #[test]
+    fn rich_189_builtin_keeps_one_message() {
+        let (mut j,p)=journal("rich-189");
+        j.admit(&[(1,msg(7,7,1))],0).unwrap();
+        let text="😀".repeat(3000);
+        outbox(&j.0,1,7,None,None,None,&text,1).unwrap();
+        assert_eq!(count(&j,"SELECT count(*) FROM outbox WHERE request_id=1 AND text LIKE '😀%'"),1);
+        drop(j);let _=std::fs::remove_dir_all(p);
     }
 
     // L11: a long answer with multibyte text is stored as ordered chunks within Telegram's limit, each with its own receipt; a

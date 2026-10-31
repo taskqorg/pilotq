@@ -483,7 +483,9 @@ async fn raw(bot: &Bot, j: &Shared, method: &str, body: Value) -> Result<Value, 
         }
         return Err(Sent::Retry {after,ambiguous:false,error:"Telegram retry-after".into()});
     }
-    if matches!(code, 400 | 404) && method == "sendRichMessage" { return Err(Sent::RichFallback); }
+    if error.contains("message is not modified") { return Ok(json!({"message_id":body["message_id"]})); }
+    if error.contains("message to edit not found") { return Err(Sent::RichFallback); }
+    if matches!(code, 400 | 404) && (method == "sendRichMessage" || body.get("rich_message").is_some()) { return Err(Sent::RichFallback); }
     if code >= 500 || code == 0 { return Err(Sent::Retry {after:1,ambiguous:true,error:"Bot API temporarily unavailable".into()}); }
     Err(Sent::Failed("Bot API rejected request".into()))
 }
@@ -512,12 +514,19 @@ async fn send(bot: &Bot, j: &Shared, d: &Delivery) -> Sent {
             Err(_) => Sent::Receipt,
         };
     }
-    if d.kind == "rich" {
+    if d.rich {
         let mut body = json!({"chat_id":d.chat,"rich_message":{"markdown":markdown(&d.text)},"link_preview_options":{"is_disabled":true}});
-        if !d.buttons.is_empty() { body["reply_markup"] = json!({"inline_keyboard":d.buttons.iter().map(|(data,label)|vec![json!({"text":label,"callback_data":data})]).collect::<Vec<_>>()}); }
+        body["reply_markup"] = json!({"inline_keyboard":[]});
+        let buttons=&d.buttons;
+        if !buttons.is_empty() { body["reply_markup"] = json!({"inline_keyboard":buttons.iter().map(|(data,label)|vec![json!({"text":label,"callback_data":data})]).collect::<Vec<_>>()}); }
         if let Some(t) = d.topic { body["message_thread_id"] = json!(t); }
         if let Some(m) = d.reply_to { body["reply_parameters"] = json!({"message_id":m,"allow_sending_without_reply":true}); }
-        return match raw(bot, j, "sendRichMessage", body).await {
+        let method=if let Some(m)=d.edit {
+            body.as_object_mut().unwrap().remove("message_thread_id");
+            body.as_object_mut().unwrap().remove("reply_parameters");
+            body["message_id"]=json!(m); "editMessageText"
+        } else {"sendRichMessage"};
+        return match raw(bot, j, method, body).await {
             Ok(v) => v["message_id"].as_i64().map(Sent::Ok).unwrap_or(Sent::Retry {after:backoff,ambiguous:true,error:"rich message receipt missing".into()}),
             Err(e) => e,
         };
@@ -540,7 +549,7 @@ async fn send(bot: &Bot, j: &Shared, d: &Delivery) -> Sent {
     }
     let mut r = bot.send_message(ChatId(d.chat), d.html.as_deref().unwrap_or(&d.text)).link_preview_options(no_preview());
     if d.kind == "question" || !d.buttons.is_empty() {
-        let rows: Vec<_> = (if d.kind == "question" {options(&d.text)} else {d.buttons.clone()}).into_iter().map(|(data, label)| vec![InlineKeyboardButton::callback(label, data)]).collect();
+        let rows: Vec<_> = d.buttons.clone().into_iter().map(|(data, label)| vec![InlineKeyboardButton::callback(label, data)]).collect();
         if !rows.is_empty() { r = r.reply_markup(InlineKeyboardMarkup::new(rows)); }
     }
     if d.html.is_some() {

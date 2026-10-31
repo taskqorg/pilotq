@@ -66,7 +66,7 @@ Reconcile TaskQ mutations by the same operation ID and revision. Retry direct mu
 
 The proposed request states are queued, running, waiting for a person, delegated, answered, failed, cancelled and uncertain. Commit final replies and questions to an ordered outbox with immutable destinations. Retry delivery without rerunning work; ambiguous Telegram sends can visibly duplicate and must stay explicit.
 
-Normal accepted text gets 👀 within five seconds, text on reaction failure and one queue notice after thirty seconds. Keep the retention notice separate and omit internal request IDs. Private drafts are ephemeral; final rich/HTML/plain fallback, UTF-16 limits, individual receipts and persisted per-chat cooldowns follow the linked delivery protocol.
+Normal accepted text gets 👀 within five seconds, text on reaction failure and one queue notice after thirty seconds. Keep the retention notice separate and omit internal request IDs. Private drafts are ephemeral; shared rich/HTML/plain fallback for every user-visible message, UTF-16 limits, individual receipts and persisted per-chat cooldowns follow the linked delivery protocol.
 
 ## 5. TaskQ, tools and project administration
 
@@ -151,11 +151,11 @@ deterministic controls; plain requests select authorized manager tools. Operator
 labelled and never imply chat authority. Tool names use `area_verb`; existing names remain
 compatible.
 
-`/help` and `pilotq help` show a short introduction, how to ask, three examples and one line per
+`/help` and `pilotq help` show a short command list, introduction, how to ask, three examples and one line per
 accessible area. `/help AREA` and `pilotq help AREA` show purposes, examples and grants for that
 area. Hide capabilities outside current grants; end with one line explaining how to request access,
-then the TaskQ PM catalog read live through its machine-readable help. Missing, old or unreadable
-TaskQ help produces one availability line, never a copied catalog. Help follows the caller's
+with the TaskQ PM catalog read live only for `/help tasks` or `pilotq help tasks` through its
+machine-readable help. Missing, old or unreadable TaskQ help produces one availability line, never a copied catalog. Help follows the caller's
 language (English and Russian deterministic text); external TaskQ text remains source text.
 
 Projects cover accessible list, current selection, switch, fresh status, connect

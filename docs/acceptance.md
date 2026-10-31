@@ -1024,3 +1024,34 @@ On the base commit `telegram_documents_are_read_in_their_turn` failed at its fir
 | Command163-04 | Administrator disconnects an explicitly named project; repeats the call, changes arguments, or supplies only quoted wording | Atomic registration/default removal and original receipt; changed arguments, quotes, missing grants and stale fences refuse. Files, board, grants and task history remain; legacy startup cannot re-enroll the removed name. Reconnect uses normal verified registration. |
 | Command163-05 | Stub changes its machine-readable TaskQ help between calls; old CLI, missing CLI, invalid JSON or output overflow | Latest JSON appears without a PilotQ change; unavailable cases give one short line. The live catalog is external source JSON, never a vendored command list. |
 | Command163-06 | PM runs `/help`, `/help projects`, then “which projects can I use” with an authorized test-bot caller | Read back all three Telegram reply texts, caller language and exact PilotQ source/binary identity. Confirm the natural-language answer uses `project_list` and actual accessible registrations. A5 remains unverified until this PM run. |
+
+### Rich delivery and concise help (#189)
+
+Under §4 and §9, all user-visible content kinds use shared rich delivery, including builtins,
+notices, errors and final answers. Native reactions, callback toasts and button-only edits keep
+native methods. Content up to 32768 UTF-16 units is one rich message; explicit rejection activates
+persisted HTML chunks of at most 4096 units, with plain fallback on entity errors. Each received
+chunk survives restart without replay; ambiguous rich sends retain their method and destination.
+The outbox-kind regression includes native exceptions and a future content kind to protect the
+default path. English and Russian overview help remains one short command list; TaskQ's live
+catalog is requested only through `/help tasks` or `pilotq help tasks`.
+
+PM checklist for A6, after the merged release on pds18 (§9; no worker installation):
+
+1. Record the installed release version and source SHA. In an authorized DM, send `/help`, first
+   with English and then Russian configured for the person. Expect one rich message with a short
+   command list and `/help tasks`, without the inline TaskQ catalog. Retain screenshots and the
+   matching successful `sendRichMessage` delivery evidence.
+2. Send `/help tasks`. Expect task help and the fresh machine-readable TaskQ catalog as rich
+   content when within 32768 units; oversized content must use ordered HTML chunks. Record the
+   actual size and method. An unavailable catalog must produce its availability line honestly.
+3. Send `/help invented`. Expect a short localized unknown-area error notice through
+   `sendRichMessage`, with no model invocation or task creation.
+4. Ask: `Write an answer containing 5000 to 6000 characters about planning work. Do not use tools
+   or create tasks.` Expect one final rich message when the observed answer is between 4097 and
+   32768 UTF-16 units. If the model returns less, record that the long-answer case is unqualified
+   and request the required length again. Retain actual length, screenshot and delivery receipt.
+5. Repeat the control and error checks in an authorized topic. Verify the same topic and original
+   reply destination, and confirm existing cards retain edits and remove used buttons.
+
+Local adapter/model tests do not qualify Telegram rendering or replace this PM evidence (R19).
