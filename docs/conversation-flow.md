@@ -2,6 +2,14 @@
 
 Presentation detail of the [Conversation contract](conversation-contract.md#conversation-contract), owner task #165. This table governs both front ends (R13); Telegram message edits and buttons project the same durable receipts. It changes presentation, never grants or TaskQ authority.
 
+## Reply shape
+
+Normal replies lead with one short essence line in the person's language, followed by at most three short bullets. When something waits, end with one “Next:” line (“Далее:” in Russian) naming who acts and what they do. Keep verified findings and material limitations; do not append unrelated release or DEV health information. Read and show release or health observations only when the person's question concerns release, deployment or health.
+
+Fixed controls, plan states, cancellation and failure lines follow the person's language, including controls sent after a Russian message. Task links use `pilotq#205 — short title` (with the actual repository, number and verified title); omit an unknown title. Held tasks name the actor they await from fresh TaskQ evidence; when evidence is missing, say the waiting actor is unknown rather than inventing a reason. Separate tasks in plan and status cards with a blank line. Plans and complete source question cards retain the stage table's required content and controls.
+
+A failed request produces one plain localized failure line, with no commands, paths, tool output or suggestion to plan its remainder. Preserve diagnostics and findings in audit. After restart, deliver safe localized completed read findings, including the available project names; summarize diagnostic-only findings and unconfirmed actions without commands or paths. Native findings and tool targets stay in audit. A recorded finding does not prove an external effect succeeded. Discard unlaunched draft revisions made by the failed turn, preserving prior successful drafts and authorized launch receipts. `/status` names a model failure reason in plain words from a bounded category; raw diagnostics remain in audit.
+
 | Stage / trigger | Text in the person's language | Buttons | Press effect | Replacement |
 |---|---|---|---|---|
 | Accepted input | 👀 reaction; existing bounded receipt fallback | None | None | Final answer; one queue notice after 30 seconds |

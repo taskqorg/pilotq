@@ -651,7 +651,7 @@ mod tests {
         assert!(first["state"].as_str().unwrap().ends_with("(first observed)"));
         assert_eq!(dev_observe(&f.j,"sample",&c,Some(&f.b),&h,end).unwrap()["state"],first["state"]);
     }
-    // #190 A3 / R8: slow board reads cannot consume the subsequent delivery budget.
+    // #190 A3 / R8, #212 A5: explicit release-status reads retain a separate delivery budget.
     #[test]
     fn slow_task_status_190() {
         let f=fixture("slow190");
@@ -663,7 +663,7 @@ mod tests {
         std::fs::write(&script,format!("#!/bin/sh\nprintf '%s' '{}'\n",report)).unwrap();
         let mut c=f.c.clone();c["delivery_status"]=json!([script,"{sha}"]);
         configure(&f.j.lock().unwrap(),7,"sample",c).unwrap();
-        let (ok,text)=crate::taskq::call(&f.tq,&f.j,&f.r,"task_status",&json!({"project":"sample","task":"42"}));
+        let (ok,text)=crate::taskq::call(&f.tq,&f.j,&f.r,"task_status",&json!({"project":"sample","task":"42","include_release":true}));
         assert!(ok,"{text}");
         assert!(text.contains("on DEV"),"slow board reads lost DEV evidence: {text}");
         assert!(!text.contains("deadline exhausted"),"board reads consumed observation budget: {text}");

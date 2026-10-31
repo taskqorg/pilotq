@@ -115,7 +115,7 @@ Block a project's first launch until its current root/board readiness passes. Pr
 
 Registered DEV/LIVE release is an exception to §2 deployment delegation and §5 direct writes. Require protected owner, project scope and separate `release:NAME`; only a bound Release button executes. Protected configuration binds exact board/root, HTTPS health, refs, absolute executables, exact arguments and minimum versions. No shell or model command exists.
 
-DEV visibility names one highest proved task delivery stage: closed from board state, merged from the trusted merge commit, on DEV from the deploy job, DEV smoke from the smoke jobs of the first main pipeline containing it, or on LIVE from LIVE branch ancestry.
+When asked about release, deployment or health, DEV visibility names one highest proved task delivery stage: closed from board state, merged from the trusted merge commit, on DEV from the deploy job, DEV smoke from the smoke jobs of the first main pipeline containing it, or on LIVE from LIVE branch ancestry.
 
 Read jobs through the protected project release adapter; name source failures in plain text without raw URLs or adapter
 stderr. Drop reqwest URLs; retain adapter diagnostics only in audit after keys.scrub. Worker notes never override pipeline facts; only a successful containing main pipeline proves CI passed. Report failed smoke job links and first failing checks, plus whether a later containing pipeline passed. Keep DEV health timing separate.
@@ -183,9 +183,9 @@ deterministic controls; plain requests select authorized manager tools. Operator
 labelled and never imply chat authority. Tool names use `area_verb`; existing names remain
 compatible.
 
-`/help` and `pilotq help` show a short command list, introduction, how to ask, three examples and one line per
+`/help` and `pilotq help` show short grouped commands, an introduction, how to ask, three examples on separate lines and one line per
 accessible area. `/help AREA` and `pilotq help AREA` show purposes, examples and grants for that
-area. Hide capabilities outside current grants; end with one line explaining how to request access,
+area. Hide operator-only controls from ordinary chat callers and unavailable commands from every help view. Hide capabilities outside current grants; end with one line explaining how to request access,
 with the TaskQ PM catalog read live only for `/help tasks` or `pilotq help tasks` through its
 machine-readable help. Missing, old or unreadable TaskQ help produces one availability line, never a copied catalog. Help follows the caller's
 language (English and Russian deterministic text); external TaskQ text remains source text.

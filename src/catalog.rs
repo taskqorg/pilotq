@@ -6,7 +6,7 @@ pub const CATALOG: &[Capability] = &[
     Capability { name: "/profile", area: "people", purpose: "Inspect own remembered facts in DM; set KEY VALUE or forget KEY; audit history remains", example: "/profile set name Alex", grant: "chat", ru: "Посмотреть, исправить или забыть свои предпочтения в личном чате" },
     Capability { name: "/access", area: "people", purpose: "Inspect own current grants in DM; ask an administrator for changes or revocation", example: "/access", grant: "chat", ru: "Посмотреть свои права в личном чате" },
     Capability { name: "/onboard", area: "projects", purpose: "Recheck registered project readiness; protected owner may override only PilotQ's gate", example: "/onboard pilotq", grant: "owner", ru: "Проверить готовность зарегистрированного проекта" },
-    Capability { name: "/release", area: "operations", purpose: "Preview a registered project LIVE release; a separate Release button is required", example: "/release pilotq", grant: "owner+project+release", ru: "Предпросмотр выпуска проекта; требуется отдельная кнопка Release" },
+    Capability { name: "/release", area: "operations", purpose: "Preview a registered project LIVE release; a separate Release button is required", example: "/release pilotq", grant: "owner+project+release", ru: "Предпросмотр выпуска проекта; требуется отдельная кнопка «Выпустить»" },
     Capability { name: "project_release_preview", area: "operations", purpose: "Preview a registered project LIVE release for the protected owner with a separate release grant. Never executes a release. A separate Release button is mandatory; do not repeat the preview card in final prose.", example: "preview release for pilotq", grant: "owner+project+release", ru: "Подготовить предпросмотр выпуска проекта для владельца" },
     Capability { name: "task_plan", area: "tasks", purpose: "Revise this conversation's one open plan draft with its complete ticket list (1-3 tickets). Files nothing. A new draft starts only after the open one is launched or cancelled.", example: "plan reply improvements for pilotq", grant: "project+taskq", ru: "Обновить обсуждаемый план без создания задач" },
     Capability { name: "task_run_plan", area: "tasks", purpose: "Launch the current draft: PilotQ files its tickets held, reads them back and starts them after this turn, then replies with each task's board state. Only when the person, in a later message, asks to run it.", example: "run the plan", grant: "project+taskq", ru: "Запустить текущий согласованный план" },
@@ -101,7 +101,12 @@ pub fn visible(c:&Capability,j:&Journal,user:i64,keys:&crate::keys::Keys,route:&
 pub fn render(j: &Journal,user:i64,area:Option<&str>,language:Option<&str>,keys:&crate::keys::Keys,route:&str) -> Result<String,String> {
     let ru=language.unwrap_or("en").starts_with("ru");
     let mut visible=Vec::new();
-    for c in CATALOG { if self::visible(c,j,user,keys,route)? { visible.push(c); } }
+    let owner=j.owner()?==Some(user);
+    for c in CATALOG {
+        if matches!(c.name,"/skills"|"/skill") {continue;}
+        if !owner && ((route!="cli" && c.name.starts_with("pilotq ")) || matches!(c.name,"/doctor"|"/restart")) {continue;}
+        if self::visible(c,j,user,keys,route)? { visible.push(c); }
+    }
     let mut lines=vec![];
     if let Some(area)=area {
         if !CATALOG.iter().any(|c|c.area==area) { return Err(if ru {"Неизвестный раздел; используйте /help."} else {"Unknown area; use /help."}.into()); }
@@ -109,8 +114,11 @@ pub fn render(j: &Journal,user:i64,area:Option<&str>,language:Option<&str>,keys:
             lines.push(format!("{} — {} [{}]\n  {}",c.name,if ru {c.ru} else {c.purpose},c.grant,c.example));
         }
     } else {
-        lines.push(if ru {"PilotQ помогает обсуждать работу, читать данные и управлять задачами TaskQ.\nПишите обычным языком; /команды — быстрые действия.\nНапример: какие проекты мне доступны? · покажи задачи pilotq · составь план для pilotq"} else {"PilotQ discusses work, reads authorized resources and manages TaskQ tasks.\nAsk in plain language; /commands are deterministic controls.\nExamples: which projects can I use? · show pilotq tasks · plan work for pilotq"}.into());
-        lines.extend(visible.iter().filter(|c|c.name.starts_with('/')).map(|c|format!("{} — {}",c.name,if ru {c.ru} else {c.purpose})));
+        lines.push(if ru {"PilotQ помогает обсуждать работу, читать данные и управлять задачами TaskQ.\nПишите обычным языком; /команды — быстрые действия.\nНапример:\nКакие проекты мне доступны?\nПокажи задачи pilotq\nСоставь план для pilotq"} else {"PilotQ discusses work, reads authorized resources and manages TaskQ tasks.\nAsk in plain language; /commands are deterministic controls.\nExamples:\nWhich projects can I use?\nShow pilotq tasks\nPlan work for pilotq"}.into());
+        for (area,en,ru_label) in [("conversation","Conversation","Диалог"),("people","Own data","Личные данные"),("projects","Projects","Проекты"),("operations","Operations","Управление")] {
+            let commands=visible.iter().filter(|c|c.area==area && c.name.starts_with('/')).map(|c|c.name).collect::<Vec<_>>();
+            if !commands.is_empty() {lines.push(format!("{}: {}",if ru {ru_label} else {en},commands.join(" · ")));}
+        }
         for (area,en,ru_label) in [("conversation","Conversation and model controls","Диалог и выбор модели"),("projects","List, current, switch, status, connect and disconnect","Список, текущий проект, переключение, статус, подключение и отключение"),("tasks","Plan and manage TaskQ work","Планы и управление задачами TaskQ"),("reads","Read issues, Asana and approved commands","Чтение задач, Asana и разрешённые команды"),("people","People, grants and topics","Люди, права и темы"),("operations","Health and operator commands","Состояние и команды оператора")] {
             if visible.iter().any(|c|c.area==area) { lines.push(format!("/help {area} — {}",if ru {ru_label} else {en})); }
         }
@@ -243,6 +251,25 @@ mod behavior_tests {
         std::fs::create_dir_all(&path).unwrap();
         let mut j=Journal::open(&path.join("journal.sqlite")).unwrap();j.bootstrap(7,0).unwrap();
         let keys=crate::keys::Keys(path.join("keys.json"));(j,path,keys)
+    }
+    // #212 A2/A7: ordinary chat help hides operator and unavailable controls in both languages.
+    #[test]
+    fn replies_212_help() {
+        let (mut j,path,keys)=fixture("replies-212");
+        j.grant(7,8,&["chat".into()],0).unwrap();
+        for lang in ["en","ru"] {
+            for area in [None,Some("conversation"),Some("operations")] {
+                let text=render(&j,8,area,Some(lang),&keys,"telegram").unwrap();
+                if area.is_none() {
+                    assert!(text.starts_with(if lang=="ru" {"PilotQ помогает"} else {"PilotQ discusses"}),"{text}");
+                    assert_eq!(text.lines().filter(|l|l.starts_with("Examples:") || l.starts_with("Например:")).count(),1);
+                }
+                for hidden in ["/doctor","/restart","/skills","/skill ","pilotq doctor","pilotq help"] {
+                    assert!(!text.contains(hidden),"{text}");
+                }
+            }
+        }
+        drop(j);std::fs::remove_dir_all(path).unwrap();
     }
     // #189 A5 / §9: both languages keep overview command help within one rich message.
     #[test]

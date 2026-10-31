@@ -229,6 +229,15 @@ fn text_choice(tx: &Connection, i: &Input, sender: i64, session: &str) -> Result
     Ok(choice.map(|choice|Input{files:vec![],callback:None,image:None,voice:None,media_group:None,quote:None,language:i.language.clone(),chat:i.chat,topic:i.topic,sender:Some(sender),name:i.name.clone(),message,kind:"action",text:Some(format!("choice:{card}:{choice}")),reply_to:Some(message)}))
 }
 
+fn discard_failed_drafts(tx:&Connection,request:i64,at:i64)->Result<(),String> {
+    let e=|e:rusqlite::Error|e.to_string();
+    // #212 A3: keep failed proposals in audit, never as an open draft. Authorized runs retain their receipts.
+    tx.execute("INSERT INTO audit_events(request_id,run_id,at,kind,result) SELECT ?1,NULL,?2,'failed_draft',tickets FROM plans WHERE request_id=?1 AND NOT EXISTS(SELECT 1 FROM plan_runs WHERE plan_id=plans.id)",params![request,at]).map_err(e)?;
+    tx.execute("DELETE FROM cards WHERE request_id=?1 AND plan_id IN (SELECT id FROM plans WHERE request_id=?1 AND NOT EXISTS(SELECT 1 FROM plan_runs WHERE plan_id=plans.id))",[request]).map_err(e)?;
+    tx.execute("DELETE FROM plans WHERE request_id=?1 AND NOT EXISTS(SELECT 1 FROM plan_runs WHERE plan_id=plans.id)",[request]).map_err(e)?;
+    Ok(())
+}
+
 /// Telegram's message limit in UTF-16 code units.
 const CHUNK: usize = 4096;
 /// Section 7 backlog: pending requests per route and in total; excess gets a recorded busy outcome.
@@ -502,15 +511,26 @@ fn answer_control(tx: &Connection, session: &str, cmd: &str, request: i64, chat:
             }
             "/status" => {
                 let (running, queued) = (ids(tx, session, "running")?, ids(tx, session, "queued")?);
+                let language:Option<String>=tx.query_row("SELECT language FROM requests WHERE id=?1",[request],|r|r.get(0)).map_err(e)?;
+                let ru=language.as_deref().unwrap_or("en").starts_with("ru");
                 let own = if running.is_empty() && queued.is_empty() {
-                    "Nothing is running or queued in this conversation.".into()
+                    if ru {"В этом диалоге нет активных запросов и очереди."} else {"Nothing is running or queued in this conversation."}.into()
                 } else {
-                    format!("Running: {}. Queued: {}.", running.len(), queued.len())
+                    if ru {format!("В работе: {}. В очереди: {}.",running.len(),queued.len())} else {format!("Running: {}. Queued: {}.", running.len(), queued.len())}
                 };
                 {
                     let observation:Option<(String,i64)>=tx.query_row("SELECT a.result,a.at FROM audit_events a JOIN requests q ON q.id=a.request_id JOIN runs r ON r.id=a.run_id JOIN conversations c ON c.session=q.session WHERE q.session=?1 AND a.kind='runtime_status' AND r.generation=c.generation AND CAST(a.item AS INTEGER)=coalesce((SELECT value FROM meta WHERE key='model-epoch:' || q.session),0) ORDER BY a.id DESC LIMIT 1",[session],|x|Ok((x.get(0)?,x.get(1)?))).optional().map_err(e)?;
-                    let measured=observation.map(|(text,seen)|format!("{text} (observed {} s ago)",at.saturating_sub(seen).max(0))).unwrap_or_else(||"Model/context/quota: unavailable.".into());
-                    format!("{}\n{own}\n{measured}", service_line(tx, at)?)
+                    let measured=observation.map(|(text,seen)| {
+                        let text=if ru {crate::footer::russian_units(&text).replace("requested","запрошена").replace("model unavailable","модель недоступна").replace("context","контекст").replace("quota","квота").replace("unavailable","недоступно").replace("stale","устарело").replace("left","осталось")} else {text};
+                        if ru {format!("{text} (наблюдалось {} с назад)",at.saturating_sub(seen).max(0))} else {format!("{text} (observed {} s ago)",at.saturating_sub(seen).max(0))}
+                    }).unwrap_or_else(||if ru {"Модель/контекст/квота: нет данных."} else {"Model/context/quota: unavailable."}.into());
+                    let model_failed:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM health WHERE source='model' AND state='failed')",[],|x|x.get(0)).map_err(e)?;
+                    let next=if model_failed {
+                        if ru {"\nДалее: владелец установки проверяет Codex; вы повторяете запрос после восстановления."} else {"\nNext: the installation owner checks Codex; you retry after recovery."}
+                    } else if !running.is_empty() || !queued.is_empty() {
+                        if ru {"\nДалее: PilotQ завершает активные запросы и обрабатывает очередь."} else {"\nNext: PilotQ finishes active requests and handles the queue."}
+                    } else {""};
+                    format!("{}\n{own}\n{measured}{next}", service_line(tx, at,language.as_deref())?)
                 }
             }
             _ => {
@@ -525,7 +545,8 @@ fn answer_control(tx: &Connection, session: &str, cmd: &str, request: i64, chat:
 }
 
 /// §9 / #81 S1: the version and each non-ok health source with the age of its last observation; never observed reads unknown.
-fn service_line(tx: &Connection, at: i64) -> Result<String, String> {
+fn service_line(tx: &Connection, at: i64, language: Option<&str>) -> Result<String, String> {
+    let ru=language.unwrap_or("en").starts_with("ru");
     let age = |s: i64| match s.max(0) {
         s if s < 60 => format!("{s} s"),
         s if s < 3600 => format!("{} min", s / 60),
@@ -533,16 +554,22 @@ fn service_line(tx: &Connection, at: i64) -> Result<String, String> {
     };
     let mut parts = vec![format!("PilotQ {}", env!("CARGO_PKG_VERSION"))];
     for source in SOURCES {
-        let row: Option<(String, i64)> =
-            tx.query_row("SELECT state, at FROM health WHERE source=?1", [source], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(|e| e.to_string())?;
+        let row: Option<(String, i64, Option<String>)> =
+            tx.query_row("SELECT state, at, reason FROM health WHERE source=?1", [source], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional().map_err(|e| e.to_string())?;
         match row {
-            Some((state, _)) if state == "ok" => {}
-            Some((state, seen)) => parts.push(format!("{source} {state} {} ago", age(at - seen))),
-            None => parts.push(format!("{source} unknown")),
+            Some((state, _, _)) if state == "ok" => {}
+            Some((state, seen, reason)) => {
+                let name=if ru {match source {"poll"=>"приём","storage"=>"хранилище","model"=>"модель","delivery"=>"доставка",_=>"TaskQ"}} else {source};
+                let status=if ru {match state.as_str() {"failed"=>"сбой","conflict"=>"конфликт",_=>"неизвестно"}} else {&state};
+                let reason=if source=="model" {format!(": {}",crate::conversation::model_failure(reason.as_deref(),language))} else {String::new()};
+                let elapsed=age(at-seen);
+                parts.push(if ru {format!("{name}: {status}{reason} · {} назад",elapsed.replace("min","мин").replace(" h"," ч").replace(" s"," с"))} else {format!("{name} {status} {} ago{reason}",elapsed)});
+            },
+            None => parts.push(if ru {format!("{}: нет данных",match source {"poll"=>"приём","storage"=>"хранилище","model"=>"модель","delivery"=>"доставка",_=>"TaskQ"})} else {format!("{source} unknown")}),
         }
     }
     if parts.len() == 1 {
-        parts.push("all sources ok".into());
+        parts.push(if ru {"все источники доступны"} else {"all sources ok"}.into());
     }
     Ok(parts.join(" · "))
 }
@@ -1156,7 +1183,7 @@ impl Journal {
                         .map_err(|e| e.to_string())?
                         .unwrap_or(false);
                     let s = session(i.chat, i.topic, sender, shared);
-                    let language = chat_language(&tx, &s, i.text.as_deref(), i.language.as_deref())?;
+                    let language = chat_language(&tx, &s, if i.kind=="action" {None} else {i.text.as_deref()}, i.language.as_deref())?;
                     let cmd = if i.kind == "text" { control(i.text.as_deref()) } else { None };
                     // controls bypass the backlog: they are answered here, never queued (§ 12)
                     let busy = cmd.is_none() && matches!(i.kind, "text" | "image" | "document" | "voice" | "action") && {
@@ -2015,6 +2042,11 @@ impl Journal {
         self.0.execute("INSERT INTO audit_events(request_id,run_id,at,kind,result) VALUES (?1,?2,?3,'kept_finding',?4)",params![r.request,r.id,at,text]).map(drop).map_err(|e|e.to_string())
     }
 
+    /// A code-owned project-list projection; classify atomically with the durable finding (R5/R17).
+    pub fn keep_project_finding(&self, r: &Run, text: &str, at: i64) -> Result<(),String> {
+        self.0.execute("INSERT INTO audit_events(request_id,run_id,at,kind,result,item) VALUES (?1,?2,?3,'kept_finding',?4,'project_list')",params![r.request,r.id,at,text]).map(drop).map_err(|e|e.to_string())
+    }
+
     /// Record every typed call before dispatch (R17); #190 removes the call-count cap.
     pub fn spend(&self, r: &Run, tool: &str, at: i64) -> Result<(), String> {
         self.0.execute("INSERT INTO audit_events(request_id,run_id,at,kind,target) VALUES (?1,?2,?3,'call',?4)",
@@ -2042,16 +2074,8 @@ impl Journal {
             Outcome::Failed(x) => ("failed", brief(language.as_deref(), if x == "document parsing timed out" { "document_timeout" } else if x.starts_with("voice") { if x.contains("20 MiB") || x.contains("5 minutes") { "voice_limit" } else { "voice_failed" } } else if x.contains("20 MiB") { "image_limit" } else if x.starts_with("image") || x.contains("image") { "image_failed" } else if x.contains("within") || x.contains("budget") { "limit" } else { "failed" }).into(), Some(x)),
             Outcome::Uncertain(x) => ("uncertain", brief(language.as_deref(), "uncertain").into(), Some(x)),
         };
-        if let Some(reason)=error.filter(|reason|reason.starts_with("Codex sent no")) {
-            text.push_str(&format!("\n{reason}."));
-        }
         if matches!(state,"failed"|"uncertain") {
-            let mut q=tx.prepare("SELECT DISTINCT result FROM audit_events WHERE request_id=?1 AND kind='kept_finding' ORDER BY id").map_err(e)?;
-            let findings:Vec<String>=q.query_map([r.request],|r|r.get(0)).and_then(Iterator::collect).map_err(e)?;
-            if !findings.is_empty() {
-                text.push_str("\n\n");text.push_str(&findings.join("\n"));
-                text.push_str(if language.as_deref().unwrap_or("en").starts_with("ru") {"\nОстальное можно запланировать отдельной задачей."} else {"\nThe remaining work can be planned as a task."});
-            }
+            discard_failed_drafts(&tx,r.request,at)?;
         }
         tx.execute("UPDATE runs SET state=?2, ended_at=?3, outcome=?4, model=?5 WHERE id=?1", params![r.id, state, at, error, model]).map_err(e)?;
         if state == "fenced" {
@@ -2132,18 +2156,21 @@ impl Journal {
                 _ => ("failed", "PilotQ restarted during the run"),
             };
             let language: Option<String> = tx.query_row("SELECT language FROM requests WHERE id=?1",[request],|x|x.get(0)).map_err(e)?;
-            let mut q=tx.prepare("SELECT DISTINCT result FROM audit_events WHERE request_id=?1 AND kind='kept_finding' ORDER BY id").map_err(e)?;
-            let findings:Vec<String>=q.query_map([request],|r|r.get(0)).and_then(Iterator::collect).map_err(e)?;
+            let mut q=tx.prepare("SELECT DISTINCT result, coalesce(item,'') FROM audit_events WHERE request_id=?1 AND kind='kept_finding' ORDER BY id").map_err(e)?;
+            let findings:Vec<(String,String)>=q.query_map([request],|r|Ok((r.get(0)?,r.get(1)?))).and_then(Iterator::collect).map_err(e)?;
             let mut pending=tx.prepare("SELECT target FROM audit_events WHERE request_id=?1 AND kind='tool' AND result IS NULL ORDER BY id").map_err(e)?;
             let pending:Vec<String>=pending.query_map([request],|r|r.get(0)).and_then(Iterator::collect).map_err(e)?;
+            let safe=findings.iter().filter(|(_,source)|source=="project_list").map(|(text,_)|text.as_str()).collect::<Vec<_>>().join("; ");
+            let hidden=findings.iter().filter(|(_,source)|source!="project_list").count();
             let mut text = if language.as_deref().unwrap_or("en").starts_with("ru") {
-                format!("PilotQ перезапущен. Завершено: {}. Не завершено: итоговый ответ прерван; неподтверждённые действия не повторяются.",if findings.is_empty(){"нет записанного подтверждения".into()}else{findings.join("\n")})
+                format!("PilotQ перезапущен. Завершено: {}. Не завершено: итоговый ответ прерван; неподтверждённые действия не повторяются.",if !safe.is_empty(){safe.clone()}else if hidden==0{"нет записанного подтверждения".into()}else{format!("записанных результатов: {hidden} (подробности в журнале)")})
             } else {
-                format!("PilotQ restarted. Finished: {}. Unfinished: the final answer was interrupted; unconfirmed actions will not be repeated.",if findings.is_empty(){"no recorded completion".into()}else{findings.join("\n")})
+                format!("PilotQ restarted. Finished: {}. Unfinished: the final answer was interrupted; unconfirmed actions will not be repeated.",if !safe.is_empty(){safe.clone()}else if hidden==0{"no recorded completion".into()}else{format!("{hidden} recorded results (details in audit)")})
             };
             if !pending.is_empty() {
-                text.push_str(&format!("\n{}: {}",if language.as_deref().unwrap_or("en").starts_with("ru") {"Не подтверждено"} else {"Unconfirmed"},pending.join("\n")));
+                text.push_str(&format!("\n{}: {}",if language.as_deref().unwrap_or("en").starts_with("ru") {"Не подтверждено"} else {"Unconfirmed"},if language.as_deref().unwrap_or("en").starts_with("ru") {format!("действий: {}; результат неизвестен",pending.len())} else {format!("{} actions; outcomes unknown",pending.len())}));
             }
+            discard_failed_drafts(&tx,*request,at)?;
             tx.execute("UPDATE requests SET state=?2, error=?3, reply=?4 WHERE id=?1", params![request, state, why, text]).map_err(e)?;
             let dest: (i64, Option<i64>, i64) = tx.query_row("SELECT chat, topic, message FROM requests WHERE id=?1", [request], |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?))).map_err(e)?;
             if front == "telegram" {
@@ -2811,7 +2838,7 @@ impl Journal {
                 }
             }
         }
-        Ok(if lines.is_empty() {if ru {"Ожидает отправки.".into()} else {"Waiting to submit.".into()}} else {lines.join("\n")})
+        Ok(if lines.is_empty() {if ru {"Ожидает отправки.".into()} else {"Waiting to submit.".into()}} else {lines.join("\n\n")})
     }
 
     /// Applies one fresh board observation of a subscribed task (§ 5). An observation older than the stored revision is stale and
@@ -3341,6 +3368,131 @@ mod tests {
         assert!(j.drain_requests(1900).unwrap().1);
         assert_eq!(j.request(answer.request).unwrap().0,"uncertain");
         drop(j);std::fs::remove_dir_all(p).unwrap();
+    }
+
+    // #212 A4/A7: follow the actual Telegram admission, plan display and Cancel edit in both languages.
+    #[test]
+    fn replies_212_draft_cancel() {
+        use crate::manager::Outcome;
+        let cases:Value=serde_json::from_str(include_str!("fixtures/replies-212.json")).unwrap();
+        for case in cases.as_array().unwrap() {
+            let lang=case["language"].as_str().unwrap();
+            let (mut j,p)=journal(&format!("replies-212-cancel-{lang}"));
+            let mut i=msg(7,7,1).unwrap(); i.text=Some(case["request"].as_str().unwrap().into()); i.language=Some(lang.into());
+            j.admit(&[(1,Some(i))],0).unwrap();
+            let r=j.claim_next(1,0).unwrap().remove(0);
+            j.save_draft(&r,&case["tickets"],"pilotq","taskqorg/pilotq","",1).unwrap();
+            j.finish(&r,None,None,&Outcome::Answered("Ignored model prose".into()),2).unwrap();
+            let reply=j.request(r.request).unwrap().1.unwrap();
+            assert_eq!(reply,case["plan"].as_str().unwrap());
+            assert!(reply.contains("\n\n"),"tasks need separation: {reply}");
+            let mut display=None;
+            while let Some(d)=j.due(2).unwrap().0 {
+                if d.kind=="rich" {display=Some((100+d.id,d.buttons));}
+                j.record(d.id,&Sent::Ok(100+d.id),2).unwrap();
+            }
+            let (message,buttons)=display.unwrap();
+            let mut i=msg(7,7,message).unwrap();i.kind="action";i.text=Some(buttons[1].0.clone());i.callback=Some("invented-cancel".into());
+            // The button has no client language: recover the person's language from conversation history.
+            j.admit(&[(2,Some(i))],3).unwrap();
+            let cancel=j.claim_next(1,3).unwrap().remove(0);
+            let text=j.cancel_draft(&cancel,4).unwrap().unwrap();
+            assert_eq!(text,case["cancelled"].as_str().unwrap());
+            j.finish(&cancel,None,None,&Outcome::Answered(text),4).unwrap();
+            let mut edited=false;
+            while let Some(d)=j.due(4).unwrap().0 {
+                if d.kind=="plan_answered" {assert_eq!(d.edit,Some(message));assert!(d.buttons.is_empty());assert!(d.text.ends_with(case["cancelled"].as_str().unwrap()));edited=true;}
+                j.record(d.id,&Sent::Ok(d.edit.unwrap_or(100+d.id)),4).unwrap();
+            }
+            assert!(edited);
+            assert_eq!(count(&j,"SELECT count(*) FROM tasks"),0);
+            drop(j);std::fs::remove_dir_all(p).unwrap();
+        }
+    }
+
+    // #212 A3/A4/A6/A7: a failed turn cannot leak findings or leave a launchable draft;
+    // localized controls must retain a safe, actionable model failure reason.
+    #[test]
+    fn replies_212_failure_and_status() {
+        for lang in ["en", "ru"] {
+            let (mut j,p)=journal(&format!("replies-212-{lang}"));
+            let mut i=msg(7,7,1).unwrap(); i.language=Some(lang.into());
+            i.text=Some(if lang=="ru" {"Составь план"} else {"Make a plan"}.into());
+            j.admit(&[(1,Some(i))],0).unwrap();
+            let r=j.claim_next(1,0).unwrap().remove(0);
+            j.save_draft(&r,&json!([{"title":"Invented plan"}]),"pilotq","taskqorg/pilotq","/invented/root",1).unwrap();
+            j.keep_finding(&r,"rg -n secret /invented/root failed; pwd; ls -a",1).unwrap();
+            j.finish(&r,None,None,&crate::manager::Outcome::Failed("model login required /invented/root".into()),2).unwrap();
+            let reply=j.request(r.request).unwrap().1.unwrap();
+            assert_eq!(reply.lines().count(),1,"{reply}");
+            assert!(reply.contains(if lang=="ru" {"Не удалось"} else {"request failed"}),"{reply}");
+            assert!(!reply.contains("rg -n") && !reply.contains("/invented/root"),"{reply}");
+            assert_eq!(count(&j,"SELECT count(*) FROM plans"),0,"failed request saved a draft");
+            assert_eq!(count(&j,"SELECT count(*) FROM audit_events WHERE kind='kept_finding'"),1);
+            j.set_health("model",2,"failed",Some("login required /invented/root")).unwrap();
+            let mut i=msg(7,7,2).unwrap(); i.text=Some("/status".into()); i.language=Some(lang.into());
+            j.admit(&[(2,Some(i))],3).unwrap();
+            let status=j.request(2).unwrap().1.unwrap();
+            assert!(status.contains(if lang=="ru" {"вход"} else {"sign-in"}),"{status}");
+            assert!(!status.contains("/invented/root"),"{status}");
+            assert!(status.lines().last().unwrap().starts_with(if lang=="ru" {"Далее: владелец"} else {"Next: the installation owner"}),"{status}");
+            // Preserve an earlier successful draft when a failed revision or restart is discarded.
+            j.admit(&[(3,msg(7,7,3))],4).unwrap();
+            let original=j.claim_next(1,4).unwrap().remove(0);
+            j.save_draft(&original,&json!([{"title":"Original"}]),"pilotq","taskqorg/pilotq","",5).unwrap();
+            j.finish(&original,None,None,&crate::manager::Outcome::Answered("Saved".into()),5).unwrap();
+            for (update,restart) in [(4,false),(5,true)] {
+                j.admit(&[(update,msg(7,7,update))],6).unwrap();
+                let edit=j.claim_next(1,6).unwrap().remove(0);
+                j.save_draft(&edit,&json!([{"title":"Failed edit"}]),"pilotq","taskqorg/pilotq","",7).unwrap();
+                if restart {j.reconcile(8).unwrap();} else {j.finish(&edit,None,None,&crate::manager::Outcome::Failed("failed edit".into()),8).unwrap();}
+                assert_eq!(count(&j,"SELECT count(*) FROM plans"),1);
+                assert_eq!(j.draft_context(&edit).unwrap()["tickets"][0]["title"],"Original");
+            }
+            drop(j);std::fs::remove_dir_all(p).unwrap();
+        }
+    }
+
+    // #212 A3/A4/A7, R5/R17: restart never publishes native diagnostics;
+    // measured controls localize units while retaining audit and no-replay evidence.
+    #[test]
+    fn replies_212_restart_and_measured_status() {
+        for lang in ["en", "ru"] {
+            for reset in [3599, 3600, 86400] {
+                let (mut j,p)=journal(&format!("restart-212-{lang}-{reset}"));
+                let mut i=msg(7,7,1).unwrap(); i.language=Some(lang.into());
+                j.admit(&[(1,Some(i))],0).unwrap();
+                let r=j.claim_next(1,0).unwrap().remove(0);
+                let mut f=crate::footer::Footer::default();
+                f.context(&json!({"last":{"inputTokens":20},"modelContextWindow":100}),0);
+                f.quota(&json!({"primary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":reset+120}}),0);
+                f.context(&json!({}),120);
+                let observed=f.render(Some("model"),None,120);
+                j.0.execute("INSERT INTO audit_events(request_id,run_id,at,kind,result,item) VALUES (?1,?2,120,'runtime_status',?3,'0')",params![r.request,r.id,observed]).unwrap();
+                j.keep_finding(&r,"rg -n /invented/root: completed",1).unwrap();
+                let safe=if lang=="ru" {"Доступные проекты: other, pilotq"} else {"Accessible projects: other, pilotq"};
+                j.keep_project_finding(&r,safe,1).unwrap();
+                j.tool(&r,"pwd /invented/root","native",None,1).unwrap();
+                j.save_draft(&r,&json!([{"title":"Failed"}]),"pilotq","taskqorg/pilotq","",1).unwrap();
+                j.reconcile(121).unwrap();
+                let reply=j.request(r.request).unwrap().1.unwrap();
+                assert!(reply.contains(safe),"R5/§5: completed project result missing: {reply}");
+                assert!(!reply.contains("/invented/root") && !reply.contains("rg -n") && !reply.contains("pwd"),"{reply}");
+                assert!(reply.contains(if lang=="ru" {"Не завершено"} else {"Unfinished"}),"{reply}");
+                assert_eq!(j.request(r.request).unwrap().0,"uncertain");
+                assert_eq!(count(&j,"SELECT count(*) FROM plans"),0);
+                assert_eq!(count(&j,"SELECT count(*) FROM audit_events WHERE result LIKE '%/invented/root%' OR target LIKE '%/invented/root%'"),2);
+                assert_eq!(j.reconcile(122).unwrap(),0);
+                assert!(j.claim_next(1,122).unwrap().is_empty());
+                let mut i=msg(7,7,2).unwrap(); i.text=Some("/status".into()); i.language=Some(lang.into());
+                j.admit(&[(2,Some(i))],123).unwrap();
+                let status=j.request(2).unwrap().1.unwrap();
+                let unit=match (lang,reset) {("ru",3599)=>"<1 ч",("ru",3600)=>"1 ч",("ru",_)=>"1 д",(_,3599)=>"<1h",(_,3600)=>"1h",_=>"1d"};
+                assert!(status.contains(unit),"{status}");
+                assert!(status.contains(if lang=="ru" {"устарело 2 мин"} else {"stale 2m"}),"{status}");
+                drop(j);std::fs::remove_dir_all(p).unwrap();
+            }
+        }
     }
 
     // R10/R13, §6: Telegram controls must reach durable own data, never another subject.
@@ -4024,7 +4176,7 @@ mod tests {
         assert_eq!(j.request(1).unwrap().0, "failed", "interrupted model turns end explicitly");
         assert_eq!(j.request(2).unwrap().0, "uncertain", "a run that started a tool is never replayed");
         let summary=j.request(2).unwrap().1.unwrap();
-        assert!(summary.contains("disk usage: completed") && summary.contains("Unfinished:"),"{summary}");
+        assert!(summary.contains("1 recorded results") && summary.contains("Unfinished:") && !summary.contains("disk usage: completed"),"{summary}");
         assert_eq!(j.reconcile(3).unwrap(),0,"restart summaries are not duplicated");
         assert!(j.claim_next(4,3).unwrap().is_empty());
 
@@ -4758,7 +4910,7 @@ mod tests {
         assert!(status(&mut j, 2, 20).starts_with(&format!("PilotQ {v} · all sources ok\n")));
         j.set_health("model", 100, "failed", Some("login")).unwrap();
         j.set_health("poll", 200, "conflict", None).unwrap();
-        assert!(status(&mut j, 3, 820).starts_with(&format!("PilotQ {v} · poll conflict 10 min ago · model failed 12 min ago\n")), "raw reasons stay out of Telegram");
+        assert!(status(&mut j, 3, 820).starts_with(&format!("PilotQ {v} · poll conflict 10 min ago · model failed 12 min ago: Codex sign-in required\n")), "raw reasons stay out of Telegram");
         drop(j);
         let _ = std::fs::remove_dir_all(p);
     }
@@ -4875,10 +5027,10 @@ mod tests {
         j.started(&run,1,19,"ready",4).unwrap();
         j.run_outcome(&run,"started",None,None,0,4).unwrap();
         let reply=j.launch_reply(&launch).unwrap().unwrap();
-        assert!(reply.contains("queued for a worker") && !reply.contains("started") && reply.contains("TaskQ · pilotq#19 · Reply improvements"),"{reply}");
+        assert!(reply.contains("queued for a worker") && !reply.contains("started") && reply.contains("pilotq#19 — Reply improvements"),"{reply}");
         j.0.execute("UPDATE requests SET language='ru' WHERE id=?1",[launch.request]).unwrap();
         let reply=j.launch_reply(&launch).unwrap().unwrap();
-        assert!(reply.contains("в очеред") && !reply.contains("запущен") && reply.contains("TaskQ · pilotq#19 · Reply improvements"),"{reply}");
+        assert!(reply.contains("в очеред") && !reply.contains("запущен") && reply.contains("pilotq#19 — Reply improvements"),"{reply}");
         drop(j); let _=std::fs::remove_dir_all(p);
     }
 

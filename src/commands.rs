@@ -237,7 +237,9 @@ mod tests {
         let saved_probe = std::fs::read(&probe).unwrap();
         // The separate board budget remains bounded and refuses dispatch on overflow.
         std::fs::write(&probe,"#!/bin/sh\nexec /usr/bin/yes\n").unwrap();
-        let (ok, overflow)=call("command_run",json!({"command":"pwd","args":[]}),deadline());
+        // Use §5's actual ten-second budget for the 1 MiB flood; two seconds can expire
+        // under parallel-suite contention before the cap is reached. Keep fail-closed/cap assertions.
+        let (ok, overflow)=call("command_run",json!({"command":"pwd","args":[]}),Instant::now()+Duration::from_secs(10));
         assert!(!ok && overflow.contains("output_limit") && overflow.contains("selected command was not executed"));
         std::fs::write(&probe,"#!/bin/sh\nprintf '%s' '{\"complete\":false}'\n").unwrap();
         assert!(!call("command_run",json!({"command":"pwd","args":[]}),deadline()).0);
