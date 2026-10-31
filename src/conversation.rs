@@ -61,6 +61,7 @@ pub fn task_state(state: &str, closed: bool, language: Option<&str>) -> &'static
         (true, "review") => "Результат на проверке",
         (true, "waiting") => "Ожидает зависимые задачи",
         (true, "later") => "Отложена",
+        (true, "failed") => "Попытка завершилась без результата",
         (true, _) => "Состояние неизвестно",
         (false, "held") => "Created; not queued yet",
         (false, "ready") => "Queued for a worker",
@@ -69,6 +70,7 @@ pub fn task_state(state: &str, closed: bool, language: Option<&str>) -> &'static
         (false, "review") => "Result is being reviewed",
         (false, "waiting") => "Waiting for dependent tasks",
         (false, "later") => "Parked",
+        (false, "failed") => "Attempt failed without a result",
         (false, _) => "State unknown",
     }
 }

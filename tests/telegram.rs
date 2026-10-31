@@ -943,6 +943,23 @@ def bump():
 def receipt(n, outcome, reason=None):
     t = st["tasks"].get(str(n), {})
     return {"task": n, "op_id": opt("--op-id"), "outcome": outcome, "state": t.get("state"), "revision": t.get("revision"), "reason": reason, "next": None}
+# TaskQ #2010: status rows carry the typed `question` TaskQ derives from the card (§ 2 answer-card contract).
+import re
+def question(card):
+    if card is None: return None
+    q = {"parsed": False, "text": card, "done": None, "problem": None, "evidence": [], "choices": [], "limits": {"chars": 240}}
+    for line in card.split("\n"):
+        m = re.match(r"(\d+)\. (.*)$", line)
+        if line.startswith("Done: "): q["done"] = line[6:]
+        elif line.startswith("Problem: "): q["problem"] = line[9:]
+        elif line.startswith("Evidence: "): q["evidence"] = [{"label": l, "url": u, "image": bool(b)} for b, l, u in re.findall(r"(!?)\[([^\]]*)\]\(([^)]*)\)", line)]
+        elif m:
+            text = m.group(2); rec = text.endswith(" ★"); text = text[:-2] if rec else text
+            label, _, detail = text.partition(" - ")
+            q["choices"].append({"id": int(m.group(1)), "text": text, "label": label, "detail": detail or None, "recommended": rec, "consequential": False})
+    c = q["choices"]
+    q["parsed"] = q["problem"] is not None and [x["id"] for x in c] == list(range(1, len(c) + 1)) and (not c or (2 <= len(c) <= 4 and sum(x["recommended"] for x in c) == 1))
+    return q
 def out(r, code=0):
     if r["outcome"] == "accepted" and opt("--op-id"): st["ops"][opt("--op-id")] = r
     save()
@@ -957,7 +974,7 @@ if op in st["ops"]:
     print(json.dumps(st["ops"][op])); sys.exit(0)
 if cmd == "status":
     repo = json.load(open(os.path.join(os.environ["TASKQ_ROOT"], "taskq.json")))["repo"]
-    tasks = [dict(t, n=int(n), url="https://github.com/" + repo + "/issues/" + n) for n, t in st["tasks"].items() if not t.get("closed")]
+    tasks = [dict(t, n=int(n), url="https://github.com/" + repo + "/issues/" + n, question=question(t.get("card"))) for n, t in st["tasks"].items() if not t.get("closed")]
     print(json.dumps({"schema": 1, "source": "board", "observed": 1, "complete": True, "reason": None, "board": {"repo": repo}, "tasks": tasks})); sys.exit(0)
 if cmd == "inbox":
     n=int(a[1]); path=os.path.join(d,"inbox.json")
@@ -2693,7 +2710,7 @@ fn u95_pinned_instructions_reach_codex() {
     stop(c, d);
 }
 
-const U95_CARD: &str = "Done: drafted both versions\nProblem: Choose the tester guide wording; this changes how much detail testers see.\n1. Short wording. Plus: quick to scan. Minus: omits setup detail. ★\n2. Detailed wording. Plus: includes setup detail. Minus: slower to scan.\nRecommended: short wording, because the linked guide already covers setup.\nTo answer: `taskq answer 19.K` or comment `K` or the option text.";
+const U95_CARD: &str = "Done: drafted both versions\nProblem: Choose the tester guide wording; this changes how much detail testers see.\nEvidence: [linked guide](https://github.com/taskqorg/pilotq/blob/main/pilotq.md)\n1. Short wording - + quick to scan; - omits setup detail ★\n2. Detailed wording - + includes setup detail; - slower to scan\nTo answer: `taskq answer 19.K` or comment `K` or the option text.";
 
 // #95 A2/A3 / §5/§12: one script connects real admission, model tools, held creation,
 // board projection and Telegram rendering. The fake checks wiring; live checks model behavior.
@@ -2743,13 +2760,15 @@ fn u95_cases(live: bool) {
     assert!(reply.to_lowercase().contains("worker") || reply.to_lowercase().contains("ready"), "{reply}");
     assert_eq!(tq_calls(&d).iter().filter(|a| a[0] == "add").count(), 1, "status creates no task");
     set_task(&d, 19, |t| { t["state"]=json!("ask"); t["card"]=json!(U95_CARD); });
-    wait("complete source question", 15, || sent_has(&st, "Recommended: short wording"));
-    let q = sent(&st).into_iter().find(|s| s["text"].as_str().is_some_and(|s| s.contains("Recommended: short wording"))).unwrap();
+    wait("complete source question", 15, || sent_has(&st, "Choose the tester guide wording"));
+    let q = sent(&st).into_iter().find(|s| s["text"].as_str().is_some_and(|s| s.contains("Choose the tester guide wording"))).unwrap();
     let body = q["text"].as_str().unwrap();
-    for line in U95_CARD.lines().filter(|l| !l.starts_with("To answer")) {
-        let line = line.strip_prefix("Done: ").or_else(|| line.strip_prefix("Problem: ")).unwrap_or(line);
-        assert!(body.contains(line), "source meaning preserved: {line}: {body}");
+    // TaskQ #2010: the relay renders the typed question: done, problem, evidence, each choice with its trade-off and one star.
+    for part in ["drafted both versions", "this changes how much detail testers see", "linked guide", "1. Short wording ★", "quick to scan; - omits setup detail",
+        "2. Detailed wording", "includes setup detail; - slower to scan"] {
+        assert!(body.contains(part), "source meaning preserved: {part}: {body}");
     }
+    assert_eq!(body.matches('★').count(), 1, "{body}");
     assert!(!body.contains("To answer") && !bare_url(body) && !body.contains("request_id"));
     assert_eq!(q["link_preview_options"]["is_disabled"], true);
     assert_eq!(q["reply_markup"]["inline_keyboard"].as_array().unwrap().len(), 2);

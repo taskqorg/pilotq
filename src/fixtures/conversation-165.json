@@ -84,6 +84,12 @@
       "ru": "Отложена"
     },
     {
+      "state": "failed",
+      "closed": false,
+      "en": "Attempt failed without a result",
+      "ru": "Попытка завершилась без результата"
+    },
+    {
       "state": "unknown",
       "closed": false,
       "en": "State unknown",
@@ -111,7 +117,11 @@
     "launch_cancelled": "**Clear replies**\nWe will: Simplify the conversation\nDone when: Every stage has a clear card\n\nFurther launch steps cancelled; earlier effects are preserved."
   },
   "worker_question": {
-    "source": "Done: checked\nProblem: Choose retention\n1. Keep - + history; - disk space ★\n2. Drop - + disk space; - history\nTo answer: taskq answer 97.K",
+    "question": {"parsed": true, "text": "Done: checked\nProblem: Choose retention\n1. Keep - + history; - disk space ★\n2. Drop - + disk space; - history\nTo answer: taskq answer 97.K",
+      "done": "checked", "problem": "Choose retention", "evidence": [],
+      "choices": [{"id": 1, "text": "Keep - + history; - disk space", "label": "Keep", "detail": "+ history; - disk space", "recommended": true, "consequential": false},
+        {"id": 2, "text": "Drop - + disk space; - history", "label": "Drop", "detail": "+ disk space; - history", "recommended": false, "consequential": false}],
+      "limits": {"chars": 240}},
     "snapshot": "? [TaskQ · pilotq#97 · Ask layout](https://forge.invalid/task/97)\n✓ checked\n⚑ Choose retention\n1. Keep ★\n\\+ history; - disk space\n2. Drop\n\\+ disk space; - history"
   },
   "progress": [
