@@ -250,7 +250,7 @@ fn selftest(t: &Tool) -> Result<(), String> {
         return Err("fixture: status.json must name the version and report unobserved health as unknown".into());
     }
     println!("fixture: ok");
-    // ponytail: no config or board read yet; the online part arrives with the journal and TaskQ in later slices.
+    // §9: offline selftest stays setup-independent; doctor owns online configuration and board checks.
     println!("pilotq {} selftest: ok", t.version);
     Ok(())
 }

@@ -26,7 +26,7 @@ pub fn read(name: &str, bytes: &[u8]) -> Result<String, String> {
 const INFLATED: usize = 64 * 1024 * 1024;
 const PAGES: usize = 300;
 
-// ponytail: in-process parse bounded by the 20 MiB input, INFLATED and PAGES; a child process with rlimits if a PDF ever hangs a turn.
+// Data caps do not bound parser time. Deadline/cancellation isolation remains open in task #195.
 fn pdf(bytes: &[u8]) -> Result<String, String> {
     let parsed = std::panic::catch_unwind(|| {
         let doc = lopdf::Document::load_mem(bytes).ok()?;

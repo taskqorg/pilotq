@@ -97,28 +97,20 @@ already authorizes that bounded check. “Let's plan” produces a revisable pro
 binds authorization to the displayed plan revision, target and scope; it does not require another
 ritual confirmation.
 
-Direct work must satisfy all of these conditions:
+Task work uses TaskQ first. Other authorized work is done directly with the service user's
+access, including requested host and remote-host administration, under [§5](../pilotq.md#5-taskq-tools-and-project-administration).
+Resolve one concrete authorized target and report a verifiable result. There is no fixed turn
+duration or tool-call cap; the runtime inactivity and cancellation rules in §7 still apply.
+Typed TaskQ, administration and release tools retain their own grants, scopes, confirmation and
+receipt boundaries. Native effects do not acquire those tools' replay guarantees: never replay an
+interrupted turn automatically, and report completed findings separately from unfinished or
+unconfirmed effects. Discussion alone never authorizes execution.
 
-- One clear authorized target and a bounded result.
-- No need to survive as a long-running job, produce a reviewed implementation, or coordinate
-  dependencies.
-- A read-only operation or a small mutation with an explicit grant and a verifiable outcome.
-- Execution fits the short-action budget in section 7.
-
-Examples: inspect one service, read a bounded log interval, look up a ticket or explain an error.
-Apart from the scoped administration and owner release operations in section 5, the only direct
-writes are the owner's board comments and labels ([section
-5](integration-contract.md#direct-actions-keys-and-project-switching)). A fast action can still be consequential:
-deployment, money, permissions or deletion do not become direct-safe because they take seconds.
-
-Multi-file implementation, long research, broad audits, repeated experiments, deployment work and
-uncertain-duration work go to TaskQ, except the owner-confirmed registered release operation in §5.
-On reaching a direct-action budget, preserve observations and completed effects; propose the
-remaining task. Reuse existing authorization if it covers the delegation. Never describe a task as
-created until board readback identifies it.
+Reuse existing authorization if it covers delegation. Never describe a task as created until board
+readback identifies it.
 
 When acting as TaskQ PM, PilotQ does not perform queued task work or choose answers on the owner's
-behalf. Its short-action role is separate from that PM role. This preserves the [TaskQ role
+behalf. Its direct-work role is separate from that PM role. This preserves the [TaskQ role
 contract](https://github.com/taskqorg/taskq/blob/93b499cf562167e380793c0c8fb15562407c6900/taskq.md).
 
 ### Changing direction
