@@ -1161,7 +1161,7 @@ impl Journal {
                         // §12: accepted text gets a reaction obligation below, without a text acknowledgement.
                         None => String::new(),
                     };
-                    let text=if matches!(cmd,Some("/help"|"/version"|"/model"|"/model-button"|"/doctor"|"/onboard"|"/onboard-button"|"/release"|"/release-confirm"|"/restart"|"/skills"|"/skill"|"/unknown")) {
+                    let text=if matches!(cmd,Some("/profile"|"/access"|"/help"|"/version"|"/model"|"/model-button"|"/doctor"|"/onboard"|"/onboard-button"|"/release"|"/release-confirm"|"/restart"|"/skills"|"/skill"|"/unknown")) {
                         crate::builtins::localized(&text,language.as_deref(),state=="failed")
                     } else {text};
                     // § 8: a person learns at admission that their requests are recorded, and for how long
@@ -3142,6 +3142,26 @@ mod tests {
         let mut unknown=msg(8,8,15).unwrap(); unknown.text=Some("/profile".into());
         j.admit(&[(15,Some(unknown))],15).unwrap();
         assert_eq!(count(&j,"SELECT count(*) FROM requests"),14);
+        drop(j); std::fs::remove_dir_all(p).unwrap();
+    }
+
+    // §12 / R10: Russian refusal paths must remain localized without exposing another subject.
+    #[test]
+    fn profile_196_russian_refusals() {
+        let (mut j,p)=journal("profile-196-ru");
+        for (n,chat,text,expected) in [
+            (1,7,"/profile 8","Используйте /profile"),
+            (2,7,"/access 8","Используйте /profile"),
+            (3,-100,"/profile","личном сообщении"),
+            (4,-100,"/access","личном сообщении"),
+        ] {
+            let mut i=msg(chat,7,n).unwrap(); i.text=Some(text.into()); i.language=Some("ru".into());
+            j.admit(&[(n,Some(i))],n).unwrap();
+            let reply=j.request(n).unwrap().1.unwrap();
+            assert!(reply.contains(expected),"{text}: {reply}");
+            assert!(count(&j,&format!("SELECT count(*) FROM outbox WHERE request_id={n} AND text LIKE '%{expected}%'"))>0);
+        }
+        assert!(j.facts(7,7).unwrap().is_empty());
         drop(j); std::fs::remove_dir_all(p).unwrap();
     }
 
