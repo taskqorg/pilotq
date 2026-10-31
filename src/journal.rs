@@ -426,6 +426,41 @@ fn finish_builtin(tx:&Connection,id:i64,text:&str,ok:bool,at:i64)->Result<(),Str
     Ok(())
 }
 
+/// R10/R13, §6: own DM self-service shares atomic admission and never changes grants.
+fn profile_control(tx:&Connection, request:i64, chat:i64, sender:i64, cmd:&str, at:i64)->Result<String,String> {
+    let e=|e:rusqlite::Error|e.to_string();
+    let topic:Option<i64>=tx.query_row("SELECT topic FROM requests WHERE id=?1",[request],|r|r.get(0)).map_err(e)?;
+    if chat!=sender || topic.is_some() { return Ok("Use this control in a direct message with PilotQ; it shows only your own data.".into()); }
+    let text:String=tx.query_row("SELECT text FROM requests WHERE id=?1",[request],|r|r.get(0)).map_err(e)?;
+    let mut words=text.splitn(2,char::is_whitespace);
+    words.next();
+    let args=words.next().unwrap_or("").trim();
+    let usage="Usage: /profile | /profile set KEY VALUE | /profile forget KEY; /access takes no arguments.";
+    if cmd=="/access" {
+        if !args.is_empty() {return Ok(usage.into());}
+        return Ok(format!("Your current grants: {}. Ask an administrator to change or revoke access. Profiles cannot change grants.",grants_of(tx,sender)?.join(", ")));
+    }
+    if args.is_empty() {
+        let mut q=tx.prepare("SELECT key,value,private,source,revision FROM facts WHERE subject=?1 ORDER BY key").map_err(e)?;
+        let rows:Vec<String>=q.query_map([sender],|r|Ok(format!("{} = {} ({}; {}; revision {})",r.get::<_,String>(0)?,r.get::<_,String>(1)?,if r.get::<_,bool>(2)? {"private"} else {"shared"},r.get::<_,String>(3)?,r.get::<_,i64>(4)?))).and_then(Iterator::collect).map_err(e)?;
+        return Ok(format!("Your current remembered facts:\n{}",if rows.is_empty() {"none".into()} else {rows.join("\n")}));
+    }
+    let mut parts=args.splitn(3,char::is_whitespace);
+    let verb=parts.next().unwrap_or(""); let key=parts.next().unwrap_or(""); let value=parts.next().unwrap_or("").trim();
+    if key.is_empty() || key.len()>64 || !key.bytes().all(|c|c.is_ascii_alphanumeric() || b"_.-".contains(&c)) {return Ok(usage.into());}
+    match verb {
+        "set" if !value.is_empty() && value.len()<=1024 => {
+            let revision:i64=tx.query_row("INSERT INTO facts(subject,key,value,private,source,revision,at) VALUES (?1,?2,?3,1,?4,1,?5) ON CONFLICT(subject,key) DO UPDATE SET value=excluded.value,private=1,source=excluded.source,revision=revision+1,at=excluded.at RETURNING revision",params![sender,key,value,format!("user:{sender}"),at],|r|r.get(0)).map_err(e)?;
+            Ok(format!("Remembered {key} = {value} (private; revision {revision}). Previous audit/history remain."))
+        },
+        "forget" if value.is_empty()=> {
+            let removed=tx.execute("DELETE FROM facts WHERE subject=?1 AND key=?2",params![sender,key]).map_err(e)?;
+            Ok(format!("{key}: {}. Preference deletion does not erase audit/history.",if removed>0 {"forgotten"} else {"no current value"}))
+        },
+        _=>Ok(usage.into())
+    }
+}
+
 /// Answers `/stop`, `/status`, `/new` or `/audit` inside the admission transaction, without the model and scoped to one
 /// conversation (§ 12). Also returns a request that `/stop` cancelled.
 fn answer_control(tx: &Connection, session: &str, cmd: &str, request: i64, chat: i64, sender: i64, at: i64) -> Result<(String, Option<i64>), String> {
@@ -440,6 +475,7 @@ fn answer_control(tx: &Connection, session: &str, cmd: &str, request: i64, chat:
                 tx.execute("UPDATE conversations SET fence=fence+1 WHERE session=?1", [session]).map_err(e)?;
                 return Ok(("Stopped; queued follow-ups stay queued.".into(), Some(id)));
             }
+            "/profile" | "/access" => profile_control(tx,request,chat,sender,cmd,at)?,
             "/version" => format!("PilotQ {}", env!("CARGO_PKG_VERSION")),
             "/help" => String::new(),
             "/skills" | "/skill" => "No skills are enabled for PilotQ's restricted manager. /skill NAME TEXT is unavailable until a skill is approved.".into(),
@@ -1127,7 +1163,7 @@ impl Journal {
                         // §12: accepted text gets a reaction obligation below, without a text acknowledgement.
                         None => String::new(),
                     };
-                    let text=if matches!(cmd,Some("/help"|"/version"|"/model"|"/model-button"|"/doctor"|"/onboard"|"/onboard-button"|"/release"|"/release-confirm"|"/restart"|"/skills"|"/skill"|"/unknown")) {
+                    let text=if matches!(cmd,Some("/profile"|"/access"|"/help"|"/version"|"/model"|"/model-button"|"/doctor"|"/onboard"|"/onboard-button"|"/release"|"/release-confirm"|"/restart"|"/skills"|"/skill"|"/unknown")) {
                         crate::builtins::localized(&text,language.as_deref(),state=="failed")
                     } else {text};
                     // § 8: a person learns at admission that their requests are recorded, and for how long
@@ -3056,6 +3092,79 @@ mod tests {
         let mut j = Journal::open(&d.join("journal.sqlite")).unwrap();
         j.bootstrap(7, 0).unwrap();
         (j, d)
+    }
+
+    // R10/R13, §6: Telegram controls must reach durable own data, never another subject.
+    #[test]
+    fn profile_196_telegram_trace() {
+        let (mut j,p)=journal("profile-196");
+        let send=|j:&mut Journal,n,text:&str| {
+            let mut i=msg(7,7,n).unwrap(); i.text=Some(text.into());
+            j.admit(&[(n,Some(i))],n).unwrap();
+            j.request(n).unwrap().1.unwrap()
+        };
+        assert!(send(&mut j,1,"/profile set name Old").contains("Remembered"));
+        assert!(send(&mut j,2,"/profile set name New").contains("revision 2"));
+        let own=send(&mut j,3,"/profile@invented_bot");
+        assert!(own.contains("New") && !own.contains("Old"));
+        assert!(send(&mut j,4,"/access").contains("chat"));
+        drop(j); let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
+        assert_eq!(j.facts(7,7).unwrap()[0].value,"New");
+        assert!(send(&mut j,5,"/profile forget name").contains("audit"));
+        send(&mut j,6,"/new");
+        drop(j); let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
+        assert!(send(&mut j,7,"/profile").contains("none"));
+        assert!(send(&mut j,8,"/profile 8").contains("Usage"));
+        assert!(send(&mut j,9,"/access 8").contains("Usage"));
+        assert!(j.facts(8,8).unwrap().is_empty());
+        let mut i=msg(-100,7,10).unwrap(); i.text=Some("/profile".into());
+        j.admit(&[(10,Some(i))],10).unwrap();
+        assert!(j.request(10).unwrap().1.unwrap().contains("direct message"));
+        assert_eq!(count(&j,"SELECT count(*) FROM requests WHERE kind='text'"),0);
+        assert!(j.profile(7).unwrap()["facts"].as_array().unwrap().is_empty());
+        j.remember(7,7,"private","invented private fact",true,11).unwrap();
+        let mut i=msg(-100,7,11).unwrap(); i.text=Some("/access".into()); i.topic=Some(5);
+        j.admit(&[(11,Some(i))],11).unwrap();
+        assert!(!j.request(11).unwrap().1.unwrap().contains("project"));
+        j.grant(7,8,&["chat".into()],12).unwrap();
+        let mut i=msg(8,8,12).unwrap(); i.text=Some("/profile forget private".into());
+        j.admit(&[(12,Some(i))],12).unwrap();
+        assert!(j.request(12).unwrap().1.unwrap().contains("no current value"));
+        let mut duplicate=msg(8,8,12).unwrap(); duplicate.text=Some("/profile forget private".into());
+        j.admit(&[(12,Some(duplicate))],13).unwrap();
+        assert_eq!(j.facts(7,7).unwrap()[0].value,"invented private fact");
+        assert_eq!(j.grants(8).unwrap(),vec!["chat"]);
+        send(&mut j,13,"/new");
+        assert_eq!(j.facts(7,7).unwrap()[0].value,"invented private fact");
+        assert!(send(&mut j,14,"/profile").contains("invented private fact"));
+        assert!(!j.profile(14).unwrap().to_string().contains("Old"));
+        assert_eq!(count(&j,"SELECT count(*) FROM requests WHERE kind='control'"),14);
+        assert!(count(&j,"SELECT count(*) FROM outbox WHERE request_id=14 AND text LIKE '%invented private fact%' AND chat=7")>0);
+        j.revoke(7,8,&[],15).unwrap();
+        let mut unknown=msg(8,8,15).unwrap(); unknown.text=Some("/profile".into());
+        j.admit(&[(15,Some(unknown))],15).unwrap();
+        assert_eq!(count(&j,"SELECT count(*) FROM requests"),14);
+        drop(j); std::fs::remove_dir_all(p).unwrap();
+    }
+
+    // §12 / R10: Russian refusal paths must remain localized without exposing another subject.
+    #[test]
+    fn profile_196_russian_refusals() {
+        let (mut j,p)=journal("profile-196-ru");
+        for (n,chat,text,expected) in [
+            (1,7,"/profile 8","Используйте /profile"),
+            (2,7,"/access 8","Используйте /profile"),
+            (3,-100,"/profile","личном сообщении"),
+            (4,-100,"/access","личном сообщении"),
+        ] {
+            let mut i=msg(chat,7,n).unwrap(); i.text=Some(text.into()); i.language=Some("ru".into());
+            j.admit(&[(n,Some(i))],n).unwrap();
+            let reply=j.request(n).unwrap().1.unwrap();
+            assert!(reply.contains(expected),"{text}: {reply}");
+            assert!(count(&j,&format!("SELECT count(*) FROM outbox WHERE request_id={n} AND text LIKE '%{expected}%'"))>0);
+        }
+        assert!(j.facts(7,7).unwrap().is_empty());
+        drop(j); std::fs::remove_dir_all(p).unwrap();
     }
 
     // #165 A3/A4/A6: snapshot actual durable card edits, not only renderer helpers.

@@ -197,6 +197,8 @@ pub fn localized(text:&str,language:Option<&str>,failed:bool)->String {
         return format!("Выпуск: {}",reason.replace("Release blocked by ","мешает выполняемая работа: ").replace("task #","задача #").replace("attempt ","попытка ").replace("release verified","выпуск проверен").replace("release outcome uncertain; no automatic retry","результат выпуска неизвестен; автоматического повтора не будет"));
     }
     match text {
+        "Usage: /profile | /profile set KEY VALUE | /profile forget KEY; /access takes no arguments."=>"Используйте /profile, /profile set KEY VALUE или /profile forget KEY; /access не принимает аргументов.".into(),
+        "Use this control in a direct message with PilotQ; it shows only your own data."=>"Используйте эту команду в личном сообщении с PilotQ; она показывает только ваши данные.".into(),
         "Unknown command; use /help."=>"Неизвестная команда; используйте /help.".into(),
         "Invalid command arguments; use /help."=>"Неверные аргументы команды; используйте /help.".into(),
         "Only the configured owner can restart PilotQ."=>"Перезапуск PilotQ доступен только владельцу установки.".into(),

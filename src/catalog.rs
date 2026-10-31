@@ -3,6 +3,8 @@ use crate::journal::Journal;
 use serde_json::Value;
 pub struct Capability { pub name: &'static str, pub area: &'static str, pub purpose: &'static str, pub example: &'static str, pub grant: &'static str, pub ru: &'static str }
 pub const CATALOG: &[Capability] = &[
+    Capability { name: "/profile", area: "people", purpose: "Inspect own remembered facts in DM; set KEY VALUE or forget KEY; audit history remains", example: "/profile set name Alex", grant: "chat", ru: "Посмотреть, исправить или забыть свои предпочтения в личном чате" },
+    Capability { name: "/access", area: "people", purpose: "Inspect own current grants in DM; ask an administrator for changes or revocation", example: "/access", grant: "chat", ru: "Посмотреть свои права в личном чате" },
     Capability { name: "/onboard", area: "projects", purpose: "Recheck registered project readiness; protected owner may override only PilotQ's gate", example: "/onboard pilotq", grant: "owner", ru: "Проверить готовность зарегистрированного проекта" },
     Capability { name: "/release", area: "operations", purpose: "Preview a registered project LIVE release; a separate Release button is required", example: "/release pilotq", grant: "owner+project+release", ru: "Предпросмотр выпуска проекта; требуется отдельная кнопка Release" },
     Capability { name: "project_release_preview", area: "operations", purpose: "Preview a registered project LIVE release for the protected owner with a separate release grant. Never executes a release. A separate Release button is mandatory; do not repeat the preview card in final prose.", example: "preview release for pilotq", grant: "owner+project+release", ru: "Подготовить предпросмотр выпуска проекта для владельца" },
@@ -262,7 +264,11 @@ mod behavior_tests {
         j.add_project(7,"demo","invented/demo","/invented/demo",0).unwrap();
         let start=render(&j,8,None,Some("ru"),&keys,"cli").unwrap();
         assert!(start.contains("PilotQ помогает") && start.contains("/help projects"));
-        assert!(!start.contains("/help people"));
+        // #196/R10: own people controls are accessible; administrator capabilities remain hidden.
+        assert!(start.contains("/help people"));
+        let people=render(&j,8,Some("people"),Some("en"),&keys,"cli").unwrap();
+        assert!(people.contains("/profile") && people.contains("/access"));
+        assert!(!people.contains("grant_change") && !people.contains("pilotq users"));
         let projects=render(&j,8,Some("projects"),Some("en"),&keys,"cli").unwrap();
         assert!(projects.contains("project_current") && projects.contains("project_status"));
         assert!(!projects.contains("project_disconnect") && !projects.contains("project_register"));
