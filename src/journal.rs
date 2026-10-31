@@ -1865,9 +1865,60 @@ impl Journal {
         self.0.query_row("SELECT count(*) FROM requests WHERE state='running'", [], |r| r.get(0)).map_err(|e| e.to_string())
     }
 
+    /// R5 / §§7,9: only runtime events renew a slot. A meta row avoids growing audit per token.
+    pub fn runtime_activity(&self, r: &Run, at: i64) -> Result<(), String> {
+        self.0.execute("INSERT OR REPLACE INTO meta(key,value) SELECT 'runtime-activity:' || id, ?2 FROM runs WHERE id=?1 AND state='running'",params![r.id,at]).map(drop).map_err(|e|e.to_string())
+    }
+
+    /// Atomically retire inactive requests and return the remaining drain blockers.
+    /// No external operation is replayed; a late runtime observes the terminal request as fenced.
+    pub fn drain_requests(&self, at: i64) -> Result<(Vec<String>, bool), String> {
+        let e=|e:rusqlite::Error|e.to_string();
+        let tx=self.0.unchecked_transaction().map_err(e)?;
+        let rows:Vec<(i64,String,String,i64,i64,Option<i64>,bool,String)>= {
+            let mut q=tx.prepare("SELECT q.id,q.session,q.front,coalesce(r.started_at,q.received_at),
+                coalesce((SELECT value FROM meta WHERE key='runtime-activity:' || r.id),(SELECT value FROM meta WHERE key='request-activity:' || q.id),r.started_at,q.received_at),
+                r.id,coalesce(r.tool,0),coalesce(r.state,'missing') FROM requests q
+                LEFT JOIN runs r ON r.id=(SELECT max(id) FROM runs WHERE request_id=q.id)
+                WHERE q.state='running' ORDER BY q.id").map_err(e)?;
+            q.query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?))).and_then(Iterator::collect).map_err(e)?
+        };
+        let mut blockers=vec![];
+        let mut retired=false;
+        for (id,session,front,started,last,run,tooled,state) in rows {
+            // Answer writes have no model run; retain their receipt reconciliation and classify expiry as uncertain.
+            if at.saturating_sub(last)<600 && (state=="running" || run.is_none()) {
+                blockers.push(format!("request={id} conversation={session} age={}s idle={}s",at.saturating_sub(started),at.saturating_sub(last)));
+                continue;
+            }
+            let why=if state=="running" || run.is_none() {"No runtime event for 600 s; unfinished work was not replayed"} else {"Terminal run left a running request; unfinished work was not replayed"};
+            let uncertain=tooled || run.is_none();
+            let ru:bool=tx.query_row("SELECT coalesce(language,'en') LIKE 'ru%' FROM requests WHERE id=?1",[id],|r|r.get(0)).map_err(e)?;
+            let mut text=match (ru,uncertain) {
+                (true,true)=>"Запрос прерван; действия не подтверждены и не повторялись.",
+                (true,false)=>"Запрос прерван; незавершённая работа не повторялась.",
+                (false,true)=>"Request interrupted; effects are unconfirmed and were not repeated.",
+                (false,false)=>"Request interrupted; unfinished work was not repeated.",
+            }.to_string();
+            let mut q=tx.prepare("SELECT DISTINCT result FROM audit_events WHERE request_id=?1 AND kind='kept_finding' ORDER BY id").map_err(e)?;
+            let findings:Vec<String>=q.query_map([id],|r|r.get(0)).and_then(Iterator::collect).map_err(e)?;
+            if !findings.is_empty() { text.push_str(if ru {"\nЗавершено: "} else {"\nFinished: "});text.push_str(&findings.join("\n")); }
+            tx.execute("UPDATE requests SET state=?2,error=?3,reply=?4 WHERE id=?1 AND state='running'",params![id,if uncertain {"uncertain"} else {"failed"},why,&text]).map_err(e)?;
+            tx.execute("UPDATE runs SET state='interrupted',ended_at=?2,outcome=?3 WHERE id=?1 AND state='running'",params![run,at,why]).map_err(e)?;
+            tx.execute("INSERT INTO audit_events(request_id,run_id,at,kind,result) VALUES (?1,?2,?3,'drain_retired',?4)",params![id,run,at,why]).map_err(e)?;
+            if front=="telegram" {
+                let (chat,topic,message)=tx.query_row("SELECT chat,topic,message FROM requests WHERE id=?1",[id],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,Option<i64>>(1)?,r.get::<_,i64>(2)?))).map_err(e)?;
+                outbox(&tx,id,chat,topic,Some(message),None,&text,at)?;
+            }
+            retired=true;
+        }
+        tx.commit().map_err(e)?;
+        Ok((blockers,retired))
+    }
+
     /// True when a stop or a later claim has retired this run's fence.
     pub fn fenced(&self, r: &Run) -> Result<bool, String> {
-        self.0.query_row("SELECT fence<>?2 OR NOT EXISTS(SELECT 1 FROM requests q JOIN grants g ON g.user=q.sender AND g.name='chat' WHERE q.id=?3) FROM conversations WHERE session=?1", params![r.session, r.fence,r.request], |x| x.get(0)).map_err(|e| e.to_string())
+        self.0.query_row("SELECT fence<>?2 OR NOT EXISTS(SELECT 1 FROM requests q JOIN grants g ON g.user=q.sender AND g.name='chat' WHERE q.id=?3 AND q.state='running') FROM conversations WHERE session=?1", params![r.session, r.fence,r.request], |x| x.get(0)).map_err(|e| e.to_string())
     }
 
     /// Rebuild context only from this conversation generation. Historical text and receipts are data, never new authority (§ 4).
@@ -1971,7 +2022,7 @@ impl Journal {
     }
 
     /// Records a run's outcome, reply and native thread in one transaction, only while its fence holds. Returns false for a
-    /// fenced run, which changes nothing but its own run row.
+    /// fenced run, which retires its running request without delivering a late reply.
     pub fn finish(&self, r: &Run, thread: Option<&str>, model: Option<&str>, outcome: &crate::manager::Outcome, at: i64) -> Result<bool, String> {
         self.finish_with_footer(r, thread, model, outcome, None, at)
     }
@@ -1981,6 +2032,8 @@ impl Journal {
         use crate::manager::Outcome;
         let e = |e: rusqlite::Error| e.to_string();
         let tx = self.0.unchecked_transaction().map_err(e)?;
+        let active:bool=tx.query_row("SELECT state='running' FROM runs WHERE id=?1",[r.id],|x|x.get(0)).map_err(e)?;
+        if !active { return Ok(false); }
         let language: Option<String> = tx.query_row("SELECT language FROM requests WHERE id=?1",[r.request],|x|x.get(0)).map_err(e)?;
         let (state, mut text, error) = match outcome {
             _ if self.fenced(r)? => ("fenced", String::new(), None),
@@ -2002,6 +2055,8 @@ impl Journal {
         }
         tx.execute("UPDATE runs SET state=?2, ended_at=?3, outcome=?4, model=?5 WHERE id=?1", params![r.id, state, at, error, model]).map_err(e)?;
         if state == "fenced" {
+            // R5 / #213: retire the slot too, preserving /stop and other terminal outcomes.
+            tx.execute("UPDATE requests SET state=CASE WHEN EXISTS(SELECT 1 FROM runs WHERE id=?2 AND tool=1) THEN 'uncertain' ELSE 'cancelled' END, error='run fenced; unfinished work was not replayed' WHERE id=?1 AND state='running'",params![r.request,r.id]).map_err(e)?;
             tx.commit().map_err(e)?;
             return Ok(false);
         }
@@ -2066,7 +2121,7 @@ impl Journal {
             let mut q = tx
                 .prepare(
                     "SELECT r.request_id, r.tool, q.front
-                    FROM runs r JOIN requests q ON q.id=r.request_id WHERE r.state='running' AND q.state='running'",
+                    FROM runs r JOIN requests q ON q.id=r.request_id WHERE q.state='running' AND r.id=(SELECT max(id) FROM runs WHERE request_id=q.id)",
                 )
                 .map_err(e)?;
             q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).and_then(Iterator::collect).map_err(e)?
@@ -2188,7 +2243,7 @@ impl Journal {
     }
 
     pub fn effect_dispatchable(&self, op: &str) -> Result<bool,String> {
-        self.0.query_row("SELECT q.state<>'cancelled' AND NOT EXISTS(SELECT 1 FROM runs r JOIN conversations c ON c.session=r.session WHERE r.request_id=q.id AND r.state='running' AND (r.generation<>c.generation OR r.fence<>c.fence)) FROM task_effects t JOIN requests q ON q.id=t.request_id WHERE t.op=?1",[op],|r|r.get(0)).map_err(|e|e.to_string())
+        self.0.query_row("SELECT q.state<>'cancelled' AND NOT EXISTS(SELECT 1 FROM audit_events WHERE request_id=q.id AND kind='drain_retired') AND NOT EXISTS(SELECT 1 FROM runs r JOIN conversations c ON c.session=r.session WHERE r.request_id=q.id AND r.state='running' AND (r.generation<>c.generation OR r.fence<>c.fence)) FROM task_effects t JOIN requests q ON q.id=t.request_id WHERE t.op=?1",[op],|r|r.get(0)).map_err(|e|e.to_string())
     }
 
     pub fn task_effect_pending(&self, op: &str) -> Result<bool,String> {
@@ -2853,7 +2908,10 @@ impl Journal {
 
     /// Marks an answer in flight before its board write.
     pub fn take_answer(&self, request: i64) -> Result<(), String> {
-        self.0.execute("UPDATE requests SET state='running' WHERE id=?1 AND kind='answer'", [request]).map(drop).map_err(|e| e.to_string())
+        let tx=self.0.unchecked_transaction().map_err(|e|e.to_string())?;
+        tx.execute("UPDATE requests SET state='running' WHERE id=?1 AND kind='answer'", [request]).map_err(|e|e.to_string())?;
+        tx.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?1,?2)",params![format!("request-activity:{request}"),crate::now() as i64]).map_err(|e|e.to_string())?;
+        tx.commit().map_err(|e|e.to_string())
     }
 
     /// Ends an answer request with its reply in its route, and records the board write in its audit record.
@@ -3210,6 +3268,79 @@ mod tests {
         let mut j = Journal::open(&d.join("journal.sqlite")).unwrap();
         j.bootstrap(7, 0).unwrap();
         (j, d)
+    }
+
+    // #213 / R5, §9: a retired run must not leave an undrainable request,
+    // including after restart; terminal states and cancelled replies remain protected.
+    #[test]
+    fn drain_213_terminal_slots() {
+        use crate::manager::Outcome;
+        let (mut j,p)=journal("drain-213-terminal");
+        for outcome in [Outcome::Failed("error".into()), Outcome::Failed("Codex sent no event for 600 s".into()), Outcome::Uncertain("tool interrupted".into()), Outcome::Fenced] {
+            let r=j.ask(7,"invented request",1).unwrap();
+            j.finish(&r,None,None,&outcome,2).unwrap();
+            assert_eq!(j.running().unwrap(),0,"terminal outcome leaked a drain slot");
+            assert_eq!(j.reconcile(3).unwrap(),0);
+        }
+        let old=j.ask(7,"overlapping CLI request",3).unwrap();
+        let newer=j.ask(7,"new CLI request",3).unwrap();
+        assert!(j.fenced(&old).unwrap());
+        j.finish(&old,None,None,&Outcome::Answered("late".into()),3).unwrap();
+        assert_eq!(j.running().unwrap(),1,"only the newer CLI request may block");
+        j.finish(&newer,None,None,&Outcome::Answered("done".into()),3).unwrap();
+        let r=j.ask(7,"restart",4).unwrap();
+        assert_eq!(j.reconcile(5).unwrap(),1);
+        assert_eq!(j.running().unwrap(),0);
+        assert!(!j.finish(&r,None,None,&Outcome::Answered("late".into()),6).unwrap());
+        assert_eq!(j.request(r.request).unwrap().0,"failed");
+        drop(j);std::fs::remove_dir_all(p).unwrap();
+    }
+
+    // #213 / §§7,9: inactivity, not request age, controls expiry; terminal orphan
+    // repair and restart must preserve findings and never accept a late reply.
+    #[test]
+    fn drain_213_activity_and_orphan_recovery() {
+        use crate::manager::Outcome;
+        let (mut j,p)=journal("drain-213-activity");
+        let idle=j.ask(7,"idle",0).unwrap();
+        let active=j.ask(7,"active",10).unwrap();
+        j.tool(&active,"commandExecution","invented",None,10).unwrap();
+        let op=j.task_intent(&active,"pilotq","taskqorg/pilotq","/invented",&["answer".into(),"1".into()],10).unwrap();
+        j.keep_finding(&active,"invented completed finding",11).unwrap();
+        j.runtime_activity(&active,599).unwrap();
+        let (blockers,retired)=j.drain_requests(599).unwrap();
+        assert!(!retired);
+        assert_eq!(blockers.len(),2);
+        assert!(blockers.iter().any(|b|b.contains(&format!("request={} conversation=cli:7 age=589s idle=0s",active.request))));
+        let (blockers,retired)=j.drain_requests(600).unwrap();
+        assert!(retired);
+        assert_eq!(blockers.len(),1,"recent runtime event preserves old active work");
+        assert_eq!(j.request(idle.request).unwrap().0,"failed");
+        assert!(!j.finish(&idle,None,None,&Outcome::Answered("late".into()),601).unwrap());
+        assert!(!j.drain_requests(1198).unwrap().1);
+        assert!(j.drain_requests(1199).unwrap().1);
+        assert_eq!(j.running().unwrap(),0);
+        assert_eq!(j.request(active.request).unwrap().0,"uncertain");
+        assert!(j.request(active.request).unwrap().1.unwrap().contains("invented completed finding"));
+        assert!(j.fenced(&active).unwrap());
+        assert!(!j.effect_dispatchable(&op).unwrap(),"expiry never dispatches an unconfirmed effect");
+        assert!(!j.finish(&active,None,None,&Outcome::Answered("late".into()),1200).unwrap());
+        j.draining(false).unwrap();
+        let orphan=j.ask(7,"old binary orphan",1201).unwrap();
+        j.0.execute("UPDATE runs SET state='fenced',ended_at=1202 WHERE id=?1",[orphan.id]).unwrap();
+        drop(j);
+        let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
+        assert_eq!(j.reconcile(1203).unwrap(),1,"restart repairs old terminal-run orphans");
+        assert_eq!(j.running().unwrap(),0);
+        assert_eq!(j.reconcile(1204).unwrap(),0);
+        let answer=j.ask(7,"invented answer without a model run",1205).unwrap();
+        j.0.execute("DELETE FROM runs WHERE id=?1",[answer.id]).unwrap();
+        j.0.execute("UPDATE requests SET kind='answer' WHERE id=?1",[answer.request]).unwrap();
+        j.0.execute("INSERT INTO meta(key,value) VALUES (?1,1300)",[format!("request-activity:{}",answer.request)]).unwrap();
+        assert!(!j.drain_requests(1899).unwrap().1);
+        assert!(j.drain_requests(1900).unwrap().1);
+        assert_eq!(j.request(answer.request).unwrap().0,"uncertain");
+        drop(j);std::fs::remove_dir_all(p).unwrap();
     }
 
     // R10/R13, §6: Telegram controls must reach durable own data, never another subject.

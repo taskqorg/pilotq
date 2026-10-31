@@ -218,6 +218,13 @@ fn installed_service_updates_on_schedule() {
     assert!(install.join("update-paused").exists());
     assert!(command(&d).args(["update", "--resume"]).status().unwrap().success());
     assert!(!install.join("update-paused").exists());
+    // #213 / R5: reproduce the old fenced-run orphan on disk before the scheduled
+    // activation. Startup must retire it so an idle installed service can update itself.
+    let db=rusqlite::Connection::open(install.join("journal.sqlite")).unwrap();
+    db.execute("INSERT INTO requests(update_id,chat,sender,message,kind,state,received_at,session,front) VALUES (-213,7,7,0,'text','running',1,'cli:7','cli')",[]).unwrap();
+    let orphan=db.last_insert_rowid();
+    db.execute("INSERT INTO runs(request_id,session,generation,fence,state,started_at,ended_at) VALUES (?1,'cli:7',0,1,'fenced',1,2)",[orphan]).unwrap();
+    drop(db);
     fs::write(install.join("update-at"), "0").unwrap();
     let mut service = start();
     let mut exit = None;
@@ -227,6 +234,10 @@ fn installed_service_updates_on_schedule() {
     assert_eq!(fs::read_to_string(install.join("previous")).unwrap(), current);
     assert_eq!(fs::read(install.join("releases/9.0.0/pilotq")).unwrap(), binary);
     assert!(install.join("drain").exists(), "admission stays stopped until restart");
+    let db=rusqlite::Connection::open(install.join("journal.sqlite")).unwrap();
+    assert_eq!(db.query_row("SELECT state FROM requests WHERE id=?1",[orphan],|r|r.get::<_,String>(0)).unwrap(),"failed");
+    assert_eq!(db.query_row("SELECT count(*) FROM requests WHERE state='running'",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    drop(db);
     drop(service);
     fs::remove_dir_all(d).unwrap();
 }

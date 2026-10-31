@@ -53,12 +53,23 @@ fn drain(t: &Tool, grace: Duration) -> Result<Option<String>, String> {
     j.planned_stop(true, now() as i64)?;
     let end = std::time::Instant::now() + grace;
     loop {
-        let n = j.running()? + release::active(&j)?;
+        let (blockers,retired) = j.drain_requests(now() as i64)?;
+        let releases = release::active(&j)?;
+        let n = blockers.len() as i64 + releases;
+        if retired {
+            // Let the runtime observe its fence (1 s) and finish its termination grace (5 s).
+            let termination = Duration::from_secs(7);
+            if end.saturating_duration_since(std::time::Instant::now()) < termination {
+                return Err("drain: waiting for inactive request termination; update deferred".into());
+            }
+            std::thread::sleep(termination);
+            continue;
+        }
         if n == 0 {
             return Ok(Some("drain: ok".into()));
         }
         if std::time::Instant::now() >= end {
-            return Err(format!("drain: {n} running request(s); update deferred"));
+            return Err(format!("drain: {n} running request(s); update deferred; {}; active releases={releases}",blockers.join("; ")));
         }
         std::thread::sleep(Duration::from_millis(500));
     }
@@ -885,8 +896,10 @@ mod update_tests {
         std::fs::create_dir_all(&t.install).unwrap();
         let mut j = journal::Journal::open(&t.install.join("journal.sqlite")).unwrap();
         j.bootstrap(7, 0).unwrap();
-        let r = j.ask(7, "fixture", 1).unwrap();
+        let r = j.ask(7, "fixture", now() as i64).unwrap();
         assert!(drain(&t, Duration::ZERO).unwrap_err().contains("update deferred"));
+        let detail=drain(&t,Duration::ZERO).unwrap_err();
+        assert!(detail.contains(&format!("request={} conversation=cli:7 age=",r.request)) && detail.contains("idle="),"{detail}");
         assert_eq!(j.request(r.request).unwrap().0, "running");
         assert!(matches!(j.ask(7, "blocked", 2), Err(e) if e.contains("drain")));
         resume_after_update(&t, true).unwrap();

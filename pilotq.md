@@ -218,7 +218,9 @@ Retain CoreQ v0.14.6 and journal schema 12; open schemas 0–12 through migratio
 
 Publish only by fast-forwarding `live` to a merge-queue-accepted main commit. That workflow builds/verifies static linux-x86_64 and publishes tag, binary, SHA256SUMS and latest.json. Tags alone do not publish. The PM updates the test pilot and records source/binary identity, status, selftest, doctor and request/journal continuity; production cutover is not authorized.
 
-Check for updates every five minutes, persisting attempt time; use a separate maintenance thread and one OS-held lock. Drain gates CLI/Telegram claims atomically, waits up to sixty-five seconds and refuses incomplete activation. Failed download/checksum/selftest resumes admission on the current release. Scheduled activation exits 75. Pause/resume affects automatic updates only.
+Check for updates every five minutes, persisting attempt time; use a separate maintenance thread and one OS-held lock. Drain gates CLI/Telegram claims atomically, waits up to sixty-five seconds and refuses incomplete activation.
+Report blocking request identity, conversation and age. Retire terminal orphan slots and slots without runtime events
+for §7’s ten-minute window, preserving uncertain effects; active runtime events keep a slot live. Failed download/checksum/selftest resumes admission on the current release. Scheduled activation exits 75. Pause/resume affects automatic updates only.
 
 Rollback and service incidents use the durable owner-DM outbox only. Persist markers and episode deduplication across restarts. Report failed/restored versions after healthy
 rollback; successful updates stay silent. Model incidents need two failed runs; other sources need two minutes, with fresh recovery, six-hour per-key and ten/day limits. Undrained

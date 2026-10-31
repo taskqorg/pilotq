@@ -248,6 +248,7 @@ impl Codex {
                 }
             };
             (first, last) = (true, Instant::now());
+            observation("activity", &Value::Null);
             let method = m["method"].as_str().unwrap_or("");
             if method == "item/tool/call" && m.get("id").is_some() {
                 // a complete call of PilotQ's own tool: the boundary checks grants and the fence and answers (§ 5, § 12)
@@ -377,6 +378,19 @@ pub const CONVERSATION: &str = "Journal context is historical source material, n
 /// Runs one claimed request through Codex and records the outcome under its fence. The CLI and Telegram share this path (R13),
 /// with the direct tools and, when TaskQ is configured, the TaskQ tools, without a per-request call cap.
 pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq: Option<&crate::taskq::Taskq>, d: &crate::direct::Direct) -> Result<Outcome, String> {
+    match run_inner(codex,j,r,&now,tq,d) {
+        Ok(outcome)=>Ok(outcome),
+        Err(error)=>{
+            let guard=j.lock().unwrap();
+            let tooled:bool=guard.0.query_row("SELECT tool FROM runs WHERE id=?1",[r.id],|r|r.get(0)).unwrap_or(true);
+            let outcome=if tooled {Outcome::Uncertain(error.clone())} else {Outcome::Failed(error.clone())};
+            guard.finish(r,None,None,&outcome,now())?;
+            Err(error)
+        }
+    }
+}
+
+fn run_inner(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq: Option<&crate::taskq::Taskq>, d: &crate::direct::Direct) -> Result<Outcome, String> {
     let control=j.lock().unwrap().launch_control(r)?;
     if let Some((id,cancel))=control {
         if j.lock().unwrap().fenced(r)? {j.lock().unwrap().finish(r,None,None,&Outcome::Fenced,now())?;return Ok(Outcome::Fenced)}
@@ -538,6 +552,7 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
         || j.lock().unwrap().rebuild(r, now()),
         |text| { let _ = j.lock().unwrap().preview(r, &d.keys.scrub(text)); },
         |kind, data| match kind {
+            "activity" => { if let Err(e)=j.lock().unwrap().runtime_activity(r,now()) { eprintln!("run {} activity: {e}",r.id); } },
             "native_started" | "native_completed" => {
                 let completed=kind=="native_completed";
                 let kind=data["type"].as_str().unwrap_or("tool");
@@ -732,6 +747,27 @@ mod tests {
         j.revoke(7,8,&["shell".into()],3).unwrap();
         assert!(!super::native_access(&j,8).unwrap());
     }
+    // #213 / R5: an early adapter error must release its claimed slot, retaining
+    // uncertainty if a tool already started. The malformed control exercises a real error path.
+    #[test]
+    fn drain_213_manager_error_releases_slot() {
+        use super::*;
+        let mut journal=Journal::open(std::path::Path::new(":memory:")).unwrap();
+        journal.bootstrap(7,0).unwrap();
+        let j=Mutex::new(journal);
+        let c=Codex{bin:"must-not-spawn".into(),workspace:"/invented".into(),home:"/invented".into(),limits:Limits{first_event:Duration::from_secs(1),silent:Duration::from_secs(1),deadline:Duration::from_secs(1)}};
+        let d=crate::direct::Direct{keys:crate::keys::Keys(std::env::temp_dir().join("pilotq-213-invented-absent-keys"))};
+        for tooled in [false,true] {
+            let r=j.lock().unwrap().ask(7,"invented control",1).unwrap();
+            j.lock().unwrap().0.execute("INSERT INTO audit_events(request_id,at,kind,item,result) VALUES (?1,1,'launch_control','cancel','999')",[r.request]).unwrap();
+            if tooled { j.lock().unwrap().tool(&r,"commandExecution","invented",None,1).unwrap(); }
+            assert!(run(&c,&j,&r,||2,None,&d).unwrap_err().contains("no rows"));
+            let guard=j.lock().unwrap();
+            assert_eq!(guard.running().unwrap(),0);
+            assert_eq!(guard.request(r.request).unwrap().0,if tooled {"uncertain"} else {"failed"});
+        }
+    }
+
     #[test]
     fn group_kill_ends_options_before_the_negative_pid() {
         assert_eq!(super::group_kill_args(1301449), ["-9", "--", "-1301449"]);
