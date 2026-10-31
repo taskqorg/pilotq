@@ -224,6 +224,9 @@ fn attach(tq:&Taskq,j:&std::sync::Mutex<Journal>,project:&str,epoch:&Value,end:I
     if service["projects"].as_array().is_some_and(|entries|entries.iter().any(|p|p["root"].as_str()==tq.root.to_str()
         && p["status"]["complete"]==true && fresh(&p["status"]["at"],crate::now() as i64) && p["error"].is_null()
         && (p["host_binding"].is_null() || p["host_binding"]=="current"))) {return Ok(());}
+    if service["service"]["install_protocol"]!=1 {
+        return Err("Owner: update/reconcile the TaskQ host through its coordinated migration route to install_protocol 1, then Recheck".into());
+    }
     let exe=fs::canonicalize(&tq.bin).map_err(|_|"TaskQ installation unavailable")?;
     let parent=exe.parent().ok_or("TaskQ installation unavailable")?;
     let install=if parent.parent().is_some_and(|p|p.file_name().is_some_and(|n|n=="releases")) {

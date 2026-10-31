@@ -633,14 +633,14 @@ mod tests {
             std::fs::write(install.join("host-policy-migration/install.json"),"invented installation fixture").unwrap();
             let unit=install.join("invented-host-unit");std::fs::write(&unit,"invented unit; never modify").unwrap();
             let native=coreq::process::identity(std::process::id()).unwrap().unwrap();
-            let owner=json!({"schema":1,"pid":native.pid,"started":native.started,"instance":"invented-instance","version":"4.6.56","at":crate::now()});
+            let owner=json!({"schema":1,"pid":native.pid,"started":native.started,"instance":"invented-instance","version":"4.6.56","install_protocol":1,"at":crate::now()});
             std::fs::write(install.join("service"),owner.to_string()).unwrap();
             let _service_lock=coreq::file_lock::lock(&install.join("service.lock")).unwrap();
             let original=format!("{}\n",dir.to_string_lossy());std::fs::write(install.join("projects"),&original).unwrap();
             std::fs::set_permissions(install.join("projects"),std::fs::Permissions::from_mode(0o600)).unwrap();
             let root=dir.join("projects/pah");
             let service=json!({"schema":"taskq.service/1","service":{"state":"running","fresh":true,"at":crate::now(),
-                "pid":native.pid,"started":native.started,"instance":"invented-instance","version":"4.6.56"},"registry_error":null,
+                "pid":native.pid,"started":native.started,"instance":"invented-instance","version":"4.6.56","install_protocol":1},"registry_error":null,
                 "projects":[{"root":root,"host_binding":"current","status":{"complete":true,"at":crate::now(),"pid":native.pid,"host_instance":"invented-instance",
                     "capacity":{"limits":{"codex":4},"gate":"open"},"access":[{"runtime":"codex","grant":"workspace (project) invented","effective":"workspace"}],
                     "kids":[{"task":999,"runtime":"codex"}]}}]});
@@ -691,10 +691,14 @@ mod tests {
             assert_eq!(std::fs::read_to_string(install.join("projects")).unwrap(),format!("{original}{}\n",root.display()));
             if front=="cli" {
                 // Attach failures never fall through to unit installation or host-policy changes.
-                for failure in ["missing-service","stale-service","install-transition","lifecycle","busy","foreign-board","symlink","changed-binding","native-identity","no-installation","cancelled-run","revoked-admin","stopped-run"] {
+                for failure in ["missing-protocol","unsupported-protocol","malformed-protocol","missing-service","stale-service","install-transition","lifecycle","busy","foreign-board","symlink","changed-binding","native-identity","no-installation","cancelled-run","revoked-admin","stopped-run"] {
                     std::fs::write(install.join("projects"),&original).unwrap();
                     let mut observed=before.clone();
+                    std::fs::remove_file(root.join(".taskq/focus")).unwrap();
                     match failure {
+                        "missing-protocol"=>{observed["service"].as_object_mut().unwrap().remove("install_protocol");},
+                        "unsupported-protocol"=>observed["service"]["install_protocol"]=json!(2),
+                        "malformed-protocol"=>observed["service"]["install_protocol"]=json!("1"),
                         "missing-service"=>observed["service"]["state"]=json!("exited"),
                         "stale-service"=>observed["service"]["fresh"]=json!(false),
                         "install-transition"=>std::fs::write(install.join("projects.installing"),"invented pending transition").unwrap(),
@@ -720,6 +724,12 @@ mod tests {
                     assert!(result.as_ref().map_or(true,|r|r["ready"]==false),"{failure}: {result:?}");
                     assert_eq!(std::fs::read_to_string(install.join("projects")).unwrap(),original,"{failure} changed registry");
                     assert_eq!(std::fs::read_to_string(&unit).unwrap(),"invented unit; never modify");
+                    assert!(!root.join(".taskq/focus").exists(),"{failure} wrote focus");
+                    if failure.ends_with("protocol") {
+                        let report=result.as_ref().unwrap();
+                        assert!(report["gaps"].as_array().unwrap().iter().any(|g|g["fix"].as_str().is_some_and(|s|s.contains("protocol") && s.contains("Recheck"))),"{report}");
+                    }
+                    std::fs::write(root.join(".taskq/focus"),"off\n").unwrap();
                     drop(held);
                     if failure=="symlink" {std::fs::remove_file(install.join("projects")).unwrap();std::fs::rename(install.join("registry-original"),install.join("projects")).unwrap();}
                     for name in ["projects.installing","resource-state/state.json"] {let _=std::fs::remove_file(install.join(name));}

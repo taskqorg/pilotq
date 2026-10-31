@@ -343,7 +343,9 @@ board, and records who registered it. For an existing repository PilotQ prepares
 TaskQ configuration itself, registers the board and runs onboarding before returning its findings.
 Repository or claim-issue creation remains an owner operation.
 
-PilotQ attaches a registered root only to an already installed, healthy TaskQ host service. It uses
+PilotQ attaches a registered root only to an already installed, healthy TaskQ host service. New
+attachments require the host to advertise numeric `install_protocol: 1` before focus or registry
+writes; missing or unsupported capability needs an owner-coordinated host update and Recheck. It uses
 the explicit line registry and wake marker defined by TaskQ's host-service contract, preserving
 existing entries under the update, project and resource locks. Refuse pending lifecycle or install
 transitions, unknown native ownership, symlinked state and changed registration or grants. Persist
