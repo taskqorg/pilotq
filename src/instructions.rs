@@ -41,6 +41,22 @@ mod tests {
         assert!(crate::taskq::INSTRUCTIONS.contains("After a successful task_plan, always send a nonempty final answer"));
     }
 
+    // #235 A1/A2 / R13: protect instruction loading on both front ends and
+    // rebuilt sessions; this does not prove model compliance or live rendering.
+    #[test]
+    fn live_235_evidence_limits_are_loaded() {
+        let policy = super::policy();
+        for requirement in [
+            "Report a worker's narrower check as that narrower check",
+            "HTTP timing and response HTML do not prove rendered visible text",
+            "Check available headless browser executables",
+            "Never install a browser, start a login or reuse another person's session",
+            "Apply these limits to progress, drafts, final replies and task summaries",
+        ] {
+            assert!(policy.contains(requirement), "missing live-check instruction: {requirement}");
+        }
+    }
+
     #[test]
     fn relocated_product_policy_is_loaded() {
         // R13 / §2: relocation must retain both delegation authority and card presentation.
