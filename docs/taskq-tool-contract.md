@@ -45,3 +45,9 @@ After a confirmed TaskQ write, persist the selected answer and the edit obligati
 The [root contract §5](integration-contract.md#dev-visibility-and-owner-release) owns this exception, configuration schema, command bounds and migration authority. `project_release_preview` needs protected owner identity, `chat`, project scope and explicitly provisioned `release:NAME`. It creates only a preview; natural-language execution requests never replace confirmation. `/release NAME` uses the same preview path. Release buttons consume the immutable owner/generation-bound preview once. CLI previews deliver the button to the owner DM; text cannot confirm.
 
 `task_status` and `project_status` add DEV ancestry observations using TaskQ merged identities and trusted terminal delivery receipts; missing evidence remains unknown. Confirmation rechecks the registry/configuration, LIVE base and every registered checkout's running attempts before recording intent. Only then may preflight, backup, pinned release and pipeline readback run, with one audit receipt per stage. Recovery never respawns an interrupted intent. Pipeline readback is a registered command, not a PilotQ forge integration.
+
+## Member reports and blockers
+
+Member report access uses `project_file_read` for UTF-8 blobs up to 256 KiB at the registered checkout’s default-branch ref (`refs/remotes/origin/HEAD`); return the pinned commit and mark remote freshness unknown. Never read working-tree files, symlinks or arbitrary refs. Current chat/project grants, registration and run fences gate disclosure.
+`issue_read` preserves full trusted closing reports and lists open dependents from a complete TaskQ snapshot.
+For member blockers, queue a scoped durable notice to the protected owner (the PM fallback), with request and project identity. Report queued versus delivered truthfully; never assign members owner or PM remedies. Known setup refusals use this same path and plain localized text.

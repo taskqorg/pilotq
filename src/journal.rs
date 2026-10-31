@@ -2203,10 +2203,17 @@ impl Journal {
         let files=self.reply_files(r.request)?;
         // #236 / R11,R13: a setup refusal is a handled result, shared by CLI, text and button paths.
         let gate_refusal:Option<String>=tx.query_row("SELECT result FROM audit_events WHERE run_id=?1 AND kind='plan_gate_refusal' AND NOT EXISTS(SELECT 1 FROM plan_runs WHERE request_id=?2) ORDER BY id DESC LIMIT 1",params![r.id,r.request],|r|r.get(0)).optional().map_err(e)?;
+        let blocker_notice:Option<String>=tx.query_row("SELECT result FROM audit_events WHERE request_id=?1 AND kind='member_blocker' ORDER BY id DESC LIMIT 1",[r.request],|row|row.get(0)).optional().map_err(e)?;
         let (state, mut text, error) = match outcome {
             _ if self.fenced(r)? => ("fenced", String::new(), None),
             Outcome::Fenced => ("fenced", String::new(), None),
             _ if gate_refusal.is_some() && !matches!(outcome,Outcome::Uncertain(_)) => ("answered",gate_refusal.unwrap(),None),
+            Outcome::Failed(x) if blocker_notice.is_some() => ("failed",format!("{}\n{}",blocker_notice.unwrap(),if language.as_deref().is_some_and(|l|l.starts_with("ru")) {"Остальная работа не завершена."} else {"The remaining work did not finish."}),Some(x)),
+            Outcome::Answered(a) if blocker_notice.is_some() => {
+                let notice=blocker_notice.unwrap();
+                ("answered",if a.contains(&notice) {a.clone()} else {format!("{a}\n{notice}")},None)
+            },
+            Outcome::Uncertain(x) if blocker_notice.is_some() => ("uncertain",format!("{}\n{}",blocker_notice.unwrap(),brief(language.as_deref(),"uncertain")),Some(x)),
             Outcome::Answered(a) => ("answered", a.clone(), None),
             Outcome::Failed(x) => ("failed", media_brief(language.as_deref(), if x == "document parsing timed out" { "document_timeout" } else if x.starts_with("voice") { if x.contains("20 MiB") || x.contains("5 minutes") { "voice_limit" } else { "voice_failed" } } else if x.contains("20 MiB") { if files.is_empty() || image { "image_limit" } else { "file_limit" } } else if x.starts_with("image") || x.contains("image") { "image_failed" } else if x.contains("within") || x.contains("budget") { "limit" } else { "failed" }, &files), Some(x)),
             Outcome::Uncertain(x) => ("uncertain", brief(language.as_deref(), "uncertain").into(), Some(x)),
@@ -2229,7 +2236,7 @@ impl Journal {
                 tx.execute("INSERT INTO cards(request_id,generation,plan_id) VALUES (?1,?2,?3) ON CONFLICT(request_id) DO UPDATE SET plan_id=excluded.plan_id",params![r.request,r.generation,plan]).map_err(e)?;
                 let tickets: Value = serde_json::from_str(&tickets).map_err(|e|e.to_string())?;
                 text = crate::conversation::plan(&tickets, language.as_deref());
-                if let Some(reason)=crate::onboarding::refusal(self,&project,language.as_deref())? {text.push_str(&format!("\n\n{reason}"));}
+                if let Some(reason)=crate::onboarding::member_refusal(self,r,&project,language.as_deref())? {text.push_str(&format!("\n\n{reason}"));}
             }
             let question: Option<(String,String)> = tx.query_row("SELECT question,options FROM cards WHERE request_id=?1 AND question IS NOT NULL",[r.request],|x|Ok((x.get(0)?,x.get(1)?))).optional().map_err(e)?;
             if let Some((question,options)) = question {

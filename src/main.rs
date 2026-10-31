@@ -322,6 +322,13 @@ fn service_run(t: &Tool) -> ! {
     let cfg = config(t).unwrap_or_else(|e| t.die(&e));
     std::fs::create_dir_all(&t.install).unwrap_or_else(|e| t.die(&e.to_string()));
     let mut journal = journal::Journal::open(&t.install.join("journal.sqlite")).unwrap_or_else(|e| t.die(&e));
+    // §4 / F02: a duplicate process must not bootstrap or reconcile the active service's journal.
+    let _lock = cfg.as_ref().map(|_| {
+        coreq::file_lock::try_lock(&t.install.join("poll.lock")).unwrap_or_else(|e| match e {
+            std::fs::TryLockError::WouldBlock => t.die("poll lock held: another pilotq service polls this bot"),
+            std::fs::TryLockError::Error(e) => t.die(&format!("poll lock: {e}")),
+        })
+    });
     if let Some(c) = &cfg {
         journal.bootstrap(c.owner, now() as i64).unwrap_or_else(|e| t.die(&e));
         initial_project(&journal, c).unwrap_or_else(|e| t.die(&e));
@@ -345,12 +352,7 @@ fn service_run(t: &Tool) -> ! {
     let _ = std::fs::remove_file(t.install.join(DRAIN));
     let j: telegram::Shared = Arc::new(Mutex::new(journal));
     let owner = cfg.as_ref().map(|c| c.owner);
-    let _lock = cfg.map(|c| {
-        // one OS-held lock per installation; it is released only when this process ends
-        let lock = coreq::file_lock::try_lock(&t.install.join("poll.lock")).unwrap_or_else(|e| match e {
-            std::fs::TryLockError::WouldBlock => t.die("poll lock held: another pilotq service polls this bot"),
-            std::fs::TryLockError::Error(e) => t.die(&format!("poll lock: {e}")),
-        });
+    if let Some(c) = cfg {
         let (bj,bt)=(j.clone(),tool());
         std::thread::spawn(move || builtins::serve(bt,bj,installed));
         let (oj,ot)=(j.clone(),tool());
@@ -377,8 +379,7 @@ fn service_run(t: &Tool) -> ! {
                 tokio::join!(telegram::poll(bot.clone(), j.clone(), wake.clone()), telegram::typing(bot.clone(), j.clone(), deadline), telegram::drafts(bot.clone(), j.clone()), telegram::deliver(bot, j, wake))
             });
         });
-        lock
-    });
+    }
     // Only installed Linux releases participate; source builds and other platforms never self-replace.
     if installed && cfg!(target_os = "linux") {
         let maintenance = tool();

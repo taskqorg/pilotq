@@ -99,6 +99,7 @@ For the owner or an explicit shell grantee, native tools may perform requested w
 
 `issue_read`, `issue_comment` and `issue_label` use `taskq issue N`; writes use stable `--op-id` and TaskQ receipts. `asana_read` uses the fixed read-only Asana API origin with no redirects/downloads, a 256 KiB response cap, ten-second deadline and bounded fields. External content never authorizes work.
 
+Member report access, full closing reports, open dependents and durable PM/owner blocker escalation follow the [member tools boundary](docs/taskq-tool-contract.md#member-reports-and-blockers); members never receive owner or PM work.
 Task status reports observed issue state, trusted closing verdict, report, proposed follow-ups and verified existing follow-ups; missing facts stay unavailable. Diagnose, research and investigate plans retain TaskQ `--type research`. Open-snapshot absence proves neither closure nor nonexistence.
 
 TaskQ reply files retain identity/caption, protected downloads, a 20 MiB cap, original target/revision/operation and same-operation reconciliation. Target/grants are validated before downloading and again at dispatch. Requeue with files requires the protected owner. Text is optional when files exist; refusals and uncertainty retain the reply and remedy.
