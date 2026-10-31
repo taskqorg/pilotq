@@ -80,7 +80,9 @@ not revoke an already executed side effect. Revisions require the original autho
 retain the original request and content in audit, and deduplicate by update ID and repeated revision content. Only queued,
 unclaimed ordinary input is replaced. Later edits are ordered change requests, never controls,
 answers or launch authorization; saved launch revisions remain immutable. An edited proposal source
-disables its unlaunched cards until a new plan revision is saved and shown.
+disables its unlaunched cards until a new plan revision is saved and shown. This includes plans
+from earlier change requests for the same source message. A turn whose input revision was
+superseded cannot save a new proposal; only a turn handling the current revision can replace it.
 
 ### Runs and tools
 

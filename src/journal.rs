@@ -1101,13 +1101,16 @@ impl Journal {
                             tx.execute("INSERT INTO updates(update_id,disposition,request_id,at) VALUES (?1,'duplicate_revision',?2,?3)",params![update,id,at]).map_err(|e|e.to_string())?;
                             continue;
                         }
-                        // Disable only unlaunched displays sourced by this input. Never mutate a saved launch.
-                        tx.execute("INSERT OR IGNORE INTO meta(key,value) SELECT 'edited-plan:' || p.id,?2 FROM plans p WHERE p.request_id=?1 AND NOT EXISTS(SELECT 1 FROM plan_runs x WHERE x.plan_id=p.id)",params![id,at]).map_err(|e|e.to_string())?;
-                        tx.execute("UPDATE cards SET used_request=?1 WHERE request_id=?1 AND used_request IS NULL AND plan_id IN (SELECT id FROM plans WHERE request_id=?1 AND NOT EXISTS(SELECT 1 FROM plan_runs WHERE plan_id=plans.id))",[id]).map_err(|e|e.to_string())?;
+                        // Every prior request for this source is stale, including earlier change requests.
+                        // Already admitted launches retain their immutable plan and operation identities.
+                        tx.execute("INSERT OR IGNORE INTO meta(key,value) SELECT 'edited-request:' || q.id,?5 FROM requests q WHERE q.front='telegram' AND q.chat=?1 AND q.topic IS ?2 AND q.message=?3 AND q.sender=?4",params![i.chat,i.topic,i.message,sender,at]).map_err(|e|e.to_string())?;
+                        tx.execute("INSERT OR IGNORE INTO meta(key,value) SELECT 'edited-plan:' || p.id,?5 FROM plans p JOIN requests q ON q.id=p.request_id WHERE q.front='telegram' AND q.chat=?1 AND q.topic IS ?2 AND q.message=?3 AND q.sender=?4 AND NOT EXISTS(SELECT 1 FROM plan_runs x WHERE x.plan_id=p.id)",params![i.chat,i.topic,i.message,sender,at]).map_err(|e|e.to_string())?;
+                        tx.execute("UPDATE cards SET used_request=?1 WHERE used_request IS NULL AND plan_id IN (SELECT p.id FROM plans p JOIN meta m ON m.key='edited-plan:' || p.id)",[id]).map_err(|e|e.to_string())?;
                         tx.execute("INSERT INTO audit_events(request_id,at,kind,item) VALUES (?1,?2,'input_revision',?3)",params![id,at,revision.to_string()]).map_err(|e|e.to_string())?;
                         let unclaimed:bool=tx.query_row("SELECT NOT EXISTS(SELECT 1 FROM runs WHERE request_id=?1)",[id],|r|r.get(0)).map_err(|e|e.to_string())?;
                         // Media revisions retain identities, but require a new turn rather than reusing a stale decode.
                         if state=="queued" && kind=="text" && unclaimed && i.image.is_none() && i.voice.is_none() && i.files.is_empty() {
+                            tx.execute("DELETE FROM meta WHERE key=?1",[format!("edited-request:{id}")]).map_err(|e|e.to_string())?;
                             tx.execute("UPDATE requests SET text=?2 WHERE id=?1",params![id,i.text]).map_err(|e|e.to_string())?;
                             request=Some(id);
                         } else {
@@ -2211,6 +2214,9 @@ impl Journal {
     pub fn save_draft(&self, r: &Run, tickets: &Value, project: &str, board: &str, root: &str, at: i64) -> Result<i64, String> {
         if self.fenced(r)? { return Err("this run was stopped; nothing was saved".into()); }
         let tx = self.0.unchecked_transaction().map_err(|e|e.to_string())?;
+        if meta(&tx,&format!("edited-request:{}",r.request))?.is_some() {
+            return Err("the source input was edited; only the current revision can save a new proposal".into());
+        }
         let previous: Option<(i64,String,String,String,bool)> = tx.query_row(
             "SELECT draft,project,board,root,EXISTS(SELECT 1 FROM plan_runs x JOIN plans p ON p.id=x.plan_id WHERE p.draft=plans.draft) FROM plans WHERE session=?1 ORDER BY revision DESC LIMIT 1",
             [&r.session], |x| Ok((x.get(0)?,x.get(1)?,x.get(2)?,x.get(3)?,x.get(4)?))).optional().map_err(|e|e.to_string())?;
@@ -3347,6 +3353,45 @@ mod tests {
         assert_eq!(count(&j,"SELECT count(*) FROM plan_runs"),1);
         assert_eq!(count(&j,"SELECT count(*) FROM plans"),2);
         drop(j);std::fs::remove_dir_all(p).unwrap();
+    }
+
+    // R5/R11 §§2,4: every edit lineage invalidates old proposals, including late saves.
+    #[test]
+    fn edit_lineage_rejects_prior_change_plan() { edit_stale_proposal(false); }
+
+    #[test]
+    fn edit_lineage_rejects_late_save() { edit_stale_proposal(true); }
+
+    fn edit_stale_proposal(late_save: bool) {
+        {
+            let (mut j,p)=journal(if late_save {"197-late"} else {"197-lineage"});
+            j.admit(&[(1,msg(7,7,1))],0).unwrap();
+            let original=j.claim_next(4,0).unwrap().remove(0);
+            let tickets=json!([{"title":"Original scope"}]);
+            let edit=|text:&str| {let mut i=msg(7,7,1).unwrap();i.kind="edit";i.text=Some(text.into());Some(i)};
+            if !late_save {
+                j.finish(&original,None,None,&crate::manager::Outcome::Answered("done".into()),1).unwrap();
+                j.admit(&[(2,edit("first change"))],2).unwrap();
+                let change=j.claim_next(4,2).unwrap().remove(0);
+                j.save_plan(&change,&tickets,"pilotq","taskqorg/pilotq","",3).unwrap();
+                j.finish(&change,None,None,&crate::manager::Outcome::Answered("plan".into()),3).unwrap();
+            }
+            j.admit(&[(3,edit("latest change"))],4).unwrap();
+            if late_save {
+                assert!(j.save_plan(&original,&tickets,"pilotq","taskqorg/pilotq","",5).is_err(),"an edited running input cannot save a stale proposal");
+                j.finish(&original,None,None,&crate::manager::Outcome::Answered("done".into()),5).unwrap();
+            }
+            let latest=j.claim_next(4,6).unwrap().remove(0);
+            if !late_save {
+                assert!(j.authorize(&latest,1,7,120,6).unwrap_err().contains("edited"),"a repeated edit invalidates the previous change request's plan");
+            }
+            let revision=j.save_plan(&latest,&tickets,"pilotq","taskqorg/pilotq","",7).unwrap();
+            j.finish(&latest,None,None,&crate::manager::Outcome::Answered("current plan".into()),7).unwrap();
+            j.admit(&[(4,msg(7,7,4))],8).unwrap();
+            let confirm=j.claim_next(4,8).unwrap().remove(0);
+            assert!(j.authorize(&confirm,revision,7,120,8).is_ok(),"freshly reviewed proposals remain launchable");
+            drop(j);std::fs::remove_dir_all(p).unwrap();
+        }
     }
 
     // #165 A3/A4/A6: snapshot actual durable card edits, not only renderer helpers.
