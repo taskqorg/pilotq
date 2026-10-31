@@ -175,7 +175,11 @@ retry interval. A separate maintenance thread keeps health reporting and convers
 during downloads. Manual and scheduled updates share one OS-held update lock. A journal drain flag
 gates both CLI and Telegram claims in their claim transactions, so a new run cannot race the drain.
 Before activation, stop new manager turns and wait up to 65 seconds for running requests; an
-incomplete or failed drain refuses activation and preserves the current release. Failed downloads,
+incomplete or failed drain refuses activation and preserves the current release. Deferred-update diagnostics name
+each blocking request, conversation, age and idle time. Runtime events persist the run’s last activity; typing
+and progress timers never renew it. Drain retires terminal orphan slots and requests with no runtime events
+for ten minutes, fences late results and preserves uncertain effects without replay. Startup also reconciles
+requests left running beside terminal runs. Failed downloads,
 checksum checks or selftests retain the current release and resume admission. Successful scheduled
 activation exits the service with code 75; the coreq Linux unit restarts it through the launcher.
 `pilotq update --pause` and `--resume` persist and read back automatic-update admission; pausing
