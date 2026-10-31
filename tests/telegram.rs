@@ -2760,6 +2760,22 @@ fn u95_pinned_instructions_reach_codex() {
     }
     assert!(policy.contains("## Task intake"), "pinned workflow intake missing");
     assert!(policy.contains("## Telegram feedback"), "PilotQ additions missing");
+    // #233 A1-A3 / R5, R13, §5: protect the read-first policy at the real
+    // new/resumed model boundary; live model choices remain PM qualification.
+    for rule in [
+        "For near-miss read requests",
+        "taskq list",
+        "список задач",
+        "project_status",
+        "Never refuse while naming a working equivalent",
+        "For yes/да after an either-or question",
+        "name the other option in one line",
+        "For an ambiguous voice transcript",
+        "note the reading taken",
+        "Never infer mutation authority",
+    ] {
+        assert!(policy.contains(rule), "#233 read-first instruction missing: {rule}");
+    }
     let resumed: Value = log.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok())
         .find(|m| m["method"] == "thread/resume").unwrap();
     assert_eq!(resumed["params"]["developerInstructions"], policy,
