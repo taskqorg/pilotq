@@ -270,28 +270,41 @@ fn status_text(board: &str, task: i64, state: &str, title: Option<&str>, url: Op
     format!("{}\n{}.", task_link(board, task, title, url), describe(state))
 }
 
-/// The card without its CLI `To answer:` line: in Telegram an option button or a reply answers (#82).
-fn card(c: &str) -> String {
-    c.lines().filter(|l| !l.starts_with("To answer")).collect::<Vec<_>>().join("\n")
+/// TaskQ #2010: a handed-in result reads the snapshot's typed verdict, never the result comment text.
+fn verdict(v: &Value) -> Option<String> {
+    let changed = v["changed"].as_str()?;
+    let checks: Vec<&str> = v["checks"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    let mut lines = vec![format!("Changed: {changed}")];
+    if !checks.is_empty() { lines.push(format!("Checks: {}", checks.join("; "))); }
+    if let Some(open) = v["open"].as_str() { lines.push(format!("Open: {open}")); }
+    Some(lines.join("\n"))
 }
 
-fn question_text(board: &str, task: i64, c: &str, title: Option<&str>, url: Option<&str>) -> String {
-    let body = card(c).lines().map(|line| {
-        if let Some(text) = line.strip_prefix("Done: ") { return format!("✓ {text}"); }
-        if let Some(text) = line.strip_prefix("Problem: ") { return format!("⚑ {text}"); }
-        if let Some((k, rest)) = line.split_once(". ") {
-            if k.parse::<u8>().is_ok_and(|n| (1..=4).contains(&n)) {
-                if let Some((label, detail)) = rest.split_once(" - ") {
-                    let recommended = detail.trim_end().ends_with('★');
-                    let detail = if recommended { detail.trim_end().trim_end_matches('★').trim_end() } else { detail };
-                    let detail = detail.strip_prefix("+ ").map_or_else(|| detail.to_string(), |text| format!(r"\+ {text}"));
-                    return format!("{k}. {label}{}\n{detail}", if recommended { " ★" } else { "" });
-                }
-            }
-        }
-        line.to_string()
-    }).collect::<Vec<_>>().join("\n");
-    format!("? {}\n{body}", task_link(board, task, title, url))
+/// Choices a person may pick: only a parsed TaskQ question offers them; an unparsed card stays readable without write controls.
+pub(crate) fn choices(q: &Value) -> &[Value] {
+    if q["parsed"] == true { q["choices"].as_array().map_or(&[], Vec::as_slice) } else { &[] }
+}
+
+/// TaskQ #2010: a question renders from the snapshot's typed `question` field, never from card text.
+/// In Telegram an option button or a reply answers, so the CLI `To answer:` line never shows (#82).
+pub(crate) fn question_body(q: &Value) -> String {
+    if q["parsed"] != true { return q["text"].as_str().unwrap_or("").to_string(); }
+    let mut lines = Vec::new();
+    if let Some(t) = q["done"].as_str() { lines.push(format!("✓ {t}")); }
+    if let Some(t) = q["problem"].as_str() { lines.push(format!("⚑ {t}")); }
+    let evidence: Vec<String> = q["evidence"].as_array().into_iter().flatten()
+        .filter_map(|e| Some(format!("[{}]({})", e["label"].as_str()?, e["url"].as_str()?))).collect();
+    if !evidence.is_empty() { lines.push(format!("Evidence: {}", evidence.join(", "))); }
+    for c in choices(q) {
+        lines.push(format!("{}. {}{}", c["id"], c["label"].as_str().unwrap_or(""), if c["recommended"] == true { " ★" } else { "" }));
+        // a detail that starts with `+` would render as a Markdown bullet
+        if let Some(d) = c["detail"].as_str() { lines.push(d.strip_prefix('+').map_or_else(|| d.to_string(), |t| format!(r"\+{t}"))); }
+    }
+    lines.join("\n")
+}
+
+fn question_text(board: &str, task: i64, q: &Value, title: Option<&str>, url: Option<&str>) -> String {
+    format!("? {}\n{}", task_link(board, task, title, url), question_body(q))
 }
 
 fn now() -> i64 {
@@ -539,9 +552,13 @@ fn dispatch_until(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Va
                     for e in t["executions"].as_array().into_iter().flatten() {
                         text += &format!("\nAttempt {} ({}, {}): {}", e["attempt"], e["role"].as_str().unwrap_or(""), e["state"].as_str().unwrap_or(""), e["reason"].as_str().unwrap_or(""));
                     }
-                    if let Some(c) = t["card"].as_str() {
-                        text += &format!("\nOpen question:\n{}", card(c));
+                    if let Some(f) = t["failed"].as_str() {
+                        text += &format!("\nFailed: {f}");
                     }
+                    if t["question"].is_object() {
+                        text += &format!("\nOpen question:\n{}", question_body(&t["question"]));
+                    }
+                    if let Some(v) = verdict(&t["verdict"]) { text += &format!("\nHanded-in result:\n{v}"); }
                     if let Ok(inbox)=tq.inbox(n) {
                         text += &format!("\nTaskQ progress and accepted answers (source data): {inbox}");
                     }
@@ -866,8 +883,9 @@ fn answer(tq: &Taskq, j: &Mutex<Journal>, a: &Answer, resumed: bool) {
     }
     let current = |j: &Mutex<Journal>| -> String {
         let fresh = tq.snapshot_for(&board).ok().and_then(|s| find(&s, n).cloned());
-        match fresh.or_else(|| j.lock().unwrap().task(&a.project, n).ok().flatten().map(|(s, r, c)| json!({"state": s, "revision": r, "card": c}))) {
-            Some(t) if t["state"] == "ask" => format!("Task #{n} now asks:\n{}", card(t["card"].as_str().unwrap_or(""))),
+        let stored = |(s, r, q): (String, i64, Option<String>)| json!({"state": s, "revision": r, "question": q.and_then(|q| serde_json::from_str::<Value>(&q).ok())});
+        match fresh.or_else(|| j.lock().unwrap().task(&a.project, n).ok().flatten().map(stored)) {
+            Some(t) if t["state"] == "ask" => format!("Task #{n} now asks:\n{}", question_body(&t["question"])),
             Some(t) => format!("Task #{n} is {}.", describe(t["state"].as_str().unwrap_or(""))),
             None => format!("Task #{n} is not open."),
         }
@@ -887,9 +905,10 @@ fn answer(tq: &Taskq, j: &Mutex<Journal>, a: &Answer, resumed: bool) {
         return eprintln!("answer {}: {e}", a.request);
     }
     let text = lines.join("\n");
-    let pick = text.trim().parse::<u8>().ok().filter(|k| files.is_empty() && (1..=4).contains(k));
+    // A pick is a choice id of the question relayed at this revision, never a number read from rendered text (#2010).
+    let pick = if files.is_empty() { j.lock().unwrap().choice(&a.project, n, a.revision, &text).ok().flatten() } else { None };
     let mut args = match pick {
-        Some(k) => vec!["answer".to_string(), format!("{n}.{k}")],
+        Some((id, _)) => vec!["answer".to_string(), format!("{n}.{id}")],
         None if text.is_empty() => vec!["answer".into(),n.to_string()],
         None => vec!["answer".to_string(), n.to_string(), "--text".into(), text],
     };
@@ -949,12 +968,13 @@ fn scan(tq: &Taskq, j: &Mutex<Journal>) -> bool {
         let j = j.lock().unwrap();
         let r = match find(s, n) {
             Some(t) => {
-                let (state, card) = (t["state"].as_str().unwrap_or(""), t["card"].as_str());
+                let state = t["state"].as_str().unwrap_or("");
+                let question = t["question"].is_object().then(|| &t["question"]);
                 let saved = j.task_title(&project, n).ok().flatten();
                 let title = t["title"].as_str().or(saved.as_deref());
                 let _=j.remember_task_url(&project,n,t["url"].as_str(),now());
                 let task_url=j.task_url(&project,n).ok().flatten();
-                j.observe(&project, n, state, t["revision"].as_i64().unwrap_or(0), card, &status_text(&board, n, state, title, task_url.as_deref()), card.map(|c| question_text(&board, n, c, title, task_url.as_deref())).as_deref(), now())
+                j.observe(&project, n, state, t["revision"].as_i64().unwrap_or(0), question.map(Value::to_string).as_deref(), &status_text(&board, n, state, title, task_url.as_deref()), question.map(|q| question_text(&board, n, q, title, task_url.as_deref())).as_deref(), now())
             }
             None => {
                 let language=j.task_language(&project,n).ok().flatten();
@@ -1015,17 +1035,80 @@ mod tests {
     #[test]
     fn ask_layout() {
         let fixture:Value=serde_json::from_str(include_str!("fixtures/conversation-165.json")).unwrap();
-        assert_eq!(question_text("taskqorg/pilotq",97,fixture["worker_question"]["source"].as_str().unwrap(),Some("Ask layout"),Some("https://forge.invalid/task/97")),fixture["worker_question"]["snapshot"].as_str().unwrap());
+        assert_eq!(question_text("taskqorg/pilotq",97,&fixture["worker_question"]["question"],Some("Ask layout"),Some("https://forge.invalid/task/97")),fixture["worker_question"]["snapshot"].as_str().unwrap());
         for (done, problem, label, other, gain, cost) in [
             ("checked", "Choose retention", "Keep", "Drop", "history", "disk space"),
             ("проверено", "Выберите хранение", "Хранить", "Удалить", "история", "место на диске"),
         ] {
-            let source = format!("Done: {done}\nProblem: {problem}\n1. {label} - + {gain}; - {cost} ★\n2. {other} - + {cost}; - {gain}\nTo answer: taskq answer 97.K");
-            let text = question_text("taskqorg/pilotq", 97, &source, Some("Ask layout"), Some("https://forge.invalid/task/97"));
+            let q = json!({"parsed":true,"text":"unused card text","done":done,"problem":problem,"evidence":[],"choices":[
+                {"id":1,"label":label,"detail":format!("+ {gain}; - {cost}"),"recommended":true},
+                {"id":2,"label":other,"detail":format!("+ {cost}; - {gain}"),"recommended":false}]});
+            let text = question_text("taskqorg/pilotq", 97, &q, Some("Ask layout"), Some("https://forge.invalid/task/97"));
             assert_eq!(text, format!("? {}\n✓ {done}\n⚑ {problem}\n1. {label} ★\n\\+ {gain}; - {cost}\n2. {other}\n\\+ {cost}; - {gain}", task_link("taskqorg/pilotq", 97, Some("Ask layout"), Some("https://forge.invalid/task/97"))));
-            assert_eq!(crate::telegram::options(&text), vec![("answer:1".into(), format!("1. {label} ★")), ("answer:2".into(), format!("2. {other}"))]);
-            assert_eq!(crate::telegram::options(&source), vec![("answer:1".into(), format!("1. {label} ★")), ("answer:2".into(), format!("2. {other}"))]);
+            assert!(!text.contains("unused card text"), "a parsed question renders from typed fields, never card text");
+            assert_eq!(crate::telegram::options(&q), vec![("answer:1".into(), format!("1. {label} ★")), ("answer:2".into(), format!("2. {other}"))]);
         }
+    }
+
+    // TaskQ #2010 A1-A4: PilotQ reads TaskQ's typed snapshot fields; the pinned TaskQ fixtures fail this test when a field
+    // PilotQ reads is renamed, retyped or dropped, and every TaskQ state, `failed` included, has a label in every view.
+    #[test]
+    fn taskq_contract_2010() {
+        let snap: Value = serde_json::from_str(include_str!("../tests/fixtures/taskq/status-snapshot.json")).unwrap();
+        let cards: Value = serde_json::from_str(include_str!("../tests/fixtures/taskq/answer-card.json")).unwrap();
+        let unknown = describe("not-a-state");
+        let states: Vec<&str> = snap["vocabulary"]["states"].as_array().expect("vocabulary.states").iter().map(|s| s["id"].as_str().expect("vocabulary.states[].id")).collect();
+        assert!(states.contains(&"failed"), "{states:?}");
+        for s in &states {
+            assert_ne!(describe(s), unknown, "status message for {s}");
+            for l in ["en", "ru"] { assert_ne!(crate::conversation::task_state(s, false, Some(l)), crate::conversation::task_state("not-a-state", false, Some(l)), "{l} label for {s}"); }
+        }
+        let mut rows: Vec<&Value> = snap["tasks"].as_array().expect("tasks").iter().collect();
+        rows.extend(cards["cases"].as_array().expect("cases").iter().flat_map(|c| c["rows"].as_array().expect("rows")));
+        let (mut parsed, mut unparsed, mut owner, mut evidence, mut failed, mut verdicts) = (0, 0, 0, 0, 0, 0);
+        for t in rows {
+            assert!(t["n"].is_u64() && t["revision"].is_i64() && t["title"].is_string() && t["url"].is_string(), "row fields: {t}");
+            assert!(t["state"].as_str().is_some_and(|s| states.contains(&s)), "row state outside the vocabulary: {t}");
+            if let Some(f) = t["failed"].as_str() { assert_eq!(t["state"], "failed"); assert!(!f.is_empty()); failed += 1; }
+            if let Some(v) = verdict(&t["verdict"]) {
+                assert!(t["verdict"]["checks"].is_array() && t["verdict"]["open"].is_string(), "verdict fields: {t}");
+                assert!(v.starts_with("Changed: ") && v.contains("\nChecks: ") && v.contains("\nOpen: "), "{v}");
+                verdicts += 1;
+            }
+            let q = &t["question"];
+            if q.is_null() { continue; }
+            assert!(q["parsed"].is_boolean() && q["text"].is_string() && q["choices"].is_array() && q["evidence"].is_array(), "question fields: {q}");
+            let body = question_body(q);
+            let buttons = crate::telegram::options(q);
+            if q["parsed"] != true {
+                assert_eq!(body, q["text"].as_str().unwrap(), "an unparsed card stays readable verbatim");
+                assert!(buttons.is_empty(), "an unparsed card has no write controls: {q}");
+                unparsed += 1;
+                continue;
+            }
+            parsed += 1;
+            assert!(q["problem"].as_str().is_some_and(|p| body.contains(p)), "problem: {body}");
+            if let Some(done) = q["done"].as_str() { assert!(body.contains(&format!("✓ {done}")), "{body}"); }
+            for e in q["evidence"].as_array().unwrap() {
+                assert!(e["label"].is_string(), "evidence label: {e}");
+                assert!(body.contains(&format!("]({})", e["url"].as_str().expect("evidence url"))), "evidence link: {body}");
+                evidence += 1;
+            }
+            let choices = q["choices"].as_array().unwrap();
+            if choices.is_empty() { owner += 1; assert!(buttons.is_empty(), "an owner action answers with text"); }
+            assert_eq!(buttons.len(), choices.len(), "{q}");
+            assert!(choices.iter().filter(|c| c["recommended"] == true).count() <= 1, "{q}");
+            for (c, (data, label)) in choices.iter().zip(&buttons) {
+                let id = c["id"].as_u64().expect("choice id");
+                let name = c["label"].as_str().expect("choice label");
+                assert!(c["recommended"].is_boolean() && (c["detail"].is_null() || c["detail"].is_string()), "choice fields: {c}");
+                assert_eq!(data, &format!("answer:{id}"), "a button answers by choice id");
+                assert!(label.starts_with(&format!("{id}. ")) && label.ends_with(" ★") == (c["recommended"] == true), "{label}");
+                assert!(body.contains(&format!("{id}. {name}")), "{body}");
+                assert_eq!(body.contains(&format!("{id}. {name} ★")), c["recommended"] == true, "recommended mark: {body}");
+            }
+        }
+        assert!(parsed > 0 && unparsed > 0 && owner > 0 && evidence > 0 && failed > 0 && verdicts > 0, "fixture coverage: {parsed} {unparsed} {owner} {evidence} {failed} {verdicts}");
     }
 
     // #170 / R8, R13: retained protection against lost close evidence and research routing.

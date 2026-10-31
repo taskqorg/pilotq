@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TaskQ status snapshot",
+  "description": "Output of `taskq status --json` (docs/design/status-report.md § Snapshot contract). Schema 1 grows only by new keys; consumers ignore keys they do not know.",
+  "type": "object",
+  "required": ["schema", "source", "observed", "complete", "reason", "board", "totals", "vocabulary", "tasks", "hosts", "capabilities"],
+  "properties": {
+    "schema": {"const": 1},
+    "source": {"type": "string"},
+    "observed": {"type": "integer"},
+    "complete": {"type": "boolean"},
+    "reason": {"type": ["string", "null"]},
+    "board": {"type": "object"},
+    "totals": {
+      "type": "object",
+      "required": ["doing", "review", "ask", "failed", "ready", "waiting", "later", "held"],
+      "additionalProperties": {"type": "integer"}
+    },
+    "vocabulary": {
+      "type": "object",
+      "required": ["states", "telemetry"],
+      "properties": {
+        "states": {
+          "description": "Counter order: consumers show state counters in this order.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "name", "label"],
+            "properties": {
+              "id": {"enum": ["doing", "review", "ask", "failed", "ready", "waiting", "later", "held"]},
+              "name": {"type": "string"},
+              "label": {"type": "string", "description": "Canonical board label of the state."}
+            }
+          }
+        },
+        "telemetry": {
+          "type": "object",
+          "required": ["errors", "stage_errors", "runtimes"],
+          "properties": {
+            "errors": {"type": "array", "items": {"type": "string"}},
+            "stage_errors": {"type": "array", "items": {"type": "string"}},
+            "runtimes": {"type": "array", "items": {"type": "string"}}
+          }
+        }
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["n", "title", "state", "labels", "url", "revision", "controls", "verdict"],
+        "properties": {
+          "n": {"type": "integer"},
+          "title": {"type": "string"},
+          "state": {"enum": ["doing", "review", "ask", "failed", "ready", "waiting", "later", "held"]},
+          "labels": {"type": "array", "items": {"type": "string"}},
+          "url": {"type": "string"},
+          "revision": {"type": "integer"},
+          "controls": {"type": "array", "items": {"type": "string"}},
+          "verdict": {
+            "description": "Fields of the accepted result text behind the current result (taskq.md § 7); null without a result.",
+            "type": ["object", "null"],
+            "required": ["changed", "checks", "open"],
+            "properties": {
+              "changed": {"type": ["string", "null"]},
+              "checks": {"type": "array", "items": {"type": "string"}},
+              "open": {"type": ["string", "null"]}
+            }
+          }
+        }
+      }
+    },
+    "hosts": {"type": "array", "items": {"type": "object"}},
+    "capabilities": {"type": "array", "items": {"type": "string"}}
+  }
+}

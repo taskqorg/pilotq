@@ -1,0 +1,405 @@
+{
+  "schema": 1,
+  "source": "board",
+  "observed": 102,
+  "complete": true,
+  "reason": null,
+  "board": {
+    "kind": "github",
+    "host": "",
+    "repo": "o/r",
+    "url": "https://board"
+  },
+  "totals": {
+    "ask": 1,
+    "doing": 0,
+    "failed": 1,
+    "held": 0,
+    "later": 0,
+    "ready": 1,
+    "review": 1,
+    "waiting": 1
+  },
+  "vocabulary": {
+    "states": [
+      {
+        "id": "doing",
+        "name": "Doing",
+        "label": "q-doing"
+      },
+      {
+        "id": "review",
+        "name": "Review",
+        "label": "q-review"
+      },
+      {
+        "id": "ask",
+        "name": "Ask",
+        "label": "q-ask"
+      },
+      {
+        "id": "failed",
+        "name": "Failed",
+        "label": "q-failed"
+      },
+      {
+        "id": "ready",
+        "name": "Ready",
+        "label": "q-ready"
+      },
+      {
+        "id": "waiting",
+        "name": "Blocked",
+        "label": "q-blocked"
+      },
+      {
+        "id": "later",
+        "name": "Later",
+        "label": "q-later"
+      },
+      {
+        "id": "held",
+        "name": "Held",
+        "label": "q-held"
+      }
+    ],
+    "telemetry": {
+      "errors": [
+        "none",
+        "http4xx",
+        "http5xx",
+        "timeout",
+        "permission",
+        "invalid",
+        "other",
+        "panic",
+        "argument-too-long"
+      ],
+      "stage_errors": [
+        "exit",
+        "left-board",
+        "unreadable"
+      ],
+      "runtimes": [
+        "claude",
+        "codex",
+        "codex-app",
+        "other"
+      ]
+    }
+  },
+  "tasks": [
+    {
+      "n": 1,
+      "title": "Ready one",
+      "state": "ready",
+      "labels": [
+        "taskq",
+        "p1"
+      ],
+      "url": "https://board/1",
+      "revision": 0,
+      "updated": null,
+      "session": null,
+      "attempt": null,
+      "role": null,
+      "deps": [],
+      "blocked": [],
+      "card": null,
+      "question": null,
+      "failed": null,
+      "controls": [
+        "stop",
+        "later"
+      ],
+      "verdict": null,
+      "since": null,
+      "created": 1,
+      "steps": [
+        {
+          "state": "ready",
+          "start": 1,
+          "end": null,
+          "complete": false
+        }
+      ],
+      "stuck": false,
+      "admission": {
+        "code": "unknown",
+        "observed": 102,
+        "host": null,
+        "reason": "no host decision"
+      }
+    },
+    {
+      "n": 2,
+      "title": "Question",
+      "state": "ask",
+      "labels": [
+        "taskq"
+      ],
+      "url": "https://board/2",
+      "revision": 4,
+      "updated": 4,
+      "session": "claude:abc mac",
+      "attempt": 3,
+      "role": "worker",
+      "deps": [],
+      "blocked": [],
+      "card": "Done: read\nProblem: Which way?\n1. left\n2. right ★",
+      "question": {
+        "parsed": true,
+        "text": "Done: read\nProblem: Which way?\n1. left\n2. right ★",
+        "done": "read",
+        "problem": "Which way?",
+        "evidence": [],
+        "choices": [
+          {
+            "id": 1,
+            "text": "left",
+            "label": "left",
+            "detail": null,
+            "recommended": false,
+            "consequential": false
+          },
+          {
+            "id": 2,
+            "text": "right",
+            "label": "right",
+            "detail": null,
+            "recommended": true,
+            "consequential": false
+          }
+        ],
+        "limits": {
+          "chars": 240
+        }
+      },
+      "failed": null,
+      "controls": [
+        "stop",
+        "later"
+      ],
+      "verdict": null,
+      "executions": [
+        {
+          "task": 2,
+          "attempt": 3,
+          "id": 3,
+          "through": 3,
+          "state": "unknown",
+          "reason": "termination unconfirmed; status missing or stale; restore owning service",
+          "host": "mac",
+          "runtime": "claude",
+          "observed": null,
+          "role": "worker"
+        }
+      ],
+      "execution_wait": "execution 3 on mac: unknown: termination unconfirmed; status missing or stale; restore owning service",
+      "wait": "Run state unknown; see service log",
+      "since": 4,
+      "created": 2,
+      "steps": [
+        {
+          "state": "ready",
+          "start": 2,
+          "end": 3,
+          "complete": true
+        },
+        {
+          "state": "doing",
+          "start": 3,
+          "end": 4,
+          "complete": true
+        },
+        {
+          "state": "ask",
+          "start": 4,
+          "end": null,
+          "complete": false
+        }
+      ],
+      "stuck": false
+    },
+    {
+      "n": 4,
+      "title": "Blocked",
+      "state": "waiting",
+      "labels": [
+        "taskq"
+      ],
+      "url": "https://board/4",
+      "revision": 0,
+      "updated": null,
+      "session": null,
+      "attempt": null,
+      "role": null,
+      "deps": [
+        3
+      ],
+      "blocked": [
+        {
+          "ref": "#3",
+          "url": "https://board/3",
+          "reason": "open"
+        }
+      ],
+      "card": null,
+      "question": null,
+      "failed": null,
+      "controls": [
+        "stop",
+        "later"
+      ],
+      "verdict": null,
+      "since": null,
+      "created": 6,
+      "steps": [
+        {
+          "state": "waiting",
+          "start": 6,
+          "end": null,
+          "complete": false
+        }
+      ],
+      "stuck": false,
+      "admission": {
+        "code": "dependency",
+        "observed": 102,
+        "host": null,
+        "reason": "#3 open"
+      }
+    },
+    {
+      "n": 5,
+      "title": "Broken",
+      "state": "failed",
+      "labels": [
+        "taskq"
+      ],
+      "url": "https://board/5",
+      "revision": 8,
+      "updated": 8,
+      "session": null,
+      "attempt": null,
+      "role": null,
+      "deps": [],
+      "blocked": [],
+      "card": null,
+      "question": null,
+      "failed": "Reason: no login",
+      "controls": [
+        "retry"
+      ],
+      "verdict": null,
+      "since": 8,
+      "created": 7,
+      "steps": [
+        {
+          "state": "ready",
+          "start": 7,
+          "end": 8,
+          "complete": true
+        },
+        {
+          "state": "failed",
+          "start": 8,
+          "end": null,
+          "complete": false
+        }
+      ],
+      "stuck": false
+    },
+    {
+      "n": 7,
+      "title": "Reviewed",
+      "state": "review",
+      "labels": [
+        "taskq"
+      ],
+      "url": "https://board/7",
+      "revision": 12,
+      "updated": 12,
+      "session": null,
+      "attempt": null,
+      "role": null,
+      "deps": [],
+      "blocked": [],
+      "card": null,
+      "question": null,
+      "failed": null,
+      "controls": [
+        "stop",
+        "later"
+      ],
+      "verdict": {
+        "changed": "faster status\nfor every reader",
+        "checks": [
+          "cargo test --locked -- pass",
+          "cargo run -- selftest -- pass"
+        ],
+        "open": "none"
+      },
+      "result": "cccccccccccccccccccccccccccccccccccccccc",
+      "executions": [
+        {
+          "task": 7,
+          "attempt": 11,
+          "id": 11,
+          "through": 11,
+          "state": "unknown",
+          "reason": "termination unconfirmed; status missing or stale; restore owning service",
+          "host": "mac",
+          "runtime": "claude",
+          "observed": null,
+          "role": "worker"
+        }
+      ],
+      "execution_wait": "execution 11 on mac: unknown: termination unconfirmed; status missing or stale; restore owning service",
+      "wait": "Run state unknown; see service log",
+      "since": 12,
+      "created": 10,
+      "steps": [
+        {
+          "state": "ready",
+          "start": 10,
+          "end": 11,
+          "complete": true
+        },
+        {
+          "state": "doing",
+          "start": 11,
+          "end": 12,
+          "complete": true
+        },
+        {
+          "state": "review",
+          "start": 12,
+          "end": null,
+          "complete": false
+        }
+      ],
+      "stuck": false,
+      "ops": [
+        "op-1"
+      ]
+    }
+  ],
+  "hosts": [
+    {
+      "name": "mac",
+      "version": "4.0.0",
+      "updated": 9,
+      "diagnostics": {
+        "state": "unknown",
+        "reason": "service diagnostics missing or invalid"
+      }
+    }
+  ],
+  "capabilities": [
+    "tasks",
+    "totals",
+    "questions",
+    "hosts"
+  ]
+}

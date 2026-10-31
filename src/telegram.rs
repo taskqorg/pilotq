@@ -353,12 +353,11 @@ fn tidy(text: &str) -> String {
     out
 }
 
-/// TaskQ #1787: number, full label and recommendation only; preserve legacy labels and remove link syntax.
-pub(crate) fn options(text: &str) -> Vec<(String, String)> {
-    text.lines().filter_map(|l| {
-        let (k, rest) = l.split_once(". ")?;
-        let k: u8 = k.parse().ok().filter(|k| (1..=4).contains(k))?;
-        let (name, detail) = rest.split_once(" - ").map_or((rest, None), |(name, detail)| (name, Some(detail)));
+/// TaskQ #1787/#2010: one button per typed choice, carrying its id; number, label and recommendation only, without link syntax.
+pub(crate) fn options(question: &serde_json::Value) -> Vec<(String, String)> {
+    crate::taskq::choices(question).iter().filter_map(|c| {
+        let k = c["id"].as_u64()?;
+        let name = c["label"].as_str()?;
         let mut label = String::new();
         let mut s = name;
         while let Some(open) = s.find('[') {
@@ -369,7 +368,7 @@ pub(crate) fn options(text: &str) -> Vec<(String, String)> {
             s = &after[close + 1..];
         }
         label += s;
-        if detail.is_some_and(|d| d.trim_end().ends_with('★')) { label += " ★"; }
+        if c["recommended"] == true { label += " ★"; }
         Some((format!("answer:{k}"), format!("{k}. {label}")))
     }).collect()
 }
@@ -884,8 +883,11 @@ mod tests {
         assert_eq!(super::tidy("Check /status for taskqorg/pilotq."), "Check /status for taskqorg/pilotq.");
         assert_eq!(super::tidy("Read src/Makefile and pilotq.md."), "Read `src/Makefile` and `pilotq.md`.");
         assert_eq!(super::tidy("Read docs/my file.md, then /status."), "Read `docs/my file.md`, then /status.");
-        let card="Task #19 asks:\nDone: drafted\nProblem: pick\n1. short, see [spec](https://x.invalid) ★\n2. long\n5. not an option";
-        assert_eq!(super::options(card),[("answer:1".into(),"1. short, see spec ★".into()),("answer:2".into(),"2. long".into())]);
+        let mut q=serde_json::json!({"parsed":true,"choices":[{"id":1,"label":"short, see [spec](https://x.invalid)","detail":null,"recommended":true},
+            {"id":2,"label":"long","detail":"+ detail; - slower","recommended":false}]});
+        assert_eq!(super::options(&q),[("answer:1".into(),"1. short, see spec ★".into()),("answer:2".into(),"2. long".into())]);
+        q["parsed"]=false.into();
+        assert!(super::options(&q).is_empty(),"an unparsed card offers no write controls");
     }
 
     // #82: a press on a question button is the presser's answer to that question message, in its chat and topic.

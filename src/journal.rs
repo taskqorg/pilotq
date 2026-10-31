@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 /// Schema this binary writes; a newer journal is refused rather than guessed (F08).
-const SCHEMA: i64 = 12;
+const SCHEMA: i64 = 13;
 /// Delivery attempts per episode, persisted across restart (§ 7).
 pub const ATTEMPTS: i64 = 5;
 /// Named grants (§ 2, § 5, § 8). `chat` admits conversation only; every other grant is separate. `project:NAME` scopes a project;
@@ -914,6 +914,11 @@ impl Journal {
                     PRIMARY KEY(chat,topic));
                 PRAGMA user_version=12; COMMIT;")?;
         }
+        if version < 13 {
+            // TaskQ #2010: a relayed question keeps its typed TaskQ JSON; buttons and picks read choices from it, never from text
+            let exists: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('outbox') WHERE name='question')",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+            up(if exists { "PRAGMA user_version=13;" } else { "BEGIN IMMEDIATE; ALTER TABLE outbox ADD COLUMN question TEXT; PRAGMA user_version=13; COMMIT;" })?;
+        }
         // TaskQ op IDs are permanent board claims; a random installation ID keeps a fresh journal from reusing another's
         let salt = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as i64) ^ ((std::process::id() as i64) << 40);
         c.execute("INSERT INTO meta(key, value) VALUES ('instance', ?1) ON CONFLICT(key) DO NOTHING", [salt & i64::MAX]).map_err(|e| e.to_string())?;
@@ -1355,7 +1360,7 @@ impl Journal {
             .optional()
             .map_err(|e| e.to_string())?;
         if let Some(d) = &mut row {
-            d.buttons = if d.kind=="question" {crate::telegram::options(&d.text)} else {self.card_buttons(d.id)?};
+            d.buttons = if d.kind=="question" {self.question(d.id)?.map_or_else(Vec::new,|q|crate::telegram::options(&q))} else {self.card_buttons(d.id)?};
             self.prepare_delivery(d)?;
         }
         let next = self.0.query_row(&format!("SELECT min(next_at) {heads}"), [], |r| r.get(0)).map_err(|e| e.to_string())?;
@@ -2298,18 +2303,28 @@ impl Journal {
         Ok(format!("Answer saved locally: {text}. Continue discussion; no launch authorized."))
     }
 
+    /// The typed TaskQ question relayed in outbox row `id`, when one was stored (#2010).
+    fn question(&self, id: i64) -> Result<Option<serde_json::Value>,String> {
+        let q:Option<String>=self.0.query_row("SELECT question FROM outbox WHERE id=?1",[id],|x|x.get(0)).optional().map_err(|e|e.to_string())?.flatten();
+        Ok(q.and_then(|q|serde_json::from_str(&q).ok()))
+    }
+
+    /// TaskQ #2010: a pick is the id of a choice in the question relayed at `revision`; anything else is free text.
+    pub fn choice(&self, project: &str, task: i64, revision: i64, text: &str) -> Result<Option<(u64,String)>,String> {
+        let id:Option<i64>=self.0.query_row("SELECT id FROM outbox WHERE project=?1 AND task=?2 AND revision=?3 AND kind='question' AND question IS NOT NULL ORDER BY id DESC LIMIT 1",
+            params![project,task,revision],|x|x.get(0)).optional().map_err(|e|e.to_string())?;
+        let Some(q)=(match id { Some(id)=>self.question(id)?, None=>None }) else { return Ok(None) };
+        let Ok(pick)=text.trim().parse::<u64>() else { return Ok(None) };
+        Ok(crate::taskq::choices(&q).iter().find(|c|c["id"].as_u64()==Some(pick)).map(|c|(pick,c["label"].as_str().unwrap_or("").to_owned())))
+    }
+
     pub fn selected_answer(&self, project: &str, task: i64, revision: i64, text: &str) -> Result<String,String> {
-        let question:Option<String>=self.0.query_row("SELECT text FROM outbox WHERE project=?1 AND task=?2 AND revision=?3 AND kind='question' LIMIT 1",params![project,task,revision],|x|x.get(0)).optional().map_err(|e|e.to_string())?;
-        let prefix=format!("{}. ",text.trim());
-        Ok(question.and_then(|q|q.lines().find(|l|l.starts_with(&prefix)).map(str::to_owned)).unwrap_or_else(||text.to_owned()))
+        Ok(self.choice(project,task,revision,text)?.map_or_else(||text.to_owned(),|(id,label)|format!("{id}. {label}")))
     }
 
     pub fn answer_state(&self, request: i64, state: &str) -> Result<String,String> {
         let ru:bool=self.0.query_row("SELECT coalesce(language,'en') LIKE 'ru%' FROM requests WHERE id=?1",[request],|x|x.get(0)).map_err(|e|e.to_string())?;
-        Ok(if ru { match state {
-            "held"=>"создана, удерживается", "ready"=>"в очереди к исполнителю", "doing"=>"исполнитель работает",
-            "ask"=>"ожидает ответа", "waiting"=>"ожидает зависимые задачи", "review"=>"на проверке", "later"=>"отложена", _=>"состояние неизвестно",
-        }} else {describe(state)}.into())
+        Ok(if ru { crate::conversation::task_state(state,false,Some("ru")) } else { describe(state) }.into())
     }
 
     pub fn answer_actor(&self, request: i64, text: &str) -> Result<String,String> {
@@ -2771,6 +2786,7 @@ impl Journal {
         }
         if let (Some(q), "ask") = (question, state) {
             notice(&tx, request, chat, topic, "question", project, task, revision, q, at)?;
+            tx.execute("UPDATE outbox SET question=?1 WHERE id=last_insert_rowid()", [card]).map_err(e)?;
         }
         tx.commit().map_err(e)?;
         Ok(true)
@@ -2793,7 +2809,6 @@ impl Journal {
         let question: Option<String> = self.0.query_row("SELECT text FROM outbox WHERE project=?1 AND task=?2 AND revision=?3 AND kind='question' LIMIT 1",
             params![project,task,revision],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
         let Some(question) = question else { return Ok(()) };
-        let question = question.lines().filter(|l| *l != "Press an option or reply to this message to answer.").collect::<Vec<_>>().join("\n");
         let html = crate::telegram::html(&format!("{question}\n\n{answer}"));
         self.0.execute("INSERT INTO outbox(request_id,chat,topic,text,html,next_at,kind,project,task,revision)
             SELECT request_id,chat,topic,?4,?5,?6,'question_answered',project,task,revision FROM outbox o
@@ -4515,13 +4530,21 @@ mod tests {
             j.record(d.id, &Sent::Ok(100 + d.id), 7).unwrap();
         }
         let status: i64 = count(&j, "SELECT sent_message FROM outbox WHERE task=19 AND kind='status' AND state='delivered'");
-        assert!(j.observe("pilotq", 19, "ask", 14, Some("Q?"), "ask", Some("Task #19 asks:\nQ?"), 8).unwrap());
+        let typed = r#"{"parsed":true,"text":"Problem: Q?\n1. one\n2. two ★","problem":"Q?","evidence":[],"choices":[{"id":1,"label":"one","recommended":false},{"id":2,"label":"two","recommended":true}]}"#;
+        assert!(j.observe("pilotq", 19, "ask", 14, Some(typed), "ask", Some("Task #19 asks:\nQ?"), 8).unwrap());
         let (d, _) = j.due(9).unwrap();
         assert_eq!(d.as_ref().unwrap().edit,Some(status),"the launch status message is edited in place");
         assert!(d.as_ref().unwrap().text.contains("Waiting for your answer"));
         j.record(d.unwrap().id, &Sent::Ok(status), 8).unwrap();
         let q = j.due(9).unwrap().0.unwrap();
         assert!(q.edit.is_none() && q.text.starts_with("Task #19 asks:"), "the question is its own message");
+        // TaskQ #2010: buttons and picks come from the typed question stored with this revision, never from its rendered text
+        assert_eq!(q.buttons, [("answer:1".to_string(), "1. one".to_string()), ("answer:2".to_string(), "2. two ★".to_string())]);
+        assert_eq!(j.choice("pilotq", 19, 14, " 2 ").unwrap(), Some((2, "two".into())));
+        assert_eq!(j.choice("pilotq", 19, 14, "3").unwrap(), None, "an id outside the question is free text");
+        assert_eq!(j.choice("pilotq", 19, 13, "2").unwrap(), None, "a pick binds to the relayed revision");
+        assert_eq!(j.selected_answer("pilotq", 19, 14, "2").unwrap(), "2. two");
+        assert_eq!(j.selected_answer("pilotq", 19, 14, "keep both").unwrap(), "keep both");
         j.record(q.id, &Sent::Ok(500), 8).unwrap();
 
         let answer = |id, to| Some(Input { files: vec![], callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: id, kind: "text", text: Some("2".into()), reply_to: Some(to) });
