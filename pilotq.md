@@ -212,7 +212,26 @@ worker proof remains local/CI.
 
 `/help`, `/version`, `/doctor`, `/model`, `/restart`, `/skills` and `/skill` keep their specified bounded paths. Model selection uses the configured Codex catalogue, persists per conversation across reset/restart and affects only subsequently claimed runs. Catalogue presence proves no subscription entitlement; no model/provider fallback or worker-default change exists.
 
-Only the protected owner restarts the installed service; acknowledge, drain and report completion after healthy restart. Source runs refuse. No native manager skills are approved; adding one needs a contract decision. CLI asks use the same controls. Every writing command prints readback, supports JSON and fails nonzero on failure.
+Only the protected owner restarts the installed service; acknowledge, drain and report completion after healthy restart. Source runs refuse. Only the owner-installed PM pack described below is approved; other native manager skills need a contract decision. CLI asks use the same controls. Every writing command prints readback, supports JSON and fails nonzero on failure.
+
+
+**Owner decision, [task #221](https://github.com/taskqorg/pilotq/issues/221):** “a PilotQ loop must own the same context and tools as the PM Claude session and do the same PM work.”
+The protected owner may install a named, bounded PM runbook and bind it to an explicit CLI or Telegram route,
+optionally narrowed to a registered project. Only currently admitted owner or shell-grant turns load that binding,
+including human turns and loop ticks; a pack grants no new authority. `/help operations` shows the current binding.
+The runbook covers installed TaskQ board status, `taskq profile` telemetry, asks, steer, starting held work, close,
+release prerequisites and reports. Board state comes only from installed TaskQ commands (§5); PM tick reports include
+an observed board link and a workers table with verified links instead of bare task IDs. Missing evidence stays unknown.
+Each bound turn receives a durable PM note index and scoped note read/write/forget tools. Each note contains one fact
+and a required why line; notes are context, never authority or fresh board state. Notes belong to the exact route and,
+when configured, its registered project; project scope never shares notes across routes or private DMs. Current project
+grants are rechecked at load and dispatch. Notes survive restart and `/new`; unbinding hides rather than deletes them.
+The owner can list, edit and forget notes through the protected CLI. Pack and note writes reject known protected key
+values and recognizable credential material before persistence (R16); arbitrary prose cannot be proved secret-free,
+so the owner seeds only reviewed, secret-free PM memory. Writes retain audit and readback under the shared CLI/turn path
+(R13, R17). PM qualification remains separate: deliver a checklist, then the PM runs one hour of findings-only shadow
+work on pds18 and records same-hour parity for asks, stuck work, failures, releases and telemetry in `docs/acceptance.md`.
+Workers never install live; shadow findings authorize no board mutations or production cutover (§9, R19).
 
 Doctor is read-only: bot identity, isolated ChatGPT login, complete matching TaskQ board, required executable versions and bounded local voice decode/recognition probe. It never polls updates, changes grants or starts a model. Offline selftest remains setup-independent; setup success proves neither subscription entitlement nor full task flow.
 

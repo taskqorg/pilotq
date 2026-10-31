@@ -3,6 +3,10 @@ use crate::journal::Journal;
 use serde_json::Value;
 pub struct Capability { pub name: &'static str, pub area: &'static str, pub purpose: &'static str, pub example: &'static str, pub grant: &'static str, pub ru: &'static str }
 pub const CATALOG: &[Capability] = &[
+    Capability { name: "pm_note_read", area: "operations", purpose: "Read a note from this route's bound PM context", example: "read PM note release", grant: "native", ru: "Прочитать заметку PM этой темы" },
+    Capability { name: "pm_note_write", area: "operations", purpose: "Remember one scoped PM fact and why it matters", example: "remember the release prerequisite and why", grant: "native", ru: "Сохранить факт PM и его причину" },
+    Capability { name: "pm_note_forget", area: "operations", purpose: "Forget a scoped PM note", example: "forget obsolete PM note release", grant: "native", ru: "Удалить заметку PM" },
+    Capability { name: "pilotq pm", area: "operations", purpose: "Owner only: install and bind PM packs; list, edit and forget scoped notes", example: "pilotq pm notes cli list", grant: "owner", ru: "Команда оператора: пакеты и заметки PM" },
     Capability { name: "/profile", area: "people", purpose: "Inspect own remembered facts in DM; set KEY VALUE or forget KEY; audit history remains", example: "/profile set name Alex", grant: "chat", ru: "Посмотреть, исправить или забыть свои предпочтения в личном чате" },
     Capability { name: "/access", area: "people", purpose: "Inspect own current grants in DM; ask an administrator for changes or revocation", example: "/access", grant: "chat", ru: "Посмотреть свои права в личном чате" },
     Capability { name: "/onboard", area: "projects", purpose: "Recheck registered project readiness; protected owner may override only PilotQ's gate", example: "/onboard pilotq", grant: "owner", ru: "Проверить готовность зарегистрированного проекта" },
@@ -43,7 +47,7 @@ pub const CATALOG: &[Capability] = &[
     Capability { name: "/new", area: "conversation", purpose: "Reset conversation, preserving task links and model choice", example: "/new", grant: "chat", ru: "Начать новый диалог" },
     Capability { name: "/audit", area: "conversation", purpose: "Read your request history in DM", example: "/audit", grant: "chat", ru: "История ваших запросов в личном чате" },
     Capability { name: "/model", area: "conversation", purpose: "Read models or save the next-run selection", example: "/model default", grant: "chat", ru: "Выбрать модель для следующих запросов" },
-    Capability { name: "/skills", area: "conversation", purpose: "List approved skills (currently none)", example: "/skills", grant: "chat", ru: "Показать разрешённые навыки (пока нет)" },
+    Capability { name: "/skills", area: "conversation", purpose: "Explain native skill availability and route-bound PM packs", example: "/skills", grant: "chat", ru: "Показать доступность навыков и пакетов PM" },
     Capability { name: "/skill", area: "conversation", purpose: "Invoke an approved skill (currently unavailable)", example: "/skill NAME TEXT", grant: "chat", ru: "Вызвать навык (пока недоступно)" },
     Capability { name: "/doctor", area: "operations", purpose: "Run bounded read-only setup checks", example: "/doctor", grant: "chat", ru: "Проверить настройки" },
     Capability { name: "/restart", area: "operations", purpose: "Drain and restart installed service", example: "/restart", grant: "owner", ru: "Перезапустить установленный сервис" },
@@ -89,6 +93,7 @@ pub fn allowed(c: &Capability, j: &Journal, user: i64) -> Result<bool,String> {
 }
 pub fn visible(c:&Capability,j:&Journal,user:i64,keys:&crate::keys::Keys,route:&str)->Result<bool,String> {
     if !allowed(c,j,user)? {return Ok(false);}
+    if crate::pm::NAMES.contains(&c.name) {return crate::pm::available(j,user,route);}
     if !crate::keys::TOOLS.contains(&c.name) {return Ok(true);}
     let entries=keys.list()?;
     let projects=j.projects()?.into_iter().filter_map(|p| {
@@ -129,6 +134,7 @@ pub fn render(j: &Journal,user:i64,area:Option<&str>,language:Option<&str>,keys:
             if visible.iter().any(|c|c.area==area) { lines.push(format!("/help {area} — {}",if ru {ru_label} else {en})); }
         }
     }
+    if area==Some("operations") && (owner || j.has(user,"shell")?) {lines.push(crate::pm::help(j,user,route,ru)?);}
     lines.push(if ru {"Для дополнительного доступа обратитесь к администратору PilotQ."} else {"Ask a PilotQ administrator for additional access."}.into());
     Ok(lines.join("\n"))
 }

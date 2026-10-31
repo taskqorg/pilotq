@@ -3352,7 +3352,9 @@ fn u106_telegram_controls_and_models() {
     wait("built-in replies",5,||sent_has(&st,"Source") || sent_has(&st,"source run"));
     assert!(sent_has(&st,concat!("PilotQ ",env!("CARGO_PKG_VERSION"))));
     assert!(sent_has(&st,"codex: ok"));
-    assert!(sent_has(&st,"No skills are enabled"));
+    // #221 approves automatic PM packs; native /skill invocation still must not start a model.
+    assert!(sent_has(&st,"No callable native skills are enabled"));
+    assert!(sent_has(&st,"PM packs load automatically"));
     assert!(sent_has(&st,"Unknown command"));
     let selector=st.lock().unwrap().sent.iter().find(|v|v["text"].as_str().is_some_and(|s|s.contains("Codex catalogue ("))).cloned().unwrap();
     let callback=selector["reply_markup"]["inline_keyboard"][2][0]["callback_data"].as_str().unwrap();
@@ -3664,4 +3666,35 @@ while [ "$1" != -i ]; do shift; done; input=$2; for a; do out=$a; done; cp "$inp
     assert!(!tq_calls(&d).iter().any(|a|a[0]=="start" || a[0]=="permissions"));
     assert!(!d.join("codex.log").exists(),"setup controls never start the manager");
     stop(process,d);
+}
+
+// #221 A2/A3/A6 / R13: real CLI and manager adapter load fresh bound context on native resume;
+// a different DM receives neither the pack nor the CLI notes. Model interpretation is a separate PM gate.
+#[test]
+fn pm_221_pack_turn_boundary() {
+    let (d,st)=setup("pm-221",vec![]);
+    use_codex(&d,&script(&d,"fake-codex",FAKE));
+    let pack=d.join("pm.txt");fs::write(&pack,"Use installed TaskQ status and taskq profile; report findings.").unwrap();
+    for args in [vec!["pm","install","pm",pack.to_str().unwrap(),"--json"],vec!["pm","bind","cli","pm","--json"],
+        vec!["pm","notes","cli","set","cadence","Invented initial cadence.","Keep the board observed.","--json"]] {
+        let out=cli(&d,&args);assert!(out.status.success(),"{}",String::from_utf8_lossy(&out.stderr));
+    }
+    for (text,fact) in [("first","Invented initial cadence."),("second","Invented updated cadence.")] {
+        if text=="second" {assert!(cli(&d,&["pm","notes","cli","set","cadence",fact,"Fresh observation.","--json"]).status.success());}
+        let out=cli(&d,&["ask",text,"--json"]);assert!(out.status.success(),"{}",String::from_utf8_lossy(&out.stderr));
+        let log=fs::read_to_string(d.join("codex.log")).unwrap();
+        let turn:Value=log.lines().filter_map(|l|serde_json::from_str::<Value>(l).ok()).filter(|v|v["method"]=="turn/start").last().unwrap();
+        let input=turn["params"]["input"].to_string();assert!(input.contains(fact),"{input}");
+        assert!(input.contains("installed TaskQ status"));
+        let thread:Value=log.lines().filter_map(|l|serde_json::from_str::<Value>(l).ok()).filter(|v|v["method"]=="thread/start").last().unwrap();
+        assert!(thread["params"]["dynamicTools"].as_array().unwrap().iter().any(|t|t["name"]=="pm_note_write"));
+    }
+    let help=cli(&d,&["ask","/help operations","--json"]);assert!(String::from_utf8_lossy(&help.stdout).contains("PM pack: pm"));
+    st.lock().unwrap().updates.push(text(1,OWNER,None,OWNER,"unbound"));
+    let c=spawn(&d,None);wait("unbound DM reply",15,||sent_has(&st,"re: unbound"));
+    let log=fs::read_to_string(d.join("codex.log")).unwrap();
+    let turn:Value=log.lines().filter_map(|l|serde_json::from_str::<Value>(l).ok()).filter(|v|v["method"]=="turn/start").last().unwrap();
+    let input=turn["params"]["input"].to_string();
+    assert!(!input.contains("Invented updated cadence.") && !input.contains("Current owner-installed PM context"),"{input}");
+    stop(c,d);
 }

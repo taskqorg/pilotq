@@ -1106,3 +1106,27 @@ protect route identity and service-event admission rather than requiring new mod
 ## Route loops and board wakes (#220)
 
 The [owner decision and protocol](conversation-contract.md#route-loops-and-board-wakes) bind these cases (R5, R10, R13, R17). `loop_220_cli_route_exclusion` protects both directions of CLI/tick mutual exclusion. `loop_220_board_adapter_shared_cursor` protects bounded installed-CLI readback, confirmed closure and shared board cursors. `loop_220_controls_and_dynamic` protects fixed/dynamic bounds, bot suffixes, CLI/Telegram common admission, refusal and stale tick decisions. `loop_220_restart_drain_coalesce_revoke` protects durable armed/pending timers, restart/drain, queued coalescing, revocation and reset. `loop_220_running_reset_and_revocation_fence` protects immediate fencing of running ticks after reset or shell revocation. `loop_220_three_routes_boards_and_human` protects independent boards, baseline/deduplicated wakes, review options, failure/closure, drain-held events, human priority and route context/reply isolation. Adapter collection and target-platform timing require their own evidence; [the PM checklist](loop-220-live.md) covers real Codex and Telegram TEST qualification without authorizing worker installation.
+
+## PM packs and scoped notes (#221)
+
+The [root contract §9](../pilotq.md#9-cli-releases-and-service-operations) owns the approved pack boundary.
+The worker stage supplies [the owner-installable runbook](pm-pack.md) and [the PM checklist](pm-221-live.md).
+`cargo test --locked pm_221 -- --nocapture` covers pack binding, fresh context on resumed turns, note tools,
+route/DM isolation, credential refusal, restart, `/new`, CLI correction/forget and revoked access.
+These are journal/process/adapter checks, not real model parity or live qualification (R13, R16, R19).
+
+The owner confirmed a staged handoff in task #221: worker implementation/checklist first, then the PM's one-hour
+findings-only shadow run. The PM must replace the pending cells below with sanitized same-hour evidence;
+no shadow run, Claude comparison, live installation or parity pass is claimed by the worker.
+
+Window (UTC): **not run**. Released source/binary: **not recorded**. Shadow route/project: **not selected**.
+
+| Category | PilotQ shadow evidence | Claude PM evidence, same hour | Match / gap |
+|---|---|---|---|
+| Asks | Pending PM run | Pending capture | Unknown |
+| Stuck work | Pending PM run | Pending capture | Unknown |
+| Failed work | Pending PM run | Pending capture | Unknown |
+| Releases | Pending PM run | Pending capture | Unknown |
+| Telemetry alerts | Pending PM run | Pending capture | Unknown |
+
+A8 remains open. Record collection failures and tick offsets explicitly; absence of evidence is never a match.

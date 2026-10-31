@@ -544,7 +544,7 @@ fn answer_control(tx: &Connection, session: &str, cmd: &str, request: i64, chat:
             "/profile" | "/access" => profile_control(tx,request,chat,sender,cmd,at)?,
             "/version" => format!("PilotQ {}", env!("CARGO_PKG_VERSION")),
             "/help" => String::new(),
-            "/skills" | "/skill" => "No skills are enabled for PilotQ's restricted manager. /skill NAME TEXT is unavailable until a skill is approved.".into(),
+            "/skills" | "/skill" => "No callable native skills are enabled. Owner-installed PM packs load automatically on bound routes; /help operations shows the binding. /skill NAME TEXT is unavailable.".into(),
             "/unknown" => "Unknown command; use /help.".into(),
             "/restart" if meta(tx,"owner")? != Some(sender) => "Only the configured owner can restart PilotQ.".into(),
             "/restart" => "Restart requested; waiting for active requests to drain.".into(),
