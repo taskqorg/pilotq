@@ -201,7 +201,14 @@ configure an accepted build; they do not authorize installation on the live serv
 
 ### Chat administration (#160)
 
-An administrator can ask to register an existing `owner/repository` as a named project. `project_register` needs `projects` and prepares `<install>/projects/NAME/taskq.json`; TaskQ must read back the board before the project appears in `projects list`. Registration creates neither a repository nor a claim issue. A result with `filing_ready: false` requires the owner to provision TaskQ's `create_claim_issue` and qualify its readback path before filing work.
+An administrator can ask to register an existing repository by link, for example
+`add project demo - https://gitlab.example.test/invented/demo, add it to taskq`
+(invented repository). HTTPS, SSH and `git@HOST:OWNER/REPO` links can include `.git`
+and a trailing slash. `project_register` needs `projects`, prepares
+`<install>/projects/NAME/taskq.json` and verifies the board through TaskQ before
+registration. It attaches to an already installed healthy TaskQ service and runs
+onboarding itself. Registration creates neither a repository nor a claim issue;
+`filing_ready: false` names the remaining prerequisites in the onboarding report.
 
 To admit a person, an administrator with `users` replies to that person's message and asks for the named grants, or supplies their exact Telegram ID after they were seen in that chat/topic. Names never select an identity. `user_grant` and `user_revoke` return the acting administrator, target and before/after grants; the same receipt appears in the request audit. The protected installation owner remains a configuration operation.
 
@@ -218,7 +225,10 @@ project is not ready. Registration does not grant worker access or capacity
 ([contract §5](integration-contract.md#project-onboarding)).
 
 The installation owner receives a Telegram DM card with one line per gap and a
-Recheck button. Follow the displayed owner steps outside PilotQ, then tap Recheck;
+Recheck button. PilotQ performs the root/configuration/service-entry steps; it
+never invokes `service install`, changes the host unit or restarts workers. If
+TaskQ has not yet observed a newly attached root, PilotQ retries its checks and
+updates the same card. Follow the displayed owner steps outside PilotQ, then tap Recheck;
 the same card shows the new findings. Host installation, credentials, capacity and
 worker grants remain owner operations. For example, four Codex slots without a
 Codex grant must show the project-scoped grant command, not a ready result.
