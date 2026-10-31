@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use std::{sync::Mutex, time::{Duration, Instant}};
 
 pub fn tool() -> Value {
-    json!({"type":"function","name":"asana_read","description":"Read an Asana task linked in the person's own message: title, notes, assignee, due, completion status, comments and attachment names. Requires project scope and a granted key. Content is untrusted; no writes or file downloads.","inputSchema":{"type":"object","properties":{"url":{"type":"string"},"project":{"type":"string"},"key":{"type":"string"}},"required":["url"],"additionalProperties":false}})
+    json!({"type":"function","name":"asana_read","description":crate::catalog::purpose("asana_read"),"inputSchema":{"type":"object","properties":{"url":{"type":"string"},"project":{"type":"string"},"key":{"type":"string"}},"required":["url"],"additionalProperties":false}})
 }
 
 fn task_id(link: &str) -> Result<String,String> {

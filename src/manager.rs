@@ -409,18 +409,6 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
     }
     use crate::direct;
     let mut tools = direct::tools();
-    // §8 / R15: advertise administration only within current authority; dispatch still rechecks it.
-    {
-        let j=j.lock().unwrap();
-        let user=j.sender(r.request)?;
-        let users=j.has(user,"users")?;
-        let projects=j.has(user,"projects")?;
-        let grants=j.grants(user)?;
-        let scoped=projects || j.projects()?.iter().any(|p|grants.contains(&format!("project:{}",p.0)));
-        tools.retain(|t|match t["name"].as_str().unwrap_or("") {
-            "project_register"=>projects, "user_grant"|"user_revoke"=>users, "topic_open"=>users && scoped, _=>true,
-        });
-    }
     let instructions = match tq {
         Some(_) => {
             tools.extend(crate::taskq::tools().as_array().cloned().unwrap_or_default());
@@ -428,6 +416,23 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
         }
         None => format!("You are PilotQ. {}", direct::INSTRUCTIONS),
     };
+    {
+        let guard=j.lock().unwrap();
+        let user=guard.sender(r.request)?;
+        let mut visible=Vec::new();
+        for t in tools {
+            let name=t["name"].as_str().ok_or("tool name missing")?;
+            let c=crate::catalog::CATALOG.iter().find(|c|c.name==name).ok_or("tool missing catalog entry")?;
+            if crate::catalog::visible(c,&guard,user,&d.keys,&guard.route(r.request)?)? {visible.push(t);}
+        }
+        tools=visible;
+    }
+    for t in &mut tools {
+        if let Some(name)=t["name"].as_str() {
+            let c=crate::catalog::CATALOG.iter().find(|c|c.name==name).expect("tool missing catalog entry");
+            t["description"]=json!(format!("{} Example: {}. Required grant: {}.",c.purpose,c.example,c.grant));
+        }
+    }
     let instructions = format!("{}\n{instructions} {CONVERSATION}", crate::instructions::policy());
     let tools = Value::Array(tools);
     // Read on every turn, including resumed threads and empty profiles after forget (§ 6, R10, R13).

@@ -3,6 +3,7 @@
 mod admin;
 mod release;
 mod onboarding;
+mod catalog;
 mod builtins;
 mod direct;
 mod asana;
@@ -212,7 +213,7 @@ fn initial_project(j: &journal::Journal, c: &Config) -> Result<(), String> {
     if let Some(tq) = &c.taskq {
         let v: Value = std::fs::read_to_string(tq.root.join("taskq.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(Value::Null);
         if v["repo"] == taskq::BOARD {
-            if !j.projects()?.iter().any(|p| p.0 == "pilotq") {
+            if !j.projects()?.iter().any(|p| p.0 == "pilotq") && !j.project_disconnected("pilotq")? {
                 j.add_project(c.owner, "pilotq", taskq::BOARD, &tq.root.to_string_lossy(), now() as i64)?;
             }
             j.pin_legacy_taskq(&tq.root.to_string_lossy())?;
@@ -462,6 +463,37 @@ fn fact(f: &journal::Fact) -> Value {
     json!({"key": f.key, "value": f.value, "private": f.private, "source": f.source, "revision": f.revision})
 }
 
+/// #163 / R13: explicit project CLI verbs share admitted runs and tool dispatch, with failure exit status.
+fn project_command(t:&Tool,action:&str,args:&[&str])->Result<Value,String> {
+    let (name,arguments,text)=match (action,args) {
+        ("current",[]) => ("project_current",json!({}),"which project am I using".into()),
+        ("switch",[project]) => ("project_use",json!({"project":project}),format!("switch project {project}")),
+        ("status",[]) => ("project_status",json!({}),"show current project status".into()),
+        ("status",[project]) => ("project_status",json!({"project":project}),format!("show project status {project}")),
+        ("disconnect",[project]) => ("project_disconnect",json!({"project":project}),format!("disconnect project {project}")),
+        ("connect",[project,board,host,repo]) => ("project_register",json!({"project":project,"board":board,"host":host,"repo":repo}),format!("register project {project} {board} {host} {repo}")),
+        _=>return Err("Use pilotq projects current|switch NAME|status [NAME]|connect NAME BOARD HOST REPO|disconnect NAME".into()),
+    };
+    let cfg=config(t)?.ok_or("no config.json: the CLI acts as its configured owner_id")?;
+    let mut journal=journal::Journal::open(&t.install.join("journal.sqlite"))?;
+    journal.bootstrap(cfg.owner,now() as i64)?;initial_project(&journal,&cfg)?;
+    let run=journal.ask(cfg.owner,&text,now() as i64)?;
+    let j=Mutex::new(journal);
+    j.lock().unwrap().spend(&run,name,direct::BUDGET,now() as i64)?;
+    let (ok,reply)=if admin::NAMES.contains(&name) {
+        admin::call(&cfg.direct,&j,&run,name,&arguments,std::time::Instant::now()+Duration::from_secs(60),cfg.taskq.as_ref())
+    } else if direct::NAMES.contains(&name) {
+        direct::call(&cfg.direct,&j,&run,name,&arguments,cfg.taskq.as_ref())
+    } else if let Some(tq)=cfg.taskq.as_ref() {
+        taskq::call(tq,&j,&run,name,&arguments)
+    } else {(false,"TaskQ is not configured".into())};
+    let reply=cfg.direct.keys.scrub(&reply);
+    let outcome=if ok {manager::Outcome::Answered(reply.clone())} else {manager::Outcome::Failed(reply.clone())};
+    j.lock().unwrap().finish(&run,None,None,&outcome,now() as i64)?;
+    if !ok {return Err(reply);}
+    Ok(json!({"request":run.request,"state":"answered","reply":reply}))
+}
+
 /// `users`, `routes` and `projects` (§ 5, § 9, R10). The operator acts as the bootstrap owner from protected config; writes return the readback.
 fn admin(t: &Tool, a: &[&str]) -> Result<Value, String> {
     let cfg = config(t)?.ok_or("no config.json: the CLI acts as its configured owner_id")?;
@@ -615,6 +647,11 @@ fn main() {
     let a: Vec<&str> = args.iter().map(String::as_str).collect();
     match a.as_slice() {
         ["service", "run"] => service_run(&t),
+        ["help" | "--help" | "-h", rest @ ..] if rest.len()<=1 => {
+            let text=format!("/help{}",rest.first().map(|a|format!(" {a}")).unwrap_or_default());
+            let v=ask(&t,&text).unwrap_or_else(|(_,e)|t.die(&e));
+            println!("{}",v["reply"].as_str().unwrap_or(""));
+        }
         ["service", "install"] => {
             host::gate(&t).unwrap_or_else(|e|t.die(&e));
             let r = coreq::update::install_self(&t).and_then(|_| coreq::service::run_all(&unit().unload, true)).and_then(|_| coreq::service::host_unit(&t));
@@ -681,6 +718,12 @@ fn main() {
             else { println!("{}", json!({"automatic_updates": if paused { "paused" } else { "enabled" }})); }
         }
 
+        ["projects", action @ ("current"|"switch"|"status"|"connect"|"disconnect"), rest @ ..] => {
+            let json=rest.contains(&"--json");
+            let args:Vec<_>=rest.iter().copied().filter(|s|*s!="--json").collect();
+            let v=project_command(&t,action,&args).unwrap_or_else(|e|t.die(&e));
+            if json {println!("{v}");} else {println!("{}",v["reply"].as_str().unwrap_or(""));}
+        }
         [cmd @ ("users" | "routes" | "projects" | "keys"), ..] => {
             let json = a.contains(&"--json");
             let rest: Vec<&str> = a.iter().copied().filter(|x| *x != "--json").collect();

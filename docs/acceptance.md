@@ -1011,3 +1011,16 @@ Root cause, from the code path these requests took: a document message carried n
 | Files186-06 | Every image turn of #72 | The current image is labeled as this message's, earlier images as earlier | `telegram_images_reach_same_session` |
 
 On the base commit `telegram_documents_are_read_in_their_turn` failed at its first document assertion: the text document's turn input was empty text. These checks qualify the adapters, not model reading quality. A5 is a post-release PM check on PDS 18: an authorized tester sends a PDF, a ZIP, a file over 20 MiB and a video in a Russian chat; record the replies and request audit IDs. Production cutover is not authorized.
+
+### Unified capability catalog (#163)
+
+[§9](../pilotq.md#9-cli-releases-and-service-operations) owns the command model (R13, R17). Component checks use invented identities and local TaskQ stubs; they do not qualify Telegram delivery or an upstream TaskQ help schema.
+
+| Case | Input and initial conditions | Expected observation |
+|---|---|---|
+| Command163-01 | Add or remove a slash control or manager tool | Catalog completeness check detects an unmatched tool; slash parsing and descriptions use catalog entries. Each entry has area, purpose, example and grant. |
+| Command163-02 | Authorized caller asks `/help`, `/help projects` or CLI `help projects`; another manager turn is active | Independent control path records and delivers the catalog answer without starting Codex or cancelling the active turn. Top-level help has introduction, three examples and one line per accessible area. |
+| Command163-03 | Compare chat-only, project-scoped and administrator callers, then revoke a project or key grant | Current inaccessible capabilities disappear; help includes the access-request line. English/Russian help follows the caller language. |
+| Command163-04 | Administrator disconnects an explicitly named project; repeats the call, changes arguments, or supplies only quoted wording | Atomic registration/default removal and original receipt; changed arguments, quotes, missing grants and stale fences refuse. Files, board, grants and task history remain; legacy startup cannot re-enroll the removed name. Reconnect uses normal verified registration. |
+| Command163-05 | Stub changes its machine-readable TaskQ help between calls; old CLI, missing CLI, invalid JSON or output overflow | Latest JSON appears without a PilotQ change; unavailable cases give one short line. The live catalog is external source JSON, never a vendored command list. |
+| Command163-06 | PM runs `/help`, `/help projects`, then “which projects can I use” with an authorized test-bot caller | Read back all three Telegram reply texts, caller language and exact PilotQ source/binary identity. Confirm the natural-language answer uses `project_list` and actual accessible registrations. A5 remains unverified until this PM run. |
