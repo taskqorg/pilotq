@@ -1137,6 +1137,59 @@ fn board(d: &Path) -> Value {
     serde_json::from_str(&fs::read_to_string(d.join("taskq-state.json")).unwrap_or("{}".into())).unwrap()
 }
 
+// #218 A2/A3, R5/R13/§12: complete tool output does not replace a terminal
+// answer. Exercise both the observed empty final and a short acknowledgement;
+// keep failure cleanup and no-board-effect protection through the shared CLI path.
+#[test]
+fn plan_218_empty_turn_and_acknowledgement() {
+    for ack in [false, true] {
+        let (d, _) = tq_setup(if ack { "plan218-ack" } else { "plan218-empty" }, true);
+        let final_text = if ack { "План подготовлен." } else { "" };
+        let fake = FAKE_TOOLS.replace("\"text\": \"re: \" + text", &format!("\"text\": {}", json!(final_text)));
+        assert_ne!(fake, FAKE_TOOLS);
+        fs::write(d.join("fake-codex"), fake).unwrap();
+        let proposal = plan(&["Добавить FAQ в README"]);
+        let input = format!("Project: pilotq\nmulti {}", json!({"calls":[["project_status",{"project":"pilotq"}],["task_plan",proposal]]}));
+        let out = cli(&d, &["ask", &input, "--json"]);
+        assert_eq!(out.status.success(), ack, "{}", String::from_utf8_lossy(&out.stderr));
+        let reply = query_text(&d, "SELECT reply FROM requests ORDER BY id DESC LIMIT 1");
+        assert_eq!(query(&d, "SELECT count(*) FROM plans"), if ack {1} else {0});
+        assert_eq!(query(&d, "SELECT count(*) FROM plan_runs"), 0);
+        assert!(tq_calls(&d).is_empty(), "planning cannot file or start board work");
+        if ack {
+            assert!(reply.contains("Добавить FAQ в README") && reply.contains("We will:") && reply.contains("Done when:"), "{reply}");
+            assert!(!reply.contains(final_text), "render the card once, without duplicate acknowledgement");
+        } else {
+            assert_eq!(reply.lines().count(), 1, "{reply}");
+            assert!(!reply.contains("Draft") && !reply.contains("revision"), "{reply}");
+            assert_eq!(query_text(&d, "SELECT error FROM requests ORDER BY id DESC LIMIT 1"), "Codex ended the turn without an answer");
+            assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE kind='failed_draft'"), 1);
+        }
+        fs::remove_dir_all(d).unwrap();
+    }
+}
+
+// Actual subscription-model qualification, separate from deterministic protocol
+// tests. Uses an isolated journal, fake read-only board and fake Telegram API;
+// never files work or qualifies the installed TEST topic (A4, §9).
+#[test]
+#[ignore = "requires explicitly supplied subscription login"]
+fn plan_218_live_model() {
+    let (d, st) = tq_setup("plan218-model", true);
+    let _login = live_login(&d);
+    limits(&d, Path::new("codex"), json!({"first_event":60,"silent":60,"deadline":180}));
+    let c = spawn(&d, None);
+    push(&st, text(1, OWNER, None, OWNER, "составь план для pilotq: добавить в README раздел FAQ"));
+    wait("plan model outcome", 180, || try_query(&d, "SELECT count(*) FROM requests WHERE update_id=1 AND state IN ('answered','failed','uncertain')") == Some(1));
+    let reply = query_text(&d, "SELECT reply FROM requests WHERE update_id=1");
+    eprintln!("plan218 model reply: {reply}");
+    assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE update_id=1 AND state='answered'"), 1, "{reply}");
+    assert_eq!(query(&d, "SELECT count(*) FROM plans"), 1);
+    assert!(reply.contains("Сделаем:") && reply.contains("Готово, когда:"), "{reply}");
+    assert!(tq_calls(&d).is_empty());
+    stop(c, d);
+}
+
 /// Changes one fake task as a worker, reviewer or the board would, and gives it a newer revision unless `f` sets one.
 fn set_task(d: &Path, n: i64, f: impl FnOnce(&mut Value)) {
     let mut s = board(d);

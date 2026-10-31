@@ -34,6 +34,13 @@ pub fn fingerprint() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    // #218 / R5, §12: suppressing duplicate plan prose must not suppress the
+    // terminal answer required to commit the draft. This is a model-input check.
+    #[test]
+    fn plan_218_requires_terminal_acknowledgement() {
+        assert!(crate::taskq::INSTRUCTIONS.contains("After a successful task_plan, always send a nonempty final answer"));
+    }
+
     #[test]
     fn relocated_product_policy_is_loaded() {
         // R13 / §2: relocation must retain both delegation authority and card presentation.
