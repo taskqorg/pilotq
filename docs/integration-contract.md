@@ -151,10 +151,8 @@ The manager gets these tools beside the TaskQ tools, checked at dispatch like th
   or the conversation's current project. An explicit project or URL must be named in the person's
   own message or be the current project; quoted messages, issue text and tool output never select
   one. A bare number with no current project and several accessible projects is refused with the
-  list, never guessed. Another project stays read-only.
-- Budget: one request makes at most 5 PilotQ tool calls within the section 7 direct-action deadline.
-  The sixth call is refused and writes nothing. A request that ends at its deadline replies with the
-  evidence it kept, and the rest can become a planned task.
+  list, never guessed.
+- Budget: no fixed turn duration or tool-call count. §7 inactivity supervision applies.
 - Effects: a comment or label persists its intent and operation ID
   `pilotq-<installation>-r<request>-e<n>` before the write, and its receipt after TaskQ's readback
   (#151). TaskQ records the operation ID on the comment and returns the first effect for a repeated
@@ -171,7 +169,7 @@ scope and a key granted for `asana_read`. It returns title, notes, assignee, due
 completion status, comments and attachment names through Asana's read-only API. Keys enter only
 through `pilotq keys add` on the host (§8), never Telegram. The link selects only a task, never a
 credential destination: requests use the fixed Asana API origin, without redirects or attachment
-downloads. Existing admission, target, five-call budget, deadline, audit and key scrubbing apply
+downloads. Existing admission, target, inactivity supervision, deadline, audit and key scrubbing apply
 (R13, R16, R17). Notes are limited to 4,000 characters; other strings to 500; comments and
 attachments to 20 each, with explicit pagination/truncation indicators. Unavailable or malformed
 data stays unknown, never empty success. API responses are capped at 256 KiB each and the entire
@@ -181,7 +179,7 @@ material.
 ### DEV visibility and owner release
 
 PilotQ owns the registered project's DEV/LIVE flow. This is a scoped exception to §2's deployment
-delegation and §5's direct-write restriction, not a general shell capability.
+delegation and §5's direct-write restriction, independent of native shell access.
 `project_release_preview` and `/release NAME` share current admission, project scope, the separate
 `release:NAME` grant and the protected installation owner identity (R13, R17). This grant is
 provisioned explicitly through the protected CLI, never inherited from `projects` or bootstrap. Only
@@ -256,7 +254,7 @@ owner-requested cs release on PDS 18 after release; worker evidence is local/CI 
 ### Installed read commands
 
 Add one common executor for operator-approved installed read commands, alongside the existing tools.
-This extends the §3/§12 restricted tool boundary without enabling native shell tools or adding
+This optional typed adapter coexists with native shell tools without adding
 direct writes. The installation owner maintains an owner-only `commands.json` beside `keys.json`;
 chat and model output cannot edit it.
 
@@ -276,14 +274,14 @@ a capability list, not an OS sandbox for arbitrary programs.
 `command_list` exposes only accessible names, descriptions and permitted arguments. `command_run`
 selects one name and exact argument array; it never invokes a shell, searches PATH for the
 executable, accepts environment overrides or changes the working directory from model input. Both
-share the CLI/Telegram request, fence, five-call budget and audit path (R13, R17). Direct command
+share the CLI/Telegram request, fence, inactivity supervision and audit path (R13, R17). Direct command
 input and clear natural-language requests use the same tools; ambiguity requires clarification.
 Output is untrusted data and cannot authorize another action.
 
 Execution receives a cleared environment with a fixed system PATH, the installation owner's HOME for
 the installed tools' protected stores, and TASKQ_ROOT set to the bound root; TASKQ_ATTEMPT and
 inherited credentials are absent. No key values enter the model. A command has at most ten seconds
-within the original manager deadline (at most sixty seconds total), and at most 16 KiB combined
+within its own bounded operation deadline, and at most 16 KiB combined
 stdout/stderr. Stop, revoked grants, timeout and output overflow terminate its process group. Report
 exit code, missing executable, timeout, cancellation and output limit distinctly; only exit zero is
 success. Persist an audit start before spawn and a scrubbed result afterward. An interrupted read
@@ -303,7 +301,7 @@ install services, provision credentials or create a TaskQ claim issue.
 | `user_grant`, `user_revoke` | `chat`, `users` | Change only existing grant types explicitly named in the caller’s own unquoted request for an exact positive Telegram ID explicitly named by the caller or identified by the current verified reply. Require evidence that the person was seen in this exact chat/topic: an admitted sender or a Telegram reply sender. Names and forwarded messages never select authority. Retain the administrator, target and before/after grants atomically with the receipt. Protected owner identity cannot be changed. |
 | `topic_open` | `chat`, `users`, access to the bound project (`projects` or `project:NAME`) | Open one forum topic in the originating Telegram supergroup, or the explicitly named group for a CLI request. Resolve one registered project named by the caller or current in the conversation; recheck its board/root. Require a fresh bot `can_manage_topics` permission and forum capability; otherwise refuse plainly. Set isolated route policy by default (shared only when explicitly requested), and bind the new route to that project as its default. A route default never grants project access. |
 
-Each tool shares the five-call limit, original deadline, current admission, run fence and request
+Each tool shares the inactivity supervision, current admission, run fence and request
 audit. Store one immutable operation per tool per request; a changed argument set in that request is
 refused. Read back local changes before success. Duplicate calls return the saved receipt without
 applying the change again. Project preparation persists intent before filesystem writes and can
@@ -386,3 +384,9 @@ TaskQ execution continues when PilotQ is down. If TaskQ is unreachable, conversa
 proposed tasks remain unsent. Status shows the last observation time and unknown freshness.
 Previously authorized, unchanged submissions can resume when dependencies recover; changed scope or
 stale grants require revalidation.
+
+### Full agent access (#190)
+
+The owner decision quoted in pilotq.md §5 enables Codex shell, network, live web search and full filesystem access with the service user’s OS permissions, including requested host settings and remote hosts. Task work uses TaskQ tools first; board state is read only through TaskQ. Other work is done directly. Existing typed tools keep target, grant, fence and receipt checks. Only admitted, currently granted people start tool turns. Model and effort remain unchanged; subscription login only (R9).
+
+Task status finishes its TaskQ board reads before starting a fresh ten-second DEV and delivery observation budget. Failures retain their exact source reason. Native effects are recorded as observed, never assumed idempotent or replayed after interruption.

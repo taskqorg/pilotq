@@ -189,7 +189,7 @@ fn config(t: &Tool) -> Result<Option<Config>, String> {
     let owner = v["owner_id"].as_i64().ok_or("config.json: owner_id missing")?;
     let api_url = v["api_url"].as_str().map(url::Url::parse).transpose().map_err(|e| format!("config.json: api_url: {e}"))?;
     let secs = |k: &str, d: u64| v["codex_limits"][k].as_u64().map_or(Ok(Duration::from_secs(d)), |n| if n > 0 { Ok(Duration::from_secs(n)) } else { Err(format!("config.json: codex_limits.{k} must be positive")) });
-    let limits = manager::Limits { first_event: secs("first_event", 30)?, silent: secs("silent", 30)?, deadline: secs("deadline", 60)? };
+    let limits = manager::Limits { first_event: secs("first_event", 600)?, silent: secs("silent", 600)?, deadline: secs("deadline", 600)? };
     let codex = manager::Codex { bin: v["codex"].as_str().unwrap_or("codex").to_string(), workspace: t.install.join("workspace"), home: t.install.join("codex"), limits };
     // § 5: the TaskQ CLI and the project root whose taskq.json names the board; absent, the manager has no TaskQ tools
     let tq = &v["taskq"];
@@ -479,7 +479,7 @@ fn project_command(t:&Tool,action:&str,args:&[&str])->Result<Value,String> {
     journal.bootstrap(cfg.owner,now() as i64)?;initial_project(&journal,&cfg)?;
     let run=journal.ask(cfg.owner,&text,now() as i64)?;
     let j=Mutex::new(journal);
-    j.lock().unwrap().spend(&run,name,direct::BUDGET,now() as i64)?;
+    j.lock().unwrap().spend(&run,name,now() as i64)?;
     let (ok,reply)=if admin::NAMES.contains(&name) {
         admin::call(&cfg.direct,&j,&run,name,&arguments,std::time::Instant::now()+Duration::from_secs(60),cfg.taskq.as_ref())
     } else if direct::NAMES.contains(&name) {

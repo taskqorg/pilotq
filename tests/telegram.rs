@@ -386,12 +386,13 @@ fn f01_crash_points_keep_each_input_once() {
     let mut c = c;
     c.kill().unwrap(); // after cursor advancement
     c.wait().unwrap();
+    let interrupted=query(&d,"SELECT count(*) FROM requests WHERE state='running'");
 
     let c = spawn(&d, None);
-    std::thread::sleep(Duration::from_millis(1500));
+    wait("interruption summaries",15,||texts(&st).iter().filter(|t|t.contains("PilotQ restarted. Finished:")).count()==interrupted as usize);
     assert_eq!(query(&d, "SELECT count(*) FROM requests"), 2);
     let f = st.lock().unwrap();
-    assert_eq!(f.sent.len(),1,"retention notice only");
+    assert_eq!(f.sent.len(),1+interrupted as usize,"retention notice and one summary per interrupted turn");
     assert_eq!(f.reactions.len(),2,"reactions not repeated after restart");
     for (i,s) in f.reactions.iter().enumerate() {
         assert_eq!(s["chat_id"],11);
@@ -693,7 +694,8 @@ fn u19_cli_and_telegram_share_one_path() {
     stop(c, d);
 }
 
-// F03: stall, disconnect before and after a tool, an empty or failed terminal event, endless output and a server request.
+// F03: stall, disconnect before and after a tool, an empty or failed terminal event and a server request.
+// #190 replaces the endless-output total deadline with native_and_long_turn_190 and U12 stop protection.
 // Every case ends bounded and never as false success; after a tool started the outcome is uncertain, not retryable.
 #[test]
 fn f03_provider_faults_are_bounded() {
@@ -705,7 +707,6 @@ fn f03_provider_faults_are_bounded() {
         ("tool", "uncertain", "Codex exited without a terminal event"),
         ("empty", "failed", "Codex ended the turn without an answer"),
         ("failed", "failed", "usage limit reached"),
-        ("chatty", "failed", "Codex did not finish within 4 s"),
     ];
     for (input, state, error) in cases {
         let t = Instant::now();
@@ -762,7 +763,7 @@ fn u23_audit_through_service_and_cli() {
     assert_eq!((dm["runs"][0]["model"].as_str(), dm["deliveries"][0]["state"].as_str()), (Some("gpt-test"), Some("delivered")));
     let topic = &all[2];
     assert_eq!((topic["where"]["chat"].as_i64(), topic["where"]["topic"].as_i64(), topic["outcome"].as_str()), (Some(-100), Some(5), Some("uncertain")));
-    assert_eq!(topic["tools"][0]["target"], "commandExecution");
+    assert_eq!(topic["tools"][0]["target"], "touch x", "#190 A6: audit retains the interrupted command");
     let one = cli(&d, &["audit", "--request", "2"]);
     assert!(String::from_utf8_lossy(&one.stdout).starts_with("#2 at "), "{}", String::from_utf8_lossy(&one.stdout));
     assert!(!cli(&d, &["audit", "--user", "x"]).status.success(), "a malformed filter exits nonzero");
@@ -803,10 +804,9 @@ fn f06_poll_failure_is_visible_while_delivery_works() {
     stop(c, d);
 }
 
-// Step 2 crash qualification (F01, F03, L15): SIGKILL the service during a Codex turn. On restart the run is interrupted, the pure
-// model request is requeued within its attempt budget and answered once; the acknowledgement is not repeated.
+// #190 A6 / R5: restart terminates a turn with a delivered summary, without replay or another acknowledgement.
 #[test]
-fn crash_during_turn_requeues_once() {
+fn crash_during_turn_reports_interruption() {
     let (d, st) = setup("crash", vec![text(1, OWNER, None, OWNER, "once")]);
     limits(&d, &script(&d, "fake-codex", FAKE), json!({"first_event": 5, "silent": 60, "deadline": 60}));
     let mut c = spawn(&d, None);
@@ -815,8 +815,9 @@ fn crash_during_turn_requeues_once() {
     c.kill().unwrap();
     c.wait().unwrap();
     let c = spawn(&d, None);
-    wait("answer after restart", 20, || sent_has(&st, "re: once @ th-2"));
-    assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE state='answered'"), 1);
+    wait("summary after restart", 20, || sent_has(&st, "PilotQ restarted. Finished: no recorded completion. Unfinished:"));
+    assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE state='failed'"), 1);
+    assert_eq!(query(&d,"SELECT count(*) FROM runs WHERE request_id=1"),1,"no replay");
     assert_eq!(query(&d, "SELECT count(*) FROM runs WHERE request_id=1 AND state='interrupted'"), 1);
     assert_eq!(st.lock().unwrap().reactions.len(), 1, "the acknowledgement is not repeated: {:?}", texts(&st));
     stop(c, d);
@@ -1701,55 +1702,43 @@ fn u09_f09_f10_switch_ambiguity_redirect_and_revoke() {
     stop(c, d);
 }
 
-// U11, L05: six reads in one request run five; the sixth is refused and writes nothing. A request cut off at its deadline replies
-// with the evidence it kept and offers to plan the rest.
+// #190 A5 replaces the five-call and total-deadline guards; retained risk: every read remains audited,
+// and inactivity terminates a stalled action while preserving its findings.
 #[test]
-fn u11_l05_budget_and_deadline_keep_evidence() {
+fn u11_l05_unlimited_calls_and_inactivity_keep_evidence() {
     let (d, st) = direct_setup("u11");
     let c = spawn(&d, None);
     let six: Vec<Value> = (1..=6).map(|_| json!(["project_list", {}])).collect();
     push(&st, text(1, OWNER, None, OWNER, &format!("multi {}", json!({"calls": six}))));
-    wait("budget", 15, || sent_has(&st, "Could not finish the action; its result is not confirmed yet."));
-    assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='direct'"),5);
+    wait("six reads",15,||query(&d,"SELECT count(*) FROM requests WHERE update_id=1 AND state='answered'")==1);
+    assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='direct'"),6);
     drop(c);
-
-    limits(&d, &d.join("fake-codex"), json!({"first_event": 10, "silent": 10, "deadline": 4}));
+    limits(&d, &d.join("fake-codex"), json!({"first_event": 10, "silent": 2, "deadline": 4}));
     let c = spawn(&d, None);
     let mut u = text(2, OWNER, None, OWNER, &format!("multi {}", json!({"calls": [["project_list", {}]], "sleep": 8})));
     u["message"]["from"]["language_code"] = json!("ru");
     push(&st, u);
-    wait("deadline", 20, || sent_has(&st, "Результат действия неизвестен; автоматического повтора не будет."));
-    assert!(sent_has(&st,"Доступные проекты: other, pilotq"), "§5/U11: readable observations must survive the deadline");
-    assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE update_id=2 AND front='telegram' AND state='uncertain'"), 1);
-    let diagnostic = query_text(&d, "SELECT error FROM requests WHERE update_id=2 AND front='telegram'");
-    // §7: context preparation consumes the same deadline, so Codex gets only the remaining budget.
-    let seconds = diagnostic.strip_prefix("Codex did not finish within ")
-        .and_then(|s| s.strip_suffix(" s"))
-        .and_then(|s| s.parse::<u64>().ok());
-    assert!(matches!(seconds, Some(0..=4)), "the audit retains the deadline cause and bounded runtime budget: {diagnostic}");
-    stop(c, d);
+    wait("inactivity",20,||sent_has(&st,"Codex sent no event for 2 s"));
+    assert!(sent_has(&st,"Доступные проекты: other, pilotq"),"read findings survive inactivity");
+    assert_eq!(query(&d,"SELECT count(*) FROM requests WHERE update_id=2 AND state='uncertain'"),1);
+    stop(c,d);
 }
 
-// A2 (#25): the budget is per request, not per run. Four reads run, PilotQ is killed before the turn ends, the restart retries
-// the request (no tool item started, so it is a pure model run), and the retry's four reads run one more: five in total, the
-// rest refused with nothing written. The fake's tool calls send no item events, as a retried run would.
+// #190 A6: completed reads survive restart; neither the model turn nor its calls are replayed.
 #[test]
-fn a2_budget_holds_across_a_retry() {
+fn a2_restart_preserves_reads_without_replay() {
     let (d, st) = direct_setup("a2");
     let c = spawn(&d, None);
     let four: Vec<Value> = (1..=4).map(|_| json!(["project_list", {}])).collect();
     push(&st, text(1, OWNER, None, OWNER, &format!("multi {}", json!({"calls": four, "bare": true, "sleep_once": 30}))));
-    // the fake marks the first run once its four calls are answered and it starts to sleep
     wait("first run's reads", 15, || d.join("slept").exists());
     drop(c);
-    assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='direct'"), 4);
     let c = spawn(&d, None);
-    wait("retry answered",15,||sent_has(&st,"Could not finish the action; its result is not confirmed yet."));
-    assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='reply_diagnostic'"),1,"#165 raw budget refusals remain in audit");
-    assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='direct'"), 5, "five reads in total across both runs");
-    assert_eq!(query(&d, "SELECT count(*) FROM runs WHERE request_id=(SELECT id FROM requests WHERE update_id=1 AND front='telegram')"), 2, "the request was retried");
-    assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE request_id=(SELECT id FROM requests WHERE update_id=1 AND front='telegram') AND kind='call'"), 5, "a refused call records nothing");
-    stop(c, d);
+    wait("restart summary",15,||sent_has(&st,"PilotQ restarted. Finished:"));
+    assert!(sent_has(&st,"Accessible projects: other, pilotq"));
+    assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='direct'"),4);
+    assert_eq!(query(&d,"SELECT count(*) FROM runs WHERE request_id=(SELECT id FROM requests WHERE update_id=1 AND front='telegram')"),1);
+    stop(c,d);
 }
 
 // A1 (#25): a key grant names a person, a route or a project (§ 8 Key store); dispatch checks all three, and revoking a route or

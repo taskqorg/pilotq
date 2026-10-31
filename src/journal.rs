@@ -8,8 +8,6 @@ use std::path::{Path, PathBuf};
 
 /// Schema this binary writes; a newer journal is refused rather than guessed (F08).
 const SCHEMA: i64 = 12;
-/// Model attempts per request across restarts (§ 7 dependency retry).
-const RUNS: i64 = 3;
 /// Delivery attempts per episode, persisted across restart (§ 7).
 pub const ATTEMPTS: i64 = 5;
 /// Named grants (§ 2, § 5, § 8). `chat` admits conversation only; every other grant is separate. `project:NAME` scopes a project;
@@ -1184,9 +1182,23 @@ impl Journal {
             params![format!("telegram-cooldown:{chat}"),until]).map(drop).map_err(|e|e.to_string())
     }
 
+    /// R11 / #190: one durable, editable progress message per active request, at most every 30 s.
+    fn turn_progress(&self, at: i64) -> Result<(), String> {
+        self.0.execute("UPDATE outbox SET state='superseded' WHERE kind='turn_progress' AND state='pending'
+            AND request_id IN (SELECT id FROM requests WHERE state<>'running')",[]).map_err(|e|e.to_string())?;
+        self.0.execute("INSERT INTO outbox(request_id,chat,topic,reply_to,text,next_at,kind)
+            SELECT q.id,q.chat,q.topic,q.message,
+                CASE WHEN q.language='ru' THEN 'Работаю · ' ELSE 'Working · ' END || (?1-r.started_at) || ' s',?1,'turn_progress'
+            FROM requests q JOIN runs r ON r.request_id=q.id
+            WHERE q.front='telegram' AND q.state='running' AND r.state='running' AND r.started_at<=?1-30
+            AND NOT EXISTS(SELECT 1 FROM outbox o WHERE o.request_id=q.id AND o.kind='turn_progress'
+                AND (o.state='pending' OR o.next_at>?1-30))",[at]).map(drop).map_err(|e|e.to_string())
+    }
+
     /// The next delivery due at `now`, else the earliest time one becomes due. Only the oldest pending row of a route
     /// (chat and topic) is eligible, so a retrying head keeps later replies in that route behind it.
     pub fn due(&self, now: i64) -> Result<(Option<Delivery>, Option<i64>), String> {
+        self.turn_progress(now)?;
         self.launch_progress(now)?;
         self.task_progress(now)?;
         for id in revalidate(&self.0)? {
@@ -1207,6 +1219,7 @@ impl Journal {
                 &format!(
                     "SELECT id, chat, topic, reply_to, html, text, attempts, CASE WHEN kind='status' THEN (SELECT s.sent_message FROM outbox s WHERE s.request_id=o.request_id AND s.chat=o.chat AND s.topic IS o.topic
                         AND s.kind='status' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
+                        WHEN kind='turn_progress' THEN (SELECT s.sent_message FROM outbox s WHERE s.request_id=o.request_id AND s.kind='turn_progress' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
                         WHEN kind='release_result' THEN (SELECT s.sent_message FROM outbox s WHERE s.request_id=o.revision AND s.kind='release_preview' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
                         WHEN kind='onboarding' THEN (SELECT s.sent_message FROM outbox s WHERE s.request_id=o.request_id AND s.kind='onboarding' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
                         WHEN kind='choice_answered' THEN o.reply_to
@@ -1665,7 +1678,7 @@ impl Journal {
 
     /// True when a stop or a later claim has retired this run's fence.
     pub fn fenced(&self, r: &Run) -> Result<bool, String> {
-        self.0.query_row("SELECT fence<>?2 FROM conversations WHERE session=?1", params![r.session, r.fence], |x| x.get(0)).map_err(|e| e.to_string())
+        self.0.query_row("SELECT fence<>?2 OR NOT EXISTS(SELECT 1 FROM requests q JOIN grants g ON g.user=q.sender AND g.name='chat' WHERE q.id=?3) FROM conversations WHERE session=?1", params![r.session, r.fence,r.request], |x| x.get(0)).map_err(|e| e.to_string())
     }
 
     /// Rebuild context only from this conversation generation. Historical text and receipts are data, never new authority (§ 4).
@@ -1762,18 +1775,10 @@ impl Journal {
         self.0.execute("INSERT INTO audit_events(request_id,run_id,at,kind,result) VALUES (?1,?2,?3,'kept_finding',?4)",params![r.request,r.id,at,text]).map(drop).map_err(|e|e.to_string())
     }
 
-    /// Spends one of the request's PilotQ tool calls (§ 5 Budget), counted in its audit record across runs and restarts, so a
-    /// retried run continues the budget instead of starting a new one. False once `budget` are spent; a refused call records nothing.
-    pub fn spend(&self, r: &Run, tool: &str, budget: usize, at: i64) -> Result<bool, String> {
-        // one statement, so the count and the insert are a single write
-        self.0
-            .execute(
-                "INSERT INTO audit_events(request_id, run_id, at, kind, target) SELECT ?1,?2,?3,'call',?4
-                WHERE (SELECT count(*) FROM audit_events WHERE request_id=?1 AND kind='call') < ?5",
-                params![r.request, r.id, at, tool, budget as i64],
-            )
-            .map(|n| n == 1)
-            .map_err(|e| e.to_string())
+    /// Record every typed call before dispatch (R17); #190 removes the call-count cap.
+    pub fn spend(&self, r: &Run, tool: &str, at: i64) -> Result<(), String> {
+        self.0.execute("INSERT INTO audit_events(request_id,run_id,at,kind,target) VALUES (?1,?2,?3,'call',?4)",
+            params![r.request,r.id,at,tool]).map(drop).map_err(|e|e.to_string())
     }
 
     /// Records a run's outcome, reply and native thread in one transaction, only while its fence holds. Returns false for a
@@ -1795,6 +1800,9 @@ impl Journal {
             Outcome::Failed(x) => ("failed", brief(language.as_deref(), if x.starts_with("voice") { if x.contains("20 MiB") || x.contains("5 minutes") { "voice_limit" } else { "voice_failed" } } else if x.contains("20 MiB") { "image_limit" } else if x.starts_with("image") || x.contains("image") { "image_failed" } else if x.contains("within") || x.contains("budget") { "limit" } else { "failed" }).into(), Some(x)),
             Outcome::Uncertain(x) => ("uncertain", brief(language.as_deref(), "uncertain").into(), Some(x)),
         };
+        if let Some(reason)=error.filter(|reason|reason.starts_with("Codex sent no")) {
+            text.push_str(&format!("\n{reason}."));
+        }
         if matches!(state,"failed"|"uncertain") {
             let mut q=tx.prepare("SELECT DISTINCT result FROM audit_events WHERE request_id=?1 AND kind='kept_finding' ORDER BY id").map_err(e)?;
             let findings:Vec<String>=q.query_map([r.request],|r|r.get(0)).and_then(Iterator::collect).map_err(e)?;
@@ -1861,32 +1869,37 @@ impl Journal {
         Ok(true)
     }
 
-    /// Startup recovery (§ 4, § 12): a run left running by a dead process is interrupted. Its request is requeued while model
-    /// attempts remain, uncertain once a tool started, and failed for a CLI caller that is gone. Returns the requests changed.
+    /// R5 / #190: interrupted turns end with durable findings and an explicit unfinished summary, never replay.
     pub fn reconcile(&mut self, at: i64) -> Result<usize, String> {
         let e = |e: rusqlite::Error| e.to_string();
         let tx = self.0.transaction().map_err(e)?;
-        let stale: Vec<(i64, bool, String, i64)> = {
+        let stale: Vec<(i64, bool, String)> = {
             let mut q = tx
                 .prepare(
-                    "SELECT r.request_id, r.tool, q.front, (SELECT count(*) FROM runs x WHERE x.request_id=r.request_id)
+                    "SELECT r.request_id, r.tool, q.front
                     FROM runs r JOIN requests q ON q.id=r.request_id WHERE r.state='running' AND q.state='running'",
                 )
                 .map_err(e)?;
-            q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).and_then(Iterator::collect).map_err(e)?
+            q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).and_then(Iterator::collect).map_err(e)?
         };
-        for (request, tool, front, attempts) in &stale {
+        for (request, tool, front) in &stale {
             let (state, why) = match (tool, front.as_str()) {
                 (true, _) => ("uncertain", "PilotQ restarted after a tool started"),
-                (false, "telegram") if *attempts < RUNS => ("queued", ""),
                 _ => ("failed", "PilotQ restarted during the run"),
             };
-            if state == "queued" {
-                tx.execute("UPDATE requests SET state='queued' WHERE id=?1", [request]).map_err(e)?;
-                continue;
-            }
             let language: Option<String> = tx.query_row("SELECT language FROM requests WHERE id=?1",[request],|x|x.get(0)).map_err(e)?;
-            let text = brief(language.as_deref(), state);
+            let mut q=tx.prepare("SELECT DISTINCT result FROM audit_events WHERE request_id=?1 AND kind='kept_finding' ORDER BY id").map_err(e)?;
+            let findings:Vec<String>=q.query_map([request],|r|r.get(0)).and_then(Iterator::collect).map_err(e)?;
+            let mut pending=tx.prepare("SELECT target FROM audit_events WHERE request_id=?1 AND kind='tool' AND result IS NULL ORDER BY id").map_err(e)?;
+            let pending:Vec<String>=pending.query_map([request],|r|r.get(0)).and_then(Iterator::collect).map_err(e)?;
+            let mut text = if language.as_deref().unwrap_or("en").starts_with("ru") {
+                format!("PilotQ перезапущен. Завершено: {}. Не завершено: итоговый ответ прерван; неподтверждённые действия не повторяются.",if findings.is_empty(){"нет записанного подтверждения".into()}else{findings.join("\n")})
+            } else {
+                format!("PilotQ restarted. Finished: {}. Unfinished: the final answer was interrupted; unconfirmed actions will not be repeated.",if findings.is_empty(){"no recorded completion".into()}else{findings.join("\n")})
+            };
+            if !pending.is_empty() {
+                text.push_str(&format!("\n{}: {}",if language.as_deref().unwrap_or("en").starts_with("ru") {"Не подтверждено"} else {"Unconfirmed"},pending.join("\n")));
+            }
             tx.execute("UPDATE requests SET state=?2, error=?3, reply=?4 WHERE id=?1", params![request, state, why, text]).map_err(e)?;
             let dest: (i64, Option<i64>, i64) = tx.query_row("SELECT chat, topic, message FROM requests WHERE id=?1", [request], |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?))).map_err(e)?;
             if front == "telegram" {
@@ -1896,9 +1909,7 @@ impl Journal {
         tx.execute("UPDATE runs SET state='interrupted', ended_at=?1 WHERE state='running'", [at]).map_err(e)?;
         tx.commit().map_err(e)?;
         for (request, ..) in &stale {
-            if self.request(*request)?.0 != "queued" {
-                self.trace(*request, at);
-            }
+            self.trace(*request, at);
         }
         Ok(stale.len())
     }
@@ -2949,6 +2960,44 @@ mod tests {
         other.execute("INSERT INTO meta(key,value) VALUES ('competing',1)", []).unwrap();
     }
 
+    // #190 A5 / R11: progress edits one message, respects 30 s, survives restart and stops on completion.
+    #[test]
+    fn turn_progress_190() {
+        let (mut j,p)=journal("progress190");
+        j.admit(&[(1,msg(-5,7,1))],0).unwrap();
+        let run=j.claim_next(4,0).unwrap().remove(0);
+        j.turn_progress(29).unwrap();
+        assert_eq!(count(&j,"SELECT count(*) FROM outbox WHERE kind='turn_progress'"),0);
+        j.turn_progress(30).unwrap();j.turn_progress(60).unwrap();
+        assert_eq!(count(&j,"SELECT count(*) FROM outbox WHERE kind='turn_progress'"),1,"pending updates coalesce");
+        j.0.execute("UPDATE outbox SET state='delivered',sent_message=99 WHERE kind='turn_progress'",[]).unwrap();
+        drop(j);
+        let j=Journal::open(&p.join("journal.sqlite")).unwrap();
+        j.turn_progress(59).unwrap();
+        assert_eq!(count(&j,"SELECT count(*) FROM outbox WHERE kind='turn_progress'"),1);
+        j.turn_progress(60).unwrap();
+        while let Some(d)=j.due(60).unwrap().0 {
+            if d.kind=="turn_progress" {assert_eq!(d.edit,Some(99));break;}
+            j.0.execute("UPDATE outbox SET state='delivered',sent_message=98 WHERE id=?1",[d.id]).unwrap();
+        }
+        j.finish(&run,None,None,&crate::manager::Outcome::Answered("Done".into()),61).unwrap();
+        j.turn_progress(90).unwrap();
+        assert_eq!(count(&j,"SELECT count(*) FROM outbox WHERE kind='turn_progress' AND state='pending'"),0);
+        drop(j);std::fs::remove_dir_all(p).unwrap();
+    }
+
+    // #190 A4/A5: no call cap, but revocation fences an active native-tool turn.
+    #[test]
+    fn unrestricted_calls_keep_admission_190() {
+        let (mut j,p)=journal("calls190");let r=j.ask(7,"inspect host",0).unwrap();
+        for _ in 0..12 {j.spend(&r,"project_list",1).unwrap();}
+        assert_eq!(count(&j,"SELECT count(*) FROM audit_events WHERE kind='call'"),12);
+        assert!(!j.fenced(&r).unwrap());
+        j.revoke(7,7,&["chat".into()],2).unwrap();
+        assert!(j.fenced(&r).unwrap());
+        drop(j);std::fs::remove_dir_all(p).unwrap();
+    }
+
     fn journal(tag: &str) -> (Journal, std::path::PathBuf) {
         let d = std::env::temp_dir().join(format!("pilotq-journal-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -3403,8 +3452,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(p);
     }
 
-    // F03, F04, U12: a restart requeues a pure model run within its attempt budget, never one that started a tool; a fenced
-    // run records nothing on its request; /new keeps the old thread off the new conversation generation.
+    // #190 A6 replaces replay; R5 still fences stopped runs and preserves /new generation boundaries.
     #[test]
     fn runs_reconcile_and_fence() {
         use crate::manager::Outcome;
@@ -3413,14 +3461,14 @@ mod tests {
         let runs = j.claim_next(4, 0).unwrap();
         assert_eq!(runs.len(), 2);
         j.tool(&runs[1], "commandExecution", "c1", None, 0).unwrap();
+        j.keep_finding(&runs[1],"disk usage: completed",0).unwrap();
         assert_eq!(j.reconcile(1).unwrap(), 2);
-        assert_eq!(j.request(1).unwrap().0, "queued", "a pure model run is retried");
+        assert_eq!(j.request(1).unwrap().0, "failed", "interrupted model turns end explicitly");
         assert_eq!(j.request(2).unwrap().0, "uncertain", "a run that started a tool is never replayed");
-        for _ in 1..RUNS {
-            j.claim_next(4, 2).unwrap();
-            j.reconcile(3).unwrap();
-        }
-        assert_eq!(j.request(1).unwrap().0, "failed", "model attempts are bounded across restarts");
+        let summary=j.request(2).unwrap().1.unwrap();
+        assert!(summary.contains("disk usage: completed") && summary.contains("Unfinished:"),"{summary}");
+        assert_eq!(j.reconcile(3).unwrap(),0,"restart summaries are not duplicated");
+        assert!(j.claim_next(4,3).unwrap().is_empty());
 
         j.admit(&[(3, msg(7, 7, 3))], 4).unwrap();
         let r = j.claim_next(4, 4).unwrap().remove(0);

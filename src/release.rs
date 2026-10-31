@@ -141,10 +141,10 @@ fn health_until(c:&Value,end:Instant)->Result<Value,String> {
     std::thread::spawn(move || {
         tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|_|"DEV runtime unavailable")?.block_on(async {
             let client=reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(remaining).build().map_err(|_|"DEV client unavailable")?;
-            let mut response=client.get(url).send().await.map_err(|_|"DEV health read failed")?.error_for_status().map_err(|_|"DEV health status failed")?;
-            let mut bytes=Vec::new();while let Some(chunk)=response.chunk().await.map_err(|_|"DEV health read failed")? {if bytes.len()+chunk.len()>65536 {return Err("DEV health too large");}bytes.extend_from_slice(&chunk);}
+            let mut response=client.get(url).send().await.map_err(|e|format!("DEV health read failed: {e}"))?.error_for_status().map_err(|e|format!("DEV health status failed: {e}"))?;
+            let mut bytes=Vec::new();while let Some(chunk)=response.chunk().await.map_err(|e|format!("DEV health read failed: {e}"))? {if bytes.len()+chunk.len()>65536 {return Err("DEV health too large".into());}bytes.extend_from_slice(&chunk);}
             let v:Value=serde_json::from_slice(&bytes).map_err(|_|"DEV health unreadable")?;
-            if !v["sha"].as_str().is_some_and(sha) {return Err("DEV health SHA unavailable");} Ok(v)
+            if !v["sha"].as_str().is_some_and(sha) {return Err("DEV health SHA unavailable".into());} Ok::<Value,String>(v)
         })
     }).join().map_err(|_|"DEV health unavailable")?.map_err(String::from)
 }
@@ -157,7 +157,7 @@ fn delivery_config(c:Result<Value,String>,issue:&Value,end:Instant)->Value {
         let c=c?;
         let target=merged.as_deref().ok_or("Merge identity unavailable")?;
         let output=run(&c,"delivery_status",target,end,||true);
-        if output["status"]!="success" {return Err("Delivery adapter failed or unavailable".into());}
+        if output["status"]!="success" {return Err(format!("Delivery adapter {}: {}",output["status"].as_str().unwrap_or("unknown"),output["reason"].as_str().or_else(||output["stderr"].as_str()).filter(|s|!s.is_empty()).unwrap_or("no diagnostic")));}
         let report:Value=serde_json::from_str(output["stdout"].as_str().unwrap_or("")).map_err(|_|"Delivery adapter JSON unreadable")?;
         delivery_report(&c,target,report,end)
     })();
@@ -562,7 +562,7 @@ mod tests {
         let status=std::process::Command::new("/usr/bin/git").current_dir(&f.dir).args(["update-ref","refs/heads/live",&f.b]).status().unwrap();assert!(status.success());
         assert_eq!(delivery_config(config(&j,"sample"),&issue,Instant::now()+Duration::from_secs(10))["stage"],"on LIVE");
         std::fs::write(&script,"#!/bin/sh\nexit 1\n").unwrap();
-        let got=delivery_config(config(&j,"sample"),&issue,Instant::now()+Duration::from_secs(10));assert_eq!(got["pipeline"],"unknown");assert_eq!(got["reason"],"Delivery adapter failed or unavailable");
+        let got=delivery_config(config(&j,"sample"),&issue,Instant::now()+Duration::from_secs(10));assert_eq!(got["pipeline"],"unknown");assert_eq!(got["reason"],"Delivery adapter exit_nonzero: no diagnostic");
     }
     // #183 A2 / §5: a task closed without the delivery line still reports pipeline facts for its hand-merged result.
     #[test]
@@ -616,6 +616,23 @@ mod tests {
         let first=dev_observe(&f.j,"sample",&c,Some(&f.b),&h,end).unwrap();
         assert!(first["state"].as_str().unwrap().ends_with("(first observed)"));
         assert_eq!(dev_observe(&f.j,"sample",&c,Some(&f.b),&h,end).unwrap()["state"],first["state"]);
+    }
+    // #190 A3 / R8: slow board reads cannot consume the subsequent delivery budget.
+    #[test]
+    fn slow_task_status_190() {
+        let f=fixture("slow190");
+        let issue=json!({"number":42,"title":"Invented","url":"https://example.invalid/issues/42","state":"closed","merged_sha":f.b});
+        std::fs::write(f.dir.join("issue.json"),issue.to_string()).unwrap();
+        std::fs::write(&f.tq.bin,"#!/bin/sh\ncase \"$1\" in\n status) sleep 9; cat snapshot.json ;;\n issue) cat issue.json ;;\n *) exit 99 ;;\nesac\n").unwrap();
+        let script=f.dir.join("runner");
+        let report=json!({"sha":f.b,"merged_at":"2026-10-31T00:00:00Z","first_main":{"sha":f.b,"state":"success","url":"https://example.invalid/pipelines/1","deploy":{"state":"success","url":"https://example.invalid/jobs/1"},"smoke":[{"state":"pending","url":"https://example.invalid/jobs/2"}]},"later_main":null});
+        std::fs::write(&script,format!("#!/bin/sh\nprintf '%s' '{}'\n",report)).unwrap();
+        let mut c=f.c.clone();c["delivery_status"]=json!([script,"{sha}"]);
+        configure(&f.j.lock().unwrap(),7,"sample",c).unwrap();
+        let (ok,text)=crate::taskq::call(&f.tq,&f.j,&f.r,"task_status",&json!({"project":"sample","task":"42"}));
+        assert!(ok,"{text}");
+        assert!(text.contains("on DEV"),"slow board reads lost DEV evidence: {text}");
+        assert!(!text.contains("deadline exhausted"),"board reads consumed observation budget: {text}");
     }
     fn save_preview(f:&Fixture)->i64 {
         let id=f.r.request;let j=f.j.lock().unwrap();

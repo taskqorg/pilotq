@@ -43,13 +43,13 @@ flowchart LR
 | Compressed tool output and recovery reference | agentq adapter plus retained original evidence | Preserve access scope and validate recovered content |
 
 Keep the runtime interface small: open/resume by ID, submit, stream events, interrupt, observe
-terminal result and close. Implement one adapter first. Do not build a universal runtime framework
-or expose native runtime tools that bypass the authorization boundary.
+terminal result and close. Implement one adapter first. Do not build a universal runtime framework.
+The #190 owner decision enables native shell, network, live web search and full filesystem access as the service user; typed tools retain their validation.
 
 The manager uses a neutral explicit workspace. Project context is resolved through the approved
 registry and scoped tools, avoiding a process-wide current-directory switch shared by conversations.
-Separate runtime processes are fault boundaries; OS permissions and mounts enforce actual resource
-isolation.
+Separate runtime processes are fault boundaries; native tools inherit the service user’s OS permissions.
+The trusted-manager exception in pilotq.md §5 does not claim resource isolation from that user.
 
 
 ## 4. Durable conversation and effects
@@ -89,7 +89,7 @@ readback after it. A crash can occur between these steps. Recovery rules are:
 
 | Interrupted operation | Recovery |
 |---|---|
-| Pure model generation or bounded read | Retry within budget; distinguish regenerated text from the original |
+| Interrupted manager turn | Deliver recorded findings and unfinished work; do not replay |
 | TaskQ mutation | Reconcile the same operation ID and revision against TaskQ |
 | Direct idempotent mutation | Read back the target, then retry only under its declared idempotency contract |
 | Non-idempotent or unobservable external effect | Mark uncertain, block automatic replay and request a decision |
@@ -189,8 +189,8 @@ recorded pilot evidence.
 |---|---|
 | Durable receipt | p95 <= 2 seconds from update receipt at PilotQ, under the defined pilot load |
 | Telegram acknowledgement | 👀 reaction within 5 seconds when Telegram is reachable; text fallback on reaction failure, one queue notice after 30 seconds |
-| Direct action | <= 60 seconds and <= 5 tool calls; longer work is delegated or returned with a bounded result |
-| Silent runtime | No useful event for 30 seconds triggers diagnosis; runtime deadline still applies even if it emits tokens indefinitely |
+| Direct action | No fixed turn duration or tool-call cap; task work uses TaskQ first |
+| Silent runtime | Ten minutes without a runtime event cancels with the exact reason; progress timers do not renew activity |
 | Cancellation | Acknowledge within 5 seconds when transport is healthy; abort then terminate the isolated process after a 5-second grace period if necessary |
 | Runtime recovery | Reconcile interrupted requests within 30 seconds after service readiness; uncertain effects stay blocked |
 | Model concurrency | 4 conversations initially, one active run per conversation; round-robin waiting routes |
@@ -297,13 +297,7 @@ transport contact; it does not prove received inputs reached admission. A live p
 indicator proves neither useful progress nor task completion. Count accepted/dispatched inputs and
 pending age as well as successful polls. Unknown observation remains unknown.
 
-The runtime supervisor observes startup/first-event latency, last useful runtime/tool event and the
-absolute run deadline. The first-event watch starts before invoking Codex; it cannot depend on Codex
-having emitted its first event. Typing, polling and periodic status timers never renew
-useful-progress time. Token activity cannot extend the absolute short-action budget. Waiting states
-retain their reason and wake condition without busy retries. Use monotonic time within a process;
-persist deadlines/attempts across restart and handle wall-clock jumps without granting a fresh
-unlimited budget.
+The runtime supervisor cancels after ten minutes without a Codex event, including before the first event. Runtime events renew this monotonic inactivity clock; typing, polling and progress timers do not. There is no fixed total turn duration or tool-call cap. `/stop` fences the run and terminates its process group. One durable topic progress message is updated at most every thirty seconds while running. A restart ends an interrupted turn without replay: deliver recorded completed findings and explicitly identify unfinished or unconfirmed work, including agent-caused restarts (R5, R11). Native shell effects without recorded completion remain unconfirmed.
 
 ### Telegram feedback
 
@@ -338,7 +332,7 @@ group automatically.
 Validate the pinned Codex protocol/capabilities before accepting executable work. Unknown optional
 diagnostic events can be retained as metadata; unknown control/terminal semantics cannot be guessed
 as success. Parse tools only after a complete validated request; a parseable partial argument stream
-is not permission to act. Disable or contain native tools that bypass PilotQ's effect boundary. An
+is not permission to act. Native effects use service-user permissions and are not automatically replayed. An
 empty useful answer with no verified delegation/action is an explicit outcome to recover or report,
 not silent success.
 
