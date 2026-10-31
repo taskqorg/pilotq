@@ -468,7 +468,7 @@ fn run_inner(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, 
     } else {
         "Native shell and live web are unavailable for this principal. Use only the granted PilotQ tools. Refuse a native shell request in one plain line in the person's language."
     };
-    let instructions = format!("{}\n{}\n{authority}\n{instructions} {CONVERSATION} Owner decision #190 overrides earlier direct-work restrictions: task work uses TaskQ tools first and board state only through TaskQ; other requested work uses native shell, network and web search only when this principal is authorized above. There is no total turn or tool-call cap. Preserve recorded outcomes before a restart; interrupted actions are never automatically replayed.", crate::instructions::policy(), direct::alias_instructions());
+    let instructions = format!("{}\n{}\n{}\n{authority}\n{instructions} {CONVERSATION} Owner decision #190 overrides earlier direct-work restrictions: task work uses TaskQ tools first and board state only through TaskQ; other requested work uses native shell, network and web search only when this principal is authorized above. There is no total turn or tool-call cap. Preserve recorded outcomes before a restart; interrupted actions are never automatically replayed.", crate::instructions::policy(), direct::alias_instructions(), crate::loops::INSTRUCTIONS);
     let tools = Value::Array(tools);
     // Read on every turn, including resumed threads and empty profiles after forget (§ 6, R10, R13).
     // Keep the person's text separate: neither profile values nor old summaries are authorization.
@@ -528,6 +528,7 @@ fn run_inner(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, 
                     return (false, format!("Tool audit failed ({e}); nothing was done"));
                 }
                 let (ok, out) = match tq {
+                    _ if crate::loops::NAMES.contains(&name) => crate::loops::call(j,r,name,args,now()),
                     _ if name == "asana_read" => crate::asana::call(d,j,r,args,command_deadline),
                     _ if crate::admin::NAMES.contains(&name) => crate::admin::call(d,j,r,name,args,command_deadline,tq),
                     _ if crate::commands::NAMES.contains(&name) => crate::commands::call(d,j,r,name,args,command_deadline,tq),
@@ -617,6 +618,7 @@ pub fn serve(
     const MODELS: usize = 4;
     let codex = std::sync::Arc::new(codex);
     loop {
+        if !drain.exists() { if let Err(e)=crate::loops::fire(&mut j.lock().unwrap(),now()) { eprintln!("loops: {e}"); } }
         let claimed = if drain.exists() { Ok(vec![]) } else { j.lock().unwrap().claim_next(MODELS, now()) };
         match claimed {
             Ok(runs) => {

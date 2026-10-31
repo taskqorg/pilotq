@@ -5,6 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
 coreq = { git = "https://github.com/taskqorg/coreq", tag = "v0.14.6" }
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
 serde_json = { version = "1", features = ["preserve_order"] }

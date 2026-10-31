@@ -171,6 +171,23 @@ impl Taskq {
         Err(format!("taskq {} failed: {why}", args.first().map_or("", String::as_str)))
     }
 
+    /// #220: board collectors share one ten-second pass deadline and refuse partial/oversized output.
+    pub(crate) fn loop_read(&self,args:&[&str],end:std::time::Instant)->Result<Value,String> {
+        let mut command=Command::new(&self.bin);
+        command.args(args).current_dir(&self.root).env("TASKQ_ROOT",&self.root)
+            .env_remove("TASKQ_ATTEMPT").env_remove("TASKQ_TASK").env_remove("TASKQ_ROLE")
+            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        #[cfg(unix)] std::os::unix::process::CommandExt::process_group(&mut command,0);
+        let out=crate::commands::execute_bounded(command,end,||true,1024*1024);
+        if out["status"]!="success" {return Err(format!("TaskQ loop observation unavailable: {}",out["status"]));}
+        let value:Value=serde_json::from_str(out["stdout"].as_str().ok_or("TaskQ loop output unavailable")?).map_err(|_|"TaskQ loop output is not JSON")?;
+        if args.first()==Some(&"status") {
+            if value["complete"]!=true || !value["tasks"].is_array() {return Err("TaskQ loop snapshot incomplete".into());}
+            self.check(value["board"]["repo"].as_str().ok_or("TaskQ loop board missing")?)?;
+        }
+        Ok(value)
+    }
+
     /// One write with `--op-id` and `--json`: its receipt `{task, op_id, outcome, state, revision, reason, next}`.
     pub(crate) fn write(&self, mut args: Vec<String>, op: &str) -> Result<Value, String> {
         args.extend(["--op-id".into(), op.into(), "--json".into()]);

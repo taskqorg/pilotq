@@ -13,6 +13,7 @@ mod files;
 mod instructions;
 mod keys;
 mod manager;
+mod loops;
 mod footer;
 mod conversation;
 mod taskq;
@@ -363,6 +364,8 @@ fn service_run(t: &Tool) -> ! {
         std::thread::spawn(move || manager::serve(codex, mj, mwake, || now() as i64, drain, mtq, d, manager_bot, voice));
         if let Some(tq) = tq {
             let (wj, wwake) = (j.clone(), wake.clone());
+            let ltq=tq.clone();let lj=wj.clone();
+            std::thread::spawn(move || loops::watch_boards(ltq,lj));
             std::thread::spawn(move || taskq::watch(tq, wj, wwake));
         }
         std::thread::spawn(move || {
