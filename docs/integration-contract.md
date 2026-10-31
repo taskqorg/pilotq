@@ -115,7 +115,9 @@ step 6). See the [trial cases](acceptance.md#human-trial-task-42).
 For an unbound read-only board list, `project_status` reads each accessible registered board once
 and returns their task lists together, with one audit read per board (§5). No current own project
 reference means all accessible boards; historical references and model-supplied project arguments
-do not narrow this list. An unavailable board retains its explicit reason alongside other results.
+do not narrow this list. A Telegram topic without an explicit route binding remains unbound for
+these lists even when it remembers a conversation project. This read preserves that selection;
+CLI/DM current selection, route bindings and current own project references retain their scope. An unavailable board retains its explicit reason alongside other results.
 Project-specific reads and mutations retain the normal target checks.
 
 Direct actions are reads. Only the owner (`owner_id` from protected configuration) may write
