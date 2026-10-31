@@ -279,8 +279,10 @@ fn tidy(text: &str) -> String {
         // Dotted filenames are not limited to known extensions. Leave versions and abbreviations such as e.g. alone.
         let dotted = file.rsplit_once('.').is_some_and(|(_, ext)| ext.chars().any(char::is_alphabetic))
             && !matches!(file, "e.g" | "i.e");
-        let path = dotted
-            && core.chars().all(|c| c.is_alphanumeric() || "_-./:".contains(c));
+        let rooted = file.split_once('/').is_some_and(|(dir, name)|
+            matches!(dir, "src" | "docs" | "tests" | "scripts" | "include" | "images" | "ui" | "assets" | "config" | ".github") && !name.is_empty());
+        let path = (dotted || rooted)
+            && core.chars().all(|c| c.is_alphanumeric() || " _-./:".contains(c));
         if path { format!("{head}`{core}`{tail}") } else { w.to_string() }
     }
     let mut out = String::new();
@@ -294,11 +296,30 @@ fn tidy(text: &str) -> String {
         for (k, part) in body.split('`').enumerate() {
             if k > 0 { out.push('`'); }
             if k % 2 == 1 { out += part; continue; }
-            for (i, w) in part.split(' ').enumerate() {
+            let words: Vec<_> = part.split(' ').collect();
+            let mut i = 0;
+            while i < words.len() {
                 if i > 0 { out.push(' '); }
-                // a word inside or next to a written link keeps its source
-                if label_open || w.contains(['[', ']']) { out += w; } else { out += &word(w); }
+                let w = words[i];
+                // An unquoted path with spaces ends at its filename. Do not join prose after
+                // an already complete filename, or consume written links/code as path text.
+                let mut last = i;
+                if !label_open && !w.contains(['[', ']']) && w.contains('/') && !w.contains("://")
+                    && !w.rsplit('/').next().unwrap_or(w).contains('.')
+                    && !w.rsplit('/').next().unwrap_or(w).starts_with(char::is_uppercase) {
+                    for (j, next) in words.iter().enumerate().skip(i + 1) {
+                        if next.is_empty() || next.contains(['[', ']', '/', ':', '!', '?']) { break; }
+                        if next.rsplit_once('.').is_some_and(|(_, ext)| ext.chars().any(char::is_alphabetic)) {
+                            last = j;
+                            break;
+                        }
+                    }
+                }
+                let candidate = words[i..=last].join(" ");
+                // A word inside or next to a written link keeps its source.
+                if label_open || w.contains(['[', ']']) { out += w; } else { out += &word(&candidate); }
                 label_open = (label_open || w.contains('[')) && !w.contains(']');
+                i = last + 1;
             }
         }
         out += end;
@@ -795,11 +816,13 @@ mod tests {
         assert_eq!(super::tidy("[see docs/a.md here](https://x.invalid) e.g. v0.2.5."),"[see docs/a.md here](https://x.invalid) e.g. v0.2.5.");
         assert_eq!(super::tidy("https://github.com/taskqorg/pilotq/blob/abc/docs/acceptance.md"),"[github.com](https://github.com/taskqorg/pilotq/blob/abc/docs/acceptance.md)");
         // #191: #82 applies to every repository path, not a fixed extension allowlist.
-        for path in ["ui/App.vue", "src/main.go:42", "docs/схема.diagram", "images/plot.svg", "include/header.hpp", "report.pdf", "schema.avsc", "a.c"] {
+        for path in ["ui/App.vue", "src/main.go:42", "docs/схема.diagram", "images/plot.svg", "include/header.hpp", "report.pdf", "schema.avsc", "a.c", "src/Makefile", "docs/my file.md"] {
             assert_eq!(super::markdown(path), format!("`{path}`"));
             assert_eq!(html(path), format!("<code>{path}</code>"));
         }
         assert_eq!(super::tidy("Check /status for taskqorg/pilotq."), "Check /status for taskqorg/pilotq.");
+        assert_eq!(super::tidy("Read src/Makefile and pilotq.md."), "Read `src/Makefile` and `pilotq.md`.");
+        assert_eq!(super::tidy("Read docs/my file.md, then /status."), "Read `docs/my file.md`, then /status.");
         let card="Task #19 asks:\nDone: drafted\nProblem: pick\n1. short, see [spec](https://x.invalid) ★\n2. long\n5. not an option";
         assert_eq!(super::options(card),[("answer:1".into(),"1. short, see spec ★".into()),("answer:2".into(),"2. long".into())]);
     }
