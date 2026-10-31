@@ -140,8 +140,7 @@ For cs use `https://dev.cyprus.bz/__health`, its registered release root and con
 explicit merged SHAs prove DEV inclusion. Health timestamps or labeled first-positive observations bound timing; failures stay unknown. Pipeline adapter, command schema and PM live
 qualification remain in the integration detail.
 
-The #190 owner decision is a manager-only exception to specq’s
-[permission authority](https://github.com/taskqorg/specq/blob/main/engineering/permission-authority.md)
+The #190 owner decision is a manager-only exception to specq’s [permission authority](https://github.com/taskqorg/specq/blob/main/engineering/permission-authority.md)
 rule protecting the policy store from governed workers: the trusted manager has the service user’s
 filesystem and host authority so it can administer those hosts. This is trust, not isolation from
 same-user policy or credential files. R16 still forbids deliberately reading secret values into the
