@@ -1508,7 +1508,11 @@ esac
         empty["complete"]=json!(false);empty["reason"]=json!("permission denied");
         std::fs::write(dir.join("snapshot.json"),empty.to_string()).unwrap();
         assert!(dispatch(&tq,&j,&r,"project_status",&json!({"project":"tight"})).unwrap_err().contains("permission denied"));
-        std::fs::write(&tq.bin,"#!/bin/sh\necho 'network unreachable' >&2\nexit 1\n").unwrap();
+        // Replace the executable inode: a recently exited child may still hold the old script open.
+        let replacement=tq.bin.with_extension("replacement");
+        std::fs::write(&replacement,"#!/bin/sh\necho 'network unreachable' >&2\nexit 1\n").unwrap();
+        std::fs::set_permissions(&replacement,std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::rename(&replacement,&tq.bin).unwrap();
         assert!(tq.snapshot_for("gradus/tight").unwrap_err().contains("network unreachable"));
         std::fs::remove_file(&tq.bin).unwrap();
         assert!(tq.snapshot_for("gradus/tight").unwrap_err().contains("did not start"));
