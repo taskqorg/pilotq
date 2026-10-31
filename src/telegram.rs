@@ -109,7 +109,8 @@ fn input(kind: &UpdateKind) -> Option<Input> {
     let file = video.as_ref().map(|(f, _)| *f).or_else(|| m.document().map(|d| &d.file));
     Some(Input { files: image.map(|f|json!({"id":f.id.0,"name":document.and_then(|d|d.file_name.clone()).unwrap_or_else(||"photo.jpg".into())}))
         .or_else(||video.as_ref().map(|(f,name)|json!({"id":f.id.0,"name":name,"media":"video"})))
-        .or_else(||m.document().map(|d|json!({"id":d.file.id.0,"name":d.file_name.as_deref().unwrap_or("document")}))).into_iter().collect(), callback: None,
+        .or_else(||m.audio().map(|a|json!({"id":a.file.id.0,"name":a.file_name.as_deref().unwrap_or("audio"),"media":"audio"})))
+        .or_else(||m.document().map(|d|json!({"id":d.file.id.0,"name":d.file_name.as_deref().unwrap_or("document"),"media":if audio_document.is_some() {"audio"} else {"document"}}))).into_iter().collect(), callback: None,
         media_group: m.media_group_id().map(|id|id.0.clone()),
         quote: m.reply_to_message().map(|r| json!({"message":r.id.0,"author":r.from.as_ref().map(|u|u.id.0),
             "text":r.text().or_else(||r.caption()), "has_image":r.photo().is_some() || r.document().is_some(),
@@ -799,6 +800,19 @@ mod tests {
             let i=super::input(&teloxide::types::UpdateKind::Message(msg)).unwrap();
             assert_eq!(i.kind,kind,"{media}");
             assert_eq!(i.files[0]["media"]=="video",video,"{media}");
+        }
+    }
+
+    // #234 / §1: 1:52 recordings are admitted; over-five-minute audio names audio in its limit reply.
+    #[test]
+    fn audio_video_duration_234() {
+        for (field, seconds, expected) in [("audio",112,"voice"),("audio",301,"voice_limit"),("video",112,"document"),("video",301,"document")] {
+            let mut m=json!({"message_id":1,"date":0,"chat":{"id":7,"type":"private","first_name":"A"},"from":{"id":7,"is_bot":false,"first_name":"A","language_code":"ru"}});
+            m[field]=json!({"file_id":"invented-media","file_unique_id":"invented-id","file_size":8,"mime_type":if field=="audio" {"audio/mpeg"} else {"video/mp4"},"width":2,"height":2,"duration":seconds,"file_name":format!("clip.{}",if field=="audio" {"mp3"} else {"mp4"})});
+            let i=super::input(&teloxide::types::UpdateKind::Message(serde_json::from_value(m).unwrap())).unwrap();
+            assert_eq!(i.kind,expected);
+            assert_eq!(i.files[0]["media"],field);
+            assert_eq!(i.language.as_deref(),Some("ru"));
         }
     }
 
