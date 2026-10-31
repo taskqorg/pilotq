@@ -105,6 +105,30 @@ fn brief(language: Option<&str>, reason: &str) -> &'static str {
     }
 }
 
+/// §1 / #234: use retained attachment identity at admission and after a late download/decoder refusal.
+fn media_brief(language: Option<&str>, reason: &str, files: &[Value]) -> String {
+    let ru=language.unwrap_or("en").starts_with("ru");
+    let file=files.first();
+    let media=file.and_then(|f|f["media"].as_str()).unwrap_or("");
+    let name=file.and_then(|f|f["name"].as_str()).unwrap_or("").to_ascii_lowercase();
+    let archive=name.rsplit('.').next().is_some_and(|e|matches!(e,"zip"|"rar"|"7z"|"gz"|"tgz"|"tar"|"bz2"|"xz"));
+    let noun=match (ru,media,archive) {
+        (true,"audio",_)=>"аудио", (false,"audio",_)=>"audio",
+        (true,"video",_)=>"видео", (false,"video",_)=>"video",
+        (true,_,true)=>"архив", (false,_,true)=>"archive",
+        (true,_,_)=>"документ", (false,_,_)=>"document",
+    };
+    match reason {
+        "file_limit" => if ru {format!("Файл больше 20 МиБ ({noun}); сожмите его или пришлите частями.")}
+            else {format!("The file is larger than 20 MiB ({noun}); compress it or send it in parts.")},
+        "voice_limit" | "voice_failed" if media=="audio" => brief(language,reason)
+            .replace("Голосовое сообщение", "Аудио").replace("голосовое сообщение", "аудио").replace("voice message", "audio file"),
+        "unsupported" if file.is_some() => if ru {format!("Этот формат не поддерживается ({noun}); отправьте PDF, ZIP или текст.")}
+            else {format!("This format is not supported ({noun}); send PDF, ZIP or text.")},
+        _ => brief(language,reason).into(),
+    }
+}
+
 /// Admits one request; its row is the audit record (§ 8 Request audit), so who, where, the display name at that time and the
 /// grant set used commit with the input.
 #[allow(clippy::too_many_arguments)]
@@ -1337,7 +1361,7 @@ impl Journal {
                         // § 1: unsupported input is detected and gets an explicit outcome, never silence
                         None if action_error.is_some() => action_error.unwrap(),
                         None if busy => brief(language.as_deref(), "busy").into(),
-                        None if state == "failed" => brief(language.as_deref(), match i.kind { "image_limit" | "voice_limit" | "file_limit" => i.kind, _ => "unsupported" }).into(),
+                        None if state == "failed" => media_brief(language.as_deref(), match i.kind { "image_limit" | "voice_limit" | "file_limit" => i.kind, _ => "unsupported" }, &i.files),
                         // §12: accepted text gets a reaction obligation below, without a text acknowledgement.
                         None => String::new(),
                     };
@@ -2175,7 +2199,8 @@ impl Journal {
         let tx = self.0.unchecked_transaction().map_err(e)?;
         let active:bool=tx.query_row("SELECT state='running' FROM runs WHERE id=?1",[r.id],|x|x.get(0)).map_err(e)?;
         if !active { return Ok(false); }
-        let language: Option<String> = tx.query_row("SELECT language FROM requests WHERE id=?1",[r.request],|x|x.get(0)).map_err(e)?;
+        let (language, image): (Option<String>, bool) = tx.query_row("SELECT language,image IS NOT NULL FROM requests WHERE id=?1",[r.request],|x|Ok((x.get(0)?,x.get(1)?))).map_err(e)?;
+        let files=self.reply_files(r.request)?;
         // #236 / R11,R13: a setup refusal is a handled result, shared by CLI, text and button paths.
         let gate_refusal:Option<String>=tx.query_row("SELECT result FROM audit_events WHERE run_id=?1 AND kind='plan_gate_refusal' AND NOT EXISTS(SELECT 1 FROM plan_runs WHERE request_id=?2) ORDER BY id DESC LIMIT 1",params![r.id,r.request],|r|r.get(0)).optional().map_err(e)?;
         let (state, mut text, error) = match outcome {
@@ -2183,7 +2208,7 @@ impl Journal {
             Outcome::Fenced => ("fenced", String::new(), None),
             _ if gate_refusal.is_some() && !matches!(outcome,Outcome::Uncertain(_)) => ("answered",gate_refusal.unwrap(),None),
             Outcome::Answered(a) => ("answered", a.clone(), None),
-            Outcome::Failed(x) => ("failed", brief(language.as_deref(), if x == "document parsing timed out" { "document_timeout" } else if x.starts_with("voice") { if x.contains("20 MiB") || x.contains("5 minutes") { "voice_limit" } else { "voice_failed" } } else if x.contains("20 MiB") { "image_limit" } else if x.starts_with("image") || x.contains("image") { "image_failed" } else if x.contains("within") || x.contains("budget") { "limit" } else { "failed" }).into(), Some(x)),
+            Outcome::Failed(x) => ("failed", media_brief(language.as_deref(), if x == "document parsing timed out" { "document_timeout" } else if x.starts_with("voice") { if x.contains("20 MiB") || x.contains("5 minutes") { "voice_limit" } else { "voice_failed" } } else if x.contains("20 MiB") { if files.is_empty() || image { "image_limit" } else { "file_limit" } } else if x.starts_with("image") || x.contains("image") { "image_failed" } else if x.contains("within") || x.contains("budget") { "limit" } else { "failed" }, &files), Some(x)),
             Outcome::Uncertain(x) => ("uncertain", brief(language.as_deref(), "uncertain").into(), Some(x)),
         };
         if matches!(state,"failed"|"uncertain") {
@@ -4377,6 +4402,46 @@ mod tests {
         assert_eq!(sessions(&j), [(7, "dm:7".to_string())]);
         drop(j);
         let _ = std::fs::remove_dir_all(p);
+    }
+
+    // #234 / §1: admission and late download failures preserve media kind and the chat language.
+    #[test]
+    fn media_refusals_234() {
+        use crate::manager::Outcome;
+        for (name, media, kind, ru, noun) in [
+            ("err.rar", "", "file_limit", true, "архив"),
+            ("clip.mp4", "video", "file_limit", false, "video"),
+            ("recording.mp3", "audio", "voice_limit", true, "Аудио"),
+            ("notes.pdf", "", "file_limit", false, "document"),
+            ("err.zip", "", "file_limit", false, "archive"),
+            ("clip.mp4", "video", "file_limit", true, "видео"),
+            ("recording.mp3", "audio", "voice_limit", false, "audio"),
+            ("notes.pdf", "", "file_limit", true, "документ"),
+        ] {
+            for mode in ["admission", "late", "unsupported"] {
+                let late=mode=="late";
+                let (mut j, p) = journal("234-media");
+                let mut own = msg(7,7,1).unwrap();
+                own.text=Some(if ru {"Прочитай файл"} else {"Read this file"}.into());
+                j.admit(&[(1,Some(own))],0).unwrap();
+                let first=j.claim_next(1,0).unwrap().remove(0);
+                j.finish(&first,None,None,&Outcome::Answered("ok".into()),0).unwrap();
+                let mut i=msg(7,7,2).unwrap();
+                i.text=None; i.language=Some("en".into());
+                i.kind=if late {if media=="audio" {"voice"} else {"document"}} else if mode=="unsupported" {"other"} else {kind};
+                i.files=vec![json!({"id":"invented-file","name":name,"media":media})];
+                j.admit(&[(2,Some(i))],1).unwrap();
+                if late {
+                    let runs=j.claim_next(4,2).unwrap();
+                    let r=runs.iter().find(|r|r.request==2).unwrap();
+                    j.finish(r,None,None,&Outcome::Failed(if media=="audio" {"voice is longer than 5 minutes"} else {"exceeds 20 MiB"}.into()),3).unwrap();
+                }
+                let reply=j.request(2).unwrap().1.unwrap();
+                assert!(reply.to_lowercase().contains(&noun.to_lowercase()), "{name} {mode}: {reply}");
+                assert!(reply.contains(if mode=="unsupported" {if ru {"не поддерживается"} else {"not supported"}} else if ru {"МиБ"} else {"MiB"}), "{reply}");
+                drop(j);std::fs::remove_dir_all(p).unwrap();
+            }
+        }
     }
 
     // #195 A2 / §1: parser timeout must survive failure projection into the durable reply and Telegram outbox.
