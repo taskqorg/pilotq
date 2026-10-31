@@ -141,15 +141,19 @@ fn health_until(c:&Value,end:Instant)->Result<Value,String> {
     std::thread::spawn(move || {
         tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|_|"DEV runtime unavailable")?.block_on(async {
             let client=reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(remaining).build().map_err(|_|"DEV client unavailable")?;
-            let mut response=client.get(url).send().await.map_err(|e|format!("DEV health read failed: {e}"))?.error_for_status().map_err(|e|format!("DEV health status failed: {e}"))?;
-            let mut bytes=Vec::new();while let Some(chunk)=response.chunk().await.map_err(|e|format!("DEV health read failed: {e}"))? {if bytes.len()+chunk.len()>65536 {return Err("DEV health too large".into());}bytes.extend_from_slice(&chunk);}
+            let mut response=client.get(url).send().await.map_err(|_|"DEV health read failed")?.error_for_status().map_err(|_|"DEV health status failed")?;
+            let mut bytes=Vec::new();while let Some(chunk)=response.chunk().await.map_err(|_|"DEV health read failed")? {if bytes.len()+chunk.len()>65536 {return Err("DEV health too large".into());}bytes.extend_from_slice(&chunk);}
             let v:Value=serde_json::from_slice(&bytes).map_err(|_|"DEV health unreadable")?;
             if !v["sha"].as_str().is_some_and(sha) {return Err("DEV health SHA unavailable".into());} Ok::<Value,String>(v)
         })
     }).join().map_err(|_|"DEV health unavailable")?.map_err(String::from)
 }
 // #179 / §5: pipeline evidence is independent of historical worker closing notes.
+#[cfg(test)]
 fn delivery_config(c:Result<Value,String>,issue:&Value,end:Instant)->Value {
+    delivery_config_audit(c,issue,end,|_|Ok(()))
+}
+fn delivery_config_audit(c:Result<Value,String>,issue:&Value,end:Instant,mut diagnostic:impl FnMut(&Value)->Result<(),String>)->Value {
     let merged=c.as_ref().ok().and_then(|c|merge_identity(c,issue,end)).or_else(||merged_sha(issue));
     let mut stage=if issue["state"].as_str().is_some_and(|s|s.eq_ignore_ascii_case("closed")) {"closed"} else {"open"};
     if merged.is_some() {stage="merged";}
@@ -157,7 +161,10 @@ fn delivery_config(c:Result<Value,String>,issue:&Value,end:Instant)->Value {
         let c=c?;
         let target=merged.as_deref().ok_or("Merge identity unavailable")?;
         let output=run(&c,"delivery_status",target,end,||true);
-        if output["status"]!="success" {return Err(format!("Delivery adapter {}: {}",output["status"].as_str().unwrap_or("unknown"),output["reason"].as_str().or_else(||output["stderr"].as_str()).filter(|s|!s.is_empty()).unwrap_or("no diagnostic")));}
+        if output["status"]!="success" {
+            diagnostic(&output).map_err(|_|"Delivery adapter failed; diagnostic audit unavailable")?;
+            return Err("Delivery adapter failed; pipeline state unknown".into());
+        }
         let report:Value=serde_json::from_str(output["stdout"].as_str().unwrap_or("")).map_err(|_|"Delivery adapter JSON unreadable")?;
         delivery_report(&c,target,report,end)
     })();
@@ -214,9 +221,15 @@ fn project_numbers(j:&Journal,p:&str,tasks:&Value)->Result<std::collections::BTr
     let cached=q.query_map([p],|r|r.get::<_,i64>(0)).and_then(Iterator::collect::<Result<Vec<_>,_>>).map_err(err)?;numbers.extend(cached);Ok(numbers)
 }
 // Snapshot protected configuration under the mutex; all network/process reads run unlocked.
-pub fn delivery(j:&std::sync::Mutex<Journal>,p:&str,issue:&Value,end:Instant)->Value {
+pub fn delivery(j:&std::sync::Mutex<Journal>,request:i64,p:&str,issue:&Value,end:Instant)->Value {
     let c=config(&j.lock().unwrap(),p);
-    delivery_config(c,issue,end)
+    delivery_config_audit(c,issue,end,|output| {
+        delivery_diagnostic(&j.lock().unwrap(),request,p,output,&crate::keys::Keys(crate::tool().install.join("keys.json")))
+    })
+}
+fn delivery_diagnostic(j:&Journal,request:i64,p:&str,output:&Value,keys:&crate::keys::Keys)->Result<(),String> {
+    let scrubbed=keys.scrub(&output.to_string());
+    audit(j,request,p,"delivery_adapter_error",&json!({"diagnostic":scrubbed}))
 }
 fn dev_observe(j:&std::sync::Mutex<Journal>,p:&str,c:&Value,merged:Option<&str>,h:&Value,end:Instant)->Result<Value,String> {
     let a=merged.ok_or("Merged SHA unavailable")?;
@@ -230,9 +243,9 @@ fn dev_observe(j:&std::sync::Mutex<Journal>,p:&str,c:&Value,merged:Option<&str>,
     let time=h["deployed_at"].as_str().or_else(||h["started_at"].as_str()).filter(|s|!s.is_empty() && s.len()<100);
     Ok(json!({"state":match time {Some(t)=>format!("on DEV since {t}"),None=>format!("on DEV since {} (first observed)",first)},"sha":b,"serves_target_exactly":a==b,"observed_at":crate::now()}))
 }
-pub fn task_observations(j:&std::sync::Mutex<Journal>,p:&str,issue:&Value,end:Instant)->(Value,Value) {
+pub fn task_observations(j:&std::sync::Mutex<Journal>,request:i64,p:&str,issue:&Value,end:Instant)->(Value,Value) {
     std::thread::scope(|scope| {
-        let pipeline=scope.spawn(||delivery(j,p,issue,end));
+        let pipeline=scope.spawn(||delivery(j,request,p,issue,end));
         let dev=task_dev(j,p,issue,end);
         (dev,pipeline.join().unwrap_or_else(|_|json!({"stage":"unknown","reason":"Delivery reader failed"})))
     })
@@ -517,6 +530,27 @@ mod tests {
         let tq=Taskq{bot:None,bin:probe,root:dir.clone(),poll:Duration::from_secs(1)};
         Fixture{dir,j:Arc::new(Mutex::new(j)),tq,c,a,b,r}
     }
+    // #202 A5 / R16–R17: transport URLs and adapter stderr stay out of replies;
+    // scrubbed diagnostics remain available in audit.
+    #[test]
+    fn release_errors_202() {
+        let f=fixture("errors202");
+        let mut c=f.c.clone();c["dev_health_url"]=json!("invented://example.invalid/private?token=invented-secret");
+        assert_eq!(health_until(&c,Instant::now()+Duration::from_secs(2)).unwrap_err(),"DEV health read failed");
+        let script=f.dir.join("runner");
+        std::fs::write(&script,"#!/bin/sh\necho 'invented-secret https://example.invalid/private' >&2\nexit 1\n").unwrap();
+        c["delivery_status"]=json!([script]);
+        let keys=crate::keys::Keys(f.dir.join("keys.json"));
+        std::fs::write(&keys.0,r#"{"test":{"value":"invented-secret"}}"#).unwrap();
+        std::fs::set_permissions(&keys.0,std::fs::Permissions::from_mode(0o600)).unwrap();
+        let j=f.j.lock().unwrap();
+        let got=delivery_config_audit(Ok(c),&json!({"state":"closed","merged_sha":f.b}),Instant::now()+Duration::from_secs(2),
+            |out|delivery_diagnostic(&j,f.r.request,"sample",out,&keys));
+        assert_eq!(got["reason"],"Delivery adapter failed; pipeline state unknown");
+        let saved:String=j.0.query_row("SELECT result FROM audit_events WHERE item='delivery_adapter_error'",[],|r|r.get(0)).unwrap();
+        assert!(!saved.contains("invented-secret"));
+        assert!(saved.contains("[key test]") && saved.contains("example.invalid/private"));
+    }
     // #179 A2–A6 / R8: adapter facts outrank close notes; retain failed attempts and later recovery.
     #[test]
     fn delivery_trace_179() {
@@ -562,7 +596,7 @@ mod tests {
         let status=std::process::Command::new("/usr/bin/git").current_dir(&f.dir).args(["update-ref","refs/heads/live",&f.b]).status().unwrap();assert!(status.success());
         assert_eq!(delivery_config(config(&j,"sample"),&issue,Instant::now()+Duration::from_secs(10))["stage"],"on LIVE");
         std::fs::write(&script,"#!/bin/sh\nexit 1\n").unwrap();
-        let got=delivery_config(config(&j,"sample"),&issue,Instant::now()+Duration::from_secs(10));assert_eq!(got["pipeline"],"unknown");assert_eq!(got["reason"],"Delivery adapter exit_nonzero: no diagnostic");
+        let got=delivery_config(config(&j,"sample"),&issue,Instant::now()+Duration::from_secs(10));assert_eq!(got["pipeline"],"unknown");assert_eq!(got["reason"],"Delivery adapter failed; pipeline state unknown");
     }
     // #183 A2 / §5: a task closed without the delivery line still reports pipeline facts for its hand-merged result.
     #[test]
@@ -602,7 +636,7 @@ mod tests {
         let c=configure(&f.j.lock().unwrap(),7,"sample",c).unwrap();
         let journal=f.j.clone();let issue=json!({"state":"closed","merged_sha":f.b});
         let start=Instant::now();let end=start+Duration::from_millis(400);
-        let worker=std::thread::spawn(move ||delivery(&journal,"sample",&issue,end));
+        let worker=std::thread::spawn(move ||delivery(&journal,1,"sample",&issue,end));
         while !f.dir.join("entered").exists() && Instant::now()<end {std::thread::yield_now();}
         assert!(f.dir.join("entered").exists(),"adapter did not start");
         let control=f.j.try_lock().expect("slow adapter blocked recovery controls");

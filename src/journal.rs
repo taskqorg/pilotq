@@ -12,7 +12,7 @@ const SCHEMA: i64 = 12;
 pub const ATTEMPTS: i64 = 5;
 /// Named grants (§ 2, § 5, § 8). `chat` admits conversation only; every other grant is separate. `project:NAME` scopes a project;
 /// `projects` covers every project; `queue` pauses host admission.
-pub const GRANTS: [&str; 6] = ["chat", "users", "projects", "taskq", "audit", "queue"];
+pub const GRANTS: [&str; 7] = ["chat", "users", "projects", "taskq", "audit", "queue", "shell"];
 /// Section 7 health sources, each reported separately.
 pub const SOURCES: [&str; 5] = ["poll", "storage", "model", "taskq", "delivery"];
 /// §9 / #81 owner incidents: source, opening and recovery text. Plain lines, no internal IDs or raw errors (§4).

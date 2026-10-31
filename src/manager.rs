@@ -95,13 +95,18 @@ impl Drop for Proc {
     }
 }
 
+// §3 / #202: admission alone never grants native host authority.
+fn native_access(j:&Journal,user:i64)->Result<bool,String> {
+    Ok(j.owner()?==Some(user) || j.has(user,"shell")?)
+}
+
 impl Codex {
-    fn spawn(&self) -> Result<Proc, String> {
+    fn spawn(&self, native: bool) -> Result<Proc, String> {
         std::fs::create_dir_all(&self.workspace).map_err(|e| format!("workspace: {e}"))?;
         std::fs::create_dir_all(&self.home).map_err(|e| format!("codex home: {e}"))?;
         let mut c = Command::new(&self.bin);
         // subscription login only, no API-key fallback (R9); native shell and web are enabled by the owner decision (#190)
-        c.args(["app-server", "--enable", "shell_tool"]);
+        c.args(["app-server", if native {"--enable"} else {"--disable"}, "shell_tool"]);
         for f in ["apps", "plugins", "browser_use", "computer_use", "multi_agent", "image_generation"] {
             c.args(["--disable", f]);
         }
@@ -113,7 +118,7 @@ impl Codex {
                 c.env(k, v);
             }
         }
-        c.args(["-c", "forced_login_method=\"chatgpt\"", "-c", "web_search=\"live\""])
+        c.args(["-c", "forced_login_method=\"chatgpt\"", "-c", if native {"web_search=\"live\""} else {"web_search=\"disabled\""}])
             .env("CODEX_HOME", &self.home)
             .current_dir(&self.workspace)
             .stdin(Stdio::piped())
@@ -147,7 +152,7 @@ impl Codex {
 
     /// #106: catalogue read only; it never creates a thread or starts inference (R9).
     pub fn models(&self) -> Result<Vec<String>, String> {
-        let mut p=self.spawn().map_err(|_|"Codex catalogue unavailable")?;
+        let mut p=self.spawn(false).map_err(|_|"Codex catalogue unavailable")?;
         let end=Instant::now()+Duration::from_secs(10);
         p.send(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"pilotq","version":env!("CARGO_PKG_VERSION")}}}));
         let mut models=vec![];
@@ -182,6 +187,7 @@ impl Codex {
     #[allow(clippy::too_many_arguments)]
     pub fn turn(
         &self,
+        native: bool,
         thread: Option<&str>,
         selected_model: Option<&str>,
         input: &Value,
@@ -196,7 +202,7 @@ impl Codex {
         // the first-event watch starts once this turn may spawn, before Codex runs (§ 12)
         let mut starting = Some(START.lock().unwrap_or_else(|e| e.into_inner()));
         let start = Instant::now();
-        let mut p = match self.spawn() {
+        let mut p = match self.spawn(native) {
             Ok(p) => p,
             Err(e) => return (None, None, Outcome::Failed(e)),
         };
@@ -288,7 +294,7 @@ impl Codex {
                         };
                         input.as_array_mut().unwrap().insert(0, json!({"type": "text", "text": history.to_string()}));
                         thread = None;
-                        let mut params = json!({"cwd": self.workspace, "approvalPolicy": "never", "sandbox": "danger-full-access"});
+                        let mut params = json!({"cwd": self.workspace, "approvalPolicy": "never", "sandbox": if native {"danger-full-access"} else {"read-only"}});
                         if let Some(model)=selected_model { params["model"]=json!(model); }
                         if let Some((tools, instructions)) = dynamic {
                             params["dynamicTools"] = tools.clone();
@@ -311,7 +317,7 @@ impl Codex {
                     drop(starting.take());
                     p.send(json!({"method": "initialized"}));
                     p.send(json!({"id": 4, "method": "account/rateLimits/read", "params": {}}));
-                    let mut params = json!({"cwd": self.workspace, "approvalPolicy": "never", "sandbox": "danger-full-access"});
+                    let mut params = json!({"cwd": self.workspace, "approvalPolicy": "never", "sandbox": if native {"danger-full-access"} else {"read-only"}});
                     if let Some(model)=selected_model { params["model"]=json!(model); }
                     if let Some((tools, instructions)) = dynamic {
                         // Tools are fixed at thread creation; schema upgrades explicitly rebuild older catalogues from the journal.
@@ -438,7 +444,17 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
             t["description"]=json!(format!("{} Example: {}. Required grant: {}.",c.purpose,c.example,c.grant));
         }
     }
-    let instructions = format!("{}\n{instructions} {CONVERSATION} Owner decision #190 overrides earlier direct-work restrictions: task work uses TaskQ tools first and board state only through TaskQ; other requested work is done directly with native shell, network and web search as the service user. There is no total turn or tool-call cap. Preserve recorded outcomes before a restart; interrupted actions are never automatically replayed.", crate::instructions::policy());
+    let native = {
+        let guard=j.lock().unwrap();
+        let user=guard.sender(r.request)?;
+        native_access(&guard,user)?
+    };
+    let authority = if native {
+        "Native shell, network and live web are authorized for this principal."
+    } else {
+        "Native shell and live web are unavailable for this principal. Use only the granted PilotQ tools. Refuse a native shell request in one plain line in the person's language."
+    };
+    let instructions = format!("{}\n{authority}\n{instructions} {CONVERSATION} Owner decision #190 overrides earlier direct-work restrictions: task work uses TaskQ tools first and board state only through TaskQ; other requested work uses native shell, network and web search only when this principal is authorized above. There is no total turn or tool-call cap. Preserve recorded outcomes before a restart; interrupted actions are never automatically replayed.", crate::instructions::policy());
     let tools = Value::Array(tools);
     // Read on every turn, including resumed threads and empty profiles after forget (§ 6, R10, R13).
     // Keep the person's text separate: neither profile values nor old summaries are authorization.
@@ -480,6 +496,7 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
     };
     let mut footer = crate::footer::Footer::default();
     let (thread, model, outcome) = codex.turn(
+        native,
         if refresh {None} else {r.thread.as_deref()},
         r.model.as_deref(),
         &input,
@@ -696,6 +713,19 @@ pub fn serve(
 
 #[cfg(test)]
 mod tests {
+    // #202 A1–A4: ordinary admission and admin grants must not imply shell authority.
+    #[test]
+    fn native_principal_202() {
+        let mut j=crate::journal::Journal::open(std::path::Path::new(":memory:")).unwrap();
+        j.bootstrap(7,0).unwrap();
+        j.grant(7,8,&["chat".into(),"users".into()],1).unwrap();
+        assert!(super::native_access(&j,7).unwrap());
+        assert!(!super::native_access(&j,8).unwrap());
+        j.grant(7,8,&["shell".into()],2).unwrap();
+        assert!(super::native_access(&j,8).unwrap());
+        j.revoke(7,8,&["shell".into()],3).unwrap();
+        assert!(!super::native_access(&j,8).unwrap());
+    }
     #[test]
     fn group_kill_ends_options_before_the_negative_pid() {
         assert_eq!(super::group_kill_args(1301449), ["-9", "--", "-1301449"]);
@@ -716,36 +746,50 @@ mod full_agent_tests {
         std::fs::write(&bin,r#"#!/usr/bin/env python3
 import sys,json,time
 def send(v): print(json.dumps(v),flush=True)
-assert 'shell_tool' in sys.argv and 'web_search="live"' in sys.argv
+native = sys.argv[sys.argv.index('shell_tool')-1]=='--enable'
+assert ('web_search="live"' if native else 'web_search="disabled"') in sys.argv
 for line in sys.stdin:
  m=json.loads(line); method=m.get('method'); ident=m.get('id')
  if method=='initialize': send({'id':ident,'result':{}})
  elif method=='account/rateLimits/read': send({'id':ident,'result':{}})
  elif method in ('thread/start','thread/resume'):
-  assert m['params']['sandbox']=='danger-full-access'
+  assert m['params']['sandbox']==('danger-full-access' if native else 'read-only')
+  if method=='thread/start': assert 'dynamicTools' in m['params']
+  if m['params'].get('threadId')=='missing':
+   send({'id':ident,'error':{'message':'thread not found'}}); continue
   assert m['params']['approvalPolicy']=='never'
   send({'id':ident,'result':{'thread':{'id':'invented'},'model':'unchanged'}})
  elif method=='turn/start':
   send({'id':ident,'result':{'turn':{'id':'invented-turn'}}})
-  mode=m['params']['input'][0]['text']
+  mode=m['params']['input'][-1]['text']
+  assert native == (mode!='restricted')
+  if mode=='restricted':
+   send({'id':77,'method':'item/tool/call','params':{'tool':'project_list','arguments':{}}})
   if mode=='active':
    for i in range(8):
     time.sleep(.05); send({'method':'item/agentMessage/delta','params':{'delta':'working'}})
    send({'method':'item/completed','params':{'item':{'type':'agentMessage','text':'finished'}}})
    send({'method':'turn/completed','params':{'turn':{'status':'completed'}}})
+ elif ident==77:
+  assert m['result']['success'] and m['result']['contentItems'][0]['text']=='granted result'
+  send({'method':'item/completed','params':{'item':{'type':'agentMessage','text':'finished'}}})
+  send({'method':'turn/completed','params':{'turn':{'status':'completed'}}})
  elif method=='turn/interrupt':
   send({'method':'turn/completed','params':{'turn':{'status':'interrupted'}}})
 "#).unwrap();
         std::fs::set_permissions(&bin,std::fs::Permissions::from_mode(0o700)).unwrap();
         let c=Codex{bin:bin.to_str().unwrap().into(),workspace:dir.clone(),home:dir.join("home"),limits:Limits{first_event:Duration::from_secs(2),silent:Duration::from_millis(200),deadline:Duration::from_millis(50)}};
-        let run=|mode:&str,stop:bool| {
+        let run=|native:bool,thread:Option<&str>,mode:&str,stop:bool| {
             let started=Instant::now();
-            c.turn(None,None,&json!([{"type":"text","text":mode}]),None,
-                ||!stop || started.elapsed()<Duration::from_millis(100),|_,_,_|{},|_,_,_|(true,String::new()),||Ok(json!({})),|_|{},|_,_|{}).2
+            c.turn(native,thread,None,&json!([{"type":"text","text":mode}]),Some((&json!([]),"test granted tools")),
+                ||!stop || started.elapsed()<Duration::from_millis(100),|_,_,_|{},|_,_,_|(true,"granted result".into()),||Ok(json!({})),|_|{},|_,_|{}).2
         };
-        assert!(matches!(run("active",false),Outcome::Answered(s) if s=="finished"));
-        assert!(matches!(run("silent",false),Outcome::Failed(s) if s.contains("sent no event")));
-        assert!(matches!(run("silent",true),Outcome::Fenced));
+        assert!(matches!(run(true,None,"active",false),Outcome::Answered(s) if s=="finished"));
+        assert!(matches!(run(true,None,"silent",false),Outcome::Failed(s) if s.contains("sent no event")));
+        assert!(matches!(run(true,None,"silent",true),Outcome::Fenced));
+        assert!(matches!(run(false,None,"restricted",false),Outcome::Answered(s) if s=="finished"));
+        assert!(matches!(run(false,Some("existing"),"restricted",false),Outcome::Answered(s) if s=="finished"));
+        assert!(matches!(run(false,Some("missing"),"restricted",false),Outcome::Answered(s) if s=="finished"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

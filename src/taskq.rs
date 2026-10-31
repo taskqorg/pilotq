@@ -553,7 +553,7 @@ fn dispatch_until(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Va
                         }
                         Err(e) => text += &format!("\nIssue state and closing evidence unavailable: {e}"),
                     }
-                    if let Ok(issue)=&issue {let end=std::time::Instant::now()+Duration::from_secs(10);let (dev,delivery)=crate::release::task_observations(j,&project,issue,end);text += &format!("\nDEV health: {dev}\nDelivery: {}",crate::release::delivery_text(&delivery));}
+                    if let Ok(issue)=&issue {let end=std::time::Instant::now()+Duration::from_secs(10);let (dev,delivery)=crate::release::task_observations(j,r.request,&project,issue,end);text += &format!("\nDEV health: {dev}\nDelivery: {}",crate::release::delivery_text(&delivery));}
                     text
                 }
                 None => {
@@ -562,7 +562,7 @@ fn dispatch_until(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Va
                     let open = tq.snapshot_for(&board);
                     let mut result:Value=serde_json::from_str(&task_issue_status(&issue, open.as_ref().ok(), n)).map_err(|_|"Task state unreadable")?;
                     let end=std::time::Instant::now()+Duration::from_secs(10);
-                    let (dev,delivery)=crate::release::task_observations(j,&project,&issue,end);
+                    let (dev,delivery)=crate::release::task_observations(j,r.request,&project,&issue,end);
                     result["dev"]=dev;
                     result["delivery"]=json!(crate::release::delivery_text(&delivery));
                     result.to_string()
