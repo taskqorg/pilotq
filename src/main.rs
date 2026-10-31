@@ -251,6 +251,11 @@ fn selftest(t: &Tool) -> Result<(), String> {
     }
     println!("fixture: ok");
     // §9: offline selftest stays setup-independent; doctor owns online configuration and board checks.
+    // §1 / #195: exercise the real child entrypoint, private input and JSON content transport.
+    let text = "Invented document fixture: Привет";
+    let parsed = files::bounded("fixture.txt", text.as_bytes(), std::time::Instant::now() + Duration::from_secs(5), || true)?;
+    if parsed != text { return Err("document parser fixture changed the content".into()); }
+    println!("document parser: ok");
     println!("pilotq {} selftest: ok", t.version);
     Ok(())
 }
@@ -637,8 +642,12 @@ fn show(v: &Value) {
 }
 
 fn main() {
-    let t = tool();
+    // Internal parser children bypass the installed launcher and all service configuration.
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let [mode, name] = args.as_slice() {
+        if mode == "--document-parser" { files::worker(name); return; }
+    }
+    let t = tool();
     // the installed launcher runs the current release (coreq launcher)
     if std::env::current_exe().ok() == Some(t.install.join(t.exe_name())) && args.first().map(String::as_str) != Some("update") {
         coreq::launcher::launch(&t, &args);

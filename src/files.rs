@@ -26,7 +26,7 @@ pub fn read(name: &str, bytes: &[u8]) -> Result<String, String> {
 const INFLATED: usize = 64 * 1024 * 1024;
 const PAGES: usize = 300;
 
-// Data caps do not bound parser time. Deadline/cancellation isolation remains open in task #195.
+// The parent isolates this parser: data caps alone do not bound parser time.
 fn pdf(bytes: &[u8]) -> Result<String, String> {
     let parsed = std::panic::catch_unwind(|| {
         let doc = lopdf::Document::load_mem(bytes).ok()?;
@@ -79,6 +79,12 @@ mod tests {
         let text = read("invoice.pdf", &pdf).unwrap();
         assert!(text.starts_with("PDF, 1 page(s):") && text.contains("Invented invoice 42"), "{text}");
 
+        doc.objects.insert(content, Stream::new(dictionary! {}, Vec::new()).into());
+        let mut scanned = Vec::new();
+        doc.save_to(&mut scanned).unwrap();
+        assert_eq!(read("scan.pdf", &scanned).unwrap_err(),
+            "the PDF has 1 page(s) but no extractable text (scanned images?)");
+
         // stored ZIP with one entry "a.txt" (5 bytes), built by hand
         let mut zip = Vec::new();
         zip.extend_from_slice(b"PK\x03\x04"); zip.extend_from_slice(&[0; 22]); zip.extend_from_slice(&5u16.to_le_bytes()); zip.extend_from_slice(&[0; 2]);
@@ -96,4 +102,137 @@ mod tests {
         assert!(read("blob.bin", b"\x00\x01\x02").unwrap_err().contains("binary"));
         assert!(read("x.pdf", b"%PDF-1.4 broken").unwrap_err().contains("PDF"));
     }
+}
+
+use std::{process::Command, time::Instant};
+
+/// Isolate untrusted parsing so a stuck parser can be terminated and reaped.
+pub fn bounded(name: &str, bytes: &[u8], end: Instant, active: impl Fn() -> bool) -> Result<String, String> {
+    use std::io::{Seek, Write};
+    if !active() { return Err("document parsing cancelled".into()); }
+    if Instant::now() >= end { return Err("document parsing timed out".into()); }
+    // Unlink private input before dispatch: no retained attachment or blocked writer thread.
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|_| "document storage unavailable")?.as_nanos();
+    let path = std::env::temp_dir().join(format!("pilotq-document-{}-{nonce}", std::process::id()));
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create_new(true);
+    #[cfg(unix)] { use std::os::unix::fs::OpenOptionsExt; options.mode(0o600); }
+    let mut input = options.open(&path).map_err(|_| "document storage unavailable")?;
+    std::fs::remove_file(&path).map_err(|_| "document storage unavailable")?;
+    input.write_all(bytes).and_then(|_| input.rewind()).map_err(|_| "document storage unavailable")?;
+    let exe = std::env::current_exe().map_err(|_| "document parser unavailable")?;
+    let mut command = crate::commands::command(exe, ".", &["--document-parser", name]);
+    command.stdin(input);
+    supervised(command, end, active)
+}
+
+/// Private child protocol; no configuration, journal, model or external executable.
+pub fn worker(name: &str) {
+    use std::io::Read;
+    std::panic::set_hook(Box::new(|_| {}));
+    let mut bytes = Vec::new();
+    let result = std::io::stdin().take(20 * 1024 * 1024 + 1).read_to_end(&mut bytes)
+        .map_err(|_| "document input could not be read".to_string())
+        .and_then(|_| if bytes.len() > 20 * 1024 * 1024 { Err("document exceeds 20 MiB".into()) } else { read(name, &bytes) });
+    println!("{}", serde_json::to_string(&result).unwrap());
+}
+
+/// Supervise an isolated parser with the original media deadline and live journal fence.
+fn supervised(command: Command, end: Instant, active: impl Fn() -> bool) -> Result<String, String> {
+    // JSON can escape each of 50,000 text characters to six bytes; leave room for metadata.
+    let output = crate::commands::execute_bounded(command, end, active, 1024 * 1024);
+    match output["status"].as_str().unwrap_or("unknown") {
+        "success" => serde_json::from_str::<Result<String, String>>(output["stdout"].as_str().unwrap_or(""))
+            .map_err(|_| "document parser returned an invalid result".to_string())?,
+        "timeout" => Err("document parsing timed out".into()),
+        "cancelled" => Err("document parsing cancelled".into()),
+        "output_limit" => Err("document parser exceeded its output limit".into()),
+        "missing" | "spawn_failed" => Err("document parser could not be started".into()),
+        _ => Err("document parser failed before returning readable content".into()),
+    }
+}
+
+#[cfg(all(test, unix))]
+mod budget_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    // §1 / §12, #195 A2: a stuck parser must release its process on the media deadline.
+    #[test]
+    fn stuck_document_deadline() {
+        let pidfile = std::env::temp_dir().join(format!("pilotq-parser-deadline-{}.pid", std::process::id()));
+        let mut command = crate::commands::command("/bin/sh", ".", &["-c",
+            "echo $$ > \"$1\"; exec sleep 30", "parser"]);
+        command.arg(&pidfile);
+        let start = Instant::now();
+        let result = supervised(command, start + Duration::from_millis(300), || true);
+        assert_eq!(result.unwrap_err(), "document parsing timed out");
+        assert!(start.elapsed() < Duration::from_secs(2));
+        let pid = std::fs::read_to_string(&pidfile).unwrap();
+        assert!(!std::process::Command::new("/bin/kill").args(["-0", pid.trim()]).status().unwrap().success(),
+            "parser is still alive");
+        std::fs::remove_file(pidfile).unwrap();
+    }
+    // §12 / R5: /stop must free the parser, not merely discard its eventual reply.
+    #[test]
+    fn stop_reaps_document_parser() {
+        use crate::journal::{Input, Journal};
+        let dir = std::env::temp_dir().join(format!("pilotq-parser-stop-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut j = Journal::open(&dir.join("journal.sqlite")).unwrap();
+        j.bootstrap(7, 0).unwrap();
+        j.admit(&[(1, Some(Input {
+            files: vec![], callback: None, media_group: None, quote: None,
+            image: None, voice: None, language: None, chat: 7, topic: None,
+            sender: Some(7), name: None, message: 1, kind: "text",
+            text: Some("read the attached document".into()), reply_to: None,
+        }))], 1).unwrap();
+        let run = j.claim_next(1, 1).unwrap().remove(0);
+        let journal = std::cell::RefCell::new(j);
+        let pidfile = dir.join("parser.pid");
+        let mut command = crate::commands::command("/bin/sh", ".", &["-c",
+            "echo $$ > \"$1\"; exec sleep 30", "parser"]);
+        command.arg(&pidfile);
+        let stopped = std::cell::Cell::new(false);
+        let active = || {
+            if pidfile.exists() && !stopped.get() {
+                journal.borrow_mut().admit(&[(2, Some(Input {
+                    files: vec![], callback: None, media_group: None, quote: None,
+                    image: None, voice: None, language: None, chat: 7, topic: None,
+                    sender: Some(7), name: None, message: 2, kind: "text",
+                    text: Some("/stop".into()), reply_to: None,
+                }))], 2).unwrap();
+                stopped.set(true);
+            }
+            !journal.borrow().fenced(&run).unwrap()
+        };
+        let start = Instant::now();
+        assert_eq!(supervised(command, start + Duration::from_secs(5), active).unwrap_err(),
+            "document parsing cancelled");
+        assert!(start.elapsed() < Duration::from_secs(2));
+        let pid = std::fs::read_to_string(&pidfile).unwrap();
+        assert!(!std::process::Command::new("/bin/kill").args(["-0", pid.trim()]).status().unwrap().success(),
+            "parser is still alive");
+        drop(journal);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // §1: bounded transport preserves content/reasons and cannot accept invalid parser output.
+    #[test]
+    fn parser_results_and_preflight() {
+        for (output, expected) in [
+            (r#"{"Ok":"Привет"}"#, Ok("Привет".to_string())),
+            (r#"{"Err":"the ZIP archive is damaged and cannot be listed"}"#,
+                Err("the ZIP archive is damaged and cannot be listed".to_string())),
+            ("invalid", Err("document parser returned an invalid result".to_string())),
+        ] {
+            let mut command = crate::commands::command("/usr/bin/printf", ".", &["%s"]);
+            command.arg(output);
+            assert_eq!(supervised(command, Instant::now() + Duration::from_secs(2), || true), expected);
+        }
+        assert_eq!(bounded("x", b"hello", Instant::now(), || true).unwrap_err(), "document parsing timed out");
+        assert_eq!(bounded("x", b"hello", Instant::now() + Duration::from_secs(2), || false).unwrap_err(),
+            "document parsing cancelled");
+    }
+
 }
