@@ -14,7 +14,7 @@ immutable task scope and durable receipt rules remain in force.
 A plan displays each task's title, one “We will” line and one “Done when” line in the person's
 language. The latter is a concise outcome summary, not the worker's acceptance list. Acceptance and
 scope remain in the saved task body. Do not show local-save receipts, internal revisions, board
-details or launch instructions. Each display offers Launch and Cancel; revisions remain internal
+details or launch instructions. Each display offers Cancel and, when project readiness permits, Launch; revisions remain internal
 authorization tokens.
 
 Launch, Cancel and discussion choices edit their source message: remove its buttons and append one

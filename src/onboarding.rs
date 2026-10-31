@@ -37,6 +37,55 @@ pub fn gate(j:&Journal,project:&str)->Result<(),String> {
     Err(format!("Project {project} setup is not ready. The owner must complete its onboarding steps and Recheck, or write /onboard {project} override. Nothing started."))
 }
 
+/// R11 / #236: the same localized remedy is used by cards, tools and durable replies.
+pub fn refusal(j:&Journal,project:&str,language:Option<&str>)->Result<Option<String>,String> {
+    if gate(j,project).is_ok() {return Ok(None);}
+    let checks=saved(j,project).ok().flatten().into_iter().flat_map(|v|v["report"]["gaps"].as_array().cloned().unwrap_or_default())
+        .filter_map(|g|g["check"].as_str().map(str::to_owned)).collect::<Vec<_>>().join(", ");
+    let why=if checks.is_empty() {String::new()} else {format!(" ({checks})")};
+    Ok(Some(if language.unwrap_or("en").starts_with("ru") {
+        format!("{project}: настройка не завершена{why}. Владелец должен нажать «Проверить снова» (Recheck). Ничего не запущено.")
+    } else {format!("Project {project} setup is not ready{why}. The owner must tap Recheck. Nothing started.")}))
+}
+
+fn service_gap(g:&Value)->bool {
+    matches!(g["check"].as_str(),Some("service"|"admission"|"codex_grant"|"codex_access"|"codex_capacity"))
+}
+
+/// Refresh only volatile service evidence. Doctor, key and other owner findings retain authority.
+/// External calls run outside the journal lock; apply fences the registration epoch and owner.
+pub fn launch_gate(tq:&Taskq,j:&std::sync::Mutex<Journal>,project:&str,language:Option<&str>,end:Instant)->Result<(),String> {
+    let refreshed=refresh_service(tq,j,project,end);
+    let j=j.lock().unwrap();
+    match refusal(&j,project,language)? {Some(text)=>Err(text),None=>refreshed}
+}
+
+fn refresh_service(tq:&Taskq,j:&std::sync::Mutex<Journal>,project:&str,end:Instant)->Result<(),String> {
+    let refresh={
+        let j=j.lock().unwrap();
+        let v=saved(&j,project)?;
+        v.filter(|v|gate(&j,project).is_err() && v["pending"]==false
+            && v["report"]["gaps"].as_array().is_some_and(|g|g.iter().any(|g|matches!(g["check"].as_str(),Some("admission"|"service"))))
+            && v["checking_until"].as_i64().is_none_or(|until|until<=crate::now() as i64))
+            .filter(|v|v["root"].as_str()==tq.root.to_str() && binding(&j,project).is_ok_and(|(b,r)|v["board"]==b && v["root"]==r))
+            .map(|mut v|{v["checking_until"]=json!(crate::now()+15);save(&j,project,&v).map(|_|v)}).transpose()?
+    };
+    if let Some(v)=refresh {
+        let active=||{let j=j.lock().unwrap();saved(&j,project).ok().flatten().is_some_and(|now|now["epoch"]==v["epoch"] && now["root"]==v["root"] && now["board"]==v["board"])};
+        let service=probe(&tq.bin,&tq.root.to_string_lossy(),&["service","status","--json"],end.min(Instant::now()+Duration::from_secs(10)),active);
+        let observed=report(tq,v["board"].as_str().unwrap_or(""),&Value::Null,&Value::Null,&service,crate::now() as i64);
+        let mut result=v["report"].clone();
+        let gaps=result["gaps"].as_array_mut().ok_or("Onboarding report unreadable")?;
+        gaps.retain(|g|!service_gap(g));
+        gaps.extend(observed["gaps"].as_array().into_iter().flatten().filter(|g|service_gap(g)).cloned());
+        result["ready"]=json!(gaps.is_empty());
+        result["service_identity"]=observed["service_identity"].clone();
+        result["service_checked_at"]=json!(crate::now());
+        apply(&j.lock().unwrap(),project,&v["epoch"],&result)?;
+    }
+    Ok(())
+}
+
 fn fresh(v:&Value,at:i64)->bool {
     v.as_i64().is_some_and(|t|t<=at+5 && at-t<=120)
 }
@@ -433,4 +482,110 @@ mod tests {
         assert!(gate(&locked,"cyprusbz-board").is_err());
         drop(locked);drop(j);let _=std::fs::remove_dir_all(dir);
     }
+    // #236 A1/A3 / R11, §5: closed setup must hide launch and survive the final reply boundary.
+    #[test]
+    fn onboarding_236_refusal_and_plan_card() {
+        for (lang,model_reply) in [("en",false),("ru",false),("en",true),("ru",true)] {
+            let (mut j,dir,_)=setup(&format!("236-{lang}-{model_reply}"));
+            queue(&j,"cyprusbz-board").unwrap();
+            let mut input=press(1,7,0,0);input.callback=None;input.reply_to=None;input.text=Some("plan cyprusbz-board".into());
+            j.admit(&[(1,Some(input))],1).unwrap();
+            let r=j.claim_next(4,1).unwrap().remove(0);
+            j.0.execute("UPDATE requests SET language=?2 WHERE id=?1",params![r.request,lang]).unwrap();
+            j.save_plan(&r,&json!([{"title":"Invented task"}]),"cyprusbz-board","invented/cyprusbz-board",dir.to_str().unwrap(),1).unwrap();
+            j.finish(&r,None,None,&crate::manager::Outcome::Answered("Prepared".into()),2).unwrap();
+            let delivery=j.0.query_row("SELECT id FROM outbox WHERE request_id=?1 AND kind='rich'",[r.request],|r|r.get(0)).unwrap();
+            assert!(!j.card_buttons(delivery).unwrap().iter().any(|(id,_)|id.starts_with("plan:")),"closed setup offered Run plan");
+            let reply=j.request(r.request).unwrap().1.unwrap();
+            assert!(reply.contains("cyprusbz-board") && reply.contains(if lang=="ru" {"Проверить снова"} else {"Recheck"}),"{reply}");
+            let mut input=press(2,7,0,0);input.callback=None;input.reply_to=None;input.text=Some("run plan".into());
+            j.admit(&[(2,Some(input))],3).unwrap();
+            let launch=j.claim_next(4,3).unwrap().remove(0);
+            j.0.execute("UPDATE requests SET language=?2 WHERE id=?1",params![launch.request,lang]).unwrap();
+            let shared=std::sync::Mutex::new(j);
+            let tq=Taskq{bot:None,bin:"/invented/taskq".into(),root:dir.clone(),poll:Duration::from_secs(15)};
+            let (ok,refusal)=crate::taskq::call(&tq,&shared,&launch,"task_run_plan",&json!({"revision":1}));
+            assert!(!ok && refusal.contains("cyprusbz-board") && refusal.contains(if lang=="ru" {"Проверить снова"} else {"Recheck"}),"{refusal}");
+            let j=shared.into_inner().unwrap();
+            let outcome=if model_reply {crate::manager::Outcome::Answered("The request failed; try again or check /status.".into())} else {crate::manager::Outcome::Failed(refusal.clone())};
+            j.finish(&launch,None,None,&outcome,4).unwrap();
+            assert_eq!(j.request(launch.request).unwrap().1.unwrap(),refusal);
+            let delivery=j.0.query_row("SELECT id FROM outbox WHERE request_id=?1 AND kind='rich'",[launch.request],|r|r.get::<_,i64>(0)).unwrap();
+            assert!(delivery>0,"refusal must reach the chat, not only a callback toast");
+            drop(j);let _=std::fs::remove_dir_all(dir);
+        }
+    }
+
+    // #236 A1 / R11, §5: setup can close after authorization; the durable
+    // receipt must retain the localized remedy through finish and chat delivery.
+    #[test]
+    fn onboarding_236_gate_closes_after_authorization() {
+        for lang in ["en","ru"] {
+            let (mut j,dir,tq)=setup(&format!("236-late-{lang}"));
+            let mut input=press(1,7,0,0);input.callback=None;input.reply_to=None;input.text=Some("plan cyprusbz-board".into());
+            j.admit(&[(1,Some(input))],1).unwrap();
+            let draft=j.claim_next(4,1).unwrap().remove(0);
+            j.save_plan(&draft,&json!([{"title":"Invented task"}]),"cyprusbz-board","invented/cyprusbz-board",dir.to_str().unwrap(),1).unwrap();
+            j.finish(&draft,None,None,&crate::manager::Outcome::Answered("Prepared".into()),2).unwrap();
+            let mut input=press(2,7,0,0);input.callback=None;input.reply_to=None;input.text=Some("run plan".into());
+            j.admit(&[(2,Some(input))],3).unwrap();
+            let launch=j.claim_next(4,3).unwrap().remove(0);
+            j.0.execute("UPDATE requests SET language=?2 WHERE id=?1",params![launch.request,lang]).unwrap();
+            assert!(gate(&j,"cyprusbz-board").is_ok());
+            j.authorize(&launch,1,7,30,3).unwrap();
+            queue(&j,"cyprusbz-board").unwrap();
+            let expected=refusal(&j,"cyprusbz-board",Some(lang)).unwrap().unwrap();
+            let shared=std::sync::Mutex::new(j);
+            let reply=crate::taskq::launch(&tq,&shared,&launch).unwrap().unwrap();
+            assert_eq!(reply,expected,"late gate refusal lost at launch");
+            let j=shared.into_inner().unwrap();
+            j.finish(&launch,None,None,&crate::manager::Outcome::Answered(reply),4).unwrap();
+            assert_eq!(j.request(launch.request).unwrap().1.unwrap(),expected);
+            let delivered:String=j.0.query_row("SELECT text FROM outbox WHERE request_id=?1 AND kind='plan_problem'",[launch.request],|r|r.get(0)).unwrap();
+            assert!(delivered.contains(&expected),"{delivered}");
+            let filed:i64=j.0.query_row("SELECT count(*) FROM tickets WHERE task IS NOT NULL",[],|r|r.get(0)).unwrap();
+            assert_eq!(filed,0);
+            drop(j);let _=std::fs::remove_dir_all(dir);
+        }
+    }
+
+    // #236 A2 / §5: a saved hold must recover without owner intervention; unrelated gaps,
+    // stale evidence, changed roots and revoked grants must still block launch.
+    #[cfg(unix)]
+    #[test]
+    fn onboarding_236_refresh_saved_service_gaps() {
+        use std::os::unix::fs::PermissionsExt;
+        let (j,dir,mut tq)=setup("236-refresh");queue(&j,"cyprusbz-board").unwrap();
+        let epoch=saved(&j,"cyprusbz-board").unwrap().unwrap()["epoch"].clone();
+        tq.bin=dir.join("taskq-fixture");
+        std::fs::write(&tq.bin,"#!/bin/sh\ncat \"$TASKQ_ROOT/service.json\"\n").unwrap();
+        std::fs::set_permissions(&tq.bin,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let shared=std::sync::Mutex::new(j);
+        for old in ["admission","service"] {
+            for outcome in ["open","closed","stale","unavailable","other-gap","revoked","rebound"] {
+                let mut svc=service(&tq);
+                let at=crate::now() as i64;
+                svc["service"]["at"]=json!(at);svc["projects"][0]["status"]["at"]=json!(at);
+                match outcome {
+                    "closed"=>svc["projects"][0]["status"]["capacity"]["gate"]=json!("closed"),
+                    "stale"=>svc["service"]["at"]=json!(at-121),
+                    "unavailable"=>svc=Value::Null,
+                    "revoked"=>svc["projects"][0]["status"]["access"]=json!([]),
+                    "rebound"=>svc["projects"][0]["root"]=json!("/invented/other"),
+                    _=>{},
+                }
+                std::fs::write(dir.join("service.json"),svc.to_string()).unwrap();
+                let mut gaps=vec![json!({"check":old,"fix":"Owner Recheck"})];
+                if outcome=="other-gap" {gaps.push(json!({"check":"issue_read_key","fix":"Owner provisions key"}));}
+                apply(&shared.lock().unwrap(),"cyprusbz-board",&epoch,&json!({"ready":false,"gaps":gaps})).unwrap();
+                let result=launch_gate(&tq,&shared,"cyprusbz-board",Some("en"),Instant::now()+Duration::from_secs(2));
+                assert_eq!(result.is_ok(),outcome=="open","{old}/{outcome}: {result:?}");
+                let j=shared.lock().unwrap();
+                let v=saved(&j,"cyprusbz-board").unwrap().unwrap();
+                if outcome=="other-gap" {assert!(v["report"]["gaps"].as_array().unwrap().iter().any(|g|g["check"]=="issue_read_key"));}
+            }
+        }
+        let _=std::fs::remove_dir_all(dir);
+    }
+
 }

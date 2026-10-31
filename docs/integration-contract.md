@@ -371,7 +371,7 @@ either with all checks green or with the named owner-only steps still outstandin
 project ready with gaps.
 
 Before PilotQ starts the first task of an onboarding project, require a passed report bound to its
-current root and board. Pending, failed or unknown onboarding leaves the launch unsent. The
+current root and board. Pending, failed or unknown onboarding leaves the launch unsent. Before refusing, refresh saved admission or service gaps through bounded, read-only TaskQ service status; retain unrelated findings and reject stale or unavailable evidence. Closed-gate plan cards omit Run plan and explain the project setup block and owner Recheck step in the chat language. The same refusal reaches button and text launch replies without a generic failure replacement. The
 protected owner may write `/onboard NAME override` to bypass only this PilotQ readiness gate; record
 actor, target and findings, keep readiness false and retain TaskQ's own admission, grant and claim
 checks. Recheck or changed registration invalidates the override. Existing admitted workers

@@ -48,7 +48,7 @@ Edits retain the original author, current grants and an audited revision; starte
 
 Discussion never executes a plan. A direct request authorizes its requested work; task launch binds the saved immutable revision, target and scope. Task work uses TaskQ first; other work is done directly with a verifiable result.
 
-Keep one open draft per conversation. Each display offers Launch and Cancel; old, foreign, repeated and superseded callbacks cannot authorize new work. Edit source cards with factual outcomes and verified links. One durable launch status card projects TaskQ state; retain trusted closing findings and limitations.
+Keep one open draft per conversation. Each display offers Cancel and, when project readiness permits, Launch; old, foreign, repeated and superseded callbacks cannot authorize new work. Edit source cards with factual outcomes and verified links. One durable launch status card projects TaskQ state; retain trusted closing findings and limitations.
 
 Persist follow-ups immediately and process them in order after the active turn. Relate them by meaning, without time windows or required reply syntax; steer a matching doing task after a fresh read. Ambiguity requires a target question. Supply the current generation's latest twelve handled inputs plus the current input, saved plan and scoped subscriptions, retaining image bytes and explicit gaps.
 
@@ -117,7 +117,9 @@ Persist immutable administration intent, readback and receipts. Unknown topic-cr
 
 Onboard only registered roots after registration, startup gaps or changed TaskQ identity. Require fresh doctor/setup evidence, active service, usable Codex capacity, explicit effective grant, claim prerequisite and owner CLI/DM `issue_read` key scope. Gaps remain visible in one durable owner DM card and nonzero CLI findings; Recheck edits it.
 
-Block a project's first launch until its current root/board readiness passes. Protected-owner `/onboard NAME override` bypasses only PilotQ's readiness gate, records findings and retains TaskQ checks; recheck or registration changes invalidate it. Existing workers continue. Owner-only installation, capacity, keys and login remain named steps rather than executable fixes.
+Block a project's first launch until its current root/board readiness passes.
+Recheck saved admission or service gaps before refusing a launch. Closed-gate plan cards explain why without offering Run plan; launch refusals name the project and owner Recheck step in the chat language.
+Protected-owner `/onboard NAME override` bypasses only PilotQ's readiness gate, records findings and retains TaskQ checks; recheck or registration changes invalidate it. Existing workers continue. Owner-only installation, capacity, keys and login remain named steps rather than executable fixes.
 
 Registered DEV/LIVE release is an exception to §2 deployment delegation and §5 direct writes. Require protected owner, project scope and separate `release:NAME`; only a bound Release button executes. Protected configuration binds exact board/root, HTTPS health, refs, absolute executables, exact arguments and minimum versions. No shell or model command exists.
 
