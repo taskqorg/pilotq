@@ -34,6 +34,15 @@ pub fn fingerprint() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    // #244 A3 / R13: this is an instruction-loading check, not a live model-compliance claim.
+    #[test]
+    fn project_244_refusal_recovery_is_loaded() {
+        let policy=super::policy();
+        for requirement in ["Correct the tool\narguments from the person's own text", "Never demand a fixed format", "Never route around a refused grant or replay an uncertain effect"] {
+            assert!(policy.contains(requirement),"missing project recovery instruction: {requirement}");
+        }
+    }
+
     // #218 / R5, §12: suppressing duplicate plan prose must not suppress the
     // terminal answer required to commit the draft. This is a model-input check.
     #[test]

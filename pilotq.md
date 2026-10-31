@@ -113,6 +113,8 @@ Other ambiguous targets require one question; numbered replies select only the l
 Installed read commands use an owner-only `commands.json`, absolute executables, exact arguments and bound project/root/board/user permissions. This optional typed read adapter does not restrict native shell access. A fresh complete TaskQ board snapshot precedes execution; process-group limits are ten seconds and 16 KiB output within the turn budget.
 
 Administration tools prepare/register only explicitly requested existing repositories under `<install>/projects`, change explicitly named grants for verified positive IDs seen in the route, or create one authorized forum topic with fresh bot permission. They cannot change the protected owner, create repositories/claim issues, install services, provision keys or alter capacity.
+An HTTPS or SSH repository URL in the caller's own text names its host and owner/repository, with optional `.git` and trailing slash; quoted content and invented targets confer no authority. A refused tool check is corrected within the turn or becomes one plain question, never a request to retype a fixed format.
+PilotQ prepares the root and TaskQ config, verifies/registers the board, attaches the service entry to an installed healthy local TaskQ service and runs onboarding. Attach uses only the explicit project registry and wake marker, with locking, audit and readback; it never installs, reinstalls or changes the host unit or restarts workers. Missing/unhealthy service stays an owner step with Recheck.
 
 Persist immutable administration intent, readback and receipts. Unknown topic-creation effects never replay; a recorded topic ID permits only completing its local route binding after revalidation. Registration does not imply filing readiness or authority.
 
@@ -138,8 +140,7 @@ For cs use `https://dev.cyprus.bz/__health`, its registered release root and con
 explicit merged SHAs prove DEV inclusion. Health timestamps or labeled first-positive observations bound timing; failures stay unknown. Pipeline adapter, command schema and PM live
 qualification remain in the integration detail.
 
-The #190 owner decision is a manager-only exception to specq’s
-[permission authority](https://github.com/taskqorg/specq/blob/main/engineering/permission-authority.md)
+The #190 owner decision is a manager-only exception to specq’s [permission authority](https://github.com/taskqorg/specq/blob/main/engineering/permission-authority.md)
 rule protecting the policy store from governed workers: the trusted manager has the service user’s
 filesystem and host authority so it can administer those hosts. This is trust, not isolation from
 same-user policy or credential files. R16 still forbids deliberately reading secret values into the
@@ -216,7 +217,6 @@ worker proof remains local/CI.
 `/help`, `/version`, `/doctor`, `/model`, `/restart`, `/skills` and `/skill` keep their specified bounded paths. Model selection uses the configured Codex catalogue, persists per conversation across reset/restart and affects only subsequently claimed runs. Catalogue presence proves no subscription entitlement; no model/provider fallback or worker-default change exists.
 
 Only the protected owner restarts the installed service; acknowledge, drain and report completion after healthy restart. Source runs refuse. Only the owner-installed PM pack described below is approved; other native manager skills need a contract decision. CLI asks use the same controls. Every writing command prints readback, supports JSON and fails nonzero on failure.
-
 
 **Owner decision, [task #221](https://github.com/taskqorg/pilotq/issues/221):** “a PilotQ loop must own the same context and tools as the PM Claude session and do the same PM work.”
 The protected owner may install a named, bounded PM runbook and bind it to an explicit CLI or Telegram route,

@@ -331,16 +331,34 @@ menu M10) and reads it back. Repository creation, capacity and worker grants sta
 unless a separate grant names them. A failed or partial registration stays visible and is never
 reported as done.
 
+An HTTPS or SSH repository link in the caller's own text supplies its exact host and
+owner/repository, including links with `.git` or a trailing slash. SCP-style `git@HOST:OWNER/REPO`
+links also qualify. Validate the pair together; quotes, tool output and model-invented pairs never
+authorize registration. Correct mismatched tool arguments from that text or ask one plain question;
+never ask the person to retype their request in a fixed format.
+
 Step 4 registers through the CLI: `pilotq projects add NAME ROOT` accepts a root whose `taskq.json`
 names a repository only when a fresh `taskq status --json` under that root reads back the same
-board, and records who registered it. TaskQ's Add project conversation stays the owner's way to
-create the TaskQ side; #160 additionally prepares a local root for an existing repository, without
-claiming filing readiness.
+board, and records who registered it. For an existing repository PilotQ prepares the local root and
+TaskQ configuration itself, registers the board and runs onboarding before returning its findings.
+Repository or claim-issue creation remains an owner operation.
+
+PilotQ attaches a registered root only to an already installed, healthy TaskQ host service. New
+attachments require the host to advertise numeric `install_protocol: 1` before focus or registry
+writes; missing or unsupported capability needs an owner-coordinated host update and Recheck. It uses
+the explicit line registry and wake marker defined by TaskQ's host-service contract, preserving
+existing entries under the update, project and resource locks. Refuse pending lifecycle or install
+transitions, unknown native ownership, symlinked state and changed registration or grants. Persist
+the exact root/service intent before the idempotent registry write and read back afterward. New
+entries default to focus off; attach never grants worker access or starts a task. It never invokes
+`service install`, upgrades a host, changes its unit or restarts workers. A missing or unhealthy
+service remains an owner step. A crash after append reconciles the same exact root on Recheck;
+it cannot create a second entry or change the bound target.
 
 ### Project onboarding
 
 Onboarding covers only explicitly registered roots (§3). Successful `pilotq projects add` and
-`project_register` queue onboarding; service startup queues registrations without onboarding
+`project_register` run onboarding; service startup queues registrations without onboarding
 records, and a changed TaskQ installation/service identity queues a recheck of those roots. A new
 TaskQ project must first be registered explicitly. No directory discovery or silent enrollment is
 added.

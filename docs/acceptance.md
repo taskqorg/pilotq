@@ -967,6 +967,29 @@ A7 remains a PM check after merge/release on PDS 18: record exact source/binary 
 
 ### Project onboarding (#168)
 
+Repository-link onboarding (#244), under §5:
+
+- **O244-1:** the caller's own HTTPS, `ssh://` or SCP-style repository link supplies
+  one host/repository pair, with optional `.git` and trailing slash. Refuse invented
+  targets and quoted links before creating a root. A corrected tool call in the
+  same turn can proceed when no operation intent was dispatched.
+- **O244-2:** replay request 255 through CLI and Telegram admission using invented
+  root, board and process boundaries. Prepare configuration, verify registration,
+  attach the exact root to a healthy service and run checks. Preserve unrelated
+  registry entries, permissions, host unit and live workers. Default new roots to
+  focus off. List only proved owner prerequisites and retain one Recheck card.
+- **O244-3:** missing/stale services, pending lifecycle/install transitions, busy
+  locks, mismatched board/native identity, symlinks and changed bindings never
+  install a service or mutate its unit. An already observed service project needs
+  no attach. Delayed observations retry automatically; failed checks stay unknown.
+- **O244-4:** Recheck and recovery after registry publication preserve one entry
+  and update the same owner card. Readiness follows fresh checks, explicit grants,
+  claim and key scope; completed local setup never substitutes for them.
+- **O244-5:** both front ends load instructions to correct refused tool arguments
+  or ask one plain question, never demand fixed wording. Instruction-loading and
+  fixture checks do not establish live model compliance. The PM verifies the real
+  request through chat after release; workers never register `pah` by hand (§9).
+
 Owner-required cases under [§5](integration-contract.md#project-onboarding):
 
 - **O168-1:** register an explicitly supplied root with a matching board and claim,

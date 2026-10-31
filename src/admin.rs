@@ -12,7 +12,7 @@ pub fn tools() -> Vec<Value> {
     let tool = |name, description, properties, required| json!({"type":"function","name":name,"description":description,
         "inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}});
     let mut tools = vec![tool("project_register", crate::catalog::purpose("project_register"),
-        json!({"project":{"type":"string"},"repo":{"type":"string","description":"Exact owner/name named by the caller"},"board":{"type":"string","enum":["github","gitlab"]},"host":{"type":"string","description":"Board web host, e.g. github.com"}}), json!(["project","repo","board","host"]))];
+        json!({"project":{"type":"string"},"repo":{"type":"string","description":"Exact owner/name from the caller's own text or repository link, without .git or trailing slash"},"board":{"type":"string","enum":["github","gitlab"]},"host":{"type":"string","description":"Exact host from that same repository link or own text, e.g. github.com"}}), json!(["project","repo","board","host"]))];
     for name in ["user_grant", "user_revoke"] {
         tools.push(tool(name,crate::catalog::purpose(name),
             json!({"user":{"type":"integer"},"grants":{"type":"array","minItems":1,"items":{"type":"string"}},"route":{"type":"string","description":"CLI only: exact CHAT:TOPIC named by caller"}}),json!(["user","grants"])));
@@ -74,6 +74,25 @@ fn route(j: &Journal, r: &Run, args: &Value) -> Result<(i64,i64),String> {
 fn own_word(text: &str, word: &str) -> bool {
     crate::direct::own_text(text).split_whitespace().any(|w|w.trim_matches([',',';','(',')'])==word)
 }
+
+// §5 / #244: a repository link names one pair, never independent host/repo substrings.
+fn repository_links(text: &str) -> Vec<(String,String)> {
+    crate::direct::own_text(text).split_whitespace().filter_map(|word| {
+        let word=word.trim_matches([',',';','(',')','<','>','[',']']);
+        let ssh;
+        let word=if let Some(s)=word.strip_prefix("git@").and_then(|s|s.split_once(':')) {
+            ssh=format!("ssh://git@{}/{}",s.0,s.1);ssh.as_str()
+        } else {word};
+        let url=url::Url::parse(word).ok()?;
+        if !matches!(url.scheme(),"https"|"ssh") || url.password().is_some() || url.query().is_some() || url.fragment().is_some()
+            || (url.scheme()=="https" && !url.username().is_empty()) || url.port().is_some_and(|p|url.scheme()!="ssh" || p!=22) {return None;}
+        let host=url.host_str()?;
+        let path=url.path().trim_end_matches('/').strip_prefix('/')?;
+        let repo=path.strip_suffix(".git").unwrap_or(path);
+        if repo.split('/').count()!=2 || !repo.split('/').all(component) {return None;}
+        Some((host.to_string(),repo.to_string()))
+    }).collect()
+}
 // Visibility changes need positive caller wording, never a model-selected boolean.
 fn shared_requested(text: &str) -> bool {
     let own=crate::direct::own_text(text).to_lowercase();
@@ -117,13 +136,36 @@ fn user_change(j: &mut Journal, r: &Run, tool: &str, args: &Value) -> Result<Val
 }
 
 pub fn call(d: &Direct, j: &Mutex<Journal>, r: &Run, tool: &str, args: &Value, deadline: Instant, tq: Option<&Taskq>) -> (bool,String) {
+    call_with_doctor(d,j,r,tool,args,deadline,tq,&std::env::current_exe().unwrap_or_default())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn call_with_doctor(d:&Direct,j:&Mutex<Journal>,r:&Run,tool:&str,args:&Value,deadline:Instant,tq:Option<&Taskq>,doctor:&Path)->(bool,String) {
     let result=(|| {
         if Instant::now()>=deadline { return Err("Administration deadline reached; nothing done".into()); }
         if matches!(tool,"user_grant"|"user_revoke") { return user_change(&mut j.lock().unwrap(),r,tool,args); }
         { let j=j.lock().unwrap(); authorize(&j,r,tool,args)?; if let Some(v)=existing(&j,r.request,tool,args)? { return Ok(v); } }
         match tool {
             "project_disconnect" => disconnect(&mut j.lock().unwrap(),r,args),
-            "project_register" => register(d,j,r,args,deadline,tq.ok_or("TaskQ is not configured")?),
+            "project_register" => {
+                let tq=tq.ok_or("TaskQ is not configured")?;
+                let mut result=register(d,j,r,args,deadline,tq)?;
+                match crate::onboarding::check_with(d,tq,j,result["project"].as_str().unwrap(),deadline,doctor) {
+                    Ok(report)=>{
+                        result["filing_ready"]=report["ready"].clone();
+                        result["filing_note"]=json!(if report["ready"]==true {"Onboarding passed. TaskQ still enforces current admission, grants and claim prerequisites."}
+                            else {"Registered; onboarding findings are in the owner card with Recheck. Filing stays disabled until readiness passes or the owner records an override; TaskQ prerequisites still apply."});
+                        result["onboarding"]=report;
+                    },
+                    Err(reason)=>{
+                        let j=j.lock().unwrap();
+                        j.direct_event(r.request,result["project"].as_str().unwrap(),"project_onboarding",None,&d.keys.scrub(&reason),now())?;
+                        result["onboarding"]=json!("incomplete; registration is saved and the owner can Recheck");
+                    },
+                }
+                receipt(&j.lock().unwrap(),r.request,"project_register",&result)?;
+                Ok(result)
+            },
             "topic_open" => topic(j,r,args,deadline,tq.and_then(|t|t.bot.as_ref()).ok_or("Telegram bot is not configured")?),
             _ => Err("Unknown administration tool".into()),
         }
@@ -185,10 +227,13 @@ fn register(d: &Direct, j: &Mutex<Journal>, r: &Run, args: &Value, deadline: Ins
     let project=args["project"].as_str().filter(|s|component(s)).ok_or("Project must be a single safe directory name")?;
     let repo=args["repo"].as_str().ok_or("Repository required")?;
     let parts:Vec<_>=repo.split('/').collect();
-    if parts.len()!=2 || !parts.iter().all(|s|component(s)) || !own_word(&r.text,repo) { return Err("Name the exact existing owner/repository in your own request".into()); }
+    if parts.len()!=2 || !parts.iter().all(|s|component(s)) { return Err("Repository arguments are invalid. Correct them from the caller's repository link, or ask which repository they mean.".into()); }
     let board=args["board"].as_str().filter(|s|["github","gitlab"].contains(s)).ok_or("TaskQ board kind required")?;
     let host=args["host"].as_str().filter(|s|s.contains('.') && s.split('.').all(component)).ok_or("Exact board web host required")?;
-    if !own_word(&r.text,host) && !matches!((board,host),("github","github.com")|("gitlab","gitlab.com")) { return Err("Name the custom board host explicitly".into()); }
+    let links=repository_links(&r.text);
+    let named=if links.is_empty() {own_word(&r.text,repo) && (own_word(&r.text,host) || matches!((board,host),("github","github.com")|("gitlab","gitlab.com")))}
+        else {links.iter().any(|(h,p)|h==host && p==repo)};
+    if !named {return Err("Repository/host arguments do not match the caller's own text. Retry with the exact pair from their repository link; if ambiguous, ask one plain question. Do not ask them to retype a format.".into());}
     {
         let j=j.lock().unwrap();
         if j.projects()?.iter().any(|p|p.0==project) { return Err("Project name already registered; registration does not rebind it".into()); }
@@ -537,6 +582,171 @@ mod tests {
         let receipt:Value=serde_json::from_str(&out).unwrap();
         assert_eq!(receipt["filing_ready"],false,"registration must await setup checks, even with a claim and codex limit 4");
         let _=std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_244_repository_link_registration() {
+        use std::os::unix::fs::PermissionsExt;
+        // A2/A5, R10/§5: URL authority must retain exact host/repo and own-text isolation.
+        for url in ["https://gitlab.example.test/invented/demo", "https://gitlab.example.test/invented/demo/",
+            "https://gitlab.example.test/invented/demo.git", "https://gitlab.example.test/invented/demo.git/",
+            "ssh://git@gitlab.example.test/invented/demo", "ssh://git@gitlab.example.test/invented/demo.git",
+            "ssh://git@gitlab.example.test/invented/demo/", "ssh://git@gitlab.example.test/invented/demo.git/",
+            "git@gitlab.example.test:invented/demo.git"] {
+            let (mut j,dir,d)=setup();
+            let bin=dir.join("fake-taskq");
+            std::fs::write(&bin,"#!/bin/sh\nprintf '%s' '{\"complete\":true,\"board\":{\"repo\":\"invented/demo\",\"kind\":\"gitlab\",\"host\":\"gitlab.example.test\"}}'\n").unwrap();
+            std::fs::set_permissions(&bin,std::fs::Permissions::from_mode(0o700)).unwrap();
+            let t=Taskq{bin,..tq(None)};
+            let r=run(&mut j,7,1,&format!("add project demo - {url}, add it to taskq"));
+            let m=Mutex::new(j);
+            let args=json!({"project":"demo","repo":"invented/demo","board":"gitlab","host":"gitlab.example.test"});
+            for bad in [json!({"repo":"invented/other"}),json!({"host":"other.example.test"})] {
+                let mut a=args.clone();for (k,v) in bad.as_object().unwrap() {a[k]=v.clone();}
+                assert!(!call(&d,&m,&r,"project_register",&a,end(),Some(&t)).0,"invented target accepted");
+                assert!(!dir.join("projects/demo").exists(),"refused target created a local root");
+            }
+            let (ok,out)=call(&d,&m,&r,"project_register",&args,end(),Some(&t));
+            assert!(ok,"{url}: {out}");
+            assert_eq!(m.lock().unwrap().projects().unwrap()[0].1,"invented/demo");
+            finish(&mut m.lock().unwrap(),&r);
+            let r=run(&mut m.lock().unwrap(),7,2,&format!("add project quoted\n> {url}"));
+            let mut quoted=args.clone();quoted["project"]=json!("quoted");
+            assert!(!call(&d,&m,&r,"project_register",&quoted,end(),Some(&t)).0,"quoted URL authorized registration");
+            assert!(!dir.join("projects/quoted").exists());
+            drop(m);std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    // A4/A5 / §§4–5, R13/R17: replay request 255 through admission, registration,
+    // real subprocess boundaries and durable onboarding. All service/board data is invented.
+    #[cfg(unix)]
+    #[test]
+    fn project_244_request_255_onboarding() {
+        use std::os::unix::fs::PermissionsExt;
+        for front in ["cli","telegram"] {
+            let (mut j,dir,d)=setup();
+            let install=dir.join("taskq-install");
+            let bin=install.join("releases/4.6.56/taskq");
+            for path in [bin.parent().unwrap(),&install.join("resource-state"),&install.join("host-policy-migration")] {std::fs::create_dir_all(path).unwrap();}
+            std::fs::write(install.join("host-policy-migration/install.json"),"invented installation fixture").unwrap();
+            let unit=install.join("invented-host-unit");std::fs::write(&unit,"invented unit; never modify").unwrap();
+            let native=coreq::process::identity(std::process::id()).unwrap().unwrap();
+            let owner=json!({"schema":1,"pid":native.pid,"started":native.started,"instance":"invented-instance","version":"4.6.56","install_protocol":1,"at":crate::now()});
+            std::fs::write(install.join("service"),owner.to_string()).unwrap();
+            let _service_lock=coreq::file_lock::lock(&install.join("service.lock")).unwrap();
+            let original=format!("{}\n",dir.to_string_lossy());std::fs::write(install.join("projects"),&original).unwrap();
+            std::fs::set_permissions(install.join("projects"),std::fs::Permissions::from_mode(0o600)).unwrap();
+            let root=dir.join("projects/pah");
+            let service=json!({"schema":"taskq.service/1","service":{"state":"running","fresh":true,"at":crate::now(),
+                "pid":native.pid,"started":native.started,"instance":"invented-instance","version":"4.6.56","install_protocol":1},"registry_error":null,
+                "projects":[{"root":root,"host_binding":"current","status":{"complete":true,"at":crate::now(),"pid":native.pid,"host_instance":"invented-instance",
+                    "capacity":{"limits":{"codex":4},"gate":"open"},"access":[{"runtime":"codex","grant":"workspace (project) invented","effective":"workspace"}],
+                    "kids":[{"task":999,"runtime":"codex"}]}}]});
+            std::fs::write(install.join("service-after.json"),service.to_string()).unwrap();
+            let mut before=service.clone();before["projects"]=json!([]);
+            std::fs::write(install.join("service-before.json"),before.to_string()).unwrap();
+            let status=json!({"complete":true,"board":{"repo":"gradus/pah","kind":"gitlab","host":"gitlab.ufobe.com"}});
+            std::fs::write(install.join("board.json"),status.to_string()).unwrap();
+            std::fs::write(&bin,format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{0}/calls'\ncase \"$1\" in\nstatus) cat '{0}/board.json';;\nservice) if grep -Fxq -- \"$TASKQ_ROOT\" '{0}/projects'; then cat '{0}/service-after.json'; else cat '{0}/service-before.json'; fi;;\n*) exit 42;;\nesac\n",install.display())).unwrap();
+            std::fs::set_permissions(&bin,std::fs::Permissions::from_mode(0o700)).unwrap();
+            let doctor=dir.join("doctor-fixture");
+            let healthy=json!({"ok":true,"checks":{"configuration":"ok","telegram":"ok","codex":"ok","taskq":"ok","voice":"ok","host_tools":"ok"}});
+            std::fs::write(&doctor,format!("#!/bin/sh\nprintf '%s' '{healthy}'\n")).unwrap();
+            std::fs::set_permissions(&doctor,std::fs::Permissions::from_mode(0o700)).unwrap();
+            let t=Taskq{bin,..tq(None)};
+            let text="add project pah - https://gitlab.ufobe.com/gradus/pah, add it to taskq";
+            let r=if front=="cli" {j.ask(7,text,1).unwrap()} else {run(&mut j,7,1,text)};
+            let m=Mutex::new(j);
+            let args=json!({"project":"pah","repo":"gradus/pah","board":"gitlab","host":"gitlab.ufobe.com"});
+            let (ok,out)=call_with_doctor(&d,&m,&r,"project_register",&args,end(),Some(&t),&doctor);assert!(ok,"{out}");
+            let mut config:Value=serde_json::from_slice(&std::fs::read(root.join("taskq.json")).unwrap()).unwrap();
+            assert_eq!(config,json!({"repo":"gradus/pah","board":"gitlab","host":"gitlab.ufobe.com"}));
+            assert_eq!(std::fs::read_to_string(install.join("projects")).unwrap(),format!("{original}{}\n",root.display()),"{out}");
+            assert_eq!(std::fs::read_to_string(root.join(".taskq/focus")).unwrap(),"off\n");
+            let report=serde_json::from_str::<Value>(&out).unwrap()["onboarding"].clone();
+            let gaps=report["gaps"].as_array().unwrap();
+            assert_eq!(gaps.iter().map(|g|g["check"].as_str().unwrap()).collect::<Vec<_>>(),["claim","issue_read_key"],"{report}");
+            {
+                let j=m.lock().unwrap();
+                let (id,chat,text):(i64,i64,String)=j.0.query_row("SELECT id,chat,text FROM outbox WHERE kind='onboarding' AND state='pending'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+                assert_eq!(crate::onboarding::buttons(&j,id).unwrap().len(),1);assert_eq!(chat,7);
+                assert!(!text.contains("retype") && !text.contains("taskq.json"));
+            }
+            // Invented owner prerequisites, not effects performed by PilotQ.
+            config["create_claim_issue"]=json!(123);
+            std::fs::write(root.join("taskq.json"),config.to_string()).unwrap();
+            d.keys.add("invented","invented",&["issue_read".into()],"invented-not-a-real-credential").unwrap();
+            d.keys.grant("invented",&["project:pah".into()]).unwrap();
+            let ready=crate::onboarding::check_with(&d,&t,&m,"pah",end(),&doctor).unwrap();
+            assert_eq!(ready["ready"],true,"{ready}");
+            assert!(crate::onboarding::gate(&m.lock().unwrap(),"pah").is_ok());
+            assert_eq!(std::fs::read_to_string(install.join("projects")).unwrap(),format!("{original}{}\n",root.display()),"Recheck duplicated entry");
+            assert_eq!(std::fs::read_to_string(&unit).unwrap(),"invented unit; never modify");
+            assert_eq!(std::fs::metadata(install.join("projects")).unwrap().permissions().mode() & 0o777,0o600);
+            // A crash after registry publication reconciles membership without duplicating it.
+            m.lock().unwrap().0.execute("UPDATE meta SET value=json_set(value,'$.attach.state','intent') WHERE key='onboarding:pah'",[]).unwrap();
+            assert_eq!(crate::onboarding::check_with(&d,&t,&m,"pah",end(),&doctor).unwrap()["ready"],true);
+            assert_eq!(std::fs::read_to_string(install.join("projects")).unwrap(),format!("{original}{}\n",root.display()));
+            if front=="cli" {
+                // Attach failures never fall through to unit installation or host-policy changes.
+                for failure in ["missing-protocol","unsupported-protocol","malformed-protocol","missing-service","stale-service","install-transition","lifecycle","busy","foreign-board","symlink","changed-binding","native-identity","no-installation","cancelled-run","revoked-admin","stopped-run"] {
+                    std::fs::write(install.join("projects"),&original).unwrap();
+                    let mut observed=before.clone();
+                    std::fs::remove_file(root.join(".taskq/focus")).unwrap();
+                    match failure {
+                        "missing-protocol"=>{observed["service"].as_object_mut().unwrap().remove("install_protocol");},
+                        "unsupported-protocol"=>observed["service"]["install_protocol"]=json!(2),
+                        "malformed-protocol"=>observed["service"]["install_protocol"]=json!("1"),
+                        "missing-service"=>observed["service"]["state"]=json!("exited"),
+                        "stale-service"=>observed["service"]["fresh"]=json!(false),
+                        "install-transition"=>std::fs::write(install.join("projects.installing"),"invented pending transition").unwrap(),
+                        "lifecycle"=>std::fs::write(install.join("resource-state/state.json"),json!({"ops":{"invented":{"bound":{"local_stop":{}},"receipt":{"state":"queued"}}}}).to_string()).unwrap(),
+                        "foreign-board"=>{let mut s=status.clone();s["board"]["repo"]=json!("invented/other");std::fs::write(install.join("board.json"),s.to_string()).unwrap();},
+                        "symlink"=>{std::fs::write(install.join("registry-original"),&original).unwrap();std::fs::remove_file(install.join("projects")).unwrap();std::os::unix::fs::symlink(install.join("registry-original"),install.join("projects")).unwrap();},
+                        "changed-binding"=>{m.lock().unwrap().0.execute("UPDATE projects SET root=?1 WHERE name='pah'",[dir.to_str().unwrap()]).unwrap();},
+                        "native-identity"=>{let mut p=owner.clone();p["instance"]=json!("other-invented-instance");std::fs::write(install.join("service"),p.to_string()).unwrap();},
+                        "no-installation"=>std::fs::remove_file(install.join("host-policy-migration/install.json")).unwrap(),
+                        "cancelled-run"=>{m.lock().unwrap().0.execute("UPDATE requests SET state='cancelled' WHERE id=?1",[r.request]).unwrap();},
+                        "stopped-run"=>{m.lock().unwrap().0.execute("UPDATE conversations SET fence=fence+1 WHERE session=?1",[&r.session]).unwrap();},
+                        "revoked-admin"=>{
+                            let mut j=m.lock().unwrap();j.grant(7,8,&["chat".into(),"projects".into()],1).unwrap();
+                            let revoked=j.ask(8,"add the invented project",1).unwrap();finish(&mut j,&revoked);
+                            j.revoke(7,8,&["projects".into()],2).unwrap();
+                            j.0.execute("UPDATE meta SET value=json_set(value,'$.attach_request',?1) WHERE key='onboarding:pah'",[revoked.request]).unwrap();
+                        },
+                        _=>{},
+                    }
+                    std::fs::write(install.join("service-before.json"),observed.to_string()).unwrap();
+                    let held=if failure=="busy" {Some(coreq::file_lock::lock(&install.join("projects.lock")).unwrap())} else {None};
+                    let result=crate::onboarding::check_with(&d,&t,&m,"pah",end(),&doctor);
+                    assert!(result.as_ref().map_or(true,|r|r["ready"]==false),"{failure}: {result:?}");
+                    assert_eq!(std::fs::read_to_string(install.join("projects")).unwrap(),original,"{failure} changed registry");
+                    assert_eq!(std::fs::read_to_string(&unit).unwrap(),"invented unit; never modify");
+                    assert!(!root.join(".taskq/focus").exists(),"{failure} wrote focus");
+                    if failure.ends_with("protocol") {
+                        let report=result.as_ref().unwrap();
+                        assert!(report["gaps"].as_array().unwrap().iter().any(|g|g["fix"].as_str().is_some_and(|s|s.contains("protocol") && s.contains("Recheck"))),"{report}");
+                    }
+                    std::fs::write(root.join(".taskq/focus"),"off\n").unwrap();
+                    drop(held);
+                    if failure=="symlink" {std::fs::remove_file(install.join("projects")).unwrap();std::fs::rename(install.join("registry-original"),install.join("projects")).unwrap();}
+                    for name in ["projects.installing","resource-state/state.json"] {let _=std::fs::remove_file(install.join(name));}
+                    m.lock().unwrap().0.execute("UPDATE projects SET root=?1 WHERE name='pah'",[root.to_str().unwrap()]).unwrap();
+                    m.lock().unwrap().0.execute("UPDATE requests SET state='running' WHERE id=?1",[r.request]).unwrap();
+                    m.lock().unwrap().0.execute("UPDATE meta SET value=json_set(value,'$.attach_request',?1) WHERE key='onboarding:pah'",[r.request]).unwrap();
+                    if failure=="stopped-run" {m.lock().unwrap().0.execute("UPDATE conversations SET fence=fence-1 WHERE session=?1",[&r.session]).unwrap();}
+                    std::fs::write(install.join("service"),owner.to_string()).unwrap();
+                    std::fs::write(install.join("service-before.json"),before.to_string()).unwrap();
+                    std::fs::write(install.join("board.json"),status.to_string()).unwrap();
+                    std::fs::write(install.join("host-policy-migration/install.json"),"invented installation fixture").unwrap();
+                }
+            }
+            let calls=std::fs::read_to_string(install.join("calls")).unwrap();
+            assert!(calls.lines().all(|s|matches!(s,"status --json"|"service status --json")),"{calls}");
+            drop(m);std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     #[cfg(unix)]

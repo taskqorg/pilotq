@@ -2657,6 +2657,8 @@ fn telegram_images_reach_same_session() {
     assert_eq!(profile["conversation"]["current_message_files"],json!([]));
     let images=fs::read_to_string(d.join("images.log")).expect("fake model read image bytes");
     assert_eq!(images.lines().count(),5);
+    // Completion is journaled inside run; ImageFile drops when the manager turn returns.
+    wait("temporary images removed after turns",5,||images.lines().all(|p|!Path::new(p).exists()));
     assert!(images.lines().all(|p|!Path::new(p).exists()),"temporary images removed after turns");
     assert!(!log.contains("123:fake"),"Telegram credential never reaches Codex");
     assert_eq!(query(&d,"SELECT count(*) FROM requests WHERE image IS NOT NULL"),4);

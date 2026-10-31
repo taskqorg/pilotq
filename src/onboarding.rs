@@ -1,4 +1,4 @@
-//! §5 / #168: registered is not ready. All host remedies remain owner operations.
+//! §5: registered is not ready. Attach only to an existing healthy host; other host remedies stay owner operations.
 use crate::{journal::Journal, taskq::Taskq, telegram::Shared};
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
@@ -23,7 +23,24 @@ pub fn queue(j:&Journal,project:&str)->Result<(),String> {
     let mut v=saved(j,project)?.filter(|v|v["board"]==board && v["root"]==root).unwrap_or(json!({"epoch":0}));
     v["board"]=json!(board);v["root"]=json!(root);v["pending"]=json!(true);v["ready"]=json!(false);v["override"]=Value::Null;v["checking_until"]=Value::Null;
     v["epoch"]=json!(v["epoch"].as_i64().unwrap_or(0)+1);
+    let origin:Option<i64>=j.0.query_row("SELECT request FROM admin_ops WHERE tool='project_register' AND json_extract(args,'$.project')=?1 ORDER BY request DESC LIMIT 1",[project],|r|r.get(0)).optional().map_err(err)?;
+    if v["attach_request"].is_null() || v["registration_request"]!=json!(origin) {v["attach_request"]=json!(origin);}
+    v["registration_request"]=json!(origin);
     save(j,project,&v)
+}
+
+fn card_request(j:&Journal,v:&mut Value,project:&str,owner:i64)->Result<i64,String> {
+    if let Some(id)=v["card_request"].as_i64() {return Ok(id);}
+    let update:i64=j.0.query_row("SELECT min(coalesce(min(update_id),0),0)-1 FROM requests",[],|r|r.get(0)).map_err(err)?;
+    let id=crate::journal::insert(&j.0,update,"service",owner,None,owner,None,0,"onboarding",Some(&format!("Onboard {project}")),"answered",crate::now() as i64,&format!("dm:{owner}"),None)?;
+    v["card_request"]=json!(id);Ok(id)
+}
+
+fn attach_authorized(j:&Journal,v:&Value,owner:i64)->Result<bool,String> {
+    let Some(request)=v["attach_request"].as_i64() else {return Ok(j.has(owner,"chat")? && j.has(owner,"projects")?)};
+    let (actor,state):(i64,String)=j.0.query_row("SELECT sender,state FROM requests WHERE id=?1",[request],|r|Ok((r.get(0)?,r.get(1)?))).map_err(err)?;
+    let fenced:bool=j.0.query_row("SELECT EXISTS(SELECT 1 FROM runs r JOIN conversations c ON c.session=r.session WHERE r.request_id=?1 AND r.state='running' AND r.fence<>c.fence)",[request],|r|r.get(0)).map_err(err)?;
+    Ok(!fenced && !matches!(state.as_str(),"cancelled"|"failed"|"uncertain") && j.has(actor,"chat")? && j.has(actor,"projects")?)
 }
 
 pub fn gate(j:&Journal,project:&str)->Result<(),String> {
@@ -147,6 +164,9 @@ fn report(tq:&Taskq,board:&str,doctor:&Value,status:&Value,service:&Value,at:i64
     if config["repo"]!=board || !config["create_claim_issue"].as_i64().is_some_and(|n|n>0) {
         gap(&mut gaps,"claim","Owner: provision create_claim_issue for this board through TaskQ, then Recheck");
     }
+    // An absent project observation proves no missing grant/capacity. Restore service
+    // evidence first instead of asking the owner to change unknown host policy.
+    if snapshot["complete"]==true && fresh(&snapshot["at"],at) {
     let access=snapshot["access"].as_array().and_then(|a|a.iter().find(|a|a["runtime"]=="codex"));
     let granted=access.is_some_and(|a|a["grant"].as_str().is_some_and(|g|!g.trim().is_empty() && !g.starts_with("none")));
     let usable=access.is_some_and(|a|matches!(a["effective"].as_str(),Some("restricted"|"workspace"|"full")) && a["refused"].is_null());
@@ -164,6 +184,7 @@ fn report(tq:&Taskq,board:&str,doctor:&Value,status:&Value,service:&Value,at:i64
     }
     if capacity["gate"]!="open" {
         gap(&mut gaps,"admission",format!("Owner: inspect {} and resolve the reported admission hold, then Recheck",tq_command(tq,"service status --json")));
+    }
     }
     json!({"ready":gaps.is_empty(),"gaps":gaps,"checked_at":at,"source":"taskq service status --json (setup-check fallback)","service_identity":if service["schema"]=="taskq.service/1" {json!([service["service"]["instance"],service["service"]["started"],service["service"]["version"]])} else {Value::Null}})
 }
@@ -191,36 +212,192 @@ fn probe(bin:&Path,root:&str,args:&[&str],end:Instant,active:impl Fn()->bool)->V
     serde_json::from_str(o["stdout"].as_str().unwrap_or("")).unwrap_or(Value::Null)
 }
 
-/// Checks never hold the journal lock or run a model, poll updates or mutate host setup.
+// TaskQ v4.6.56 host-service contract: explicit line registry + poke. Never call
+// service install here: it can upgrade an image or create/change the native unit.
+fn attach(tq:&Taskq,j:&std::sync::Mutex<Journal>,project:&str,epoch:&Value,end:Instant,active:impl Fn()->bool)->Result<(),String> {
+    use std::fs;
+    let service=probe(&tq.bin,&tq.root.to_string_lossy(),&["service","status","--json"],end,&active);
+    if service["schema"]!="taskq.service/1" || service["service"]["state"]!="running" || service["service"]["fresh"]!=true
+        || !fresh(&service["service"]["at"],crate::now() as i64) || !service["registry_error"].is_null() {
+        return Err("Owner: restore a healthy installed TaskQ service, then Recheck".into());
+    }
+    if service["projects"].as_array().is_some_and(|entries|entries.iter().any(|p|p["root"].as_str()==tq.root.to_str()
+        && p["status"]["complete"]==true && fresh(&p["status"]["at"],crate::now() as i64) && p["error"].is_null()
+        && (p["host_binding"].is_null() || p["host_binding"]=="current"))) {return Ok(());}
+    if service["service"]["install_protocol"]!=1 {
+        return Err("Owner: update/reconcile the TaskQ host through its coordinated migration route to install_protocol 1, then Recheck".into());
+    }
+    let exe=fs::canonicalize(&tq.bin).map_err(|_|"TaskQ installation unavailable")?;
+    let parent=exe.parent().ok_or("TaskQ installation unavailable")?;
+    let install=if parent.parent().is_some_and(|p|p.file_name().is_some_and(|n|n=="releases")) {
+        parent.parent().and_then(Path::parent).ok_or("TaskQ installation unavailable")?
+    } else {parent};
+    // Refuse source binaries and missing installations without creating their directories.
+    if !install.join("host-policy-migration/install.json").is_file() || !install.join("resource-state").is_dir() {
+        return Err("Owner: install or repair the TaskQ host service, then Recheck".into());
+    }
+    for name in ["resource-state","host-policy-migration","host-policy-migration/install.json","service","service.lock","projects.lock","update.lock","resource-state/lock","resource-state/state.json","poke"] {
+        match fs::symlink_metadata(install.join(name)) {
+            Ok(m) if m.file_type().is_symlink()=>return Err("TaskQ installation state symlink refused; owner must repair it, then Recheck".into()),
+            Err(e) if e.kind()!=std::io::ErrorKind::NotFound=>return Err("TaskQ installation state unavailable; Recheck".into()),
+            _=>{},
+        }
+    }
+    let _update=coreq::file_lock::try_lock(&install.join("update.lock")).map_err(|_|"TaskQ update in progress; Recheck")?;
+    let _projects=coreq::file_lock::try_lock(&install.join("projects.lock")).map_err(|_|"TaskQ project registry busy; Recheck")?;
+    // Serialize lifecycle submissions as TaskQ does. A fresh service alone does not
+    // authorize editing its registry during a retained stop/install transition.
+    let _resources=coreq::file_lock::try_lock(&install.join("resource-state/lock")).map_err(|_|"TaskQ lifecycle store busy; Recheck")?;
+    for name in ["projects.pending","projects.installing","projects.installing.pending","projects.upgrading","resource-state/state.json.pending","restart","update"] {
+        match fs::symlink_metadata(install.join(name)) {
+            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{},
+            _=>return Err("TaskQ has a pending host transition; owner must reconcile it, then Recheck".into()),
+        }
+    }
+    let state=match fs::read(install.join("resource-state/state.json")) {
+        Ok(bytes)=>serde_json::from_slice::<Value>(&bytes).map_err(|_|"TaskQ lifecycle store unreadable; Recheck")?,
+        Err(e) if e.kind()==std::io::ErrorKind::NotFound=>json!({"ops":{}}),
+        Err(_)=>return Err("TaskQ lifecycle store unavailable; Recheck".into()),
+    };
+    let ops=state["ops"].as_object().ok_or("TaskQ lifecycle store unsupported; Recheck")?;
+    if ops.values().any(|op|["local_restart","local_stop","local_uninstall"].iter().any(|k|!op["bound"][k].is_null()) && op["receipt"]["state"]!="observed") {
+        return Err("TaskQ lifecycle operation pending; owner must reconcile it, then Recheck".into());
+    }
+    let owner:Value=serde_json::from_slice(&fs::read(install.join("service")).map_err(|_|"TaskQ service identity unavailable")?).map_err(|_|"TaskQ service identity unreadable")?;
+    if owner["schema"]!=1 || ["pid","started","instance","version"].iter().any(|k|owner[k]!=service["service"][k]) {
+        return Err("TaskQ service identity changed; Recheck".into());
+    }
+    let pid=owner["pid"].as_u64().and_then(|n|u32::try_from(n).ok()).filter(|p|*p>0).ok_or("TaskQ service identity invalid")?;
+    if !coreq::process::identity(pid).map_err(|_|"TaskQ service liveness unknown")?.is_some_and(|p|Some(p.started.as_str())==owner["started"].as_str()) {
+        return Err("TaskQ service exited; owner must restore it, then Recheck".into());
+    }
+    match coreq::file_lock::try_lock(&install.join("service.lock")) {
+        Err(std::fs::TryLockError::WouldBlock)=>{},
+        _=>return Err("TaskQ service ownership unavailable; Recheck".into()),
+    }
+    let path=install.join("projects");
+    if !fs::symlink_metadata(&path).is_ok_and(|m|m.is_file() && !m.file_type().is_symlink()) {return Err("TaskQ registry must be an existing ordinary file; Recheck".into());}
+    let before=fs::read_to_string(&path).map_err(|_|"TaskQ registry unreadable; Recheck")?;
+    let root=fs::canonicalize(&tq.root).map_err(|_|"Project root unavailable")?;
+    let root_text=root.to_str().filter(|s|!s.contains(['\r','\n'])).ok_or("Project root cannot be represented in TaskQ registry")?;
+    let roots=before.lines().filter(|l|!l.is_empty()).map(|s| {
+        let p=Path::new(s);if !p.is_absolute() {return Err("TaskQ registry contains a relative root");}
+        fs::canonicalize(p).ok().filter(|p|p.is_dir()).ok_or("TaskQ registry contains an unavailable root")
+    }).collect::<Result<Vec<_>,_>>()?;
+    if !active() {return Err("Onboarding authorization changed; attach refused".into());}
+    let mut intent=json!({"root":root,"service":owner,"state":"intent"});
+    {
+        let j=j.lock().unwrap();let tx=j.0.unchecked_transaction().map_err(err)?;
+        let mut v=saved(&j,project)?.ok_or("Onboarding missing")?;
+        if &v["epoch"]!=epoch {return Err("Onboarding changed; Recheck".into());}
+        v["attach"]=intent.clone();save(&j,project,&v)?;
+        let request=v["attach_request"].as_i64().or(v["card_request"].as_i64()).ok_or("Onboarding audit source unavailable")?;
+        j.0.execute("INSERT INTO audit_events(request_id,at,kind,target,item,result) VALUES (?1,?2,'project_attach',?3,?4,'intent')",params![request,crate::now() as i64,project,intent.to_string()]).map_err(err)?;
+        tx.commit().map_err(err)?;
+    }
+    if !roots.contains(&root) {
+        // TaskQ service install also defaults new roots to focus off; attaching never admits tasks.
+        let dot=root.join(".taskq");fs::create_dir_all(&dot).map_err(|_|"Project state directory unavailable")?;
+        if fs::symlink_metadata(&dot).map_err(|_|"Project state directory unavailable")?.file_type().is_symlink() {return Err("Project state symlink refused".into());}
+        use std::io::Write;
+        match fs::OpenOptions::new().write(true).create_new(true).open(dot.join("focus")) {
+            Ok(mut f)=>{f.write_all(b"off\n").and_then(|_|f.sync_all()).map_err(|_|"Project focus write failed")?;},
+            Err(e) if e.kind()==std::io::ErrorKind::AlreadyExists=>{
+                if !fs::symlink_metadata(dot.join("focus")).is_ok_and(|m|m.is_file() && !m.file_type().is_symlink()) {return Err("Project focus must be an ordinary file".into());}
+            },
+            Err(_)=>return Err("Project focus unavailable".into()),
+        }
+        fs::File::open(&dot).and_then(|f|f.sync_all()).and_then(|_|fs::File::open(&root)?.sync_all()).map_err(|_|"Project state sync failed")?;
+        let next=format!("{before}{}{root_text}\n",if before.is_empty() || before.ends_with('\n') {""} else {"\n"});
+        if !active() {return Err("Onboarding authorization changed; attach refused".into());}
+        // Preserve registry permissions before atomic publication, including after a crash.
+        let pending=path.with_extension("pending");
+        let mut options=fs::OpenOptions::new();options.write(true).create_new(true);
+        #[cfg(unix)] {use std::os::unix::fs::{OpenOptionsExt,PermissionsExt};options.mode(fs::metadata(&path).map_err(|_|"TaskQ registry metadata unavailable")?.permissions().mode() & 0o777);}
+        let mut file=options.open(&pending).map_err(|_|"TaskQ registry prepare unavailable; owner must reconcile it, then Recheck")?;
+        file.set_permissions(fs::metadata(&path).map_err(|_|"TaskQ registry metadata unavailable")?.permissions()).map_err(|_|"TaskQ registry permissions unavailable")?;
+        file.write_all(next.as_bytes()).and_then(|_|file.sync_all()).map_err(|_|"TaskQ registry prepare failed; owner must reconcile it, then Recheck")?;
+        fs::rename(&pending,&path).and_then(|_|fs::File::open(install)?.sync_all()).map_err(|_|"TaskQ registry publication uncertain; Recheck reads back the same root")?;
+        if fs::read_to_string(&path).map_err(|_|"TaskQ registry readback unavailable")?!=next {return Err("TaskQ registry readback differs; attach uncertain".into());}
+    }
+    coreq::write_durable(&install.join("poke"),"")?;
+    intent["state"]=json!("registered");
+    let j=j.lock().unwrap();let tx=j.0.unchecked_transaction().map_err(err)?;
+    let mut v=saved(&j,project)?.ok_or("Onboarding missing")?;
+    if &v["epoch"]!=epoch {return Err("Onboarding changed; Recheck".into());}
+    v["attach"]=intent.clone();save(&j,project,&v)?;
+    let request=v["attach_request"].as_i64().or(v["card_request"].as_i64()).ok_or("Onboarding audit source unavailable")?;
+    j.0.execute("INSERT INTO audit_events(request_id,at,kind,target,item,result) VALUES (?1,?2,'project_attach',?3,?4,'registered')",params![request,crate::now() as i64,project,intent.to_string()]).map_err(err)?;
+    tx.commit().map_err(err)?;
+    Ok(())
+}
+
+/// Checks never hold the journal lock across subprocesses, run a model or poll updates.
 pub fn check(t:&coreq::Tool,j:&Shared,project:&str)->Result<Value,String> {
     let config=crate::config(t)?.ok_or("PilotQ configuration unavailable")?;
+    let tq=config.taskq.as_ref().ok_or("TaskQ configuration unavailable")?;
+    check_registered(&config.direct,tq,j,project,Instant::now()+Duration::from_secs(60))
+}
+
+pub fn check_registered(d:&crate::direct::Direct,tq:&Taskq,j:&std::sync::Mutex<Journal>,project:&str,end:Instant)->Result<Value,String> {
+    let exe=std::env::current_exe().map_err(|_|"PilotQ binary unavailable")?;
+    check_with(d,tq,j,project,end,&exe)
+}
+
+// A5 uses the same registration/check/apply chain with invented executable and board boundaries.
+pub(crate) fn check_with(d:&crate::direct::Direct,tq:&Taskq,j:&std::sync::Mutex<Journal>,project:&str,end:Instant,exe:&Path)->Result<Value,String> {
+    let owner=j.lock().unwrap().owner()?.ok_or("Owner unavailable")?;
     let (board,root,epoch)={
         let j=j.lock().unwrap();
-        if !j.has(config.owner,"chat")? {return Err("Owner access revoked".into());}
+        if !j.has(owner,"chat")? || !j.has(owner,"projects")? {return Err("Owner access revoked".into());}
         let (board,root)=binding(&j,project)?;
         let tx=j.0.unchecked_transaction().map_err(err)?;
         let mut v=saved(&j,project)?.ok_or("Onboarding not queued")?;
+        if v["root"]!=root || v["board"]!=board {return Err("Registration changed; Recheck must queue the new binding before checks".into());}
+        if !attach_authorized(&j,&v,owner)? {return Err("Registration authority revoked or stopped; the owner must Recheck".into());}
+        let created=v["card_request"].is_null();
+        let source=card_request(&j,&mut v,project,owner)?;
         let now=crate::now() as i64;
         if v["checking_until"].as_i64().is_some_and(|until|until>now) {return Err("Setup checks already running; wait for the card update".into());}
         v["checking_until"]=json!(now+65);save(&j,project,&v)?;
         tx.commit().map_err(err)?;
+        if created {j.trace(source,now);}
         (board,root,v["epoch"].clone())
     };
-    let active=|| {let j=j.lock().unwrap(); j.has(config.owner,"chat").unwrap_or(false) && binding(&j,project).is_ok_and(|b|b==(board.clone(),root.clone()))
-        && saved(&j,project).ok().flatten().is_some_and(|v|v["epoch"]==epoch)};
-    let end=Instant::now()+Duration::from_secs(60);
-    let exe=std::env::current_exe().map_err(|_|"PilotQ binary unavailable")?;
+    let active=|| {let j=j.lock().unwrap(); j.has(owner,"chat").unwrap_or(false) && j.has(owner,"projects").unwrap_or(false) && binding(&j,project).is_ok_and(|b|b==(board.clone(),root.clone()))
+        && saved(&j,project).ok().flatten().is_some_and(|v|v["epoch"]==epoch && v["root"]==root && v["board"]==board && attach_authorized(&j,&v,owner).unwrap_or(false))};
+    let fallback=Taskq{bot:None,bin:tq.bin.clone(),root:root.clone().into(),poll:Duration::from_secs(15)};
+    let status=probe(&fallback.bin,&root,&["status","--json"],end.min(Instant::now()+Duration::from_secs(10)),&active);
+    let config:Value=std::fs::read(fallback.root.join("taskq.json")).ok().and_then(|s|serde_json::from_slice(&s).ok()).unwrap_or(Value::Null);
+    let matched=status["complete"]==true && status["board"]["repo"]==board && config["repo"]==board
+        && ["kind","host"].iter().all(|k|status["board"][k].is_null() || status["board"][k]==config[if *k=="kind" {"board"} else {"host"}]);
+    let attached=if matched {attach(&fallback,j,project,&epoch,end.min(Instant::now()+Duration::from_secs(10)),&active)}
+        else {Err("Owner: restore matching TaskQ configuration and board readback, then Recheck".into())};
     // Doctor must use the same install and service PATH. Only its JSON crosses this boundary.
     let mut cmd=std::process::Command::new(&exe);
     cmd.args(["doctor","--json"]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
     #[cfg(unix)] std::os::unix::process::CommandExt::process_group(&mut cmd,0);
     let output=crate::commands::execute_bounded(cmd,end.min(Instant::now()+Duration::from_secs(40)),&active,128*1024);
     let doctor=if matches!(output["status"].as_str(),Some("success"|"exit_nonzero")) {serde_json::from_str(output["stdout"].as_str().unwrap_or("")).unwrap_or(Value::Null)} else {Value::Null};
-    let fallback=Taskq{bot:None,bin:config.taskq.as_ref().map(|q|q.bin.clone()).unwrap_or_default(),root:root.clone().into(),poll:Duration::from_secs(15)};
-    let status=probe(&fallback.bin,&root,&["status","--json"],end.min(Instant::now()+Duration::from_secs(10)),&active);
     let service=probe(&fallback.bin,&root,&["service","status","--json"],end.min(Instant::now()+Duration::from_secs(10)),&active);
     let mut result=report(&fallback,&board,&doctor,&status,&service,crate::now() as i64);
-    if let Some(step)=issue_key_step(&config.direct.keys,project,config.owner) {
+    let waiting=attached.is_ok() && service["service"]["state"]=="running" && service["service"]["fresh"]==true
+        && result["gaps"].as_array().unwrap().iter().any(|g|g["check"]=="service");
+    if waiting {
+        for g in result["gaps"].as_array_mut().unwrap().iter_mut().filter(|g|g["check"]=="service") {
+            g["fix"]=json!("PilotQ: waiting for TaskQ to observe the attached project; checks retry automatically.");g["owner_only"]=json!(false);
+        }
+        result["retry"]=json!(true);
+    }
+    if let Err(reason)=attached {
+        // Keep the failed boundary explicit; never turn missing service evidence into readiness.
+        result["gaps"].as_array_mut().unwrap().retain(|g|g["check"]!="service");
+        let owner_only=reason.starts_with("Owner:");
+        result["gaps"].as_array_mut().unwrap().push(json!({"check":"service","fix":d.keys.scrub(&reason),"owner_only":owner_only}));
+        result["retry"]=json!(reason.contains("busy") || reason.contains("in progress") || reason.contains("identity changed"));
+        result["ready"]=json!(false);
+    }
+    if let Some(step)=issue_key_step(&d.keys,project,owner) {
         result["gaps"].as_array_mut().unwrap().push(json!({"check":"issue_read_key","fix":step,"owner_only":true}));
         result["ready"]=json!(false);
     }
@@ -235,7 +412,9 @@ pub fn summary(project:&str,result:&Value)->String { text(project,result,false) 
 
 fn text(project:&str,result:&Value,ru:bool)->String {
     let title=if result["ready"]==true {if ru {format!("{project}: настройки проверены, проект готов к первой задаче.")} else {format!("{project}: setup passed; ready for the first task.")}}
-        else if ru {format!("{project}: проект пока не готов. Шаги для владельца:")} else {format!("{project}: not ready. Owner steps:")};
+        else if result["gaps"].as_array().is_some_and(|g|g.iter().any(|g|g["owner_only"]==false)) {
+            if ru {format!("{project}: проект пока не готов. Результаты настройки:")} else {format!("{project}: not ready. Setup findings:")}
+        } else if ru {format!("{project}: проект пока не готов. Шаги для владельца:")} else {format!("{project}: not ready. Owner steps:")};
     let mut lines=vec![title];
     for g in result["gaps"].as_array().into_iter().flatten() {lines.push(format!("{}: {}",g["check"].as_str().unwrap_or("setup"),g["fix"].as_str().unwrap_or("Owner: run pilotq doctor --json")));}
     if result["ready"]!=true {lines.push(if ru {"После исправления нажмите «Проверить снова»."} else {"After the owner steps, tap Recheck."}.into());}
@@ -254,11 +433,7 @@ fn apply(j:&Journal,project:&str,epoch:&Value,result:&Value)->Result<(),String> 
     let at=crate::now() as i64;
     let session=format!("dm:{owner}");
     let created=v["card_request"].is_null();
-    let source=if let Some(id)=v["card_request"].as_i64() {id} else {
-        let update:i64=j.0.query_row("SELECT min(coalesce(min(update_id),0),0)-1 FROM requests",[],|r|r.get(0)).map_err(err)?;
-        let id=crate::journal::insert(&j.0,update,"service",owner,None,owner,None,0,"onboarding",Some(&format!("Onboard {project}")),"answered",at,&session,None)?;
-        v["card_request"]=json!(id);id
-    };
+    let source=card_request(j,&mut v,project,owner)?;
     let generation:i64=j.0.query_row("SELECT coalesce((SELECT generation FROM conversations WHERE session=?1),0)",[&session],|r|r.get(0)).map_err(err)?;
     v["generation"]=json!(generation);
     let language:Option<String>=j.0.query_row("SELECT language FROM requests WHERE sender=?1 AND language IS NOT NULL ORDER BY id DESC LIMIT 1",[owner],|r|r.get(0)).optional().map_err(err)?;
@@ -315,6 +490,8 @@ pub fn control(t:&coreq::Tool,j:&Shared,r:&crate::builtins::Request)->Result<(),
         } else {
             if action.is_some() {return Err("Use /onboard NAME or /onboard NAME override".into());}
             queue(&j,&project)?;
+            let mut v=saved(&j,&project)?.ok_or("Onboarding unavailable")?;
+            v["attach_request"]=json!(r.id);save(&j,&project,&v)?;
         }
         // A valid callback gets its toast before potentially slow dependency checks.
         let callback:Option<Vec<u8>>=j.0.query_row("SELECT value FROM meta WHERE key=?1",[format!("callback:{}",r.id)],|x|x.get(0)).optional().map_err(err)?;
@@ -356,7 +533,7 @@ fn scan(t:&coreq::Tool,j:&Shared)->Result<(),String> {
             if !j.has(config.owner,"chat")? {return Ok(())}
             let mut v=saved(&j,&project)?.unwrap_or(Value::Null);
             if !identity.is_null() && v["service_identity"]!=identity {queue(&j,&project)?;v=saved(&j,&project)?.unwrap();v["service_identity"]=identity.clone();save(&j,&project,&v)?;}
-            v["pending"]==true
+            v["pending"]==true || v["report"]["retry"]==true
         };
         if pending {let _=check(t,j,&project);}
     }
