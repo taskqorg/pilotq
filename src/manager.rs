@@ -659,9 +659,13 @@ pub fn serve(
                                         None => Err("video reading is not configured on this host".into()),
                                         Some(v) => crate::voice::frames(v, &bytes, left()).and_then(|pictures| {
                                             for p in &pictures { frames.push(crate::telegram::store_image(p)?); }
-                                            let speech = crate::voice::transcribe(v, &bytes, left())
-                                                .map(|t| format!("Speech, automatic Russian recognition that may contain errors: {t}"))
-                                                .unwrap_or_else(|e| format!("No speech recognized ({}).", e.trim_start_matches("voice ")));
+                                            let speech = match crate::voice::transcribe(v, &bytes, left()) {
+                                                Ok(t) => {
+                                                    j.lock().unwrap().video_transcript(&r,&t,now())?;
+                                                    format!("Speech, automatic Russian recognition that may contain errors: {t}")
+                                                },
+                                                Err(e) => format!("No speech recognized ({}).", e.trim_start_matches("voice ")),
+                                            };
                                             Ok(format!("Video: {} frame(s) attached below as images of this message, in time order, one every 15 seconds. {speech}", pictures.len()))
                                         }),
                                     },

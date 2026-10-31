@@ -3112,6 +3112,18 @@ fn telegram_voice_becomes_sender_text() {
     assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE kind='voice' AND item LIKE 'invented-voice-%'"), 3);
     assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE kind='transcript' AND item='Проверь место на диске.'"), 3);
     assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE text LIKE '%Проверь место на диске.'"), 3, "history and audit keep the transcript");
+    // #222 / R13: check the actual outbound Bot API payload after all three ingress forms.
+    wait("voice transcript delivered",15,||st.lock().unwrap().sent.iter().filter(|m|m["text"].as_str().is_some_and(|t|t.starts_with("<blockquote expandable>🎤 "))).count()==3);
+    let sent=st.lock().unwrap().sent.clone();
+    for message in 101..=103 {
+        let replies=sent.iter().filter(|m|m["reply_parameters"]["message_id"]==message && m["text"].as_str().is_some_and(|t|t.contains("🎤"))).collect::<Vec<_>>();
+        assert_eq!(replies.len(),1,"one answer with speech per voice input");
+        let text=replies[0]["text"].as_str().unwrap();
+        assert!(text.starts_with("<blockquote expandable>🎤 Проверь место на диске.</blockquote>\n\n"));
+        assert!(text.len()>"<blockquote expandable>🎤 Проверь место на диске.</blockquote>\n\n".len(),"answer shares the message");
+        assert!(!text.split_once("</blockquote>").unwrap().0.contains("about the disk"),"caption is not part of recognized speech");
+        assert!(replies[0]["rich_message"]["markdown"].as_str().unwrap().starts_with("<blockquote expandable>"));
+    }
     let calls = fs::read_to_string(d.join("recognizer.log")).unwrap();
     assert_eq!(calls.lines().count(), 3);
     for l in calls.lines() {
