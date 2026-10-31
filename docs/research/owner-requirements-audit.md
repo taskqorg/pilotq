@@ -30,11 +30,11 @@ The five follow-ups were filed held and read back through TaskQ. The fresh open-
 [#1](https://github.com/taskqorg/pilotq/issues/1) — Spec: Rust service on coreq, CLI, keys, projects, first slice; TaskQ setup
 
 > Owner decision 2026-10-22: option A. PilotQ is one small Rust service on coreq with teloxide for the Bot API, Hermes gateway patterns as reference and Codex app-server under the subscription login.
-> 
+>
 > - Commits the 2026-10-16 draft (R9-R11, admission, lifecycle protocol, mechanism matrix).
 > - Adds R12-R16, the `pilotq` command line, key store, project registration, coreq update and monitoring, the first slice and acceptance cases U19-U22.
 > - TaskQ setup: `taskq.json` (`publish: pr`), CI job `tests` with `merge_group`, public repository note.
-> 
+>
 > 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
 ### Source #3
@@ -43,7 +43,7 @@ The five follow-ups were filed held and read back through TaskQ. The fresh open-
 
 > ## Goal
 > Create the pilotq Rust binary on coreq per pilotq.md sections 9 and 10 step 2: coreq Tool, service install&#124;run&#124;stop&#124;status, update [--check], selftest, status --json; release workflow publishing linux-x86_64 with SHA256SUMS.
-> 
+>
 > ## Acceptance
 > A1. CI job tests is green on the PR and in the merge queue.
 > A2. pilotq selftest passes on the built binary.
@@ -55,10 +55,10 @@ The five follow-ups were filed held and read back through TaskQ. The fresh open-
 
 > ## Goal
 > Implement the SQLite journal (WAL, synchronous=FULL), teloxide long polling whose cursor commits in the same transaction as admitted inputs, an OS poll lock, and an outbox with per-route order and bounded retry, per pilotq.md section 4.
-> 
+>
 > ## Acceptance
 > A1. docs/acceptance.md F01, F02 and F05 pass against a test bot.
-> 
+>
 > Depends on #3
 
 ### Source #5
@@ -67,10 +67,10 @@ The five follow-ups were filed held and read back through TaskQ. The fresh open-
 
 > ## Goal
 > Bootstrap the owner from protected config; add pilotq users list&#124;show&#124;grant&#124;revoke and pilotq routes list&#124;set; ignore unknown senders silently; apply DM, group and forum-topic session policy; keep per-person profiles.
-> 
+>
 > ## Acceptance
 > A1. docs/acceptance.md U02, U17 and U18 pass.
-> 
+>
 > Depends on #4
 
 ### Source #6
@@ -79,10 +79,10 @@ The five follow-ups were filed held and read back through TaskQ. The fresh open-
 
 > ## Goal
 > Add one Codex app-server adapter under the subscription login with request and run identity, fencing, first-event and absolute deadlines; pilotq ask and Telegram share one path.
-> 
+>
 > ## Acceptance
 > A1. docs/acceptance.md U01, U12, U16, U19 and F03 pass.
-> 
+>
 > Depends on #4
 > Depends on #5
 
@@ -93,11 +93,11 @@ The five follow-ups were filed held and read back through TaskQ. The fresh open-
 > ## Goal
 > Implement pilotq.md R17 and section 8 Request audit: one audit record per CLI or Telegram request, written in the same transaction as the admitted input, joined by request ID to the CoreQ trace and TaskQ task text.
 > Add `pilotq audit` with the section 9 filters and reader grants (owner and audit grant see all, a person sees only their own, every read recorded).
-> 
+>
 > ## Acceptance
 > A1. docs/acceptance.md U23 passes.
 > A2. No key value appears in any audit record, export or CoreQ event.
-> 
+>
 > Depends on #4
 > Depends on #5
 > Depends on #6
@@ -108,7 +108,7 @@ The five follow-ups were filed held and read back through TaskQ. The fresh open-
 
 > ## Goal
 > An authorized person plans work in Telegram; PilotQ files it held on the pilotq board, reads it back, starts it, relays the worker question and answer, and reports the reviewer outcome (pilotq.md section 10 step 3).
-> 
+>
 > ## Acceptance
 > A1. pilotq.md sets the TaskQ tool contract before code (R13): board taskqorg/pilotq, grants per tool, create claim with op id, no plain add.
 > A2. U05, U06, U15 pass: a plan-only request starts nothing; an authorized revision is created held, read back and started; a network loss after ticket two reconciles the same IDs.
@@ -150,7 +150,7 @@ Accepted source/update [comment 6356068324](https://github.com/taskqorg/pilotq/i
 > ## Goal
 > Owner decision 2026-10-23 (option B): direct actions are reads; only the owner may add a board comment or label; keys enter only through the CLI.
 > Add the key store, these direct actions and project registration with switching (pilotq.md section 10 step 4).
-> 
+>
 > ## Acceptance
 > A1. pilotq.md records the decision before code (R13): section 11 closes short-action grants and key entry; reads per grant, comment and label owner only, no other writes; keys CLI only.
 > A2. Key store per section 8: pilotq keys list&#124;add&#124;grant&#124;revoke, value from stdin, owner-only file; the value never reaches model context, journal, telemetry, logs, replies or task text; tool output is scrubbed. U23 key-value checks pass.
@@ -171,7 +171,7 @@ Accepted source/update [comment 6356068324](https://github.com/taskqorg/pilotq/i
 > ## Goal
 > pilotq.md section 10 step 5 (owner go 2026-10-23): qualify agentq against the native-compaction baseline, record the complete case matrix, then start the pilot on the test bot.
 > Gates per docs/acceptance.md Selection gates 3 and 4; the pilot itself runs seven days, so this attempt ends at a started, measurable pilot.
-> 
+>
 > ## Acceptance
 > A1. C01-C07 run with agentq off and on at fixed model, provider and runtime versions; model-dependent cases three times; report quality, exact recovery, provider tokens/cache, latency, interventions.
 > A2. agentq is enabled for the pilot only if the P1 metric gate passes; otherwise the pilot runs on the native baseline and the result says why.
@@ -221,7 +221,7 @@ Accepted source/update [comment 6361538252](https://github.com/taskqorg/pilotq/i
 > ## Goal
 > pilotq.md section 5 lists steer and requeue among the write tools; the first tool contract has neither and serves only taskqorg/pilotq. Close that gap.
 > Owner 2026-10-24 (PM plan A): first full PilotQ version for TaskQ work; automatic tests first, then a human trial.
-> 
+>
 > ## Acceptance
 > A1. Spec first (R13): section 5 First TaskQ tool contract names the new tools, grants and effects and covers every registered project; acceptance.md gets cases.
 > A2. task_steer and task_requeue run the TaskQ CLI with argument arrays, check grants and the run fence at dispatch, audit, and reply with the readback.
@@ -236,7 +236,7 @@ Accepted source/update [comment 6361538252](https://github.com/taskqorg/pilotq/i
 > ## Goal
 > After the automatic suite passes on FRA, invited people use PilotQ on the test bot for real TaskQ work; their feedback closes the first version.
 > Owner 2026-10-24 (PM plan A): first full PilotQ version for TaskQ work; automatic tests first, then a human trial.
-> 
+>
 > ## Acceptance
 > A1. Spec first: pilotq.md and docs/acceptance.md describe the trial (people, length, measures) beside the owner 2026-10-23 scripted-run decision.
 > A2. The owner approves the trial plan and tester list through an ask before any tester gets access.
@@ -301,7 +301,7 @@ Accepted source/update [comment 6508172165](https://github.com/taskqorg/pilotq/i
 > ## Goal
 > Owner tried the bot: each message gets a separate 'Request #N is queued' reply, answers re-quote it, long answers are plain 4096-char text, and 'which projects do you see' fails (no project list tool).
 > Make the chat feel like a normal assistant (reaction ack, live draft streaming, rich final message) and keep the durable outbox guarantees; spec first in pilotq.md.
-> 
+>
 > ## Acceptance
 > A1. pilotq.md is updated first (section 4 Delivery, 5 direct tools, 7 ack budget, 12 Telegram feedback) to these decisions; the code matches it
 > A2. Accepted text input gets an eyes reaction within 5 s, no text ack; text ack only if the reaction fails or work waits over 30 s ('queued behind N'); busy/unsupported/control stay text
@@ -329,7 +329,7 @@ Accepted source/update [comment 6477224354](https://github.com/taskqorg/pilotq/i
 > ## Goal
 > Owner checked 0.2.3 on FRA: rich replies lose all line breaks (lists render as one paragraph), a screenshot with caption got 'Request #12: this input type is not supported yet'.
 > Owner decision 2026-10-28: images with captions must work fluently in Telegram; replies must be crisp, minimal and clear about what was done. Spec first: close the image part of the §11 media decision.
-> 
+>
 > ## Acceptance
 > A1. Rich replies keep paragraphs, lists, headings and bold exactly as the model wrote them (sent HTML newlines collapse today; use rich Markdown mode or block tags); fixture covers a plan reply with a list.
 > A2. Photos and image documents, with or without caption, reach the model as images plus caption text for the same session; unsupported types (voice, other files) get one short plain-language line.
@@ -346,7 +346,7 @@ Accepted source/update [comment 6477224354](https://github.com/taskqorg/pilotq/i
 
 > ## Goal
 > Make a failed PilotQ update and launcher rollback visible to the owner without reading service logs (R11, #76 A5).
-> 
+>
 > ## Acceptance
 > A1. A failed candidate startup followed by rollback produces one owner-visible incident naming failed and restored versions, with no credentials or request content.
 > A2. A deterministic lifecycle check proves the notification survives restart and does not repeat indefinitely; successful updates produce no failure notice.
@@ -367,7 +367,7 @@ Accepted source/update [comment 6479788661](https://github.com/taskqorg/pilotq/i
 
 > ## Goal
 > Предложить понятный способ показывать состояние сервиса и уведомлять о перезапусках, обновлениях, сбоях и восстановлении при множестве досок и чатов.
-> 
+>
 > ## Acceptance
 > A1. Сравнены варианты отображения состояния и маршрутизации уведомлений по доскам и чатам.
 > A2. Предложены правила против шума и дублей и способ обнаружить недоступность самого PilotQ.
@@ -385,7 +385,7 @@ Accepted source/update [comment 6480230211](https://github.com/taskqorg/pilotq/i
 
 > ## Goal
 > Обеспечить чёткое, минималистичное и наглядное оформление ответов в чате.
-> 
+>
 > ## Acceptance
 > A1. Проверен текущий путь формирования и отображения сообщений и определены причины потери форматирования.
 > A2. Исправлено оформление абзацев, списков, ссылок и выделений с учётом возможностей чата.
@@ -405,7 +405,7 @@ Accepted source/update [comment 6480258198](https://github.com/taskqorg/pilotq/i
 
 > ## Goal
 > Выбрать бесплатную модель для качественного распознавания голосовых сообщений PilotQ, прежде всего на русском языке, с учётом доступного сервера.
-> 
+>
 > ## Acceptance
 > A1. Проверены ресурсы доступного сервера: CPU, RAM, GPU и возможность локального запуска.
 > A2. Parakeet сравнён с подходящими альтернативами по поддержке русского языка, качеству, лицензии, памяти и скорости на доступном оборудовании.
@@ -422,7 +422,7 @@ Accepted source/update [comment 6488061328](https://github.com/taskqorg/pilotq/i
 
 > ## Goal
 > Пользователь видит обработку сообщения и получает короткие понятные статусы без повторов.
-> 
+>
 > ## Acceptance
 > A1. Исправлен Telegram typing: работает в течение обработки, включая длительные вызовы, и завершается при ответе, ошибке или отмене.
 > A2. Создание, очередь и выполнение имеют точные разные статусы.
@@ -440,7 +440,7 @@ Accepted source/update [comment 6486780232](https://github.com/taskqorg/pilotq/i
 
 > ## Goal
 > Картинка и последующий текст, в том числе пришедший во время обработки, дополняют один запрос без потери контекста.
-> 
+>
 > ## Acceptance
 > A1. Проверены и исправлены передача изображений, подписей, reply и последовательных сообщений в контекст модели.
 > A2. Связанные дополнения обновляют текущий замысел без дублирования задач; независимые запросы различаются.
@@ -458,7 +458,7 @@ Accepted source/update [comment 6486904526](https://github.com/taskqorg/pilotq/i
 
 > ## Goal
 > Обсуждение развивает один понятный черновик плана; пользователь запускает согласованную версию кнопкой без необходимости печатать служебную команду.
-> 
+>
 > ## Acceptance
 > A1. Исследован текущий сценарий и в спеке описаны состояния обсуждения, черновика, запуска и последующих изменений с конкретными примерами.
 > A2. Дополнения обновляют один пользовательский план с устойчивой идентичностью; внутренние ревизии не подаются как новые планы, новый самостоятельный замысел отделяется осмысленно.
@@ -478,7 +478,7 @@ Accepted source/update [comment 6486786054](https://github.com/taskqorg/pilotq/i
 
 > ## Goal
 > When a TaskQ question is answered anywhere (tray, DashQ, CLI, PM), PilotQ edits its question message in place, so nobody answers a closed question.
-> 
+>
 > ## Acceptance
 > A1. Within one poll after the answer event the message loses its buttons and gains 'Answered by &lt;actor&gt;: &lt;text&gt;'; an old button tap shows that text as a toast and writes nothing.
 > A2. Follows the taskq.md rule for late answers (taskq#1785); a test covers answer-elsewhere and the stale tap.
@@ -494,12 +494,12 @@ Accepted source/update [comment 6486906697](https://github.com/taskqorg/pilotq/i
 
 > ## Goal
 > PilotQ's Codex instructions come from the pinned specq rules (replies, icons, task intake, decision questions) instead of one hand-written string, and tests prove the bot follows them.
-> 
+>
 > ## Acceptance
 > A1. Instructions load the pinned specq caveman and agent-workflow rules plus pilotq.md additions; a specq pin bump changes them without a code edit; the hand-written string keeps only PilotQ specifics.
 > A2. Scripted cases (plan, task creation, relayed ask, status) checked: language, length, no bare URL or internal id, task goal ≤2 lines, ask options with plus, minus and reasoned recommendation.
 > A3. Relayed TaskQ asks reach Telegram in the specq decision-question form; the case runs in CI with a fake model and once live on FRA.
-> 
+>
 > Depends on specq#90
 
 Accepted source/update [comment 6487074488](https://github.com/taskqorg/pilotq/issues/95#issuecomment-6487074488):
@@ -515,13 +515,13 @@ Accepted source/update [comment 6487074488](https://github.com/taskqorg/pilotq/i
 
 > ## Goal
 > A relayed ask in Telegram is short and structured: task title link, icon sections, short option buttons, footer in the chat language; nothing is said twice.
-> 
+>
 > ## Acceptance
 > A1. src/taskq.rs ask message uses the taskq#1787 render: header with task title link, Done and Problem lines with icons, numbered options with label and detail, one footer line in the chat language.
 > A2. Buttons show N and the option label only; no truncated detail text; recommended option marked.
 > A3. Tests: Russian and English ask fixtures render to the expected Telegram text and buttons; one live relay on FRA shows the screenshot in the result.
-> 
-> 
+>
+>
 > Depends on taskq#1787
 
 Accepted source/update [comment 6487859617](https://github.com/taskqorg/pilotq/issues/97#issuecomment-6487859617):
@@ -542,7 +542,7 @@ Accepted source/update [comment 6487992011](https://github.com/taskqorg/pilotq/i
 
 > ## Goal
 > Owner decision on #89 (option 1): voice notes and audio files become text input through local GigaAM v3 RNNT int8, so people can talk to PilotQ instead of typing.
-> 
+>
 > ## Acceptance
 > A1. pilotq.md first: §1 accepts voice/audio as recognized input; §11 records the #89 decision; non-Russian notes get one short line; Parakeet fallback only if real use shows the need.
 > A2. Voice, audio and audio documents use the image path (§12): admission, grants, 20 MiB cap, journal file identity and transcript, audit; ffmpeg decode to 16 kHz; failures are explicit outcomes.
@@ -557,7 +557,7 @@ Accepted source/update [comment 6487992011](https://github.com/taskqorg/pilotq/i
 
 > ## Goal
 > Управлять командами Telegram и выбором моделей менеджера и воркеров по явной политике.
-> 
+>
 > ## Acceptance
 > A1. Проверены встроенные команды и skills; описана поддержка /version, /model, /doctor, /help, /restart, списка и вызова skills с точным синтаксисом.
 > A2. Команды вызывают встроенные обработчики; версия, модель и диагностика отражают фактическое состояние; справка перечисляет доступные действия.
@@ -611,7 +611,7 @@ Accepted source/update [comment 6492223249](https://github.com/taskqorg/pilotq/i
 
 > ## Goal
 > Пользователь видит, какой ответ сохранён, к какому вопросу он относится и что произошло дальше.
-> 
+>
 > ## Acceptance
 > A1. Исследован путь от кнопки или текстового ответа до сохранения и передачи воркеру; установлено, где ответ теряется либо отсутствует видимое подтверждение.
 > A2. После подтверждённого сохранения карточка показывает выбранный ответ и статус; получение нажатия не выдаётся за сохранение или возобновление работы.
@@ -634,7 +634,7 @@ Accepted source/update [comment 6488655806](https://github.com/taskqorg/pilotq/i
 
 > ## Goal
 > Revising a plan edits one draft with Launch and Cancel buttons; launch reports each task's real board state.
-> 
+>
 > ## Acceptance
 > A1. Follow-up messages revise the current draft in place; no new numbered plan per message (FRA requests 29-34 made plans 3, 4, 5, 6 for one ask); older drafts close.
 > A2. The Launch button starts that draft; a text 'launch' maps to the current draft only.
@@ -653,7 +653,7 @@ Accepted source/update [comment 6488655806](https://github.com/taskqorg/pilotq/i
 
 > ## Goal
 > Обновить действующий PilotQ готовыми изменениями по командам и ответам и проверить пользовательские сценарии на live.
-> 
+>
 > ## Acceptance
 > A1. Проверены результаты #106 и #108, уточнения владельца и текущая версия live; определено, какие изменения готовы и какие требования ещё не реализованы.
 > A2. Недостающие требования переданы в соответствующую работу без параллельных писателей; незавершённое не объявляется установленным.
@@ -701,7 +701,7 @@ Accepted source/update [comment 6490731447](https://github.com/taskqorg/pilotq/i
 
 > ## Goal
 > After /new PilotQ shows the chosen model briefly; a compact Unicode status line (model, context used, Codex account quota and reset) in the Hermes spec format is shown in the most convenient Telegram place.
-> 
+>
 > ## Acceptance
 > A1. Stage 1 research: read how Hermes builds its status line (config, script) and the specq format; pick minimal useful data; compare placements: footer on each reply, one edited pinned message, topic title, newer Telegram means.
 > A2. Stage 1 picks a placement for DMs, groups and topics with reasons and Telegram limits (edit rate, pin rights, topic rename rights); the reviewer cross-checks before code.
@@ -744,7 +744,7 @@ Accepted source/update [comment 6493752300](https://github.com/taskqorg/pilotq/i
 
 > ## Goal
 > Voice notes on FRA fail with 'voice recognition is not configured': #104 shipped code but the host has no voice config, recognizer, GigaAM model or ffmpeg on PATH. Make voice work live and stop this gap recurring.
-> 
+>
 > ## Acceptance
 > A1. FRA has the sherpa-onnx-offline v2.0.1 static binary, the GigaAM v3 RNNT-punct int8 model and ffmpeg per docs/tester-guide.md; config.json voice names them by absolute path; the service restarts cleanly.
 > A2. pilotq doctor reports voice readiness: missing config, missing binary or model, or a failed one-second probe recognition each fail the check with a short reason.
@@ -781,7 +781,7 @@ Accepted source/update [comment 6491110267](https://github.com/taskqorg/pilotq/i
 > ## Goal
 > PilotQ takes the project from the conversation when it is clear, asks only when it is not, shows a project's task status on request, and puts one empty line before the status footer.
 > Owner (Telegram, 2026-10-29): "you must take it from context; I named the project. If it is clear, act; if not, ask."
-> 
+>
 > ## Acceptance
 > A1. Project from context: plan, run, status, steer, requeue, park and project_use accept a project the person named in an earlier own message of this conversation generation when exactly one accessible project fits.
 > A2. Example that must pass: "What is the task status for Pilot Q?" then "Make a task so this works" files the draft on pilotq without asking to repeat the project name.
@@ -807,7 +807,7 @@ Accepted source/update [comment 6495176090](https://github.com/taskqorg/pilotq/i
 
 > ## Goal
 > Пользователь просит выполнить установленную команду обычным текстом или вводит её напрямую и получает фактический результат через общий механизм PilotQ.
-> 
+>
 > ## Acceptance
 > A1. В разрешённом окружении taskq list выполняется как установленная команда; ответ содержит её фактический результат без необходимости отдельного инструмента списка.
 > A2. Через тот же механизм выполняется другая установленная команда чтения, например pwd, без добавления специального обработчика для неё.
@@ -833,7 +833,7 @@ Accepted source/update [comment 6497254373](https://github.com/taskqorg/pilotq/i
 > ## Goal
 > Apply specq Host requirements (taskqorg/specq#98, owner 2026-10-29): each external tool pilotq runs on a host has a minimum version, checked by pilotq doctor.
 > Install/update brings hosts up to it. Trigger: pilotq silently broke on FRA's old gh (pilotq#127).
-> 
+>
 > ## Acceptance
 > A1. The contract lists each external tool/library pilotq runs on a host: name, minimum version, what needs it; or states none.
 > A2. pilotq doctor checks each listed requirement: missing or below minimum fails naming the tool, found version, minimum and fix.
@@ -854,7 +854,7 @@ Accepted source/update [comment 6497527863](https://github.com/taskqorg/pilotq/i
 
 > ## Goal
 > Выяснить, почему уже подключённые правила specq не обеспечивают краткие и понятные сообщения PilotQ, и исправить спецификацию и её применение к ответам, планам и задачам.
-> 
+>
 > ## Acceptance
 > A1. Причины расхождения между правилами и реальными сообщениями подтверждены ссылками на код, спецификации и действующие инструкции; приведено сравнение с TaskQ.
 > A2. Определено, каких правил не хватает и какие уже есть, но не применяются; устранены подтверждённые причины в спецификации и интеграции PilotQ.
@@ -882,7 +882,7 @@ Accepted source/update [comment 6508382255](https://github.com/taskqorg/pilotq/i
 
 > ## Goal
 > Подключить gradus/tight на gitlab.ufobe.com к PilotQ для инфраструктурных задач PDS 18 и подтвердить чтение его доски из чата.
-> 
+>
 > ## Acceptance
 > A1. Проверены поддержка GitLab, доступ к проекту и его доске; отсутствие интерфейса, отсутствие прав и сетевые ошибки различены.
 > A2. При поддерживаемом подключении tight зарегистрирован и виден в project_list; существующие проекты остаются доступны.
@@ -911,7 +911,7 @@ Accepted source/update [comment 6511752122](https://github.com/taskqorg/pilotq/i
 
 > ## Goal
 > PilotQ delivers Telegram reply photos and documents through the TaskQ attachment CLI (taskq --file, from taskqorg/taskq#1817). Replaces #133, whose lost spawn on the retired hermes-fra1 can never be released.
-> 
+>
 > ## Acceptance
 > A1. PilotQ passes downloaded photo/document files to TaskQ answer, steer and owner requeue with text optional, preserving task, revision and operation identity.
 > A2. A live Telegram photo, a 20 MB document and mixed text plus files reach the intended worker as verified readable files; record exact client and TaskQ revisions.
@@ -941,7 +941,7 @@ Accepted source/update [comment 6539336854](https://github.com/taskqorg/pilotq/i
 
 > taskq: steer
 > A2 qualification: the current Telegram message attaches the photo. Please read the forwarded file and report its path, name, byte length, SHA256, dimensions, and whether it decodes.
-> 
+>
 > ![photo.jpg](https://github.com/taskqorg/pilotq/raw/08148379c6ee3178c2ff655e0e4514f1e0c3ea46/145/dac8e34070b4-photo.jpg)
 > &lt;!-- taskq-files [{"id":"dac8e34070b41870e6fa1de7a6c813dd7b11655a445f63d80fccb1767995a415","name":"photo.jpg","mime":"image/jpeg","hash":"dac8e34070b41870e6fa1de7a6c813dd7b11655a445f63d80fccb1767995a415","bytes":2328,"url":"https://github.com/taskqorg/pilotq/raw/08148379c6ee3178c2ff655e0e4514f1e0c3ea46/145/dac8e34070b4-photo.jpg"}] --&gt;
 > op-id: pilotq-3cb9674929ca8680-r188-tq1
@@ -951,7 +951,7 @@ Accepted source/update [comment 6539349409](https://github.com/taskqorg/pilotq/i
 
 > taskq: steer
 > A2 qualification: the current Telegram message attaches pilotq-145-20MB.bin. Please verify the forwarded document copy and report its path, name, byte length, and SHA256. PilotQ could not preview this binary file.
-> 
+>
 > [pilotq-145-20MB.bin](https://github.com/taskqorg/pilotq/raw/0d8e75d68e33d136fa15624564d48e0841cbfba5/145/42e65a57483f-pilotq-145-20MB.bin)
 > &lt;!-- taskq-files [{"id":"42e65a57483f7993819c73125f9f266dad8788c191a5df93455270767466f36c","name":"pilotq-145-20MB.bin","mime":"application/octet-stream","hash":"42e65a57483f7993819c73125f9f266dad8788c191a5df93455270767466f36c","bytes":20000000,"url":"https://github.com/taskqorg/pilotq/raw/0d8e75d68e33d136fa15624564d48e0841cbfba5/145/42e65a57483f-pilotq-145-20MB.bin"}] --&gt;
 > op-id: pilotq-3cb9674929ca8680-r189-tq1
@@ -974,7 +974,7 @@ Accepted source/update [comment 6539397197](https://github.com/taskqorg/pilotq/i
 
 > ## Goal
 > PilotQ issue_read, issue_comment and issue_label work through taskq issue N (TaskQ 4.6.44) instead of refusing
-> 
+>
 > ## Acceptance
 > A1. pilotq.md section 5 names taskq issue N as the issue read and write path before code changes (R13)
 > A2. issue_read returns the issue JSON from taskq issue N --json on GitHub and GitLab boards
@@ -987,7 +987,7 @@ Accepted source/update [comment 6539397197](https://github.com/taskqorg/pilotq/i
 
 > ## Goal
 > PilotQ doctor gets the TaskQ version from `taskq --version` (TaskQ 4.6.46), so TaskQ self-updates no longer break doctor and no owner-made TaskQ receipt is needed.
-> 
+>
 > ## Acceptance
 > A1. pilotq.md is edited first: TaskQ minimum 4.6.46, version read from `taskq --version`; the &lt;binary&gt;.pilotq-version.json receipt stays only for tools without a version command (sherpa-onnx-offline).
 > A2. doctor and the taskq.bin / executable probes run `taskq --version` and need no TaskQ receipt; a test with a fake taskq that prints a version passes with no receipt file and fails below 4.6.46.
@@ -999,7 +999,7 @@ Accepted source/update [comment 6539397197](https://github.com/taskqorg/pilotq/i
 
 > ## Goal
 > A person's numbered or worded answer to PilotQ's own 'which project' question selects that project for task_plan and other context tools; today it is refused (owner, Telegram, 2026-10-30).
-> 
+>
 > ## Acceptance
 > A1. Root cause recorded: target_inner propagates context_project's 'Which project' error even with explicit project, and the person's answer '1' never names it.
 > A2. pilotq.md #124 rule extended: PilotQ's own listed project question, answered by the same person by number or name, selects that project; quotes and tool output still never select.
@@ -1012,7 +1012,7 @@ Accepted source/update [comment 6539397197](https://github.com/taskqorg/pilotq/i
 
 > ## Goal
 > PilotQ reads an Asana task the person links in chat (title, notes, assignee, due, status, comments, attachment names) through a granted key; today it says it has no Asana access (owner, Telegram, 2026-10-30).
-> 
+>
 > ## Acceptance
 > A1. pilotq.md section 5 adds asana_read: project scope plus a key granted for the tool; read-only; output bounded and scrubbed of the key.
 > A2. The key enters by pilotq keys add on the host, never Telegram; README shows the command.
@@ -1025,7 +1025,7 @@ Accepted source/update [comment 6539397197](https://github.com/taskqorg/pilotq/i
 > ## Goal
 > The owner or an administrator asks PilotQ in chat to add a project, grant a person or open a project topic, and PilotQ does it; today each step needs the PM on the host (owner, Telegram, 2026-10-30).
 > Case: cyprusbz on 2026-10-30 needed a root with taskq.json, projects add, users grant, routes set and a create claim issue, all by hand.
-> 
+>
 > ## Acceptance
 > A1. pilotq.md R15 and section 5 list the admin tools, grants and limits; topics bound to a project are a new owner rule (2026-10-30).
 > A2. project_register (projects grant): resolve repo and board, create the root with taskq.json under the projects dir, read back via taskq status --json, show the result; filing readiness stated.
@@ -1045,7 +1045,7 @@ Accepted source/update [comment 6521032853](https://github.com/taskqorg/pilotq/i
 > ## Goal
 > PilotQ gets one command model: one catalog of every capability (slash commands and manager tools) by area, the single source for /help, CLI help and the manager's own knowledge of its tools.
 > Projects get a complete command set; help serves a first-time user and a daily user; the taskq catalog shows live from taskq (taskqorg/taskq#1910).
-> 
+>
 > ## Acceptance
 > A1. pilotq.md first states the command model (areas, naming, slash command vs plain request, grants, help layout); code follows it (spec first, R13).
 > A2. One catalog in code lists every command and tool with area, purpose, example and grant; /help, `pilotq help` and manager tool descriptions render from it; a test fails when a capability is missing from it.
@@ -1075,7 +1075,7 @@ Accepted source/update [comment 6522321848](https://github.com/taskqorg/pilotq/i
 
 > ## Goal
 > One spec defines what PilotQ shows a person at each stage, which buttons it offers and how they go away. Plans show only the task and its result; technical detail never reaches chat.
-> 
+>
 > ## Acceptance
 > A1. Spec first: pilotq.md gets a Conversation contract section and docs/conversation-flow.md a stage table (trigger, text, buttons, press effect, replacement) before code; conflicting #72, #91, #93, #110 text is rewritten.
 > A2. Plan card per task: title, one 'we will' line, one 'done when' line, in the person's language. Acceptance and scope stay in the task body. No 'Draft saved locally', revision, board or 'Use Run plan' lines.
@@ -1110,7 +1110,7 @@ Accepted source/update [comment 6523813686](https://github.com/taskqorg/pilotq/i
 
 > ## Goal
 > When the owner adds a project (pilotq projects add or a new taskq install), pilotq runs the taskq setup check and pilotq doctor, then walks the owner through each gap in Telegram in plain steps until the project can run its first task.
-> 
+>
 > ## Acceptance
 > A1. Spec first: pilotq.md names the onboarding flow (trigger, checks run, message shape, done state) before code lands.
 > A2. projects add ends with pilotq doctor plus the taskq setup check (taskqorg/taskq#1938; until it ships, taskq service status) and reports each failed item as one plain line with the exact fix or owner step.
@@ -1136,7 +1136,7 @@ Accepted source/update [comment 6525104391](https://github.com/taskqorg/pilotq/i
 > ## Goal
 > Asked about a task, PilotQ reads its board state and close result and says plainly: open or closed, verdict, report, proposed follow-up tasks and whether they exist.
 > Diagnose and research tasks PilotQ files carry --type research, so their reports reach Reports.
-> 
+>
 > ## Acceptance
 > A1. Owner case 2026-10-30: asked 'статус' about cyprusbz#540, PilotQ said it was not open and its result unconfirmed. The answer must say: closed, diagnosis accepted, report docs/research/540.md, fix task #541 in work.
 > A2. Status answers come from taskq issue/status output (state, close comment, linked tasks), never from guesses; when a fact is missing PilotQ names the missing fact once, without hedging chains.
@@ -1160,7 +1160,7 @@ Accepted source/update [comment 6526080283](https://github.com/taskqorg/pilotq/i
 > ## Goal
 > Owner chose 2026-10-30: PilotQ owns the cs DEV/LIVE flow. Status must show if a merged task is on DEV; an owner-only tool previews a LIVE release and runs it only after a Release button press.
 > Spec first (R13). Each project declares DEV health URL, release, dry-run and pipeline check in its PilotQ registration; cs reference values are in the first comment.
-> 
+>
 > ## Acceptance
 > A1. pilotq.md and docs/taskq-tool-contract.md define the DEV state read and the release tool (grants, preview, confirmation, pinned SHA, refusals, audit) in the same PR as the code
 > A2. task_status and project_status say 'on DEV since T' when the merged SHA is an ancestor of the SHA from the declared DEV health URL, 'not yet on DEV' otherwise, unknown when the read fails
@@ -1188,7 +1188,7 @@ Accepted source/update [comment 6527711591](https://github.com/taskqorg/pilotq/i
 
 > ## Goal
 > Asked whether a task is done, PilotQ states one delivery stage (closed, merged, on DEV, DEV smoke, on LIVE) read from the board and the project pipeline, never a guess from worker notes.
-> 
+>
 > ## Acceptance
 > A1. Spec first: pilotq.md DEV visibility defines the task delivery stage and its fact sources: board state, merge commit, DEV deploy and smoke jobs of the first main pipeline containing it, LIVE branch containing it.
 > A2. A task status answer reads DEV deploy and smoke state for the merge commit through the project release adapter; it says unknown only when that source fails, and names the failure.
@@ -1216,7 +1216,7 @@ Accepted source/update [comment 6530383167](https://github.com/taskqorg/pilotq/i
 > ## Goal
 > Owner live test 2026-10-31 04:25-04:27 local, direct chat: a 310 KB PDF and a 15 MB zip got a description of an earlier header screenshot ("4, Simon") plus "content unavailable"; a 20.4 MB rar got "The image is too large".
 > A 1:02 video got "format is not supported yet"; all refusals were English while the owner wrote Russian (brief() keys on the Telegram language label). The agent must read what was actually sent, and replies fit the chat.
-> 
+>
 > ## Acceptance
 > A1. Root cause of the stale image is named from the audit of these requests; a turn never describes an earlier image as the current attachment; the agent prompt states exactly which files this message carries.
 > A2. Documents up to 20 MiB are downloaded and given to the agent as readable files (PDF text, archive listing, plain text); the reply describes the real content or names the exact reason it cannot.
@@ -1235,7 +1235,7 @@ Accepted source/update [comment 6530383167](https://github.com/taskqorg/pilotq/i
 > ## Goal
 > Owner asked for rich Telegram replies by default and a readable /help; only final answers go rich (final_outbox has 2 callers, 25 outbox() callers send split replies plain).
 > pilotq.md §9 itself makes /help append the full TaskQ catalog; fix the root cause spec first and route every user-visible message through one send path.
-> 
+>
 > ## Acceptance
 > A1. Spec first: docs/runtime-contract.md states the delivery rule for every user-visible message on every path (builtins, notices, errors, final answers)
 > A2. Spec first: pilotq.md §9 keeps the TaskQ catalog behind `/help tasks` instead of appending it inline to /help
@@ -1270,7 +1270,7 @@ Accepted source/update [comment 6539512055](https://github.com/taskqorg/pilotq/i
 > ## Goal
 > Owner 2026-10-31: PilotQ is a full, smart agent with wide access like the hermes user (own and other hosts, system settings); its specialty is our tasks, via TaskQ first.
 > Priority one is full, stable function; security is by trust for now. Today the spec makes Codex read-only, no shell/web, 60 s turns, 5 tool calls. Model and effort unchanged.
-> 
+>
 > ## Acceptance
 > A1. Spec first: pilotq.md and docs/integration-contract.md describe a full Codex agent with the service user's access; TaskQ first for tasks, board state only via TaskQ (R1)
 > A2. Spec first: the read-only, no-shell, restricted-tool and 5-call rules are removed, and the owner decision is quoted
