@@ -1176,3 +1176,13 @@ Window (UTC): **not run**. Released source/binary: **not recorded**. Shadow rout
 | Telemetry alerts | Pending PM run | Pending capture | Unknown |
 
 A8 remains open. Record collection failures and tick offsets explicitly; absence of evidence is never a match.
+
+## GitLab onboarding (#251)
+
+The [local evidence and PM checklist](research/251.md) cover §5 cloning, PM
+claim/grant remedies, the skipped nonblocking GitLab MR route probe and the
+GitLab-specific issue-read key. Local fixtures retain file/origin protection,
+current authority, fresh service evidence and metadata-only key inspection
+(R13, R16, R19). A5 requires the PM's post-release recheck in PilotQ TEST PAH and
+its audit ID. That live check is **not run**; no release or live readiness is
+claimed by the worker (§9).

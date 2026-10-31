@@ -51,7 +51,7 @@ pub fn gate(j:&Journal,project:&str)->Result<(),String> {
     let overridden=v["override"]["actor"].as_i64().is_some_and(|a|Some(a)==j.owner().ok().flatten())
         && v["override"]["request"].as_i64().is_some_and(|id|id>0) && v["override"]["report"]==v["report"];
     if v["board"]==board && v["root"]==root && v["pending"]==false && (passed || overridden) { return Ok(()) }
-    Err(format!("Project {project} setup is not ready. The owner must complete its onboarding steps and Recheck, or write /onboard {project} override. Nothing started."))
+    Err(format!("Project {project} setup is not ready. Complete its onboarding steps and Recheck; the protected owner may write /onboard {project} override. Nothing started."))
 }
 
 /// R11 / #236: the same localized remedy is used by cards, tools and durable replies.
@@ -121,7 +121,8 @@ fn fresh(v:&Value,at:i64)->bool {
     v.as_i64().is_some_and(|t|t<=at+5 && at-t<=120)
 }
 fn gap(items:&mut Vec<Value>,name:&str,fix:impl Into<String>) {
-    items.push(json!({"check":name,"fix":fix.into(),"owner_only":true}));
+    let fix=fix.into();
+    items.push(json!({"check":name,"owner_only":!fix.starts_with("PM:"),"fix":fix}));
 }
 // Shell quoting is for displayed owner commands only. Execution always uses argument arrays.
 fn quote(s:&str)->String { format!("'{}'",s.replace('\'',"'\\''")) }
@@ -162,7 +163,7 @@ fn report(tq:&Taskq,board:&str,doctor:&Value,status:&Value,service:&Value,at:i64
     }
     let config:Value=std::fs::read(tq.root.join("taskq.json")).ok().and_then(|s|serde_json::from_slice(&s).ok()).unwrap_or(Value::Null);
     if config["repo"]!=board || !config["create_claim_issue"].as_i64().is_some_and(|n|n>0) {
-        gap(&mut gaps,"claim","Owner: provision create_claim_issue for this board through TaskQ, then Recheck");
+        gap(&mut gaps,"claim","PM: complete the create_claim_issue prerequisite through TaskQ Add project setup for this board using existing on-host credentials, verify it through TaskQ, then Recheck");
     }
     // An absent project observation proves no missing grant/capacity. Restore service
     // evidence first instead of asking the owner to change unknown host policy.
@@ -171,7 +172,7 @@ fn report(tq:&Taskq,board:&str,doctor:&Value,status:&Value,service:&Value,at:i64
     let granted=access.is_some_and(|a|a["grant"].as_str().is_some_and(|g|!g.trim().is_empty() && !g.starts_with("none")));
     let usable=access.is_some_and(|a|matches!(a["effective"].as_str(),Some("restricted"|"workspace"|"full")) && a["refused"].is_null());
     if !granted {
-        gap(&mut gaps,"codex_grant",format!("Owner: review project-scoped Workspace access, then run {} and Recheck (no automatic grant)",tq_command(tq,"service permissions --runtime codex --mode workspace --scope project")));
+        gap(&mut gaps,"codex_grant",format!("PM: review project-scoped Workspace access, then run {} and Recheck (owner or explicit shell grant required)",tq_command(tq,"service permissions --runtime codex --mode workspace --scope project")));
     }
     if granted && !usable {
         gap(&mut gaps,"codex_access",format!("Owner: inspect {} and resolve the refused or unsupported runtime containment through TaskQ setup, then Recheck",tq_command(tq,"service permissions")));
@@ -186,21 +187,29 @@ fn report(tq:&Taskq,board:&str,doctor:&Value,status:&Value,service:&Value,at:i64
         gap(&mut gaps,"admission",format!("Owner: inspect {} and resolve the reported admission hold, then Recheck",tq_command(tq,"service status --json")));
     }
     }
-    json!({"ready":gaps.is_empty(),"gaps":gaps,"checked_at":at,"source":"taskq service status --json (setup-check fallback)","service_identity":if service["schema"]=="taskq.service/1" {json!([service["service"]["instance"],service["service"]["started"],service["service"]["version"]])} else {Value::Null}})
+    let route=if config["board"]=="gitlab" {json!({"outcome":"skipped","reason":"TaskQ service status fallback has no qualified GitLab merge-request route probe; TaskQ retains execution checks"})} else {Value::Null};
+    json!({"setup_revision":2,"merge_request_route":route,"ready":gaps.is_empty(),"gaps":gaps,"checked_at":at,"source":"taskq service status --json (setup-check fallback)","service_identity":if service["schema"]=="taskq.service/1" {json!([service["service"]["instance"],service["service"]["started"],service["service"]["version"]])} else {Value::Null}})
 }
 
 /// Inspect grants through the metadata-only key API: no take(), credential injection or last-use write.
+#[cfg(test)]
 fn issue_key_step(keys:&crate::keys::Keys,project:&str,owner:i64)->Option<String> {
+    issue_key_step_for_board(keys,project,owner,&Value::Null)
+}
+fn issue_key_step_for_board(keys:&crate::keys::Keys,project:&str,owner:i64,config:&Value)->Option<String> {
     let entries=match keys.list() {
         Ok(v)=>v,
         Err(_)=>return Some("Owner: repair the protected keys.json permissions/content, then run pilotq keys list and Recheck".into()),
     };
+    let gitlab=config["board"]=="gitlab";
     let candidates:Vec<_>=entries.as_array().into_iter().flatten().filter(|k|
+        (!gitlab || k["name"]=="pilotq-gitlab") &&
         k["tools"].as_array().is_some_and(|t|t.contains(&json!("issue_read")))
         && k["name"].as_str().is_some_and(|n|!n.is_empty() && n.len()<=32 && n.bytes().all(|c|c.is_ascii_lowercase() || c.is_ascii_digit() || b"-_".contains(&c)))).collect();
     let holds=|k:&Value,field:&str,value:Value|k[field].as_array().is_some_and(|a|a.contains(&value));
     let allows=|k:&Value,route:&str|holds(k,"projects",json!(project)) || holds(k,"users",json!(owner)) || holds(k,"routes",json!(route));
     if candidates.iter().any(|k|allows(k,"cli")) && candidates.iter().any(|k|allows(k,&owner.to_string())) {return None;}
+    if candidates.is_empty() && gitlab {return Some(format!("Owner: missing GitLab issue_read key; run pilotq keys add pilotq-gitlab 'GitLab issue access' issue_read with the approved on-host token via protected stdin, then grant that key to project:{project} and Recheck"));}
     if candidates.is_empty() {return Some(format!("Owner: provision an approved issue_read key through pilotq keys add (value via protected stdin), then grant it to project:{project}; pilotq keys list shows key names"));}
     let commands=candidates.iter().filter_map(|k|k["name"].as_str()).map(|name|format!("pilotq keys grant {name} project:{project}")).collect::<Vec<_>>().join(" OR ");
     Some(format!("Owner: choose the approved issue_read key and run {commands}, then Recheck"))
@@ -397,7 +406,7 @@ pub(crate) fn check_with(d:&crate::direct::Direct,tq:&Taskq,j:&std::sync::Mutex<
         result["retry"]=json!(reason.contains("busy") || reason.contains("in progress") || reason.contains("identity changed"));
         result["ready"]=json!(false);
     }
-    if let Some(step)=issue_key_step(&d.keys,project,owner) {
+    if let Some(step)=issue_key_step_for_board(&d.keys,project,owner,&config) {
         result["gaps"].as_array_mut().unwrap().push(json!({"check":"issue_read_key","fix":step,"owner_only":true}));
         result["ready"]=json!(false);
     }
@@ -416,8 +425,11 @@ fn text(project:&str,result:&Value,ru:bool)->String {
             if ru {format!("{project}: проект пока не готов. Результаты настройки:")} else {format!("{project}: not ready. Setup findings:")}
         } else if ru {format!("{project}: проект пока не готов. Шаги для владельца:")} else {format!("{project}: not ready. Owner steps:")};
     let mut lines=vec![title];
+    if result["merge_request_route"]["outcome"]=="skipped" {
+        lines.push(format!("merge_request_route: skipped; {}",result["merge_request_route"]["reason"].as_str().unwrap_or("qualification unavailable")));
+    }
     for g in result["gaps"].as_array().into_iter().flatten() {lines.push(format!("{}: {}",g["check"].as_str().unwrap_or("setup"),g["fix"].as_str().unwrap_or("Owner: run pilotq doctor --json")));}
-    if result["ready"]!=true {lines.push(if ru {"После исправления нажмите «Проверить снова»."} else {"After the owner steps, tap Recheck."}.into());}
+    if result["ready"]!=true {lines.push(if ru {"После исправления нажмите «Проверить снова»."} else {"After completing the listed steps, tap Recheck."}.into());}
     lines.join("\n")
 }
 
@@ -509,7 +521,7 @@ pub fn control(t:&coreq::Tool,j:&Shared,r:&crate::builtins::Request)->Result<(),
 
 /// Startup queues old registrations before new manager claims; no root discovery.
 pub fn startup(j:&Journal)->Result<(),String> {
-    for (project,..) in j.projects()? { if saved(j,&project)?.is_none_or(|v|v["report"]["issue_read_key_checked"]!=true) {queue(j,&project)?;} }
+    for (project,..) in j.projects()? { if saved(j,&project)?.is_none_or(|v|v["report"]["issue_read_key_checked"]!=true || v["report"]["setup_revision"]!=2) {queue(j,&project)?;} }
     Ok(())
 }
 
@@ -577,7 +589,7 @@ mod tests {
         let bad=report(&tq,"invented/cyprusbz-board",&doctor(),&status(),&no_grant,1000);
         assert_eq!(bad["ready"],false);
         let line=summary("cyprusbz-board",&bad);
-        assert!(line.contains("codex_grant: Owner:") && line.contains("service permissions --runtime codex --mode workspace --scope project"),"{line}");
+        assert!(line.contains("codex_grant: PM:") && line.contains("service permissions --runtime codex --mode workspace --scope project"),"{line}");
         assert!(!line.contains("setup passed"));
         for (doc,board,svc,at) in [(Value::Null,status(),service(&tq),1000),(doctor(),Value::Null,service(&tq),1000),
             (doctor(),status(),Value::Null,1000),(doctor(),status(),service(&tq),1201),
@@ -586,6 +598,47 @@ mod tests {
         }
         let _=std::fs::remove_dir_all(dir);
     }
+    // #251 A2/A3 / §5: PM remedies never masquerade as owner-only work; unknown MR route is non-gating.
+    #[test]
+    fn onboarding_251_pm_steps_and_gitlab_route() {
+        let (_,dir,tq)=setup("pm-251");
+        std::fs::write(dir.join("taskq.json"),r#"{"repo":"invented/cyprusbz-board","board":"gitlab"}"#).unwrap();
+        let mut svc=service(&tq);svc["projects"][0]["status"]["access"]=json!([]);
+        let result=report(&tq,"invented/cyprusbz-board",&doctor(),&status(),&svc,1000);
+        for check in ["claim","codex_grant"] {
+            let g=result["gaps"].as_array().unwrap().iter().find(|g|g["check"]==check).unwrap();
+            assert_eq!(g["owner_only"],false,"{g}");
+            assert!(g["fix"].as_str().unwrap().starts_with("PM:"));
+        }
+        std::fs::write(dir.join("taskq.json"),r#"{"repo":"invented/cyprusbz-board","board":"gitlab","create_claim_issue":20}"#).unwrap();
+        let mut st=status();st["merge_request_route"]=json!("unknown");
+        let result=report(&tq,"invented/cyprusbz-board",&doctor(),&st,&service(&tq),1000);
+        assert_eq!(result["ready"],true,"{result}");
+        assert_eq!(result["merge_request_route"]["outcome"],"skipped");
+        assert!(summary("pah",&result).contains("merge_request_route: skipped"));
+        assert!(result["merge_request_route"]["reason"].as_str().unwrap().contains("fallback"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // #251 / R5: reports from older binaries must not retain GitHub-only readiness after restart.
+    #[test]
+    fn onboarding_251_refresh_old_readiness() {
+        let (j,dir,tq)=setup("upgrade-251");
+        queue(&j,"cyprusbz-board").unwrap();
+        let mut v=saved(&j,"cyprusbz-board").unwrap().unwrap();
+        let mut old=report(&tq,"invented/cyprusbz-board",&doctor(),&status(),&service(&tq),1000);
+        old.as_object_mut().unwrap().remove("setup_revision");old["issue_read_key_checked"]=json!(true);
+        v["report"]=old;v["pending"]=json!(false);v["ready"]=json!(true);save(&j,"cyprusbz-board",&v).unwrap();
+        startup(&j).unwrap();
+        assert!(gate(&j,"cyprusbz-board").is_err(),"old GitHub-only readiness survived startup");
+        let mut v=saved(&j,"cyprusbz-board").unwrap().unwrap();
+        v["report"]=report(&tq,"invented/cyprusbz-board",&doctor(),&status(),&service(&tq),1000);
+        v["report"]["issue_read_key_checked"]=json!(true);v["pending"]=json!(false);v["ready"]=json!(true);
+        save(&j,"cyprusbz-board",&v).unwrap();startup(&j).unwrap();
+        assert!(gate(&j,"cyprusbz-board").is_ok(),"current reports should not be requeued on every restart");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     // #168 continuation / §8: project-only issue key grants do not cover other registered projects.
     #[test]
     fn onboarding_168_issue_key_project_grants() {
@@ -616,6 +669,26 @@ mod tests {
         let unknown=issue_key_step(&keys,"tight",7).unwrap();
         assert!(unknown.contains("repair the protected keys.json") && !unknown.contains("invented-issue-key-value"));
         let _=std::fs::remove_dir_all(dir);
+    }
+
+    // #251 A4 / R16: a scoped GitHub key must not hide a missing GitLab key; values stay protected.
+    #[test]
+    fn onboarding_251_gitlab_key() {
+        let (_,dir,_)=setup("gitlab-key-251");let keys=crate::keys::Keys(dir.join("keys.json"));
+        keys.add("pilotq-github","invented",&["issue_read".into()],"invented-github-credential").unwrap();
+        keys.grant("pilotq-github",&["project:pah".into()]).unwrap();
+        let config=json!({"board":"gitlab","host":"gitlab.example.test"});
+        let missing=issue_key_step_for_board(&keys,"pah",7,&config).expect("GitHub key cannot qualify GitLab");
+        assert_eq!(missing.matches("pilotq-gitlab").count(),1,"{missing}");
+        assert!(!missing.contains("invented-github-credential"));
+        keys.add("pilotq-gitlab","invented",&["issue_read".into()],"invented-gitlab-credential").unwrap();
+        let step=issue_key_step_for_board(&keys,"pah",7,&config).unwrap();
+        assert!(step.contains("pilotq keys grant pilotq-gitlab project:pah"),"{step}");
+        keys.grant("pilotq-gitlab",&["project:pah".into()]).unwrap();
+        let before=keys.list().unwrap();
+        assert!(issue_key_step_for_board(&keys,"pah",7,&config).is_none());
+        assert_eq!(before,keys.list().unwrap(),"readiness must not consume credentials or modify grants");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn press(message:i64,sender:i64,source:i64,epoch:i64)->Input {

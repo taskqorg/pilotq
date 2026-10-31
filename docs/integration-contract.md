@@ -307,7 +307,7 @@ install services, provision credentials or create a TaskQ claim issue.
 
 | Tool | Required grants | Operation and limits |
 |---|---|---|
-| `project_register` | `chat`, `projects` | Register an existing repository by its explicit TaskQ board kind, host and repository. Create only a named child of `<install>/projects` with `taskq.json`; refuse traversal, symlinks, conflicting configuration or rebinding an existing name. A fresh complete `taskq status --json` must match before registration. Return repository, root, board and filing readiness; without `create_claim_issue`, filing remains disabled and the owner provisions it through TaskQ. |
+| `project_register` | `chat`, `projects` | Register an existing repository by its explicit TaskQ board kind, host and repository. Create only a named child of `<install>/projects` with `taskq.json`; refuse traversal, symlinks, conflicting configuration or rebinding an existing name. A fresh complete `taskq status --json` must match before registration. Return repository, root, board and filing readiness; without `create_claim_issue`, filing remains disabled and the owner or explicit shell-grant PM provisions it through TaskQ. |
 | `user_grant`, `user_revoke` | `chat`, `users` | Change only existing grant types explicitly named in the caller’s own unquoted request for an exact positive Telegram ID explicitly named by the caller or identified by the current verified reply. Require evidence that the person was seen in this exact chat/topic: an admitted sender or a Telegram reply sender. Names and forwarded messages never select authority. Retain the administrator, target and before/after grants atomically with the receipt. Protected owner identity cannot be changed. |
 | `topic_open` | `chat`, `users`, access to the bound project (`projects` or `project:NAME`) | Open one forum topic in the originating Telegram supergroup, or the explicitly named group for a CLI request. Resolve one registered project named by the caller or current in the conversation; recheck its board/root. Require a fresh bot `can_manage_topics` permission and forum capability; otherwise refuse plainly. Set isolated route policy by default (shared only when explicitly requested), and bind the new route to that project as its default. A route default never grants project access. |
 
@@ -329,8 +329,9 @@ reference.
 An administrator with the `projects` grant can ask PilotQ to create or register a project. PilotQ
 shows the resolved repository, root and board, then applies the request through TaskQ's supported
 registration path (Add project, [taskq.md](https://github.com/taskqorg/taskq/blob/main/taskq.md)
-menu M10) and reads it back. Repository creation, capacity and worker grants stay owner operations
-unless a separate grant names them. A failed or partial registration stays visible and is never
+menu M10) and reads it back. Repository creation and capacity stay owner operations. The owner or an explicit
+shell-grant PM may complete claim-issue setup and project-scoped Codex grants through existing tools. A failed
+or partial registration stays visible and is never
 reported as done.
 
 An HTTPS or SSH repository link in the caller's own text supplies its exact host and
@@ -341,9 +342,14 @@ never ask the person to retype their request in a fixed format.
 
 Step 4 registers through the CLI: `pilotq projects add NAME ROOT` accepts a root whose `taskq.json`
 names a repository only when a fresh `taskq status --json` under that root reads back the same
-board, and records who registered it. For an existing repository PilotQ prepares the local root and
-TaskQ configuration itself, registers the board and runs onboarding before returning its findings.
-Repository or claim-issue creation remains an owner operation.
+board, and records who registered it. For an explicitly linked existing repository PilotQ clones into the
+empty local root before writing TaskQ configuration, registers the board and runs onboarding before returning
+its findings. It preserves the URL transport (HTTPS or SSH), disables interactive Git prompts and bounds
+execution by the request deadline and grants. A matching existing checkout is reused; a mismatched origin,
+symlink or nonempty root without a checkout is refused without overwriting files. Clone failures report their
+operation, process outcome and exit code; raw Git diagnostics stay out of replies because they can include
+credentials. Partial roots remain inspectable and are never reported as registered. Repository creation
+remains an owner operation.
 
 PilotQ attaches a registered root only to an already installed, healthy TaskQ host service. New
 attachments require the host to advertise numeric `install_protocol: 1` before focus or registry
@@ -363,7 +369,7 @@ Onboarding covers only explicitly registered roots (§3). Successful `pilotq pro
 `project_register` run onboarding; service startup queues registrations without onboarding
 records, and a changed TaskQ installation/service identity queues a recheck of those roots. A new
 TaskQ project must first be registered explicitly. No directory discovery or silent enrollment is
-added.
+added. Reports from before the GitLab onboarding revision are queued for fresh checks at startup before new claims; current reports retain their existing lifecycle.
 
 Registration and readiness are separate. After registration run `pilotq doctor --json` and the TaskQ
 setup check; until taskq#1938 ships use `taskq service status --json`, matching the registered root
@@ -373,8 +379,15 @@ explicit effective Codex grant without refusal, plus the existing claim prerequi
 limit such as 4 never substitutes for a grant. Unavailable checks stay gaps. Setup evidence is not
 proof of the full first-task scenario or subscription entitlement.
 
+GitLab merge-request route qualification is skipped by this fallback: `taskq service status --json` has no
+qualified merge-request route probe. Record that reason as a non-gating observation, including when TaskQ
+reports the route unknown. This does not prove publishing works; TaskQ retains its execution checks.
+
 Check that each registered project has an `issue_read` key grant usable by the protected owner
-through both CLI and DM. Project grants and existing owner-wide grants retain §8 semantics; paired
+through both CLI and DM. For GitLab use the named `pilotq-gitlab` key; a GitHub key never substitutes. If it
+is missing, name it once with the protected-CLI add/grant remedy; do not read or copy a host token into model
+context. Existing on-host credentials remain TaskQ-owned at dispatch. Project grants and existing owner-wide
+grants retain §8 semantics; paired
 CLI/owner-DM route grants also qualify. Read key metadata only, never return values or update
 last-use time. If suitable issue-tool keys exist but lack scope, show the exact `pilotq keys grant
 KEY project:NAME` command for each owner-selectable candidate; do not grant automatically. Missing
@@ -391,8 +404,12 @@ current admission, audit and persisted Telegram cooldowns (R10, R13, R17). Butto
 owner, card, current registration and conversation generation; stale or foreign buttons receive only
 a toast.
 
-Existing §5/§9 authority remains unchanged: installation, capacity, worker grants, credentials and
-subscription login are owner-only steps, shown with Recheck rather than executable Fix buttons. Any
+Installation, capacity, credentials and subscription login remain owner-only steps. Missing
+`create_claim_issue` and project-scoped Codex grants are PM steps with existing-tool remedies, executable only
+by the owner or a currently admitted explicit shell grantee. The manager completes authorized PM steps through
+native tools and rechecks; typed onboarding does not silently create issues or grant workers. These findings
+retain the readiness gate until verified. Owner-only findings are shown with Recheck rather than executable
+Fix buttons. Any
 fix within PilotQ's existing authority requires one explicit OK for its displayed scope and the
 existing durable intent/readback path; this flow adds no host mutation capability. The flow ends
 either with all checks green or with the named owner-only steps still outstanding. It never calls a

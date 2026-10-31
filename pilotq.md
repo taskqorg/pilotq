@@ -83,13 +83,10 @@ Normal accepted text gets 👀 within five seconds, text on reaction failure and
 
 ## 5. TaskQ, tools and project administration
 
-**Owner, task #190:** “Let it stay a full agent that can do anything, but its specialization is our tasks: for tasks it
-works through TaskQ first, as its convenient mechanism.” “Access must be wide, full, like Hermes.” This decision
-replaces the read-only, no-shell, restricted native-tool and five-call rules. Board state still comes only through
-TaskQ; R9 subscription access, R10 admission and §9 release qualification remain binding. Native effects have
-service-user authority, not typed-tool replay guarantees: persist observed tool outcomes and never replay an interrupted
-turn automatically. After any restart, deliver the recorded completed findings and explicitly identify unfinished or
-unconfirmed work. Shell requests without that authority are refused in one plain line.
+**Owner, task #190:** “Let it stay a full agent that can do anything, but its specialization is our tasks: for tasks it works through TaskQ first, as its convenient mechanism.” “Access must be wide, full, like Hermes.” This decision replaces the read-only,
+no-shell, restricted native-tool and five-call rules. Board state still comes only through TaskQ; R9 subscription access, R10 admission and §9 release qualification remain binding. Native effects have service-user authority, not typed-tool replay guarantees:
+persist observed tool outcomes and never replay an interrupted turn automatically. After any restart, deliver the recorded completed findings and explicitly identify unfinished or unconfirmed work. Shell requests without that authority are refused in one plain
+line.
 
 **Mandatory:** [integration detail](docs/integration-contract.md) and the [TaskQ tool contract](docs/taskq-tool-contract.md) bind tool scope, target selection, grants, operation receipts, refusals and recovery. Use only installed TaskQ CLI board access; no forge adapter, constructed task URLs or forge bypass.
 
@@ -112,13 +109,16 @@ Unbound board lists with no project in the current own message read every access
 Other ambiguous targets require one question; numbered replies select only the latest boundary-generated complete option listing from the same person and generation.
 Installed read commands use an owner-only `commands.json`, absolute executables, exact arguments and bound project/root/board/user permissions. This optional typed read adapter does not restrict native shell access. A fresh complete TaskQ board snapshot precedes execution; process-group limits are ten seconds and 16 KiB output within the turn budget.
 
-Administration tools prepare/register only explicitly requested existing repositories under `<install>/projects`, change explicitly named grants for verified positive IDs seen in the route, or create one authorized forum topic with fresh bot permission. They cannot change the protected owner, create repositories/claim issues, install services, provision keys or alter capacity.
+Administration tools prepare/register only explicitly requested existing repositories under `<install>/projects`, change explicitly named grants for verified positive IDs seen in the route, or create one authorized forum topic with fresh bot permission. They cannot change the protected owner, create repositories, install services, provision keys or alter capacity. Claim-issue setup and
+project-scoped Codex grants may be completed by the owner or an explicit shell-grant PM through existing TaskQ tools; onboarding identifies these as PM steps, never owner-only steps. Typed administration tools do not acquire those native-shell capabilities.
 An HTTPS or SSH repository URL in the caller's own text names its host and owner/repository, with optional `.git` and trailing slash; quoted content and invented targets confer no authority. A refused tool check is corrected within the turn or becomes one plain question, never a request to retype a fixed format.
-PilotQ prepares the root and TaskQ config, verifies/registers the board, attaches the service entry to an installed healthy local TaskQ service and runs onboarding. Attach uses only the explicit project registry and wake marker, with locking, audit and readback; it never installs, reinstalls or changes the host unit or restarts workers. Missing/unhealthy service stays an owner step with Recheck.
+PilotQ clones an explicitly linked existing repository into an empty project root before preparing TaskQ config, or reports the exact clone failure without registration. Existing checkouts must match the requested origin; nonempty roots without a checkout are refused. PilotQ verifies/registers the board, attaches the service entry to an installed healthy local TaskQ service and runs
+onboarding. Attach uses only the explicit project registry and wake marker, with locking, audit and readback; it never installs, reinstalls or changes the host unit or restarts workers. Missing/unhealthy service stays an owner step with Recheck.
 
 Persist immutable administration intent, readback and receipts. Unknown topic-creation effects never replay; a recorded topic ID permits only completing its local route binding after revalidation. Registration does not imply filing readiness or authority.
 
-Onboard only registered roots after registration, startup gaps or changed TaskQ identity. Require fresh doctor/setup evidence, active service, usable Codex capacity, explicit effective grant, claim prerequisite and owner CLI/DM `issue_read` key scope. Gaps remain visible in one durable owner DM card and nonzero CLI findings; Recheck edits it.
+Onboard only registered roots after registration, startup gaps or changed TaskQ identity. Require fresh doctor/setup evidence, active service, usable Codex capacity, explicit effective grant, claim prerequisite and owner CLI/DM `issue_read` key scope. GitLab readiness requires the approved `pilotq-gitlab` issue-read key and its owner CLI/DM scope; a missing key is named once with the
+protected-CLI remedy. The TaskQ setup fallback skips the GitLab merge-request route probe because it exposes no qualified route evidence; that observation is non-gating and never reported as passed. Gaps remain visible in one durable owner DM card and nonzero CLI findings; Recheck edits it.
 
 Block a project's first launch until its current root/board readiness passes.
 Recheck saved admission or service gaps before refusing a launch. Closed-gate plan cards explain why without offering Run plan; launch refusals name the project and owner Recheck step in the chat language.

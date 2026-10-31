@@ -1120,7 +1120,7 @@ fn tq_setup(tag: &str, claim: bool) -> (PathBuf, State) {
     let out=cli(&d,&["projects","list","--json"]);assert!(out.status.success());
     let db=rusqlite::Connection::open(d.join("journal.sqlite")).unwrap();
     let record=json!({"board":"taskqorg/pilotq","root":d.join("root"),"pending":false,"ready":true,"epoch":1,
-        "report":{"ready":true,"gaps":[],"source":"invented completed-onboarding fixture","issue_read_key_checked":true}});
+        "report":{"ready":true,"gaps":[],"source":"invented completed-onboarding fixture","issue_read_key_checked":true,"setup_revision":2}});
     db.execute("INSERT OR REPLACE INTO meta(key,value) VALUES ('onboarding:pilotq',?1)",[record.to_string()]).unwrap();
     (d, st)
 }

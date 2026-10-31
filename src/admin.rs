@@ -149,7 +149,7 @@ fn call_with_doctor(d:&Direct,j:&Mutex<Journal>,r:&Run,tool:&str,args:&Value,dea
             "project_disconnect" => disconnect(&mut j.lock().unwrap(),r,args),
             "project_register" => {
                 let tq=tq.ok_or("TaskQ is not configured")?;
-                let mut result=register(d,j,r,args,deadline,tq)?;
+                let mut result=register(d,j,r,args,deadline,tq,Path::new("/usr/bin/git"))?;
                 match crate::onboarding::check_with(d,tq,j,result["project"].as_str().unwrap(),deadline,doctor) {
                     Ok(report)=>{
                         result["filing_ready"]=report["ready"].clone();
@@ -194,7 +194,7 @@ fn disconnect(j:&mut Journal,r:&Run,args:&Value)->Result<Value,String> {
 }
 
 fn component(s: &str) -> bool { !s.is_empty() && s.len()<=100 && s!="." && s!=".." && s.bytes().all(|c|c.is_ascii_alphanumeric() || b"-_.".contains(&c)) }
-fn config_root(d: &Direct, project: &str, config: &Value) -> Result<std::path::PathBuf,String> {
+fn prepare_root(d: &Direct, project: &str) -> Result<std::path::PathBuf,String> {
     let base=d.keys.0.parent().ok_or("Installation directory unavailable")?.join("projects");
     std::fs::create_dir_all(&base).map_err(|_|"Cannot prepare projects directory")?;
     if std::fs::symlink_metadata(&base).map_err(|_|"Projects directory unavailable")?.file_type().is_symlink() { return Err("Projects directory must not be a symlink".into()); }
@@ -205,6 +205,10 @@ fn config_root(d: &Direct, project: &str, config: &Value) -> Result<std::path::P
     std::fs::File::open(&base).and_then(|f|f.sync_all()).map_err(|_|"Projects directory sync failed")?;
     let meta=std::fs::symlink_metadata(&root).map_err(|_|"Project root unavailable")?;
     if !meta.is_dir() || meta.file_type().is_symlink() { return Err("Project root must be an ordinary directory".into()); }
+    Ok(root)
+}
+fn config_root(d: &Direct, project: &str, config: &Value) -> Result<std::path::PathBuf,String> {
+    let root=prepare_root(d,project)?;
     let path=root.join("taskq.json");
     let mut options=std::fs::OpenOptions::new(); options.write(true).create_new(true);
     #[cfg(unix)] std::os::unix::fs::OpenOptionsExt::mode(&mut options,0o600);
@@ -223,7 +227,45 @@ fn config_root(d: &Direct, project: &str, config: &Value) -> Result<std::path::P
     }
     std::fs::canonicalize(root).map_err(|_|"Project root unavailable".into())
 }
-fn register(d: &Direct, j: &Mutex<Journal>, r: &Run, args: &Value, deadline: Instant, tq: &Taskq) -> Result<Value,String> {
+// §5: injectable Git boundary keeps empty-root regression checks local.
+fn config_root_with_git(d:&Direct,project:&str,config:&Value,url:&str,git:&Path,end:Instant,active:impl Fn()->bool)->Result<std::path::PathBuf,String> {
+    if !active() {return Err("Repository clone cancelled; nothing registered".into());}
+    let root=prepare_root(d,project)?;
+    let run=|args:&[&str]| {
+        let mut cmd=crate::commands::command(git,root.to_str().unwrap_or(""),args);
+        cmd.env("GIT_TERMINAL_PROMPT","0").env("GIT_SSH_COMMAND","ssh -oBatchMode=yes");
+        crate::commands::execute_bounded_private(cmd,end,&active,16*1024)
+    };
+    match std::fs::symlink_metadata(root.join(".git")) {
+        Ok(meta)=>{
+            if meta.file_type().is_symlink() {return Err("Repository checkout symlink refused; nothing registered".into());}
+            let result=run(&["remote","get-url","origin"]);
+            let origin=result["stdout"].as_str().unwrap_or("").trim();
+            let same=origin==url || (!repository_links(url).is_empty() && repository_links(origin)==repository_links(url));
+            if result["status"]!="success" || !same {return Err("Existing repository origin is unavailable or mismatched; nothing overwritten or registered".into());}
+        },
+        Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{
+            if std::fs::read_dir(&root).map_err(|_|"Project root unreadable")?.next().is_some() {
+                return Err("Repository clone refused: project root is nonempty without a checkout; nothing overwritten or registered".into());
+            }
+            let result=run(&["clone","--",url,"."]);
+            if result["status"]!="success" {
+                let stderr=result["stderr"].as_str().unwrap_or("").to_lowercase();
+                let reason=if stderr.contains("could not resolve host") || stderr.contains("could not resolve hostname") {"host name resolution failed"}
+                    else if stderr.contains("authentication failed") || stderr.contains("could not read username") || stderr.contains("permission denied (publickey") {"noninteractive repository authentication failed; PM must check the on-host Git credential setup"}
+                    else if stderr.contains("host key verification failed") {"SSH host key verification failed"}
+                    else if stderr.contains("ssl certificate problem") {"TLS certificate verification failed"}
+                    else {"Git did not complete; raw diagnostics withheld to protect host credentials"};
+                return Err(format!("Repository clone failed: {reason}; {} (exit code {}). Inspect the partial root before retrying. Nothing registered.",
+                    result["status"].as_str().unwrap_or("unknown"),result["exit_code"]));
+            }
+        },
+        Err(_)=>return Err("Repository checkout unreadable; nothing registered".into()),
+    }
+    if !active() {return Err("Repository preparation cancelled; nothing registered".into());}
+    config_root(d,project,config)
+}
+fn register(d: &Direct, j: &Mutex<Journal>, r: &Run, args: &Value, deadline: Instant, tq: &Taskq, git:&Path) -> Result<Value,String> {
     let project=args["project"].as_str().filter(|s|component(s)).ok_or("Project must be a single safe directory name")?;
     let repo=args["repo"].as_str().ok_or("Repository required")?;
     let parts:Vec<_>=repo.split('/').collect();
@@ -241,9 +283,14 @@ fn register(d: &Direct, j: &Mutex<Journal>, r: &Run, args: &Value, deadline: Ins
         start(&j,r,"project_register",args)?; tx.commit().map_err(err)?;
     }
     let config=json!({"repo":repo,"board":board,"host":host});
-    let root=config_root(d,project,&config)?;
-    // Same bounded executor as installed reads: deadline, grant revocation, process group and output cap.
     let active=||authorize(&j.lock().unwrap(),r,"project_register",args).is_ok();
+    let own=crate::direct::own_text(&r.text);
+    let link=own.split_whitespace().map(|w|w.trim_matches([',',';','(',')','<','>','[',']']))
+        .find(|w|repository_links(w).iter().any(|(h,p)|h==host && p==repo));
+    let root=if let Some(url)=link {
+        config_root_with_git(d,project,&config,url.trim_end_matches('/'),git,deadline,&active)?
+    } else {config_root(d,project,&config)?};
+    // Same bounded executor as installed reads: deadline, grant revocation, process group and output cap.
     let output=crate::commands::execute_bounded(crate::commands::command(&tq.bin,root.to_str().ok_or("Non-UTF8 project root")?,&["status","--json"]),deadline,&active,256*1024);
     let snapshot:Value=output["stdout"].as_str().and_then(|s|serde_json::from_str(s).ok()).unwrap_or(Value::Null);
     if output["status"]!="success" || snapshot["complete"]!=true || snapshot["board"]["repo"]!=repo || snapshot["board"]["kind"] .as_str().is_some_and(|v|v!=board)
@@ -560,6 +607,58 @@ mod tests {
         let _=std::fs::remove_dir_all(dir);
     }
 
+    // #251 A1 / §5: empty roots must contain a checkout, while files and foreign origins stay protected.
+    #[cfg(unix)]
+    #[test]
+    fn onboarding_251_empty_root_clone() {
+        use std::os::unix::fs::PermissionsExt;
+        let (mut j,dir,d)=setup();
+        let source=dir.join("source");
+        assert!(std::process::Command::new("git").args(["init","--quiet"]).arg(&source).output().unwrap().status.success());
+        std::fs::write(source.join("README.md"),"invented source checkout").unwrap();
+        assert!(std::process::Command::new("git").arg("-C").arg(&source).args(["add","README.md"]).output().unwrap().status.success());
+        assert!(std::process::Command::new("git").arg("-C").arg(&source).args(["-c","user.name=Invented","-c","user.email=invented@example.test","commit","-qm","Invented source"]).output().unwrap().status.success());
+        let config=json!({"repo":"invented/demo","board":"gitlab","host":"gitlab.example.test"});
+        let url="https://gitlab.example.test/invented/demo";
+        let git=dir.join("git-fixture");
+        std::fs::write(&git,format!("#!/bin/sh\nif [ \"$1\" = clone ]; then\n printf '%s' \"$3\" > '{0}/clone-url'\n /usr/bin/git clone -- '{1}' . || exit $?\n exec /usr/bin/git remote set-url origin \"$3\"\nfi\nexec /usr/bin/git \"$@\"\n",dir.display(),source.display())).unwrap();
+        std::fs::set_permissions(&git,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let bin=dir.join("taskq-fixture");
+        std::fs::write(&bin,"#!/bin/sh\nprintf '%s' '{\"complete\":true,\"board\":{\"repo\":\"invented/demo\",\"kind\":\"gitlab\",\"host\":\"gitlab.example.test\"}}'\n").unwrap();
+        std::fs::set_permissions(&bin,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let t=Taskq{bin,..tq(None)};
+        let r=run(&mut j,7,1,&format!("register demo from {url}"));let m=Mutex::new(j);
+        let mut args=config.clone();args["project"]=json!("demo");
+        let registered=register(&d,&m,&r,&args,end(),&t,&git).unwrap();
+        let root=std::path::PathBuf::from(registered["root"].as_str().unwrap());
+        assert_eq!(std::fs::read_to_string(dir.join("clone-url")).unwrap(),url,"clone must use the caller's exact link");
+        assert_eq!(m.lock().unwrap().projects().unwrap()[0].1,"invented/demo");
+        assert!(root.join(".git").is_dir(),"empty registered root has no clone");
+        assert_eq!(std::fs::read_to_string(root.join("README.md")).unwrap(),"invented source checkout");
+        assert!(config_root_with_git(&d,"demo",&config,url,Path::new("/usr/bin/git"),end(),||true).is_ok());
+        assert!(config_root_with_git(&d,"demo",&config,"https://other.example.test/invented/demo",Path::new("/usr/bin/git"),end(),||true).is_err());
+        let occupied=dir.join("projects/occupied");std::fs::create_dir_all(&occupied).unwrap();
+        std::fs::write(occupied.join("keep"),"preserve me").unwrap();
+        assert!(config_root_with_git(&d,"occupied",&config,source.to_str().unwrap(),Path::new("/usr/bin/git"),end(),||true).is_err());
+        assert_eq!(std::fs::read_to_string(occupied.join("keep")).unwrap(),"preserve me");
+        assert!(!occupied.join("taskq.json").exists());
+        let missing=config_root_with_git(&d,"missing",&config,source.to_str().unwrap(),Path::new("/invented/missing-git"),end(),||true).unwrap_err();
+        assert!(missing.contains("clone") && missing.contains("missing"),"{missing}");
+        assert!(config_root_with_git(&d,"cancelled",&config,source.to_str().unwrap(),Path::new("/usr/bin/git"),end(),||false).is_err());
+        let fail=dir.join("failing-git-fixture");
+        std::fs::write(&fail,"#!/bin/sh\nprintf '%s' 'fatal: Authentication failed for invented-secret-never-return' >&2\nexit 128\n").unwrap();
+        std::fs::set_permissions(&fail,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let failure=config_root_with_git(&d,"auth-failed",&config,url,&fail,end(),||true).unwrap_err();
+        assert!(failure.contains("authentication failed") && failure.contains("128") && !failure.contains("invented-secret-never-return"),"{failure}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn checkout_fixture(root:&Path,url:&str) {
+        std::fs::create_dir_all(root).unwrap();
+        assert!(std::process::Command::new("git").args(["init","--quiet"]).arg(root).output().unwrap().status.success());
+        assert!(std::process::Command::new("git").arg("-C").arg(root).args(["remote","add","origin",url]).output().unwrap().status.success());
+    }
+
     // #168 A4/A5 / §5: a claim and Codex slots do not make an ungranted project ready.
     #[cfg(unix)]
     #[test]
@@ -607,6 +706,7 @@ mod tests {
                 assert!(!call(&d,&m,&r,"project_register",&a,end(),Some(&t)).0,"invented target accepted");
                 assert!(!dir.join("projects/demo").exists(),"refused target created a local root");
             }
+            checkout_fixture(&dir.join("projects/demo"),url.trim_end_matches('/'));
             let (ok,out)=call(&d,&m,&r,"project_register",&args,end(),Some(&t));
             assert!(ok,"{url}: {out}");
             assert_eq!(m.lock().unwrap().projects().unwrap()[0].1,"invented/demo");
@@ -639,6 +739,7 @@ mod tests {
             let original=format!("{}\n",dir.to_string_lossy());std::fs::write(install.join("projects"),&original).unwrap();
             std::fs::set_permissions(install.join("projects"),std::fs::Permissions::from_mode(0o600)).unwrap();
             let root=dir.join("projects/pah");
+            checkout_fixture(&root,"https://gitlab.ufobe.com/gradus/pah");
             let service=json!({"schema":"taskq.service/1","service":{"state":"running","fresh":true,"at":crate::now(),
                 "pid":native.pid,"started":native.started,"instance":"invented-instance","version":"4.6.56","install_protocol":1},"registry_error":null,
                 "projects":[{"root":root,"host_binding":"current","status":{"complete":true,"at":crate::now(),"pid":native.pid,"host_instance":"invented-instance",
@@ -677,8 +778,8 @@ mod tests {
             // Invented owner prerequisites, not effects performed by PilotQ.
             config["create_claim_issue"]=json!(123);
             std::fs::write(root.join("taskq.json"),config.to_string()).unwrap();
-            d.keys.add("invented","invented",&["issue_read".into()],"invented-not-a-real-credential").unwrap();
-            d.keys.grant("invented",&["project:pah".into()]).unwrap();
+            d.keys.add("pilotq-gitlab","invented",&["issue_read".into()],"invented-not-a-real-credential").unwrap();
+            d.keys.grant("pilotq-gitlab",&["project:pah".into()]).unwrap();
             let ready=crate::onboarding::check_with(&d,&t,&m,"pah",end(),&doctor).unwrap();
             assert_eq!(ready["ready"],true,"{ready}");
             assert!(crate::onboarding::gate(&m.lock().unwrap(),"pah").is_ok());
