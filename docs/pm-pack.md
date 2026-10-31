@@ -40,6 +40,13 @@ Read the installed TaskQ help before dispatch; commands and required fields may 
   Project LIVE releases use the separate scoped preview and bound Release button (§5); a pack cannot bypass them.
   Record exact source/binary identities, selftest, doctor and continuity. Production cutover remains unauthorized.
 
+## Live page checks
+
+Use the [live-check evidence rules](telegram-feedback.md) through the existing authorized native shell path.
+Check browser availability before naming a blocker; HTTP status/timing and HTML text are a useful fallback,
+but never rendered or signed-in browser proof. Retain the narrower scope of worker evidence in every report.
+The post-release DEV header qualification recipe and current host finding are in [#235](research/235.md).
+
 ## Report
 
 Start with the observed board link. Show a workers table with columns **Task**, **State**, **Finding / next action**.
