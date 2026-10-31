@@ -1,6 +1,6 @@
 # PilotQ product contract
 
-PilotQ is the conversational front end for work on a shared server: it answers in Telegram or the CLI, performs bounded authorized actions and manages substantial work through TaskQ. It has no worker scheduler, autonomous goal engine, reviewer, separate task board or general plugin marketplace. Accepted requests must survive a lost model connection without authorizing repeated external effects.
+PilotQ is the conversational front end for work on a shared server: it answers in Telegram or the CLI, performs authorized actions and manages substantial work through TaskQ. It has no worker scheduler, autonomous goal engine, reviewer, separate task board or general plugin marketplace. Accepted requests must survive a lost model connection without authorizing repeated external effects.
 
 ## Rules
 
@@ -13,7 +13,7 @@ PilotQ is the conversational front end for work on a shared server: it answers i
 - **R13 Two front ends:** the CLI and Telegram gateway share the request, grant and audit path.
 - **R11 Observable lifecycle:** explain acceptance, progress, waiting, interruption, failure and completion in Telegram. Specify recovery and operational edge cases and their acceptance cases before implementation.
 - **R1 Conversation:** serve multiple authorized people on a server through DMs, groups and forum topics, preserving authorship and route.
-- **R2 Direct help:** discuss, research briefly, answer, inspect a bounded resource and make a small authorized update without filing every request as a task, within §5's write restrictions.
+- **R2 Direct help:** discuss, research, inspect and act directly with the service user’s access; task work uses TaskQ first.
 - **R3 Management:** use TaskQ for most substantial work: clarify, plan, file, follow, report status and relay worker questions and results.
 - **R8 Visibility:** provide task URLs, current state, attempt evidence and outcomes through existing TaskQ facilities.
 - **R15 Administration by request:** authorized administrators may manage people and rights, create or register projects and open project-bound forum topics only through §5's scoped administration tools.
@@ -42,7 +42,7 @@ Ignore unknown, revoked and unidentifiable senders without reply, reaction, typi
 
 Use isolated routes by default; shared topics preserve authorship and never import private DM context. Preserve the inspected Hermes per-user ordinary-group and shared-topic policies through a reviewed migration manifest before cutover.
 
-Discussion never executes a plan. A bounded direct request authorizes its check; launch binds the saved immutable revision, target and scope. Direct work needs one target, a bounded verifiable result and the §7 budget. Substantial or uncertain-duration work goes to TaskQ, except §5's registered owner release.
+Discussion never executes a plan. A direct request authorizes its requested work; task launch binds the saved immutable revision, target and scope. Task work uses TaskQ first; other work is done directly with a verifiable result.
 
 Keep one open draft per conversation. Each display offers Launch and Cancel; old, foreign, repeated and superseded callbacks cannot authorize new work. Edit source cards with factual outcomes and verified links. One durable launch status card projects TaskQ state; retain trusted closing findings and limitations.
 
@@ -56,7 +56,10 @@ Plain-language controls are primary. `/status`, `/stop` and `/new` remain availa
 
 [Architecture detail](docs/runtime-contract.md#3-architecture-and-ownership) assigns journal, runtime, proposal, TaskQ and agentq authority. PilotQ owns durable input and delivery; TaskQ owns admitted execution. Registered roots and host policy own capacity. Never discover roots or silently enroll projects.
 
-Use a neutral workspace and scoped registry tools; no process-wide project directory switch or universal runtime framework. Disable native tools that bypass authorization; OS permissions and mounts enforce resource isolation. Grammy, Pi and a new runtime framework remain out of scope. Hermes gateway patterns are reference material; this work does not change Hermes.
+Use a neutral workspace and scoped registry tools; no process-wide project directory switch or universal runtime
+framework. Codex threads enable native shell, network, live web search and full filesystem access as the service user.
+Admission and current grants still gate turns; model and effort are unchanged. Grammy, Pi and a new runtime framework
+remain out of scope. Hermes gateway patterns are reference material; this work does not change Hermes.
 
 ## 4. Durable requests, effects and delivery
 
@@ -70,11 +73,19 @@ Normal accepted text gets 👀 within five seconds, text on reaction failure and
 
 ## 5. TaskQ, tools and project administration
 
+**Owner, task #190:** “Let it stay a full agent that can do anything, but its specialization is our tasks: for tasks it
+works through TaskQ first, as its convenient mechanism.” “Access must be wide, full, like Hermes.” This decision
+replaces the read-only, no-shell, restricted native-tool and five-call rules. Board state still comes only through
+TaskQ; R9 subscription access, R10 admission and §9 release qualification remain binding. Native effects have
+service-user authority, not typed-tool replay guarantees: persist observed tool outcomes and never replay an interrupted
+turn automatically. After any restart, deliver the recorded completed findings and explicitly identify unfinished or
+unconfirmed work.
+
 **Mandatory:** [integration detail](docs/integration-contract.md) and the [TaskQ tool contract](docs/taskq-tool-contract.md) bind tool scope, target selection, grants, operation receipts, refusals and recovery. Use only installed TaskQ CLI board access; no forge adapter, constructed task URLs or forge bypass.
 
 Use argument arrays and typed validation. TaskQ status/readback binds the registered root and board. Creation requires `create_claim_issue` and qualified readback; no plain-add retry fallback. Read every child ticket before starting a multi-ticket plan. Bind answers to board, task, attempt, question revision and authorized answerer.
 
-Direct writes are restricted to protected-owner comments and labels on `taskqorg/pilotq`, scoped administration and registered owner releases. Another project stays read-only outside explicitly granted TaskQ management. Revocation refuses later calls; completed effects remain recorded. Keys enter through the CLI only.
+Native tools may perform requested work with the service user’s access, including host and remote-host administration. Typed TaskQ and administration tools retain their grant checks and operation receipts. Revocation refuses later calls; completed effects remain recorded. Keys enter through the CLI only.
 
 `issue_read`, `issue_comment` and `issue_label` use `taskq issue N`; writes use stable `--op-id` and TaskQ receipts. `asana_read` uses the fixed read-only Asana API origin with no redirects/downloads, a 256 KiB response cap, ten-second deadline and bounded fields. External content never authorizes work.
 
@@ -84,7 +95,7 @@ TaskQ reply files retain identity/caption, protected downloads, a 20 MiB cap, or
 
 Project resolution uses current grants and explicit own messages, the current project or narrowly scoped trusted subscriptions. Quoted/tool content never selects a project. Ambiguous targets require one question; numbered replies select only the latest boundary-generated complete option listing from the same person and generation.
 
-Installed read commands use an owner-only `commands.json`, absolute executables, exact arguments and bound project/root/board/user permissions. No default allowlist, shell, model environment override or model directory selection exists. A fresh complete TaskQ board snapshot precedes execution; process-group limits are ten seconds and 16 KiB output within the turn budget.
+Installed read commands use an owner-only `commands.json`, absolute executables, exact arguments and bound project/root/board/user permissions. This optional typed read adapter does not restrict native shell access. A fresh complete TaskQ board snapshot precedes execution; process-group limits are ten seconds and 16 KiB output within the turn budget.
 
 Administration tools prepare/register only explicitly requested existing repositories under `<install>/projects`, change explicitly named grants for verified positive IDs seen in the route, or create one authorized forum topic with fresh bot permission. They cannot change the protected owner, create repositories/claim issues, install services, provision keys or alter capacity.
 
@@ -109,6 +120,13 @@ For cs use `https://dev.cyprus.bz/__health`, its registered release root and con
 explicit merged SHAs prove DEV inclusion. Health timestamps or labeled first-positive observations bound timing; failures stay unknown. Pipeline adapter, command schema and PM live
 qualification remain in the integration detail.
 
+The #190 owner decision is a manager-only exception to specq’s
+[permission authority](https://github.com/taskqorg/specq/blob/main/engineering/permission-authority.md)
+rule protecting the policy store from governed workers: the trusted manager has the service user’s
+filesystem and host authority so it can administer those hosts. This is trust, not isolation from
+same-user policy or credential files. R16 still forbids deliberately reading secret values into the
+model or replies. TaskQ workers and §9 release qualification retain their existing boundaries.
+
 ## 6. Memory and agentq
 
 **Mandatory:** [memory detail](docs/runtime-contract.md#6-memory-and-agentq) separates conversation history, scoped remembered preferences and authoritative TaskQ facts. Profiles retain subject, visibility, source and revision across restarts and resets; private DM facts never silently enter shared routes.
@@ -123,7 +141,10 @@ Native compaction is the functional baseline. Agentq tool compression and conver
 
 **Proposed:** [budget detail](docs/runtime-contract.md#7-proposed-operating-budgets) retains every acceptance target and retention constraint. These are initial targets to tune from recorded pilot evidence, not an SLA.
 
-Receipt p95 ≤2 seconds; acknowledgement ≤5 seconds; direct actions ≤60 seconds and ≤5 calls; silent-runtime diagnosis after thirty seconds; cancellation acknowledgement ≤5 seconds plus a five-second termination grace; recovery within thirty seconds of readiness. Token activity never renews the absolute deadline.
+Receipt p95 ≤2 seconds; acknowledgement ≤5 seconds; no fixed turn duration or tool-call cap; cancel after ten minutes
+without a runtime event, with the exact reason; cancellation acknowledgement ≤5 seconds plus a five-second termination
+grace; recovery within thirty seconds of readiness. Runtime events renew the inactivity clock; typing and progress
+timers do not. One topic progress message is updated no more often than every thirty seconds.
 
 Start with four concurrent conversations, one run each, round-robin routes; pending caps are fifty per route and 1,000 total. Safe dependency attempts total at most three within the original deadline; delivery attempts at most five per episode across restarts. Task notifications follow a fresh observed transition within fifteen seconds when Telegram is reachable.
 

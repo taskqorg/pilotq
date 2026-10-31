@@ -568,15 +568,15 @@ async fn send(bot: &Bot, j: &Shared, d: &Delivery) -> Sent {
 }
 
 /// Best-effort typing in the exact originating chat and topic while a turn runs, refreshed every 4 s (§ 12, L02). It stops
-/// when the run ends or its deadline passes; a failure is ignored and never touches the run.
-// §12 / #91: the active call deadline owns typing; cosmetic activity never renews model supervision.
-pub async fn typing(bot: Bot, j: Shared, deadline: Duration) {
+/// when the run ends; a failure is ignored and never touches the run.
+// #190: cosmetic activity never renews the inactivity watch.
+pub async fn typing(bot: Bot, j: Shared, _deadline: Duration) {
     let mut tick = tokio::time::interval(Duration::from_secs(4));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tick.tick().await;
         let mut sends = tokio::task::JoinSet::new();
-        let routes = j.lock().unwrap().typing(now(), deadline.as_secs() as i64).unwrap_or_default();
+        let routes = j.lock().unwrap().typing(now(), i64::MAX).unwrap_or_default();
         for (chat, topic) in routes {
             if j.lock().unwrap().telegram_cooldown(chat).unwrap_or(i64::MAX) > now() { continue; }
             let (bot, j) = (bot.clone(), j.clone());
