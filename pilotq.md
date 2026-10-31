@@ -42,6 +42,8 @@ Ignore unknown, revoked and unidentifiable senders without reply, reaction, typi
 
 Use isolated routes by default; shared topics preserve authorship and never import private DM context. Preserve the inspected Hermes per-user ordinary-group and shared-topic policies through a reviewed migration manifest before cutover.
 
+Edits retain the original author, current grants and an audited revision; started work receives a change request. Telegram route incidents hold output at its original destination without automatic rerouting (§4, §12).
+
 Discussion never executes a plan. A direct request authorizes its requested work; task launch binds the saved immutable revision, target and scope. Task work uses TaskQ first; other work is done directly with a verifiable result.
 
 Keep one open draft per conversation. Each display offers Launch and Cancel; old, foreign, repeated and superseded callbacks cannot authorize new work. Edit source cards with factual outcomes and verified links. One durable launch status card projects TaskQ state; retain trusted closing findings and limitations.

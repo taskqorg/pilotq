@@ -665,6 +665,7 @@ fn records(c: &Connection, reader: i64, front: &str, f: &Filter, at: i64) -> Res
         })?
         .into();
         let event = |r: &rusqlite::Row| Ok(json!({"at": r.get::<_, i64>(0)?, "target": r.get::<_, Option<String>>(1)?, "item": r.get::<_, Option<String>>(2)?, "result": r.get::<_, Option<String>>(3)?}));
+        v["revisions"] = list("SELECT at,NULL,item,NULL FROM audit_events WHERE request_id=?1 AND kind='input_revision' ORDER BY id", &event)?.into();
         v["tools"] = list("SELECT at, target, item, result FROM audit_events WHERE request_id=?1 AND kind='tool' ORDER BY id", &event)?.into();
         v["tasks"] = list("SELECT at, target, item, result FROM audit_events WHERE request_id=?1 AND kind='task' ORDER BY id", &event)?.into();
         v["direct"] = list("SELECT at, target, item, result FROM audit_events WHERE request_id=?1 AND kind='direct' ORDER BY id", &event)?.into();
@@ -722,6 +723,14 @@ pub struct Input {
     pub text: Option<String>,
     /// The message this one replies to; a reply to a relayed TaskQ question is an answer (§ 5).
     pub reply_to: Option<i64>,
+}
+
+/// §12: holds survive restart and never rewrite a destination or replay work.
+fn hold_route(tx: &Connection, chat:i64, topic:Option<i64>, reason:&str, at:i64)->Result<(),String> {
+    let source=format!("route-hold:{chat}:{}",topic.unwrap_or(0));
+    tx.execute("INSERT INTO meta(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![source,at]).map_err(|e|e.to_string())?;
+    tx.execute("INSERT INTO health(source,at,state,reason) VALUES (?1,?2,'failed',?3) ON CONFLICT(source) DO UPDATE SET state=excluded.state,reason=excluded.reason",params![source,at,reason]).map_err(|e|e.to_string())?;
+    Ok(())
 }
 
 /// An outbox row due for a send.
@@ -1061,6 +1070,75 @@ impl Journal {
             if known {
                 continue;
             }
+            if let Some(i)=input.as_ref().filter(|i|i.kind=="route_incident") {
+                let reason=i.text.as_deref().unwrap_or("route unavailable");
+                hold_route(&tx,i.chat,i.topic,reason,at)?;
+                tx.execute("INSERT INTO meta(key,value) VALUES (?1,?2)",params![format!("route-event:{update}"),json!({"chat":i.chat,"topic":i.topic,"reason":reason,"at":at}).to_string()]).map_err(|e|e.to_string())?;
+                tx.execute("INSERT INTO updates(update_id,disposition,at) VALUES (?1,'unsupported',?2)",params![update,at]).map_err(|e|e.to_string())?;
+                continue;
+            }
+            if let Some(i)=input.as_ref().filter(|i|i.kind=="edit") {
+                let mut request=None;
+                if let Some(sender)=i.sender {
+                    if !has(&tx,sender,"chat")? {
+                        tx.execute("INSERT INTO updates(update_id,disposition,at) VALUES (?1,'ignored',?2)",params![update,at]).map_err(|e|e.to_string())?;
+                        continue;
+                    }
+                    let original:Option<(i64,String,String,String)>=tx.query_row(
+                        "SELECT id,state,session,kind FROM requests WHERE front='telegram' AND chat=?1 AND topic IS ?2 AND message=?3 AND sender=?4 ORDER BY id LIMIT 1",
+                        params![i.chat,i.topic,i.message,sender],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(|e|e.to_string())?;
+                    if let Some((id,state,session,kind))=original {
+                        let before:Option<String>=tx.query_row("SELECT text FROM requests WHERE id=?1",[id],|r|r.get(0)).map_err(|e|e.to_string())?;
+                        let revision=json!({"update":update,"author":sender,"before":before,"text":i.text,"image":i.image,"voice":i.voice,"files":i.files,"quote":i.quote,"media_group":i.media_group});
+                        let previous:Option<String>=tx.query_row("SELECT item FROM audit_events WHERE request_id=?1 AND kind='input_revision' ORDER BY id DESC LIMIT 1",[id],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
+                        let same=if let Some(previous)=previous {
+                            let mut previous:Value=serde_json::from_str(&previous).map_err(|e|e.to_string())?;
+                            let mut current=revision.clone();
+                            for v in [&mut previous,&mut current] {v.as_object_mut().unwrap().remove("update");v.as_object_mut().unwrap().remove("before");}
+                            previous==current
+                        } else {false};
+                        if same {
+                            tx.execute("INSERT INTO updates(update_id,disposition,request_id,at) VALUES (?1,'duplicate_revision',?2,?3)",params![update,id,at]).map_err(|e|e.to_string())?;
+                            continue;
+                        }
+                        // Every prior request for this source is stale, including earlier change requests.
+                        // Already admitted launches retain their immutable plan and operation identities.
+                        tx.execute("INSERT OR IGNORE INTO meta(key,value) SELECT 'edited-request:' || q.id,?5 FROM requests q WHERE q.front='telegram' AND q.chat=?1 AND q.topic IS ?2 AND q.message=?3 AND q.sender=?4",params![i.chat,i.topic,i.message,sender,at]).map_err(|e|e.to_string())?;
+                        tx.execute("INSERT OR IGNORE INTO meta(key,value) SELECT 'edited-plan:' || p.id,?5 FROM plans p JOIN requests q ON q.id=p.request_id WHERE q.front='telegram' AND q.chat=?1 AND q.topic IS ?2 AND q.message=?3 AND q.sender=?4 AND NOT EXISTS(SELECT 1 FROM plan_runs x WHERE x.plan_id=p.id)",params![i.chat,i.topic,i.message,sender,at]).map_err(|e|e.to_string())?;
+                        tx.execute("UPDATE cards SET used_request=?1 WHERE used_request IS NULL AND plan_id IN (SELECT p.id FROM plans p JOIN meta m ON m.key='edited-plan:' || p.id)",[id]).map_err(|e|e.to_string())?;
+                        tx.execute("INSERT INTO audit_events(request_id,at,kind,item) VALUES (?1,?2,'input_revision',?3)",params![id,at,revision.to_string()]).map_err(|e|e.to_string())?;
+                        let unclaimed:bool=tx.query_row("SELECT NOT EXISTS(SELECT 1 FROM runs WHERE request_id=?1)",[id],|r|r.get(0)).map_err(|e|e.to_string())?;
+                        // Media revisions retain identities, but require a new turn rather than reusing a stale decode.
+                        if state=="queued" && kind=="text" && unclaimed && i.image.is_none() && i.voice.is_none() && i.files.is_empty() {
+                            tx.execute("DELETE FROM meta WHERE key=?1",[format!("edited-request:{id}")]).map_err(|e|e.to_string())?;
+                            tx.execute("UPDATE requests SET text=?2 WHERE id=?1",params![id,i.text]).map_err(|e|e.to_string())?;
+                            request=Some(id);
+                        } else {
+                            let text=format!("Change request for earlier message {}. Do not replay completed work or treat this edit as launch/answer/control authorization. Clarify any changed task scope before acting. Revised input: {}",i.message,i.text.as_deref().unwrap_or("[media revision; see retained attachments]"));
+                            let kind=if i.image.is_some() {"image"} else if i.voice.is_some() {"voice"} else if !i.files.is_empty() {"document"} else {"text"};
+                            let language=chat_language(&tx,&session,i.text.as_deref(),i.language.as_deref())?;
+                            let (route,total):(i64,i64)=tx.query_row("SELECT count(*) FILTER(WHERE chat=?1 AND topic IS ?2),count(*) FROM requests WHERE state='queued'",params![i.chat,i.topic],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|e.to_string())?;
+                            let busy=route>=ROUTE_BACKLOG || total>=TOTAL_BACKLOG;
+                            let changed=insert(&tx,*update,"telegram",i.chat,i.topic,sender,i.name.as_deref(),i.message,kind,Some(&text),if busy {"failed"} else {"queued"},at,&session,None)?;
+                            tx.execute("UPDATE requests SET image=?2,language=?3 WHERE id=?1",params![changed,i.image,language]).map_err(|e|e.to_string())?;
+                            tx.execute("INSERT INTO audit_events(request_id,at,kind,item) VALUES (?1,?2,'reply_files',?3)",params![changed,at,serde_json::to_string(&i.files).map_err(|e|e.to_string())?]).map_err(|e|e.to_string())?;
+                            if let Some(voice)=&i.voice {
+                                tx.execute("INSERT INTO audit_events(request_id,at,kind,item) VALUES (?1,?2,'voice',?3)",params![changed,at,voice]).map_err(|e|e.to_string())?;
+                            }
+                            let feedback=if busy {brief(language.as_deref(),"busy")} else if language.as_deref().unwrap_or("en").starts_with("ru") {"Изменение сохранено как запрос на корректировку; ранее разрешённая работа не изменена."} else {"Edit saved as a change request; previously authorized work is unchanged."};
+                            outbox(&tx,changed,i.chat,i.topic,Some(i.message),None,feedback,at)?;
+                            if busy {
+                                tx.execute("UPDATE requests SET reply=?2,error='busy: backlog full' WHERE id=?1",params![changed,feedback]).map_err(|e|e.to_string())?;
+                                ended.push(changed);
+                            }
+                            request=Some(changed);
+                        }
+                        admitted+=1;
+                    }
+                }
+                tx.execute("INSERT INTO updates(update_id,disposition,request_id,at) VALUES (?1,?2,?3,?4)",params![update,if request.is_some(){"revision"}else{"ignored"},request,at]).map_err(|e|e.to_string())?;
+                continue;
+            }
             let sender = match input.as_ref().and_then(|i| i.sender) {
                 Some(s) if has(&tx, s, "chat")? => Some(s),
                 _ => None,
@@ -1210,6 +1288,10 @@ impl Journal {
         Ok(admitted)
     }
 
+    pub fn route_held(&self, chat:i64, topic:Option<i64>) -> Result<bool,String> {
+        self.0.query_row("SELECT EXISTS(SELECT 1 FROM meta WHERE key=?1 OR key=?2)",params![format!("route-hold:{chat}:0"),format!("route-hold:{chat}:{}",topic.unwrap_or(0))],|r|r.get(0)).map_err(|e|e.to_string())
+    }
+
     /// §4: Telegram retry_after applies across methods and topics in the same chat, including restart.
     pub fn telegram_cooldown(&self, chat: i64) -> Result<i64, String> {
         self.0.query_row("SELECT value FROM meta WHERE key=?1", [format!("telegram-cooldown:{chat}")], |r| r.get(0))
@@ -1249,7 +1331,8 @@ impl Journal {
             FROM requests r WHERE r.front='telegram' AND r.state='queued' AND r.kind<>'builtin' AND r.received_at<?1-30
             AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.request_id=r.id AND o.kind='queued')", [now]).map_err(|e|e.to_string())?;
         self.0.execute("UPDATE outbox SET state='superseded' WHERE kind='queued' AND state='pending' AND request_id IN (SELECT id FROM requests WHERE state<>'queued')", []).map_err(|e|e.to_string())?;
-        let heads = "FROM outbox o WHERE state='pending' AND (o.kind='reaction' OR NOT EXISTS
+        let heads = "FROM outbox o WHERE state='pending'
+            AND NOT EXISTS(SELECT 1 FROM meta h WHERE h.key='route-hold:' || o.chat || ':0' OR h.key='route-hold:' || o.chat || ':' || coalesce(o.topic,0)) AND (o.kind='reaction' OR NOT EXISTS
             (SELECT 1 FROM outbox p WHERE p.state='pending' AND p.chat=o.chat AND p.topic IS o.topic AND p.id<o.id))";
         let mut row = self
             .0
@@ -1315,6 +1398,10 @@ impl Journal {
             }
         }
         let tx = self.0.transaction().map_err(|e| e.to_string())?;
+        if matches!(sent,Sent::Held(_)) {
+            let (chat,topic)=tx.query_row("SELECT chat,topic FROM outbox WHERE id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|e.to_string())?;
+            hold_route(&tx,chat,topic,"Telegram destination unavailable; administrator revalidation required",now)?;
+        }
         let key=format!("delivery:{id}");
         let progress:Option<String>=tx.query_row("SELECT value FROM meta WHERE key=?1",[&key],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
         if let Some(progress)=progress {
@@ -1561,6 +1648,16 @@ impl Journal {
                     }
                 }
                 _ => {}
+            }
+        }
+        let held:Vec<(String,String)> = {
+            let mut q=tx.prepare("SELECT source,coalesce(reason,'route unavailable') FROM health WHERE source LIKE 'route-hold:%' AND state='failed' AND at<=?1").map_err(e)?;
+            q.query_map([at-HOLD],|r|Ok((r.get(0)?,r.get(1)?))).and_then(Iterator::collect).map_err(e)?
+        };
+        for (source,reason) in held {
+            let key=format!("notified:{source}");
+            if meta(&tx,&key)?.is_none() && service_message(&tx,owner,Some(&source),&format!("PilotQ Telegram route unavailable ({source}): {reason}. Output remains at its original destination; administrator revalidation is required."),at)? {
+                tx.execute("INSERT INTO meta(key,value) VALUES (?1,?2)",params![key,at]).map_err(e)?;
             }
         }
         tx.commit().map_err(e)
@@ -2117,6 +2214,9 @@ impl Journal {
     pub fn save_draft(&self, r: &Run, tickets: &Value, project: &str, board: &str, root: &str, at: i64) -> Result<i64, String> {
         if self.fenced(r)? { return Err("this run was stopped; nothing was saved".into()); }
         let tx = self.0.unchecked_transaction().map_err(|e|e.to_string())?;
+        if meta(&tx,&format!("edited-request:{}",r.request))?.is_some() {
+            return Err("the source input was edited; only the current revision can save a new proposal".into());
+        }
         let previous: Option<(i64,String,String,String,bool)> = tx.query_row(
             "SELECT draft,project,board,root,EXISTS(SELECT 1 FROM plan_runs x JOIN plans p ON p.id=x.plan_id WHERE p.draft=plans.draft) FROM plans WHERE session=?1 ORDER BY revision DESC LIMIT 1",
             [&r.session], |x| Ok((x.get(0)?,x.get(1)?,x.get(2)?,x.get(3)?,x.get(4)?))).optional().map_err(|e|e.to_string())?;
@@ -2432,6 +2532,9 @@ impl Journal {
         if let Some((run, state)) = tx.query_row("SELECT id, state FROM plan_runs WHERE plan_id=?1", [plan], |x| Ok((x.get(0)?, x.get::<_, String>(1)?))).optional().map_err(e)? {
             if state == "cancelled" { return Err("this draft was cancelled; nothing was filed. Plan again to open a new draft.".into()); }
             return Ok(run);
+        }
+        if meta(&tx,&format!("edited-plan:{plan}"))?.is_some() {
+            return Err("the source input was edited; review and save a new plan revision before launching".into());
         }
         tx.execute("INSERT INTO plan_runs(plan_id, request_id, actor, state, next_at, at) VALUES (?1,?2,?3,'creating',?4,?5)", params![plan, r.request, actor, at + lease, at]).map_err(e)?;
         let run = tx.last_insert_rowid();
@@ -3165,6 +3268,130 @@ mod tests {
         }
         assert!(j.facts(7,7).unwrap().is_empty());
         drop(j); std::fs::remove_dir_all(p).unwrap();
+    }
+
+    // R5/R11 §4, §12: revisions cannot replay work, impersonate an author or reroute output.
+    #[test]
+    fn edit_revisions_and_route_holds() {
+        let (mut j,p)=journal("197");
+        let edit=|sender,text|input(-100,Some(5),Some(sender),"Invented","edit",Some(text));
+        j.admit(&[(1,input(-100,Some(5),Some(7),"Invented","text",Some("original")))],0).unwrap();
+        j.admit(&[(2,edit(7,"queued revision")),(2,edit(7,"queued revision")),(20,edit(7,"queued revision"))],1).unwrap();
+        assert_eq!(count(&j,"SELECT count(*) FROM requests"),1);
+        assert_eq!(j.0.query_row("SELECT text FROM requests WHERE id=1",[],|r|r.get::<_,String>(0)).unwrap(),"queued revision");
+        let run=j.claim_next(4,2).unwrap().remove(0);
+        j.grant(7,8,&["chat".into()],2).unwrap();
+        j.admit(&[(3,edit(8,"forged")),(4,edit(9,"unknown")),(5,edit(7,"/new")),(5,edit(7,"/new"))],3).unwrap();
+        assert_eq!(count(&j,"SELECT count(*) FROM requests"),2);
+        assert_eq!(count(&j,"SELECT count(*) FROM audit_events WHERE kind='input_revision'"),2);
+        assert_eq!(j.request(run.request).unwrap().0,"running");
+        assert_eq!(count(&j,"SELECT count(*) FROM requests WHERE text LIKE 'Change request%' AND state='queued'"),1);
+        j.revoke(7,7,&["chat".into()],4).unwrap();
+        j.admit(&[(6,edit(7,"revoked"))],4).unwrap();
+        assert_eq!(count(&j,"SELECT count(*) FROM requests"),2);
+        j.grant(7,7,&["chat".into()],4).unwrap();
+        assert!(j.due(4).unwrap().0.is_some(),"original output is pending before the incident");
+        for (update,topic,reason) in [(7,Some(5),"topic closed"),(8,None,"group migration:-200"),(9,None,"bot permission loss")] {
+            let event=||input(-100,topic,None,"","route_incident",Some(reason));
+            j.admit(&[(update,event()),(update,event())],5).unwrap();
+        }
+        assert_eq!(count(&j,"SELECT count(*) FROM requests"),2,"service events never enter the model queue");
+        assert_eq!(count(&j,"SELECT count(*) FROM meta WHERE key LIKE 'route-hold:%'"),2);
+        assert_eq!(count(&j,"SELECT count(*) FROM meta WHERE key LIKE 'route-event:%'"),3);
+        assert_eq!(count(&j,"SELECT count(*) FROM outbox WHERE chat<>-100 OR topic IS NOT 5"),0);
+        j.admit(&[(21,input(-300,None,Some(7),"Invented","text",Some("unaffected")))],6).unwrap();
+        drop(j);
+        let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
+        while let Some(d)=j.due(10).unwrap().0 {assert_eq!(d.chat,-300);j.record(d.id,&Sent::Ok(90+d.id),10).unwrap();}
+        assert!(count(&j,"SELECT count(*) FROM outbox WHERE chat=-100 AND state='pending'")>0);
+        assert!(j.due(10).unwrap().0.is_none(),"pending and future output stays at its immutable destination");
+        assert_eq!(j.cursor().unwrap(),22);
+        j.incidents(7,130).unwrap();
+        let notices=count(&j,"SELECT count(*) FROM outbox WHERE text LIKE 'PilotQ Telegram route unavailable%'");
+        assert_eq!(notices,2);
+        j.incidents(7,131).unwrap();
+        assert_eq!(count(&j,"SELECT count(*) FROM outbox WHERE text LIKE 'PilotQ Telegram route unavailable%'"),notices);
+        drop(j);std::fs::remove_dir_all(p).unwrap();
+    }
+
+    // §12: a deleted/closed topic first observed through delivery also holds later output.
+    #[test]
+    fn route_delivery_failure_holds_later_output() {
+        let (mut j,p)=journal("197-delivery");
+        j.admit(&[(1,input(-100,Some(5),Some(7),"Invented","text",Some("pending")))],0).unwrap();
+        let d=j.due(0).unwrap().0.unwrap();
+        j.record(d.id,&Sent::Held("invented missing topic".into()),1).unwrap();
+        assert!(j.route_held(-100,Some(5)).unwrap());
+        assert!(!j.route_held(-100,Some(6)).unwrap());
+        j.admit(&[(2,input(-100,Some(5),Some(7),"Invented","text",Some("later")))],2).unwrap();
+        assert!(j.due(2).unwrap().0.is_none());
+        assert_eq!(count(&j,"SELECT count(*) FROM requests WHERE state='queued'"),2);
+        drop(j);std::fs::remove_dir_all(p).unwrap();
+    }
+
+    // §2, §4: edits invalidate an unlaunched source card but cannot rewrite immutable launches.
+    #[test]
+    fn edit_preserves_launch_scope() {
+        let (mut j,p)=journal("197-launch");
+        let fixture:Value=serde_json::from_str(include_str!("fixtures/conversation-165.json")).unwrap();
+        j.admit(&[(1,msg(7,7,1))],0).unwrap();
+        let r=j.claim_next(4,0).unwrap().remove(0);
+        j.save_plan(&r,&fixture["plans"][0]["tickets"],"pilotq","taskqorg/pilotq","",1).unwrap();
+        j.finish(&r,None,None,&crate::manager::Outcome::Answered("saved".into()),1).unwrap();
+        let mut edit=msg(7,7,1).unwrap();edit.kind="edit";edit.text=Some("changed scope".into());
+        j.admit(&[(2,Some(edit))],2).unwrap();
+        let change=j.claim_next(4,2).unwrap().remove(0);
+        assert!(j.authorize(&change,1,7,120,2).unwrap_err().contains("edited"));
+        j.save_plan(&change,&fixture["plans"][0]["tickets"],"pilotq","taskqorg/pilotq","",3).unwrap();
+        j.finish(&change,None,None,&crate::manager::Outcome::Answered("revised".into()),3).unwrap();
+        j.admit(&[(3,msg(7,7,3))],4).unwrap();let confirm=j.claim_next(4,4).unwrap().remove(0);
+        let launch=j.authorize(&confirm,2,7,120,4).unwrap();
+        let before=j.plan_run(launch).unwrap().tickets[0].op_id.clone();
+        let mut edit=msg(7,7,1).unwrap();edit.kind="edit";edit.text=Some("another change".into());
+        j.admit(&[(4,Some(edit))],5).unwrap();
+        assert_eq!(j.plan_run(launch).unwrap().tickets[0].op_id,before);
+        assert_eq!(count(&j,"SELECT count(*) FROM plan_runs"),1);
+        assert_eq!(count(&j,"SELECT count(*) FROM plans"),2);
+        drop(j);std::fs::remove_dir_all(p).unwrap();
+    }
+
+    // R5/R11 §§2,4: every edit lineage invalidates old proposals, including late saves.
+    #[test]
+    fn edit_lineage_rejects_prior_change_plan() { edit_stale_proposal(false); }
+
+    #[test]
+    fn edit_lineage_rejects_late_save() { edit_stale_proposal(true); }
+
+    fn edit_stale_proposal(late_save: bool) {
+        {
+            let (mut j,p)=journal(if late_save {"197-late"} else {"197-lineage"});
+            j.admit(&[(1,msg(7,7,1))],0).unwrap();
+            let original=j.claim_next(4,0).unwrap().remove(0);
+            let tickets=json!([{"title":"Original scope"}]);
+            let edit=|text:&str| {let mut i=msg(7,7,1).unwrap();i.kind="edit";i.text=Some(text.into());Some(i)};
+            if !late_save {
+                j.finish(&original,None,None,&crate::manager::Outcome::Answered("done".into()),1).unwrap();
+                j.admit(&[(2,edit("first change"))],2).unwrap();
+                let change=j.claim_next(4,2).unwrap().remove(0);
+                j.save_plan(&change,&tickets,"pilotq","taskqorg/pilotq","",3).unwrap();
+                j.finish(&change,None,None,&crate::manager::Outcome::Answered("plan".into()),3).unwrap();
+            }
+            j.admit(&[(3,edit("latest change"))],4).unwrap();
+            if late_save {
+                assert!(j.save_plan(&original,&tickets,"pilotq","taskqorg/pilotq","",5).is_err(),"an edited running input cannot save a stale proposal");
+                j.finish(&original,None,None,&crate::manager::Outcome::Answered("done".into()),5).unwrap();
+            }
+            let latest=j.claim_next(4,6).unwrap().remove(0);
+            if !late_save {
+                assert!(j.authorize(&latest,1,7,120,6).unwrap_err().contains("edited"),"a repeated edit invalidates the previous change request's plan");
+            }
+            let revision=j.save_plan(&latest,&tickets,"pilotq","taskqorg/pilotq","",7).unwrap();
+            j.finish(&latest,None,None,&crate::manager::Outcome::Answered("current plan".into()),7).unwrap();
+            j.admit(&[(4,msg(7,7,4))],8).unwrap();
+            let confirm=j.claim_next(4,8).unwrap().remove(0);
+            assert!(j.authorize(&confirm,revision,7,120,8).is_ok(),"freshly reviewed proposals remain launchable");
+            drop(j);std::fs::remove_dir_all(p).unwrap();
+        }
     }
 
     // #165 A3/A4/A6: snapshot actual durable card edits, not only renderer helpers.
