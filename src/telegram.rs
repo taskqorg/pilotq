@@ -668,6 +668,9 @@ pub async fn drafts(bot: Bot, j: Shared) {
             if j.lock().unwrap().route_held(chat,topic).unwrap_or(true) { continue; }
             let entry = shown.entry(run).or_insert_with(|| (String::new(), true));
             if entry.0 == text || text.is_empty() { continue; }
+            // Wait for any earlier route delivery, then revalidate after the await.
+            let barrier=j.lock().unwrap().delivery_barrier(chat,topic);
+            let _delivery=barrier.lock().await;
             // Recheck immediately before dispatch; a stale preview never starts a new request or changes its result.
             if !j.lock().unwrap().previews().unwrap_or_default().iter().any(|p|p.0==run) { continue; }
             let mut body = json!({"chat_id":chat,"draft_id":run});
@@ -698,6 +701,11 @@ pub async fn deliver(bot: Bot, j: Shared, wake: Arc<Notify>) {
         let due = j.lock().unwrap().due(now());
         match due {
             Ok((Some(d), _)) => {
+                // A stop receipt cannot overtake an already dispatched preview in this route.
+                let barrier=j.lock().unwrap().delivery_barrier(d.chat,d.topic);
+                let _delivery=barrier.lock().await;
+                // Stop may retire the selected tick while we wait for its draft send.
+                if !j.lock().unwrap().due(now()).ok().and_then(|(row,_)|row).is_some_and(|row|row.id==d.id) { continue; }
                 let sent = send(&bot, &j, &d).await;
                 match &sent {
                     Sent::Ok(_) => health(&j, "delivery", "ok", None),

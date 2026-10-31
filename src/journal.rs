@@ -858,9 +858,19 @@ pub enum Sent {
 }
 
 /// The journal connection, the CoreQ telemetry store path beside it and that store, opened on first use.
-pub struct Journal(pub(crate) Connection, PathBuf, std::sync::OnceLock<Result<Store, String>>);
+pub struct Journal(pub(crate) Connection, PathBuf, std::sync::OnceLock<Result<Store, String>>, std::collections::HashMap<(i64, Option<i64>), std::sync::Weak<tokio::sync::Mutex<()>>>);
 
 impl Journal {
+    /// §2 / #229: drafts and stop receipts share a route barrier across network awaits.
+    /// Weak entries retain no route history once sends finish; other routes use independent locks.
+    pub(crate) fn delivery_barrier(&mut self, chat: i64, topic: Option<i64>) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+        self.3.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock)=self.3.get(&(chat,topic)).and_then(std::sync::Weak::upgrade) { return lock; }
+        let lock=std::sync::Arc::new(tokio::sync::Mutex::new(()));
+        self.3.insert((chat,topic),std::sync::Arc::downgrade(&lock));
+        lock
+    }
+
     pub fn open(path: &Path) -> Result<Journal, String> {
         let c = Connection::open(path).map_err(|e| format!("journal {}: {e}", path.display()))?;
         // R5 / #205: startup may hold the writer; install the bounded wait before any PRAGMA or DDL.
@@ -1008,7 +1018,7 @@ impl Journal {
         let salt = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as i64) ^ ((std::process::id() as i64) << 40);
         c.execute("INSERT INTO meta(key, value) VALUES ('instance', ?1) ON CONFLICT(key) DO NOTHING", [salt & i64::MAX]).map_err(|e| e.to_string())?;
         up("CREATE TEMP TABLE previews(run INTEGER PRIMARY KEY, text TEXT NOT NULL);")?;
-        Ok(Journal(c, path.with_file_name("telemetry.sqlite"), std::sync::OnceLock::new()))
+        Ok(Journal(c, path.with_file_name("telemetry.sqlite"), std::sync::OnceLock::new(), std::collections::HashMap::new()))
     }
 
     /// R17, § 6: metadata only, measured after scrubbing; no arguments or result content enter this record.
@@ -1499,6 +1509,13 @@ impl Journal {
             }
         }
         let tx = self.0.transaction().map_err(|e| e.to_string())?;
+        // #229 A3 / R5: a late send result must retain its evidence without reviving stopped tick output.
+        let retired_tick:bool=tx.query_row("SELECT state='superseded' AND EXISTS(SELECT 1 FROM audit_events a WHERE a.request_id=o.request_id AND a.kind='loop_tick') FROM outbox o WHERE id=?1",[id],|r|r.get(0)).map_err(|e|e.to_string())?;
+        if retired_tick {
+            tx.execute("INSERT INTO audit_events(request_id,at,kind,item,result) SELECT request_id,?2,'loop_delivery_retired',?1,?3 FROM outbox WHERE id=?1",params![id,now,format!("{sent:?}")]).map_err(|e|e.to_string())?;
+            tx.execute("UPDATE outbox SET attempts=attempts+1,sent_message=coalesce(?2,sent_message),possible_duplicate=possible_duplicate OR ?3 WHERE id=?1",params![id,if let Sent::Ok(m)=sent {Some(*m)} else {None},matches!(sent,Sent::Retry{ambiguous:true,..})]).map_err(|e|e.to_string())?;
+            return tx.commit().map_err(|e|e.to_string());
+        }
         if matches!(sent,Sent::Held(_)) {
             let (chat,topic)=tx.query_row("SELECT chat,topic FROM outbox WHERE id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|e.to_string())?;
             hold_route(&tx,chat,topic,"Telegram destination unavailable; administrator revalidation required",now)?;
@@ -2195,6 +2212,11 @@ impl Journal {
         }
         if let Some(observation) = footer {
             tx.execute("INSERT INTO audit_events(request_id,run_id,at,kind,result,item) VALUES (?1,?2,?3,'runtime_status',?4,?5)",params![r.request,r.id,at,observation,r.model_epoch.to_string()]).map_err(e)?;
+        }
+        // #229 A1 / R11,R13: a model paraphrase cannot drop the committed start receipt.
+        if state == "answered" {
+            let receipt:Option<String>=tx.query_row("SELECT receipt FROM admin_ops WHERE request=?1 AND tool='loop_start'",[r.request],|x|x.get(0)).optional().map_err(e)?;
+            if let Some(receipt)=receipt {if !text.contains(&receipt) {text.push_str(&format!("\n\n{receipt}"));}}
         }
         let shown=crate::conversation::reply(&text,language.as_deref());
         if shown!=text {
