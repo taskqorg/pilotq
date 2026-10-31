@@ -469,7 +469,7 @@ fn dispatch_until(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Va
             let guard=j.lock().unwrap();
             let projects=guard.projects()?.into_iter().filter(|p|allowed(&guard,sender,&p.0,false).is_ok()).collect::<Vec<_>>();
             let named=projects.iter().any(|p|crate::direct::named_own(&r.text,&p.0) || crate::direct::named_own(&r.text,&p.1));
-            if guard.current_project(&r.session)?.is_none() && !named {Some(projects)} else {None}
+            if !named && (guard.unbound_topic(r)? || guard.current_project(&r.session)?.is_none()) {Some(projects)} else {None}
         };
         if let Some(projects)=projects {
             if projects.is_empty() {return Err("No accessible registered board; status unavailable".into());}
@@ -1428,6 +1428,32 @@ print(json.dumps(dict(task=19,op_id=op,outcome='accepted',state='doing',revision
         let count:i64=guard.0.query_row("SELECT count(*) FROM audit_events WHERE request_id=?1 AND kind='task' AND result='read'",[r.request],|row|row.get(0)).unwrap();assert_eq!(count,3);
         let questions:i64=guard.0.query_row("SELECT count(*) FROM audit_events WHERE request_id=?1 AND kind='project_question'",[r.request],|row|row.get(0)).unwrap();assert_eq!(questions,0);
         drop(guard);
+        // Selection remains unset; broad reads never switch a route.
+        assert!(j.lock().unwrap().current_project(&r.session).unwrap().is_none());
+        // #250 / §5: request 259 had no route binding, but retained a conversation
+        // selection. An older own project question must not prevent the broad read.
+        let mut journal=j.into_inner().unwrap();
+        crate::journal::insert(&journal.0, 258, "telegram", -100, Some(3), 7, None, 258, "text", Some("Projects: cyprusbz, pilotq, tight"), "queued", 6, "-100:3", None).unwrap();
+        let prior=journal.claim_next(1,6).unwrap().remove(0);
+        journal.use_project(&prior,"pilotq",7,6).unwrap();
+        journal.project_question(&prior, &["cyprusbz".into(),"pilotq".into(),"tight".into()]).unwrap();
+        journal.finish(&prior,None,None,&crate::manager::Outcome::Answered("Which project?\n1. cyprusbz\n2. pilotq\n3. tight".into()),7).unwrap();
+        crate::journal::insert(&journal.0, 259, "telegram", -100, Some(3), 7, None, 259, "text", Some("сделай таскью-лист"), "queued", 8, "-100:3", None).unwrap();
+        let r=journal.claim_next(1,8).unwrap().remove(0);
+        assert!(journal.open_project_question(&r).unwrap().is_some());
+        assert_eq!(journal.current_project(&r.session).unwrap().as_deref(),Some("pilotq"));
+        for project in ["cyprusbz","pilotq","tight"] { std::fs::remove_file(dir.join(project).join("reads")).unwrap(); }
+        let j=Mutex::new(journal);
+        let result:Value=serde_json::from_str(&dispatch(&tq,&j,&r,"project_status",&json!({})).unwrap()).unwrap();
+        assert_eq!(result["boards"].as_array().unwrap().len(),3);
+        for project in ["cyprusbz","pilotq","tight"] {
+            assert_eq!(std::fs::read_to_string(dir.join(project).join("reads")).unwrap(),"read\n");
+        }
+        let guard=j.lock().unwrap();
+        let count:i64=guard.0.query_row("SELECT count(*) FROM audit_events WHERE request_id=?1 AND kind='task' AND result='read'",[r.request],|row|row.get(0)).unwrap();assert_eq!(count,3);
+        let questions:i64=guard.0.query_row("SELECT count(*) FROM audit_events WHERE request_id=?1 AND kind='project_question'",[r.request],|row|row.get(0)).unwrap();assert_eq!(questions,0);
+        assert_eq!(guard.current_project(&r.session).unwrap().as_deref(),Some("pilotq"));
+        drop(guard);
         // A board outage is explicit, while other successful reads survive.
         std::fs::write(dir.join("tight/snapshot.json"),"{}").unwrap();
         let text=dispatch(&tq,&j,&r,"project_status",&json!({})).unwrap();
@@ -1440,8 +1466,26 @@ print(json.dumps(dict(task=19,op_id=op,outcome='accepted',state='doing',revision
         let result:Value=serde_json::from_str(&text).unwrap();
         assert_eq!(result["boards"].as_array().unwrap().len(),1);
         assert_eq!(result["boards"][0]["project"],"pilotq");
-        // Selection remains unset; broad reads never switch a route.
-        assert!(j.lock().unwrap().current_project(&r.session).unwrap().is_none());
+        // Current own references and explicit route bindings still prevent aggregation.
+        j.lock().unwrap().finish(&r,None,None,&crate::manager::Outcome::Answered("listed".into()),9).unwrap();
+        let mut journal=j.into_inner().unwrap();
+        crate::journal::insert(&journal.0, 260, "telegram", -100, Some(3), 7, None, 260, "text", Some("pilotq tasks"), "queued", 10, "-100:3", None).unwrap();
+        let explicit=journal.claim_next(1,10).unwrap().remove(0);
+        let j=Mutex::new(journal);
+        let result:Value=serde_json::from_str(&dispatch(&tq,&j,&explicit,"project_status",&json!({})).unwrap()).unwrap();
+        assert_eq!(result["project"],"pilotq");assert!(result["boards"].is_null());
+        let guard=j.lock().unwrap();
+        guard.0.execute("INSERT INTO route_projects(chat,topic,project) VALUES (-100,3,'pilotq')",[]).unwrap();
+        assert!(!guard.unbound_topic(&explicit).unwrap());
+        guard.finish(&explicit,None,None,&crate::manager::Outcome::Answered("listed".into()),11).unwrap();
+        drop(guard);
+        let mut journal=j.into_inner().unwrap();
+        journal.0.execute("INSERT INTO route_projects(chat,topic,project) VALUES (-101,3,'pilotq')",[]).unwrap();
+        crate::journal::insert(&journal.0, 261, "telegram", -101, Some(3), 7, None, 261, "text", Some("list tasks"), "queued", 11, "-101:3", None).unwrap();
+        let bound=journal.claim_next(1,11).unwrap().remove(0);
+        let j=Mutex::new(journal);
+        let result:Value=serde_json::from_str(&dispatch(&tq,&j,&bound,"project_status",&json!({})).unwrap()).unwrap();
+        assert_eq!(result["project"],"pilotq");assert!(result["boards"].is_null());
         drop(j);std::fs::remove_dir_all(dir).unwrap();
     }
 

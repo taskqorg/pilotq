@@ -3238,6 +3238,13 @@ impl Journal {
         self.0.query_row("SELECT coalesce(project,(SELECT p.project FROM route_projects p JOIN requests q ON q.chat=p.chat AND coalesce(q.topic,0)=p.topic WHERE q.session=?1 ORDER BY q.id DESC LIMIT 1)) FROM conversations WHERE session=?1", [session], |r| r.get(0)).optional().map(Option::flatten).map_err(|e| e.to_string())
     }
 
+    /// §5 / #250: a topic's remembered selection is not an explicit route binding.
+    pub(crate) fn unbound_topic(&self, r: &Run) -> Result<bool, String> {
+        self.0.query_row("SELECT front='telegram' AND topic IS NOT NULL AND NOT EXISTS
+            (SELECT 1 FROM route_projects p WHERE p.chat=q.chat AND p.topic=q.topic)
+            FROM requests q WHERE q.id=?1", [r.request], |row| row.get(0)).map_err(|e|e.to_string())
+    }
+
     /// Switches the run's conversation to `project` while its fence holds, with who switched and when (§ 6). `/new` keeps it.
     pub fn use_project(&self, r: &Run, project: &str, actor: i64, at: i64) -> Result<(), String> {
         if self.fenced(r)? {

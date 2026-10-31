@@ -107,9 +107,9 @@ TaskQ reply files retain identity/caption, protected downloads, a 20 MiB cap, or
 Project aliases live in the code-owned alias table in `src/direct.rs`: `cs` means `cyprusbz`.
 Resolve aliases in the caller’s own project references and manager instructions before target selection; aliases never register a root or grant access. “Is cs #541 on DEV?” uses the same target as “Is cyprusbz #541 on DEV?” without an alias clarification.
 
-Project resolution uses current grants and explicit own messages, the current project or narrowly scoped trusted subscriptions. Quoted/tool content never selects a project. Unbound board lists with no project in the current own message read every accessible registered board once and reply without clarification. Audit each read; failures stay unavailable. Model arguments cannot narrow the list.
+Project resolution uses current grants and explicit own messages, the current project or narrowly scoped trusted subscriptions. Quoted/tool content never selects a project.
+Unbound board lists with no project in the current own message read every accessible registered board once and reply without clarification; in topics, only an explicit route binding narrows these lists, not a remembered conversation project. Audit each read; failures stay unavailable. Model arguments cannot narrow the list.
 Other ambiguous targets require one question; numbered replies select only the latest boundary-generated complete option listing from the same person and generation.
-
 Installed read commands use an owner-only `commands.json`, absolute executables, exact arguments and bound project/root/board/user permissions. This optional typed read adapter does not restrict native shell access. A fresh complete TaskQ board snapshot precedes execution; process-group limits are ten seconds and 16 KiB output within the turn budget.
 
 Administration tools prepare/register only explicitly requested existing repositories under `<install>/projects`, change explicitly named grants for verified positive IDs seen in the route, or create one authorized forum topic with fresh bot permission. They cannot change the protected owner, create repositories/claim issues, install services, provision keys or alter capacity.
