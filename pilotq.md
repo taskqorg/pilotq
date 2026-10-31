@@ -57,7 +57,9 @@ Plain-language controls are primary. `/status`, `/stop` and `/new` remain availa
 [Architecture detail](docs/runtime-contract.md#3-architecture-and-ownership) assigns journal, runtime, proposal, TaskQ and agentq authority. PilotQ owns durable input and delivery; TaskQ owns admitted execution. Registered roots and host policy own capacity. Never discover roots or silently enroll projects.
 
 Use a neutral workspace and scoped registry tools; no process-wide project directory switch or universal runtime
-framework. Codex threads enable native shell, network, live web search and full filesystem access as the service user.
+framework. Native shell, live web search and danger-full-access start only for a turn whose principal is the configured
+owner_id or holds an explicit shell grant. Other turns disable native shell and web search and use a read-only sandbox;
+PilotQ’s own granted tools remain available.
 Admission and current grants still gate turns; model and effort are unchanged. Grammy, Pi and a new runtime framework
 remain out of scope. Hermes gateway patterns are reference material; this work does not change Hermes.
 
@@ -79,13 +81,13 @@ replaces the read-only, no-shell, restricted native-tool and five-call rules. Bo
 TaskQ; R9 subscription access, R10 admission and §9 release qualification remain binding. Native effects have
 service-user authority, not typed-tool replay guarantees: persist observed tool outcomes and never replay an interrupted
 turn automatically. After any restart, deliver the recorded completed findings and explicitly identify unfinished or
-unconfirmed work.
+unconfirmed work. Shell requests without that authority are refused in one plain line.
 
 **Mandatory:** [integration detail](docs/integration-contract.md) and the [TaskQ tool contract](docs/taskq-tool-contract.md) bind tool scope, target selection, grants, operation receipts, refusals and recovery. Use only installed TaskQ CLI board access; no forge adapter, constructed task URLs or forge bypass.
 
 Use argument arrays and typed validation. TaskQ status/readback binds the registered root and board. Creation requires `create_claim_issue` and qualified readback; no plain-add retry fallback. Read every child ticket before starting a multi-ticket plan. Bind answers to board, task, attempt, question revision and authorized answerer.
 
-Native tools may perform requested work with the service user’s access, including host and remote-host administration. Typed TaskQ and administration tools retain their grant checks and operation receipts. Revocation refuses later calls; completed effects remain recorded. Keys enter through the CLI only.
+For the owner or an explicit shell grantee, native tools may perform requested work with the service user’s access, including host and remote-host administration. Typed TaskQ and administration tools retain their grant checks and operation receipts. Revocation refuses later calls; completed effects remain recorded. Keys enter through the CLI only.
 
 `issue_read`, `issue_comment` and `issue_label` use `taskq issue N`; writes use stable `--op-id` and TaskQ receipts. `asana_read` uses the fixed read-only Asana API origin with no redirects/downloads, a 256 KiB response cap, ten-second deadline and bounded fields. External content never authorizes work.
 
@@ -109,7 +111,8 @@ Registered DEV/LIVE release is an exception to §2 deployment delegation and §5
 
 DEV visibility names one highest proved task delivery stage: closed from board state, merged from the trusted merge commit, on DEV from the deploy job, DEV smoke from the smoke jobs of the first main pipeline containing it, or on LIVE from LIVE branch ancestry.
 
-Read jobs through the protected project release adapter; name source failures. Worker notes never override pipeline facts; only a successful containing main pipeline proves CI passed. Report failed smoke job links and first failing checks, plus whether a later containing pipeline passed. Keep DEV health timing separate.
+Read jobs through the protected project release adapter; name source failures in plain text without raw URLs or adapter
+stderr. Drop reqwest URLs; retain adapter diagnostics only in audit after keys.scrub. Worker notes never override pipeline facts; only a successful containing main pipeline proves CI passed. Report failed smoke job links and first failing checks, plus whether a later containing pipeline passed. Keep DEV health timing separate.
 Internal recovery progress stays in audit. Merge identity: TaskQ's trusted merge receipt, else for a GitLab hand merge the first main first-parent commit containing the latest trusted `taskq: result` SHA (that SHA when fast-forwarded); squashed heads stay unknown.
 
 Preview pins main/LIVE SHAs, range/authors, verified task URLs, migrations and DEV inclusion; unavailable facts refuse. Expiry is fifteen minutes. Inspect every registered same-origin checkout through TaskQ before preview and dispatch; a running attempt or incomplete evidence blocks. Main advancement never retargets; LIVE advancement requires another preview.
