@@ -116,13 +116,22 @@ fn execute(command: Command, end: Instant, active: impl Fn() -> bool) -> Value {
     execute_bounded(command,end,active,CAP)
 }
 
-pub(crate) fn execute_bounded(mut command: Command, end: Instant, active: impl Fn() -> bool, cap: usize) -> Value {
+pub(crate) fn execute_bounded(command: Command, end: Instant, active: impl Fn() -> bool, cap: usize) -> Value {
+    execute_bounded_logged(command,end,active,cap,true)
+}
+
+// R16: Git may echo credentials from its own host store. Its caller returns fixed diagnostics only.
+pub(crate) fn execute_bounded_private(command: Command, end: Instant, active: impl Fn() -> bool, cap: usize) -> Value {
+    execute_bounded_logged(command,end,active,cap,false)
+}
+
+fn execute_bounded_logged(mut command: Command, end: Instant, active: impl Fn() -> bool, cap: usize, log:bool) -> Value {
     if !active() { return json!({"status":"cancelled","exit_code":null}); }
     if Instant::now() >= end { return json!({"status":"timeout","exit_code":null}); }
     let diagnostic=format!("{:?} {:?}",command.get_program(),command.get_args().collect::<Vec<_>>());
     let mut child = match command.spawn() {
         Ok(c) => c,
-        Err(e) => { crate::host::log(&diagnostic,&e.to_string()); return json!({"status":if e.kind()==std::io::ErrorKind::NotFound {"missing"} else {"spawn_failed"},"exit_code":null}); },
+        Err(e) => { if log {crate::host::log(&diagnostic,&e.to_string());} return json!({"status":if e.kind()==std::io::ErrorKind::NotFound {"missing"} else {"spawn_failed"},"exit_code":null}); },
     };
     let (tx,rx) = mpsc::sync_channel(4);
     fn reader(mut pipe: impl Read + Send + 'static, tx: mpsc::SyncSender<(bool,Result<Vec<u8>,std::io::Error>)>, stderr: bool) {
@@ -177,7 +186,7 @@ pub(crate) fn execute_bounded(mut command: Command, end: Instant, active: impl F
     let _ = child.wait();
     stdout.truncate(cap);
     stderr.truncate(cap-stdout.len());
-    if status != "success" { crate::host::log(&diagnostic,&format!("{status}: {}",String::from_utf8_lossy(&stderr))); }
+    if log && status != "success" { crate::host::log(&diagnostic,&format!("{status}: {}",String::from_utf8_lossy(&stderr))); }
     json!({"status":status,"exit_code":exit.and_then(|c|c.code()),"stdout":String::from_utf8_lossy(&stdout),"stdout_utf8":std::str::from_utf8(&stdout).is_ok(),"stderr":String::from_utf8_lossy(&stderr)})
 }
 

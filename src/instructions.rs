@@ -34,6 +34,14 @@ pub fn fingerprint() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    // #251 A2 / R13: PM remedies must reach owner/shell manager turns, not only the setup card.
+    #[test]
+    fn onboarding_251_pm_remedies_loaded() {
+        assert!(crate::direct::INSTRUCTIONS.contains("complete PM onboarding findings"));
+        assert!(crate::direct::INSTRUCTIONS.contains("owner or explicit shell authority"));
+        assert!(crate::direct::INSTRUCTIONS.contains("recheck before reporting readiness"));
+    }
+
     // #244 A3 / R13: this is an instruction-loading check, not a live model-compliance claim.
     #[test]
     fn project_244_refusal_recovery_is_loaded() {
