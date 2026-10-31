@@ -1,6 +1,8 @@
 # PilotQ product contract
 
-PilotQ is the conversational front end for work on a shared server: it answers in Telegram or the CLI, performs authorized actions and manages substantial work through TaskQ. It has no worker scheduler, reviewer, separate task board or general plugin marketplace. Owner and explicit shell-grant routes may run authorized conversational loops under §2. Accepted requests must survive a lost model connection without authorizing repeated external effects.
+PilotQ is the conversational front end for work on a shared server: it answers in Telegram or the CLI, performs authorized actions and manages substantial work through TaskQ. It has no worker scheduler, reviewer, separate task board or general plugin marketplace.
+
+Owner and explicit shell-grant routes may run authorized conversational loops under §2. Accepted requests must survive a lost model connection without authorizing repeated external effects.
 
 ## Rules
 
@@ -50,7 +52,9 @@ Keep one open draft per conversation. Each display offers Launch and Cancel; old
 
 Persist follow-ups immediately and process them in order after the active turn. Relate them by meaning, without time windows or required reply syntax; steer a matching doing task after a fresh read. Ambiguity requires a target question. Supply the current generation's latest twelve handled inputs plus the current input, saved plan and scoped subscriptions, retaining image bytes and explicit gaps.
 
-**Owner decision, [task #220](https://github.com/taskqorg/pilotq/issues/220):** “PilotQ works like the PM Claude session: a loop timer to start/stop, task follow-up, telemetry, moving tasks, in several topics at once.” This authorizes route-local loops only for the configured owner and explicit shell grantees; it does not authorize worker scheduling, automatic answers to owner questions or production cutover. [Loop protocol](docs/conversation-contract.md#route-loops-and-board-wakes) defines durable ticks, dynamic delay, scoped board observation and recovery. CLI and Telegram share this boundary (R13, R18).
+**Owner decision, [task #220](https://github.com/taskqorg/pilotq/issues/220):** “PilotQ works like the PM Claude session: a loop timer to start/stop, task follow-up, telemetry, moving tasks, in several topics at once.”
+
+This authorizes route-local loops only for the configured owner and explicit shell grantees; it does not authorize worker scheduling, automatic answers to owner questions or production cutover. [Loop protocol](docs/conversation-contract.md#route-loops-and-board-wakes) defines durable ticks, dynamic delay, scoped board observation and recovery. CLI and Telegram share this boundary (R13, R18).
 
 Plain-language controls are primary. `/status`, `/stop` and `/new` remain available outside the model backlog. Reset fences old runs without erasing task links, subscriptions, grants or receipts. Resolve stop scope explicitly; a manager stop, task park and queue pause differ.
 

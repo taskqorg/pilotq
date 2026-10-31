@@ -212,7 +212,7 @@ fn watching(c:&Connection,l:&Loop,w:&Watch)->Result<bool,String> {
 fn observe(j:&mut Journal,w:&Watch,tasks:&Value,at:i64)->Result<(),String> {
     let tx=j.0.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(err)?;
     maintain(&tx,at)?;
-    let k=format!("loop-board:{}:{}",w.board,w.root);
+    let k=format!("loop-board:{}",w.board);
     let previous:Option<String>=tx.query_row("SELECT CAST(value AS TEXT) FROM meta WHERE key=?1",[&k],|r|r.get(0)).optional().map_err(err)?;
     let before:Option<Value>=previous.map(|s|serde_json::from_str(&s).map_err(|e|e.to_string())).transpose()?;
     let mut events=vec![];
@@ -234,10 +234,10 @@ fn observe(j:&mut Journal,w:&Watch,tasks:&Value,at:i64)->Result<(),String> {
     if !events.is_empty() {
         let event=events.join("\n");
         for mut l in all(&tx)? {
-            if l.watches.iter().any(|x|x.board==w.board && x.root==w.root) {
+            if l.watches.iter().any(|x|x.board==w.board) {
                 let watched=l.watches.clone();
                 l.watches=watched.into_iter().filter_map(|x|match watching(&tx,&l,&x){Ok(true)=>Some(Ok(x)),Ok(false)=>None,Err(e)=>Some(Err(e))}).collect::<Result<_,_>>()?;
-                if l.watches.iter().any(|x|x.board==w.board && x.root==w.root) {enqueue(&tx,&mut l,Some(&event),at)?;} else {save(&tx,&l)?;}
+                if l.watches.iter().any(|x|x.board==w.board) {enqueue(&tx,&mut l,Some(&event),at)?;} else {save(&tx,&l)?;}
             }
         }
     }
@@ -257,7 +257,7 @@ fn collect(bound:Result<(crate::taskq::Taskq,String),String>,j:&std::sync::Mutex
     for t in snap["tasks"].as_array().ok_or("loop board tasks unavailable")? {
         if let Some(n)=t["n"].as_i64() {tasks.insert(n.to_string(),json!({"state":t["state"],"revision":t["revision"],"question":t["question"],"options":t["options"],"title":t["title"],"blocked":t["blocked"]}));}
     }
-    let baseline={let guard=j.lock().unwrap();guard.0.query_row("SELECT CAST(value AS TEXT) FROM meta WHERE key=?1",[format!("loop-board:{}:{}",w.board,w.root)],|r|r.get::<_,String>(0)).optional().map_err(err)?};
+    let baseline={let guard=j.lock().unwrap();guard.0.query_row("SELECT CAST(value AS TEXT) FROM meta WHERE key=?1",[format!("loop-board:{}",w.board)],|r|r.get::<_,String>(0)).optional().map_err(err)?};
     if let Some(baseline)=baseline {
         let before:Value=serde_json::from_str(&baseline).map_err(|e|e.to_string())?;
         for (n,old) in before.as_object().ok_or("loop board baseline unavailable")? {
@@ -276,14 +276,14 @@ fn collect(bound:Result<(crate::taskq::Taskq,String),String>,j:&std::sync::Mutex
 
 }
 
-/// A concrete board/root has one collector, shared by every route; slow boards never hold journal locks or other boards.
+/// A concrete board has one collector, shared by every route; slow boards never hold journal locks or other boards.
 pub fn watch_boards(tq:std::sync::Arc<crate::taskq::Taskq>,j:crate::telegram::Shared) {
-    let mut observers=std::collections::HashMap::<(String,String),std::thread::JoinHandle<()>>::new();
+    let mut observers=std::collections::HashMap::<String,std::thread::JoinHandle<()>>::new();
     loop {
         let watches=(||{
             let guard=j.lock().unwrap();
             let mut watches=std::collections::BTreeMap::new();
-            for l in all(&guard.0)? {for w in &l.watches {if watching(&guard.0,&l,w)? {watches.insert((w.board.clone(),w.root.clone()),w.clone());}}}
+            for l in all(&guard.0)? {for w in &l.watches {if watching(&guard.0,&l,w)? {watches.entry(w.board.clone()).or_insert_with(||w.clone());}}}
             Ok::<_,String>(watches)
         })();
         if let Ok(watches)=watches {
@@ -294,21 +294,20 @@ pub fn watch_boards(tq:std::sync::Arc<crate::taskq::Taskq>,j:crate::telegram::Sh
                 observers.entry(k).or_insert_with(||{
                     let tq=tq.clone();let j=j.clone();
                     std::thread::spawn(move || loop {
-                        let bound={
+                        let selected={
                             let guard=j.lock().unwrap();
                             match all(&guard.0) {
-                                Ok(ls)=>{
-                                    let project=ls.iter().find_map(|l|l.watches.iter().find(|x|x.board==w.board && x.root==w.root && watching(&guard.0,l,x).unwrap_or(false)).map(|x|x.project.clone()));
-                                    match project {Some(project)=>tq.registered(&guard,&project),None=>break}
-                                },
-                                Err(_)=>break,
+                                Ok(ls)=>ls.iter().find_map(|l|l.watches.iter().find(|x|x.board==w.board && watching(&guard.0,l,x).unwrap_or(false)).cloned())
+                                    .map(|current|(tq.registered(&guard,&current.project),current)),
+                                Err(_)=>None,
                             }
                         };
-                        let result=collect(bound,&j,&w);
+                        let Some((bound,current))=selected else {break};
+                        let result=collect(bound,&j,&current);
                         if let Err(e)=result {
                             crate::host::log("loop board observer",&e);
                             let guard=j.lock().unwrap();
-                            for l in all(&guard.0).unwrap_or_default() {if l.watches.iter().any(|x|x.board==w.board && x.root==w.root) {let _=audit(&guard.0,l.source,crate::now() as i64,"loop_board_unknown",&w.board);}}
+                            for l in all(&guard.0).unwrap_or_default() {if l.watches.iter().any(|x|x.board==w.board) {let _=audit(&guard.0,l.source,crate::now() as i64,"loop_board_unknown",&w.board);}}
                         }
                         std::thread::sleep(std::time::Duration::from_secs(5));
                     })
@@ -430,9 +429,10 @@ mod tests {
         std::fs::set_permissions(&bin,std::fs::Permissions::from_mode(0o700)).unwrap();
         j.0.execute("INSERT INTO projects(name,repo,root,by,at) VALUES ('alpha','invented/alpha',?1,7,0)",[p.to_str().unwrap()]).unwrap();
         let tq=crate::taskq::Taskq{bot:None,bin,root:p.clone(),poll:std::time::Duration::from_secs(5)};
+        j.0.execute("INSERT INTO projects(name,repo,root,by,at) VALUES ('alpha-second','invented/alpha',?1,7,0)",[p.join("second").to_str().unwrap()]).unwrap();
         for topic in [1,2] {
             let id=admitted(&mut j,topic,topic,7,"start a loop watching alpha",0);
-            apply(&j.0,id,"loop_start",&json!({"prompt":"inspect alpha","projects":["alpha"]}),0).unwrap();
+            apply(&j.0,id,"loop_start",&json!({"prompt":"inspect alpha","projects":[if topic==1 {"alpha"} else {"alpha-second"}]}),0).unwrap();
             j.0.execute("UPDATE requests SET state='answered' WHERE id=?1",[id]).unwrap();
         }
         let w=all(&j.0).unwrap()[0].watches[0].clone();let mutex=std::sync::Mutex::new(j);

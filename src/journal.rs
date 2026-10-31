@@ -1964,7 +1964,7 @@ impl Journal {
 
     /// True when a stop or a later claim has retired this run's fence.
     pub fn fenced(&self, r: &Run) -> Result<bool, String> {
-        self.0.query_row("SELECT fence<>?2 OR generation<>?4 OR NOT EXISTS(SELECT 1 FROM requests q JOIN grants g ON g.user=q.sender AND g.name='chat' WHERE q.id=?3 AND q.state='running')
+        self.0.query_row("SELECT fence<>?2 OR (generation<>?4 AND EXISTS(SELECT 1 FROM audit_events WHERE request_id=?3 AND kind='loop_tick')) OR NOT EXISTS(SELECT 1 FROM requests q JOIN grants g ON g.user=q.sender AND g.name='chat' WHERE q.id=?3 AND q.state='running')
             OR (EXISTS(SELECT 1 FROM audit_events WHERE request_id=?3 AND kind='loop_tick') AND NOT EXISTS(SELECT 1 FROM requests q WHERE q.id=?3 AND (q.sender=(SELECT value FROM meta WHERE key='owner') OR EXISTS(SELECT 1 FROM grants g WHERE g.user=q.sender AND g.name='shell'))))
             FROM conversations WHERE session=?1", params![r.session, r.fence,r.request,r.generation], |x| x.get(0)).map_err(|e| e.to_string())
     }
