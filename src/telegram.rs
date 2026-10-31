@@ -27,8 +27,15 @@ pub(crate) fn fault(point: &str) {
     }
 }
 
-/// A person's message, else None. Service messages (topic created, chat migrated, member joined, pin) are not input: they get an
-/// ID-only disposition and no reply. Found on the live test bot, where each one drew an "unsupported" reply.
+/// Trusted Bot API lifecycle metadata only; never retain the service actor or body.
+fn route_incident(chat: i64, topic: Option<i64>, reason: String) -> Input {
+    Input { files:vec![], callback:None, media_group:None, quote:None, image:None,
+        voice:None, language:None, chat, topic, sender:None, name:None, message:0,
+        kind:"route_incident", text:Some(reason), reply_to:None }
+}
+
+/// Person input or trusted route metadata. Service messages never start a turn or receive a reply;
+/// route incidents retain configuration metadata independently of the service actor.
 fn input(kind: &UpdateKind) -> Option<Input> {
     // A press on a relayed question's option button is the presser's answer to that question (#82); admission and the
     // answer checks treat it like a reply with the option number.
@@ -57,7 +64,25 @@ fn input(kind: &UpdateKind) -> Option<Input> {
             reply_to: Some(m.id.0 as i64),
         });
     }
-    let UpdateKind::Message(m) = kind else { return None };
+    if let UpdateKind::MyChatMember(m) = kind {
+        let member=serde_json::to_value(&m.new_chat_member).ok()?;
+        let status=member["status"].as_str().unwrap_or("unknown");
+        let old=serde_json::to_value(&m.old_chat_member).ok()?;
+        if matches!(status,"left"|"kicked"|"restricted") || (old["status"]=="administrator" && status!="administrator") || (status=="administrator" && member["can_manage_topics"]==false) {
+            return Some(route_incident(m.chat.id.0,None,"bot membership or permissions changed; administrator revalidation required".into()));
+        }
+        return None;
+    }
+    let (m,edited) = match kind { UpdateKind::Message(m)=>(m,false), UpdateKind::EditedMessage(m)=>(m,true), _=>return None };
+    let wire=serde_json::to_value(m).ok()?;
+    if wire.get("forum_topic_closed").is_some() {
+        return Some(route_incident(m.chat.id.0,m.thread_id.map(|t|t.0.0 as i64),"topic closed".into()));
+    }
+    for key in ["migrate_to_chat_id","migrate_from_chat_id"] {
+        if let Some(other)=wire[key].as_i64() {
+            return Some(route_incident(m.chat.id.0,None,format!("group migration:{other}")));
+        }
+    }
     let MessageKind::Common(c) = &m.kind else { return None };
     if matches!(c.media_kind, MediaKind::Migration(_)) {
         return None;
@@ -97,7 +122,7 @@ fn input(kind: &UpdateKind) -> Option<Input> {
         sender: m.from.as_ref().map(|u| u.id.0 as i64),
         name: m.from.as_ref().map(|u| u.full_name()),
         message: m.id.0 as i64,
-        kind: if m.text().is_some() { "text" } else if let Some(f) = image { if f.size > IMAGE_LIMIT as u32 { "image_limit" } else { "image" } }
+        kind: if edited { "edit" } else if m.text().is_some() { "text" } else if let Some(f) = image { if f.size > IMAGE_LIMIT as u32 { "image_limit" } else { "image" } }
             else if let Some((f, seconds)) = voice { if f.size > IMAGE_LIMIT as u32 || seconds > crate::voice::SECONDS { "voice_limit" } else { "voice" } }
             else if let Some(f)=file { if f.size > IMAGE_LIMIT as u32 { "file_limit" } else { "document" } } else { "other" },
         text: m.text().or_else(|| m.caption()).map(str::to_string),
@@ -209,7 +234,7 @@ pub async fn poll(bot: Bot, j: Shared, wake: Arc<Notify>) {
                 continue;
             }
         };
-        match bot.get_updates().offset(offset as i32).timeout(POLL).await {
+        match bot.get_updates().offset(offset as i32).allowed_updates(vec![teloxide::types::AllowedUpdate::Message,teloxide::types::AllowedUpdate::EditedMessage,teloxide::types::AllowedUpdate::CallbackQuery,teloxide::types::AllowedUpdate::MyChatMember]).timeout(POLL).await {
             Ok(updates) => {
                 fault("after-fetch");
                 let batch: Vec<(i64, Option<Input>)> = updates.iter().map(|u| (u.id.0 as i64, input(&u.kind))).collect();
@@ -249,7 +274,8 @@ fn failed(e: RequestError, backoff: i64) -> Sent {
         RequestError::Api(ApiError::CantParseEntities(_)) => Sent::Plain,
         RequestError::Api(e) => {
             let s = e.to_string();
-            if s.starts_with("Forbidden") || s.contains("chat not found") || s.contains("thread not found") { Sent::Held(s) } else { Sent::Failed(s) }
+            let lower=s.to_ascii_lowercase();
+            if lower.starts_with("forbidden") || lower.contains("chat not found") || lower.contains("thread not found") || lower.contains("topic_closed") || lower.contains("topic closed") || lower.contains("not enough rights") { Sent::Held(s) } else { Sent::Failed(s) }
         }
         e @ RequestError::MigrateToChatId(_) => Sent::Held(e.to_string()),
         RequestError::RetryAfter(s) => Sent::Retry { after: s.seconds() as i64, ambiguous: false, error: "Telegram retry-after".into() },
@@ -515,6 +541,9 @@ async fn raw(bot: &Bot, j: &Shared, method: &str, body: Value) -> Result<Value, 
 }
 
 async fn send(bot: &Bot, j: &Shared, d: &Delivery) -> Sent {
+    if j.lock().unwrap().route_held(d.chat,d.topic).unwrap_or(true) {
+        return Sent::Held("Telegram route held; administrator revalidation required".into());
+    }
     let backoff = d.attempts + 1;
     if let Some(callback) = d.kind.strip_prefix("toast:") {
         // Bot API limits callback toasts to 200 characters; the complete receipt stays in the question and audit.
@@ -602,6 +631,7 @@ pub async fn typing(bot: Bot, j: Shared, _deadline: Duration) {
         let mut sends = tokio::task::JoinSet::new();
         let routes = j.lock().unwrap().typing(now(), i64::MAX).unwrap_or_default();
         for (chat, topic) in routes {
+            if j.lock().unwrap().route_held(chat,topic).unwrap_or(true) { continue; }
             if j.lock().unwrap().telegram_cooldown(chat).unwrap_or(i64::MAX) > now() { continue; }
             let (bot, j) = (bot.clone(), j.clone());
             sends.spawn(async move {
@@ -625,6 +655,7 @@ pub async fn drafts(bot: Bot, j: Shared) {
         let previews = j.lock().unwrap().previews().unwrap_or_default();
         shown.retain(|run, _| previews.iter().any(|p| p.0 == *run));
         for (run, chat, topic, text) in previews {
+            if j.lock().unwrap().route_held(chat,topic).unwrap_or(true) { continue; }
             let entry = shown.entry(run).or_insert_with(|| (String::new(), true));
             if entry.0 == text || text.is_empty() { continue; }
             // Recheck immediately before dispatch; a stale preview never starts a new request or changes its result.
@@ -688,7 +719,33 @@ mod tests {
     use super::html;
     use serde_json::json;
 
-    // #145 / R13: photos and arbitrary documents retain file identity, caption and reply correlation.
+    // R5/R11, §4: edited text and transport incidents must reach durable ingress.
+    #[test]
+    fn edit_and_route_events_reach_ingress() {
+        for (field, extra, expected) in [
+            ("edited_message", json!({"text":"changed","edit_date":2}), "edit"),
+            ("message", json!({"forum_topic_closed":{},"message_thread_id":5}), "route_incident"),
+            ("message", json!({"migrate_to_chat_id":-200}), "route_incident"),
+        ] {
+            let mut m=json!({"message_id":1,"date":1,"chat":{"id":-100,"type":"supergroup","title":"invented","is_forum":true},"from":{"id":7,"is_bot":false,"first_name":"Invented"}});
+            m.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            let message=serde_json::from_value(m).unwrap();
+            let kind=if field=="edited_message" {teloxide::types::UpdateKind::EditedMessage(message)} else {teloxide::types::UpdateKind::Message(message)};
+            assert_eq!(super::input(&kind).unwrap_or_else(||panic!("retained {field}: {kind:?}")).kind,expected);
+        }
+        let member=|status:&str|json!({"user":{"id":42,"is_bot":true,"first_name":"Invented bot"},"status":status});
+        for status in ["left","kicked","restricted"] {
+            let mut next=member(status);
+            next["until_date"]=json!(0);
+            next["is_member"]=json!(true);
+            for key in ["can_send_messages","can_send_audios","can_send_documents","can_send_photos","can_send_videos","can_send_video_notes","can_send_voice_notes","can_send_polls","can_send_other_messages","can_add_web_page_previews","can_change_info","can_invite_users","can_pin_messages","can_manage_topics"] {next[key]=json!(false);}
+            let event=serde_json::from_value(json!({"chat":{"id":-100,"type":"supergroup","title":"Invented","is_forum":true},"from":{"id":999,"is_bot":false,"first_name":"Unknown"},"date":1,"old_chat_member":member("member"),"new_chat_member":next})).unwrap();
+            assert_eq!(super::input(&teloxide::types::UpdateKind::MyChatMember(event)).unwrap().kind,"route_incident");
+        }
+
+    }
+
+    // #145 / R13: photos and documents retain identity, caption and reply correlation.
     #[test]
     fn reply_files_ingress() {
         for media in [serde_json::json!({"photo":[{"file_id":"invented-photo","file_unique_id":"invented-id","file_size":8,"width":2,"height":2}]}),

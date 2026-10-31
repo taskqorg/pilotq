@@ -1072,3 +1072,33 @@ stay absent from the fresh model profile, even when history contains them. Profi
 edits never grant access, and revoked people remain ignored. The local executable
 trace and its before/after evidence are in [profile-196-evidence.md](profile-196-evidence.md).
 Real Telegram presentation remains PM qualification under §9.
+
+## Input revisions and route incidents (#197)
+
+R5/R11 and runtime §§4, 12 retain I202–I204 and I801–I803 from the
+[contract inventory](contract-177-inventory.md). Source request:
+[task #197](https://github.com/taskqorg/pilotq/issues/197).
+
+- `edit_and_route_events_reach_ingress` checks edited text, topic closure, migration,
+  bot removal and permission loss at the Bot API adapter boundary.
+- `edit_revisions_and_route_holds` checks queued/started/duplicate revisions, original
+  author and current grants, audit retention, restart persistence, unaffected routes
+  and deduplicated owner incidents. A held route retains pending output without replay.
+- `edit_preserves_launch_scope` rejects launch of an edited proposal source and retains
+  immutable launch identities after later edits.
+- `route_delivery_failure_holds_later_output` holds future output after a missing-topic
+  delivery failure. Telegram has no topic-deletion update; that case starts at delivery.
+- Existing `service_messages_are_not_input` and `strangers_and_claims_change_nothing`
+  retain no-model service events and ID-only ignored senders.
+
+These are local component/process checks. Real Telegram lifecycle qualification remains
+with the PM under §9; no installation or production cutover is authorized.
+
+Before/after evidence: with the three `edit_` regressions applied to the unchanged
+`bf82a9671fb7af000135af9c638962cdd0cfda10` implementation,
+`cargo test --locked --bin pilotq edit_` failed all three: the adapter dropped an
+`EditedMessage`, queued edits created extra request rows, and a started edit produced
+no claimable change request. The same command passes all three after the fix.
+`cargo test --locked --bin pilotq route_delivery_failure_holds_later_output` and
+`cargo test --locked service_messages_are_not_input` also pass. The retained tests
+protect route identity and service-event admission rather than requiring new model calls.

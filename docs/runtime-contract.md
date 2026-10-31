@@ -76,7 +76,11 @@ claim that a new bot can fetch all old group history.
 
 Edited messages create a revision. They can revise an unstarted proposal; they cannot silently alter
 already authorized work. If work started, present the edit as a change request. A deleted input does
-not revoke an already executed side effect.
+not revoke an already executed side effect. Revisions require the original author and current chat grant,
+retain the original request and content in audit, and deduplicate by update ID and repeated revision content. Only queued,
+unclaimed ordinary input is replaced. Later edits are ordered change requests, never controls,
+answers or launch authorization; saved launch revisions remain immutable. An edited proposal source
+disables its unlaunched cards until a new plan revision is saved and shown.
 
 ### Runs and tools
 
@@ -330,7 +334,12 @@ conversation. Reset does not revoke the originating subscriptions to already adm
 Topic deletion/closure, group migration, bot removal and permission loss become explicit
 delivery/configuration incidents. Preserve the original destination and hold affected output. An
 administrator must authorize a route change; do not fall back to General, a private DM or another
-group automatically.
+group automatically. Transport lifecycle events record a durable route hold without a model
+turn or service-message reply, independently of the initiating person’s grants. Migration holds
+the reporting chat and records its reported peer without copying context or output. Reopening or
+restored membership does not automatically release a hold. Route incidents use §9’s durable
+owner notice path and hold-down; notifications contain configuration metadata, never held output. Telegram does not emit topic-deletion updates; delivery
+errors provide that incident signal when no closure event was received.
 
 ### Runtime and recovery boundaries
 
