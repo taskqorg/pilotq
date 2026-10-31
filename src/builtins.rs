@@ -60,8 +60,10 @@ pub fn execute(t:&Tool,j:&Shared,r:&Request,installed:bool) -> Result<(),String>
                     let language:Option<String>=j.0.query_row("SELECT language FROM requests WHERE id=?1",[r.id],|x|x.get(0)).map_err(|e|e.to_string())?;
                     (crate::catalog::render(&j,r.sender,words.get(1).copied(),language.as_deref(),&keys,&j.route(r.id)?)?,language)
                 };
-                text.push('\n');
-                text.push_str(&keys.scrub(&crate::catalog::taskq_help(config.as_ref().and_then(|c|c.taskq.as_ref()).map(|t|t.bin.as_path()),language.as_deref())));
+                if words.get(1)==Some(&"tasks") {
+                    text.push('\n');
+                    text.push_str(&keys.scrub(&crate::catalog::taskq_help(config.as_ref().and_then(|c|c.taskq.as_ref()).map(|t|t.bin.as_path()),language.as_deref())));
+                }
                 return Ok(Some(text));
             }
             "/model"|"/model-button"=> {
@@ -157,7 +159,13 @@ mod tests {
         execute(&t,&j,&request,false).unwrap();
         let mut guard=j.lock().unwrap();let (state,reply,error)=guard.request(id).unwrap();
         assert_eq!(state,"answered");assert!(error.is_none());
-        let reply=reply.unwrap();assert!(reply.contains("project_disconnect") && reply.contains("TaskQ catalog unavailable"));
+        let reply=reply.unwrap();assert!(reply.contains("project_disconnect") && !reply.contains("TaskQ catalog unavailable"));
+        let tasks=guard.builtin_cli(7,"/help tasks",3).unwrap().unwrap();
+        let tasks_request=guard.builtin_take(tasks).unwrap().unwrap();
+        drop(guard);
+        execute(&t,&j,&tasks_request,false).unwrap();
+        let mut guard=j.lock().unwrap();
+        assert!(guard.request(tasks).unwrap().1.unwrap().contains("TaskQ catalog unavailable"));
         assert_eq!(guard.request(active.request).unwrap().0,"running");
         assert!(guard.builtin_take(id).unwrap().is_none(),"duplicate control must not replay");
         drop(guard);drop(j);std::fs::remove_dir_all(t.install).unwrap();

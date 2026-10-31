@@ -124,7 +124,10 @@ user-visible answer text through sendRichMessageDraft, falling back to sendMessa
 updates to at most one per second; drafts are ephemeral, fenced to the active run, and failures
 never change the request outcome or replace final delivery.
 
-Final answers first use sendRichMessage for content within 32768 UTF-16 units. On an explicit
+Every user-visible message, including builtins, notices, errors and final answers, uses one shared
+delivery path: first sendRichMessage for content within 32768 UTF-16 units (editMessageText with
+rich_message for an existing card). Reactions, callback toasts and button-only edits retain their
+native Bot API methods. Oversized content starts with ordered HTML chunks. On an explicit
 unsupported-method or content rejection, fall back to HTML sendMessage in stable ordered chunks of
 at most 4096 UTF-16 units, then plain text on entity errors. Preserve literal source content, escape
 generated HTML at the output boundary and never allow raw model HTML to become markup. Persist
