@@ -279,8 +279,9 @@ fn tidy(text: &str) -> String {
         // Dotted filenames are not limited to known extensions. Leave versions and abbreviations such as e.g. alone.
         let dotted = file.rsplit_once('.').is_some_and(|(_, ext)| ext.chars().any(char::is_alphabetic))
             && !matches!(file, "e.g" | "i.e");
+        // A repository identity is not a local path; slash controls have no directory.
         let rooted = file.split_once('/').is_some_and(|(dir, name)|
-            matches!(dir, "src" | "docs" | "tests" | "scripts" | "include" | "images" | "ui" | "assets" | "config" | ".github") && !name.is_empty());
+            !dir.is_empty() && dir != "taskqorg" && !name.is_empty());
         let path = (dotted || rooted)
             && core.chars().all(|c| c.is_alphanumeric() || " _-./:".contains(c));
         if path { format!("{head}`{core}`{tail}") } else { w.to_string() }
@@ -305,10 +306,9 @@ fn tidy(text: &str) -> String {
                 // an already complete filename, or consume written links/code as path text.
                 let mut last = i;
                 if !label_open && !w.contains(['[', ']']) && w.contains('/') && !w.contains("://")
-                    && !w.rsplit('/').next().unwrap_or(w).contains('.')
-                    && !w.rsplit('/').next().unwrap_or(w).starts_with(char::is_uppercase) {
+                    && !w.rsplit('/').next().unwrap_or(w).contains('.') {
                     for (j, next) in words.iter().enumerate().skip(i + 1) {
-                        if next.is_empty() || next.contains(['[', ']', '/', ':', '!', '?']) { break; }
+                        if next.is_empty() || matches!(*next, "and" | "or" | "then" | "for" | "in" | "with" | "see") || next.contains(['[', ']', '/', ':', '!', '?']) { break; }
                         if next.rsplit_once('.').is_some_and(|(_, ext)| ext.chars().any(char::is_alphabetic)) {
                             last = j;
                             break;
@@ -816,7 +816,7 @@ mod tests {
         assert_eq!(super::tidy("[see docs/a.md here](https://x.invalid) e.g. v0.2.5."),"[see docs/a.md here](https://x.invalid) e.g. v0.2.5.");
         assert_eq!(super::tidy("https://github.com/taskqorg/pilotq/blob/abc/docs/acceptance.md"),"[github.com](https://github.com/taskqorg/pilotq/blob/abc/docs/acceptance.md)");
         // #191: #82 applies to every repository path, not a fixed extension allowlist.
-        for path in ["ui/App.vue", "src/main.go:42", "docs/схема.diagram", "images/plot.svg", "include/header.hpp", "report.pdf", "schema.avsc", "a.c", "src/Makefile", "docs/my file.md"] {
+        for path in ["ui/App.vue", "src/main.go:42", "docs/схема.diagram", "images/plot.svg", "include/header.hpp", "report.pdf", "schema.avsc", "a.c", "src/Makefile", "docs/my file.md", "docs/My file.md", "crates/Makefile"] {
             assert_eq!(super::markdown(path), format!("`{path}`"));
             assert_eq!(html(path), format!("<code>{path}</code>"));
         }
