@@ -233,3 +233,88 @@ PYTHONDONTWRITEBYTECODE=1 python3 experiments/speech344/check-cpp-english.py
 PYTHONDONTWRITEBYTECODE=1 python3 experiments/speech344/check-sherpa-english.py
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_probe_speech_344.py
 ```
+
+## Prepared GigaAM community export static inspection
+
+Note6564856780 approves only the pinned fussraider220M acquisition and preparation
+of private static tooling for PM review. Assets in
+`target/pm344-giga-multilingual-assets` are verified in full: model224,762,524bytes,
+SHA256 `2d94f93ffd4ef58e7899c9de885c25bbbc8c9f1073618868d118a674450ba5f7`.
+The private manifest pins revision `9f5a77e8975211abe8511693accd3a63ee1e9f43`
+and tokens/config/exporter/MIT/README sizes, hashes and immutable source URLs.
+Directory0700/files0600; no model load, exporter execution or installed write.
+
+Private handoff `target/pm344-giga-static-handoff/manifest.json` SHA256
+`16680b31cd2418a736c1a96da6c832023fa9f5b7fb664e59c98fb9f248478251`
+pins the inspector, standard cap helper, asset manifest and proposed wheel locks.
+PM rehashes all artifacts in its namespace before using them. Do not substitute
+another derivative/revision or acquire fp32/600M/i2z1.
+
+`onnx-inspector-wheels.json` identifies exact official PyPI filenames, URLs,
+sizes, expected full SHA256 and dependency metadata; these wheels have **not**
+been acquired/installed/import-tested. The requirements file pins ONNX1.20.1,
+NumPy2.4.2, protobuf6.33.5, ml_dtypes0.5.4 and typing_extensions4.15.0 with hashes.
+Proposed platform: standard-GIL CPython3.14 x86_64/glibc>=2.27. ONNX uses its
+cp312-abi3 stable-ABI wheel (not a cp313t free-threaded wheel); protobuf cp39-abi3,
+NumPy/ml_dtypes cp314-cp314. Published tags and dependency bounds fit inspected
+Python3.14.4/glibc2.43; actual import compatibility remains untested.
+No Torch, Transformers, ONNXRuntime, ReferenceEvaluator or reference extra.
+
+After PM review only, proposed private setup commands from the worktree root:
+
+```sh
+python3 -m venv target/pm344-onnx-inspector
+target/pm344-onnx-inspector/bin/python -m pip --isolated --disable-pip-version-check download \
+  --index-url https://pypi.org/simple --only-binary=:all: --require-hashes --no-deps \
+  --dest target/pm344-onnx-wheels -r experiments/speech344/onnx-inspector-requirements.txt
+target/pm344-onnx-inspector/bin/python -m pip --isolated --disable-pip-version-check install \
+  --no-index --find-links target/pm344-onnx-wheels --only-binary=:all: --require-hashes --no-deps \
+  -r experiments/speech344/onnx-inspector-requirements.txt
+```
+
+These are a proposal, not an instruction to install globally or run now. Use new
+private0700 directories/umask077 and verify downloaded filenames/full hashes
+against the wheel manifest before installing. Missing venv/ensurepip, wrong
+platform/tag, dependency/import failure or byte mismatch stops, without tool
+upgrades, source builds, PATH changes or alternative packages. Preserve bundled
+pip/version evidence; do not upgrade it. PM's existing isolation runner must
+cover approved setup and inspection with one hard600s episode and actual
+1280M/1024M/256M/CPU150%/Tasks256. A later inner clock cannot extend that outer
+deadline. Do not run setup outside those limits to obtain a passing result.
+
+Exact inner inspection argv, under that same episode after approved setup:
+
+```sh
+target/pm344-onnx-inspector/bin/python experiments/speech344/inspect-giga-multilingual.py \
+  --assets target/pm344-giga-multilingual-assets \
+  --output target/pm344-giga-static-v1
+```
+
+Output must be new. The inspector checks actual caps, exact package versions and
+all asset sizes/full hashes before parser load. It limits numerical-library
+thread environment to4 within its own process. Standard `onnx.load_model` uses
+`load_external_data=False`; recursive standard protobuf reflection refuses any
+external tensor location/data, including nested attributes/graphs/sparse tensors,
+functions and training graphs, before `onnx.checker.check_model(full_check=False)`.
+A prepared synthetic external-data guard runs first under the same deadline;
+its runtime result is **not yet known**. AST/CLI preparation checks pass only.
+
+No graph operator executes. The report retains input/output dtype/shape/dynamic
+axes, actual metadata/opsets/operator counts, convolution/normalization nodes,
+output producer chains and bounded symbolic integer expressions for length
+outputs. Unsupported/capped expressions remain explicitly unknown; no guessed
+floor(input/4) or shape-inference result is declared equivalent to actual valid
+lengths. Tensor payloads are not printed; only small integer structural constants
+are read via standard `numpy_helper`. Official-checkpoint equivalence and
+numerical frontend parity remain gaps. Do not declare a patch necessary or a
+compatible engine until actual graph findings are reviewed.
+
+The inspector spawns no subprocess, creates no converted model or temporary
+weight files, and leaves only its private output JSON. PM records package/import
+outcomes, runtime/peak/OOM and independently verifies unit inactive/MainPID0,
+wrapper/cgroup gone and unchanged ordinary services; it removes its private venv
+and wheel staging after preserving approved provenance/evidence as appropriate.
+Never remove retained ASR assets or previous failures. External-data refusal,
+parse/check/schema/import failure, resource/deadline failure and missing host
+cleanup remain failures/gaps, not model-quality results. No inference or
+production activation follows automatically (R19).
