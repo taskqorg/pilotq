@@ -3761,6 +3761,8 @@ while [ "$1" != -i ]; do shift; done; input=$2; for a; do out=$a; done; cp "$inp
     // Retain the full fallback projection, rather than the host-version-only stub.
     fs::write(d.join("fake-taskq"),FAKE_TASKQ).unwrap();
     fs::write(d.join("root/taskq.json"),json!({"repo":"invented/cyprusbz-board","create_claim_issue":20}).to_string()).unwrap();
+    // A checkout root: #266 board-only roots skip the local service checks this case covers.
+    assert!(Command::new("git").args(["init","--quiet"]).arg(d.join("root")).status().unwrap().success());
     let db=rusqlite::Connection::open(d.join("journal.sqlite")).unwrap();
     db.execute("DELETE FROM projects",[]).unwrap();db.execute("DELETE FROM meta WHERE key LIKE 'onboarding:%'",[]).unwrap();drop(db);
     // Invented key: the reported live gap was a tool key granted to pilotq alone.
@@ -3799,6 +3801,25 @@ while [ "$1" != -i ]; do shift; done; input=$2; for a; do out=$a; done; cp "$inp
     assert!(!tq_calls(&d).iter().any(|a|a[0]=="start" || a[0]=="permissions"));
     assert!(!d.join("codex.log").exists(),"setup controls never start the manager");
     stop(process,d);
+}
+
+// #266 A2/A4 / §5: CLI registration of a root without a checkout is board-only, like chat registration:
+// onboarding never attaches it to this host's TaskQ service, so this host spawns no workers for it.
+#[test]
+fn project_266_cli_board_only_no_attach() {
+    let (d,_st)=tq_setup("project-266-cli",true);
+    fs::write(d.join("root/taskq.json"),json!({"repo":"invented/csgo-board","board":"gitlab","create_claim_issue":5}).to_string()).unwrap();
+    let db=rusqlite::Connection::open(d.join("journal.sqlite")).unwrap();
+    db.execute("DELETE FROM projects",[]).unwrap();db.execute("DELETE FROM meta WHERE key LIKE 'onboarding:%'",[]).unwrap();drop(db);
+    let out=cli(&d,&["projects","add","csgo",d.join("root").to_str().unwrap(),"--json"]);
+    let v:Value=serde_json::from_slice(&out.stdout).unwrap_or_else(|_|panic!("{}",String::from_utf8_lossy(&out.stderr)));
+    let checks:Vec<_>=v["onboarding"]["gaps"].as_array().unwrap().iter().map(|g|g["check"].as_str().unwrap().to_string()).collect();
+    assert!(checks.iter().any(|c|c=="host"),"no serving host warns once: {v}");
+    assert!(!checks.iter().any(|c|matches!(c.as_str(),"service"|"admission"|"codex_grant"|"codex_access"|"codex_capacity")),"board-only needs no local service or Codex: {v}");
+    assert_eq!(query(&d,"SELECT json_extract(value,'$.board_only') FROM meta WHERE key='onboarding:csgo'"),1);
+    assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='project_attach'"),0,"board-only roots never attach to the local service");
+    assert!(!tq_calls(&d).iter().any(|a|a[0]=="service" && a.get(1).is_some_and(|s|s!="status")),"{:?}",tq_calls(&d));
+    let _=fs::remove_dir_all(d);
 }
 
 // #221 A2/A3/A6 / R13: real CLI and manager adapter load fresh bound context on native resume;

@@ -79,6 +79,22 @@ pub(crate) fn setup_refusal(j:&Journal,request:i64,project:&str,language:Option<
         else {format!("Project {project} setup is not ready. Nothing started. {notice}")})
 }
 
+/// #266 / §5: registration records a root without a code checkout as a board connection; hosts whose service serves the board execute it.
+/// Called in the registration transaction after queue(); requeues keep the flag for the same binding.
+pub fn mark_board_only(j:&Journal,project:&str)->Result<(),String> {
+    let mut v=saved(j,project)?.ok_or("Onboarding not queued")?;
+    v["board_only"]=json!(true);save(j,project,&v)
+}
+
+/// A fresh board heartbeat, not a local service, proves some TaskQ host will take this board's tasks.
+fn host_gap(status:&Value,config:&Value)->Option<Value> {
+    let ttl=config["ttl"].as_i64().filter(|n|*n>0).unwrap_or(300);
+    let observed=status["observed"].as_i64();
+    let served=status["complete"]==true && status["hosts"].as_array().into_iter().flatten()
+        .any(|h|h["updated"].as_i64().zip(observed).is_some_and(|(u,o)|u<=o+5 && o-u<=ttl));
+    (!served).then(||json!({"check":"host","owner_only":true,"fix":"No fresh TaskQ host heartbeat serves this board, so no host will take its tasks. Owner: start or restore the TaskQ service for this project on an execution host, then Recheck"}))
+}
+
 fn service_gap(g:&Value)->bool {
     matches!(g["check"].as_str(),Some("service"|"admission"|"codex_grant"|"codex_access"|"codex_capacity"))
 }
@@ -96,13 +112,23 @@ fn refresh_service(tq:&Taskq,j:&std::sync::Mutex<Journal>,project:&str,end:Insta
         let j=j.lock().unwrap();
         let v=saved(&j,project)?;
         v.filter(|v|gate(&j,project).is_err() && v["pending"]==false
-            && v["report"]["gaps"].as_array().is_some_and(|g|g.iter().any(|g|matches!(g["check"].as_str(),Some("admission"|"service"))))
+            && v["report"]["gaps"].as_array().is_some_and(|g|g.iter().any(|g|matches!(g["check"].as_str(),Some("admission"|"service"|"host"))))
             && v["checking_until"].as_i64().is_none_or(|until|until<=crate::now() as i64))
             .filter(|v|v["root"].as_str()==tq.root.to_str() && binding(&j,project).is_ok_and(|(b,r)|v["board"]==b && v["root"]==r))
             .map(|mut v|{v["checking_until"]=json!(crate::now()+15);save(&j,project,&v).map(|_|v)}).transpose()?
     };
     if let Some(v)=refresh {
         let active=||{let j=j.lock().unwrap();saved(&j,project).ok().flatten().is_some_and(|now|now["epoch"]==v["epoch"] && now["root"]==v["root"] && now["board"]==v["board"])};
+        if v["board_only"]==true {
+            let status=probe(&tq.bin,&tq.root.to_string_lossy(),&["status","--json"],end.min(Instant::now()+Duration::from_secs(10)),active);
+            let config:Value=std::fs::read(tq.root.join("taskq.json")).ok().and_then(|s|serde_json::from_slice(&s).ok()).unwrap_or(Value::Null);
+            let mut result=v["report"].clone();
+            let gaps=result["gaps"].as_array_mut().ok_or("Onboarding report unreadable")?;
+            gaps.retain(|g|g["check"]!="host");
+            gaps.extend(host_gap(&status,&config));
+            result["ready"]=json!(gaps.is_empty());
+            return apply(&j.lock().unwrap(),project,&v["epoch"],&result);
+        }
         let service=probe(&tq.bin,&tq.root.to_string_lossy(),&["service","status","--json"],end.min(Instant::now()+Duration::from_secs(10)),active);
         let observed=report(tq,v["board"].as_str().unwrap_or(""),&Value::Null,&Value::Null,&service,crate::now() as i64);
         let mut result=v["report"].clone();
@@ -356,7 +382,7 @@ pub fn check_registered(d:&crate::direct::Direct,tq:&Taskq,j:&std::sync::Mutex<J
 // A5 uses the same registration/check/apply chain with invented executable and board boundaries.
 pub(crate) fn check_with(d:&crate::direct::Direct,tq:&Taskq,j:&std::sync::Mutex<Journal>,project:&str,end:Instant,exe:&Path)->Result<Value,String> {
     let owner=j.lock().unwrap().owner()?.ok_or("Owner unavailable")?;
-    let (board,root,epoch)={
+    let (board,root,epoch,board_only)={
         let j=j.lock().unwrap();
         if !j.has(owner,"chat")? || !j.has(owner,"projects")? {return Err("Owner access revoked".into());}
         let (board,root)=binding(&j,project)?;
@@ -371,7 +397,7 @@ pub(crate) fn check_with(d:&crate::direct::Direct,tq:&Taskq,j:&std::sync::Mutex<
         v["checking_until"]=json!(now+65);save(&j,project,&v)?;
         tx.commit().map_err(err)?;
         if created {j.trace(source,now);}
-        (board,root,v["epoch"].clone())
+        (board,root,v["epoch"].clone(),v["board_only"]==true)
     };
     let active=|| {let j=j.lock().unwrap(); j.has(owner,"chat").unwrap_or(false) && j.has(owner,"projects").unwrap_or(false) && binding(&j,project).is_ok_and(|b|b==(board.clone(),root.clone()))
         && saved(&j,project).ok().flatten().is_some_and(|v|v["epoch"]==epoch && v["root"]==root && v["board"]==board && attach_authorized(&j,&v,owner).unwrap_or(false))};
@@ -380,8 +406,9 @@ pub(crate) fn check_with(d:&crate::direct::Direct,tq:&Taskq,j:&std::sync::Mutex<
     let config:Value=std::fs::read(fallback.root.join("taskq.json")).ok().and_then(|s|serde_json::from_slice(&s).ok()).unwrap_or(Value::Null);
     let matched=status["complete"]==true && status["board"]["repo"]==board && config["repo"]==board
         && ["kind","host"].iter().all(|k|status["board"][k].is_null() || status["board"][k]==config[if *k=="kind" {"board"} else {"host"}]);
-    let attached=if matched {attach(&fallback,j,project,&epoch,end.min(Instant::now()+Duration::from_secs(10)),&active)}
-        else {Err("Owner: restore matching TaskQ configuration and board readback, then Recheck".into())};
+    let attached=if !matched {Err("Owner: restore matching TaskQ configuration and board readback, then Recheck".into())}
+        else if board_only {Ok(())}
+        else {attach(&fallback,j,project,&epoch,end.min(Instant::now()+Duration::from_secs(10)),&active)};
     // Doctor must use the same install and service PATH. Only its JSON crosses this boundary.
     let mut cmd=std::process::Command::new(&exe);
     cmd.args(["doctor","--json"]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
@@ -390,6 +417,14 @@ pub(crate) fn check_with(d:&crate::direct::Direct,tq:&Taskq,j:&std::sync::Mutex<
     let doctor=if matches!(output["status"].as_str(),Some("success"|"exit_nonzero")) {serde_json::from_str(output["stdout"].as_str().unwrap_or("")).unwrap_or(Value::Null)} else {Value::Null};
     let service=probe(&fallback.bin,&root,&["service","status","--json"],end.min(Instant::now()+Duration::from_secs(10)),&active);
     let mut result=report(&fallback,&board,&doctor,&status,&service,crate::now() as i64);
+    if board_only {
+        // No local worker serves this root, so local service, grant and capacity evidence is irrelevant.
+        let gaps=result["gaps"].as_array_mut().unwrap();
+        gaps.retain(|g|!service_gap(g));
+        gaps.extend(host_gap(&status,&config));
+        result["ready"]=json!(gaps.is_empty());
+        result["board_only"]=json!(true);
+    }
     let waiting=attached.is_ok() && service["service"]["state"]=="running" && service["service"]["fresh"]==true
         && result["gaps"].as_array().unwrap().iter().any(|g|g["check"]=="service");
     if waiting {

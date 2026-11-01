@@ -346,16 +346,25 @@ never ask the person to retype their request in a fixed format.
 
 Step 4 registers through the CLI: `pilotq projects add NAME ROOT` accepts a root whose `taskq.json`
 names a repository only when a fresh `taskq status --json` under that root reads back the same
-board, and records who registered it. For an explicitly linked existing repository PilotQ clones into the
-empty local root before writing TaskQ configuration, registers the board and runs onboarding before returning
-its findings. It preserves the URL transport (HTTPS or SSH), disables interactive Git prompts and bounds
+board, and records who registered it. Chat registration is board-only by default: the root holds only
+`taskq.json`, execution stays with hosts whose TaskQ service serves the board, and PilotQ never attaches
+it to the local service. Only when the caller's own text asks to clone or check out an explicitly linked
+existing repository does PilotQ clone into the empty local root before writing TaskQ configuration; it
+then registers the board and runs onboarding before returning its findings. Registration records a root
+without `.git` as board-only, through the CLI and chat alike; other registered roots are checkout projects. It preserves the URL transport (HTTPS or SSH), disables interactive Git prompts and bounds
 execution by the request deadline and grants. A matching existing checkout is reused; a mismatched origin,
 symlink or nonempty root without a checkout is refused without overwriting files. Clone failures report their
 operation, process outcome and exit code; raw Git diagnostics stay out of replies because they can include
 credentials. Partial roots remain inspectable and are never reported as registered. Repository creation
 remains an owner operation.
 
-PilotQ attaches a registered root only to an already installed, healthy TaskQ host service. New
+Board-only onboarding skips attach and the local service, admission, Codex grant and capacity
+checks. It requires a complete board readback and at least one `hosts` heartbeat whose `updated`
+time is within the project's TaskQ `ttl` (default 300 seconds) of the snapshot's `observed` time;
+otherwise one `host` finding says no host will take tasks. Launch refusal rechecks a saved `host`
+finding with a fresh board read.
+
+PilotQ attaches a registered checkout root only to an already installed, healthy TaskQ host service. New
 attachments require the host to advertise numeric `install_protocol: 1` before focus or registry
 writes; missing or unsupported capability needs an owner-coordinated host update and Recheck. It uses
 the explicit line registry and wake marker defined by TaskQ's host-service contract, preserving

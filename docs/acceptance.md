@@ -1229,6 +1229,23 @@ the fix and passes after it (R5, R11, R13). Live Telegram behavior still needs t
   started at 02:05:29 UTC. The reply is sent only after the replacement's healthy start at 60 seconds (§9).
   `u106_restart_receipt_requires_healthy_replacement` protects that timing and the no-replay rule.
 
+## Board-only projects (#266)
+
+§5 now defines board-only and checkout projects. A registration is board-only unless the
+caller's own text asks for a clone or checkout (R4, R12, R15). `cargo test --locked
+project_266_board_only_registration` registers a GitLab board from a repository link with
+invented fixtures. It checks these cases:
+
+- A model-selected checkout without the caller's request is refused before any root or Git call.
+- A board-only root holds only `taskq.json`; Git never runs and no focus or service registry entry is written.
+- Onboarding reports no local service, admission or Codex gaps. A heartbeat older than the
+  board's `ttl` gives one `host` finding and holds launch.
+- A fresh heartbeat reopens launch through the existing launch recheck, without owner action.
+
+The clone path keeps its #251 protections in `onboarding_251_empty_root_clone`, now with an
+explicit clone request. A4 and A5 on pds18 (csgo add, question and answer in its topic) are
+PM work after the PilotQ release (§9) and are **not run** by the worker.
+
 ## Missing-project onboarding usage (#274)
 
 Under R13/R17 and §9, `cargo test --locked onboard_274_usage_reply` admits an owner
