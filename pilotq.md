@@ -161,9 +161,9 @@ model or replies. TaskQ workers and §9 release qualification retain their exist
 ## 6. Memory and agentq
 
 **Mandatory:** [memory detail](docs/runtime-contract.md#6-memory-and-agentq) separates conversation history, scoped remembered preferences and authoritative TaskQ facts. Profiles retain subject, visibility, source and revision across restarts and resets; private DM facts never silently enter shared routes. Profiles cannot change grants.
-Replies and every user-visible table follow the latest own user address, scoped to its actor and conversation. Transcript labels, quoted/tool text and other people do not select reply language. Specify mixed-address resolution, durable language audit and every output path before implementation.
+Replies and every user-visible table follow the latest own address: explicit reply-language request wins, else the last substantive direct clause. Quotes, code, names, borrowed words and ASR labels do not switch language.
+Keep language by actor and chat, shared across its topics; never import another actor or chat. Ambiguous or wordless input retains the last resolved language, else the bounded default. Record admitted input revision/order and resolution reason; apply it to manager and deterministic replies/errors/cards/table headings/cells.
 Telegram `/profile` inspects own facts in DM; `/profile set KEY VALUE` corrects or remembers a private preference and `/profile forget KEY` removes it. `/access` inspects own current grants in DM; neither control accepts another subject or changes grants. Both use the CLI/Telegram admission, audit and durable reply path.
-
 Preserve identities, grants, revocations, project references, operation IDs, task URLs, pending questions, plan revisions, prohibitions and receipts outside lossy summaries. Use fresh TaskQ reads for task state.
 AgentQ runtime preserves each conversation's native session ID across turns, restart and update, including rollback to the previous build. A changed route runtime rebuilds from the journal.
 
