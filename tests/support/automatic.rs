@@ -12,7 +12,22 @@ const CASES: [&str; 14] = [
 // No token, environment or board snapshot is logged. Python is already used by the integration fixtures.
 const RECORD_TASKQ: &str = r#"#!/usr/bin/env python3
 import json, os, pathlib, subprocess, sys
-base = pathlib.Path(__file__).parent
+base = pathlib.Path(__file__).resolve().parent
+scope = json.loads(base.joinpath('taskq-scope.json').read_text())
+for key, name in [('TASKQ_INSTALL', 'install'), ('TASKQ_ROOT', 'root')]:
+    target = pathlib.Path(scope[name]).resolve(strict=True)
+    if str(target) != scope[name]: sys.exit('noncanonical A40 scope')
+    if key in os.environ and pathlib.Path(os.environ[key]).resolve() != target:
+        sys.exit('foreign A40 ' + name)
+# Reject explicit foreign project directories before any receipt or dispatch.
+for parent in [pathlib.Path.cwd(), *pathlib.Path.cwd().parents]:
+    if parent.joinpath('taskq.json').exists():
+        if parent != pathlib.Path(scope['root']): sys.exit('foreign A40 project')
+        break
+if sys.argv[1:] == ['--a40-path-probe']:
+    print(json.dumps(scope)); sys.exit(0)
+env = {k:v for k,v in os.environ.items() if not k.startswith('TASKQ_')}
+env.update(TASKQ_INSTALL=scope['install'], TASKQ_ROOT=scope['root'])
 args = sys.argv[1:]
 if args and args[0] == 'add':
     # Bind the create claim itself, not a later label edit: start must never race a service.
@@ -27,7 +42,7 @@ def save(row):
     with open(base / 'taskq-calls.jsonl', 'a') as f:
         f.write(json.dumps(row) + '\n'); f.flush(); os.fsync(f.fileno())
 if write: save({'args': args})
-p = subprocess.run([str(base.joinpath('taskq-path').read_text().strip()), *args], capture_output=True, timeout=120)
+p = subprocess.run([str(base.joinpath('taskq-path').read_text().strip()), *args], capture_output=True, timeout=120, env=env, cwd=scope['root'])
 if write:
     try:
         v = json.loads(p.stdout)
@@ -143,7 +158,7 @@ impl Run {
     fn start(&mut self) {
         // A long live run must not fill an unread stderr pipe and stall PilotQ.
         let log = fs::OpenOptions::new().create(true).append(true).open(self.d.join("service.log")).unwrap();
-        self.svc = Some(Svc(service(&self.d, None).stderr(log).spawn().unwrap()));
+        self.svc = Some(Svc(service(&self.d, None).env("HOME", self.d.join("home")).env_remove("TASKQ_INSTALL").stderr(log).spawn().unwrap()));
         self.data["service_pid"] = json!(self.svc.as_ref().unwrap().id());
         self.save();
     }
@@ -189,7 +204,7 @@ impl Run {
 
     fn taskq(&self, args: &[String]) -> Result<String, String> {
         let out = Command::new(self.d.join("record-taskq"))
-            .args(args).env("TASKQ_ROOT", &self.root).env_remove("TASKQ_ATTEMPT")
+            .args(args).env("TASKQ_ROOT", &self.root).env_remove("TASKQ_INSTALL").env_remove("TASKQ_ATTEMPT")
             .env_remove("TASKQ_TASK").env_remove("TASKQ_ROLE").current_dir(&self.root).output().map_err(|e| e.to_string())?;
         if !out.status.success() { return Err(format!("taskq {} failed ({})", args[0], out.status)); }
         String::from_utf8(out.stdout).map_err(|e| e.to_string())
@@ -364,6 +379,37 @@ fn a40_live_management() {
         fs::write(h.d.join("taskq-path"), std::env::var("PILOTQ_A8_TASKQ").expect("PILOTQ_A8_TASKQ")).unwrap();
         fs::write(h.d.join("record-taskq"), RECORD_TASKQ).unwrap();
         fs::set_permissions(h.d.join("record-taskq"), fs::Permissions::from_mode(0o700)).unwrap();
+        // §9: the PM provisions a disposable TaskQ installation and checkout together.
+        // Never infer fixture ownership from an ordinary installation's environment.
+        let install = PathBuf::from(std::env::var("PILOTQ_A40_TASKQ_INSTALL").expect("PILOTQ_A40_TASKQ_INSTALL"));
+        let fixture = install.parent().expect("fixture parent").canonicalize().unwrap();
+        assert!(fixture.starts_with(std::env::temp_dir().canonicalize().unwrap()));
+        assert!(fixture.file_name().unwrap().to_string_lossy().starts_with("pilotq-e2e-"));
+        use std::os::unix::fs::MetadataExt;
+        let metadata = fs::metadata(&fixture).unwrap();
+        assert_eq!(metadata.mode() & 0o777, 0o700, "fixture must be private");
+        assert_eq!(metadata.uid(), fs::metadata(&h.d).unwrap().uid(), "foreign fixture owner");
+        let install = install.canonicalize().unwrap();
+        h.root = h.root.canonicalize().unwrap();
+        assert_eq!(install.parent(), Some(fixture.as_path()));
+        assert_eq!(h.root.parent(), Some(fixture.as_path()));
+        assert_ne!(install, h.root);
+        let projects = fs::read_to_string(install.join("projects")).expect("fixture project registry");
+        assert_eq!(projects.trim(), h.root.to_str().unwrap(), "foreign fixture projects");
+        fs::write(h.d.join("taskq-scope.json"), json!({"install":install,"root":h.root}).to_string()).unwrap();
+        std::os::unix::fs::symlink(h.d.join("record-taskq"), h.d.join("taskq")).unwrap();
+        let home_bin = h.d.join("home/.local/share/taskq");
+        fs::create_dir_all(&home_bin).unwrap();
+        std::os::unix::fs::symlink(h.d.join("record-taskq"), home_bin.join("taskq")).unwrap();
+        // Model children receive only manager.rs's production allowlist. Probe that boundary
+        // without a model call, token access, board read or service mutation.
+        let native = Command::new("/bin/sh").args(["-c", "taskq --a40-path-probe"])
+            .env_clear().env("PATH", format!("{}:{}", h.d.display(), std::env::var("PATH").unwrap_or_default()))
+            .env("HOME", h.d.join("home")).current_dir(&h.d).output().unwrap();
+        assert!(native.status.success(), "native A40 preflight failed");
+        let scope: Value = serde_json::from_slice(&native.stdout).unwrap();
+        assert_eq!(scope, json!({"install":install,"root":h.root}));
+        h.data["native_taskq_scope"] = scope;
         h.login = Some(live_login(&h.d));
         limits(&h.d, Path::new("codex"), json!({"first_event":60,"silent":60,"deadline":240}));
         let mut cfg: Value = serde_json::from_slice(&fs::read(h.d.join("config.json")).unwrap()).unwrap();
@@ -558,6 +604,31 @@ fn a40_live_management() {
     h.finish(result);
     eprintln!("A40 report: {}",h.report.display());
     assert_eq!(h.data["pass"],true,"A40 incomplete; inspect the per-case report and cleanup");
+}
+
+// R9/R16, §3: exercise the actual manager env_clear boundary with a harmless
+// fake app-server child. No subscription, token, board or service control is used.
+#[test]
+fn a40_native_manager_scope() {
+    let (d, st) = setup("a40-native-scope", vec![]);
+    let root = d.join("root");
+    let install = d.join("install");
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(&install).unwrap();
+    let scope = json!({"install":install,"root":root});
+    fs::write(d.join("taskq-scope.json"), scope.to_string()).unwrap();
+    fs::write(d.join("record-taskq"), RECORD_TASKQ).unwrap();
+    fs::set_permissions(d.join("record-taskq"), fs::Permissions::from_mode(0o700)).unwrap();
+    std::os::unix::fs::symlink(d.join("record-taskq"), d.join("taskq")).unwrap();
+    let fake = script(&d, "probe-codex", &FAKE.replace("d=$(dirname \"$0\")", "d=$(dirname \"$0\")\ntaskq --a40-path-probe > \"$d/native-scope.json\""));
+    use_codex(&d, &fake);
+    let c = Svc(service(&d, None).spawn().unwrap());
+    push(&st, text(1, OWNER, None, OWNER, "hello"));
+    wait("native path probe", 10, || d.join("native-scope.json").exists() && fs::metadata(d.join("native-scope.json")).unwrap().len() > 0);
+    let observed: Value = serde_json::from_slice(&fs::read(d.join("native-scope.json")).unwrap()).unwrap();
+    assert_eq!(observed, scope);
+    drop(c);
+    fs::remove_dir_all(d).unwrap();
 }
 
 #[test]

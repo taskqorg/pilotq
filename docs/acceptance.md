@@ -541,12 +541,15 @@ Task #40 adds one release qualification command for R3, R5, R8, R10 and R17, ove
 Prerequisites: a Linux host with Rust, Python 3, `sha256sum`, `gh`, a working board token, TaskQ, an already authenticated test-only Codex subscription home, and a TaskQ root with an existing queue focus. No worker service is required for the fixture. No login or paid API fallback occurs. The selected root must name `taskqorg/pilotq` and configure `create_claim_issue`. Run from the candidate checkout:
 
 ```sh
-PILOTQ_A8_ROOT=<absolute PilotQ TaskQ root> \
+PILOTQ_A8_ROOT=<private fixture directory>/root \
+PILOTQ_A40_TASKQ_INSTALL=<private fixture directory>/install \
 PILOTQ_A8_TASKQ=<absolute TaskQ binary> \
 PILOTQ_A8_CODEX_HOME=<authenticated test-only Codex home> \
 PILOTQ_A40_REPORT=<absolute new report.json path> \
   cargo test --locked --test telegram automatic::a40_live_management -- --ignored --exact --nocapture
 ```
+
+The PM provisions the fixture under the OS temporary directory in a private (0700), caller-owned `pilotq-e2e-*` directory, with sibling `root` and `install` directories. The root is a disposable PilotQ checkout; the installation has its own owner-provisioned board credential and a `projects` registry containing only that root. Do not use an ordinary installation or checkout. No service is enrolled. The harness validates these paths before dispatch and records a harmless native path preflight in `native_taskq_scope`. Both the native `taskq` on PATH (also at the fixture HOME's `.local/share/taskq/taskq`) and structured calls use the same recorder, which binds `TASKQ_INSTALL`, `TASKQ_ROOT` and cwd. Foreign explicit install/root overrides or project directories refuse before effects. Production environment clearing and subscription login are unchanged. This is harness isolation, not a sandbox against an authorized full agent deliberately invoking another absolute binary (§3, §5).
 
 The command creates one real board task for a scripted navigation-check fixture, with no implementation or publication. Before forwarding any `add` to TaskQ, the test-only wrapper appends `--host pilotq-e2e-<unique-run-id>`; that host is bound into the create claim and retained on retries and cleanup. Reserve `pilotq-e2e-*` for these tests: never configure a service with such a host name. The runner verifies the issue has exactly that host label and remains unclaimed after start. It then writes trusted, hand-authored TaskQ log entries (§2 of the TaskQ contract) for synthetic worker spawn, question, result, reviewer spawn and close, reading back each transition. The resulting notifications qualify PilotQ's management path, not worker execution, code review or publication. Real Codex still chooses PilotQ tools; TaskQ still performs held creation, start, status, revision-fenced controls and answers.
 
@@ -1247,3 +1250,5 @@ PM qualification remains open under §9: after the ordinary merged release, send
 `/onboard NAME` and `/onboard NAME override`, identifies NAME as the project name,
 and does not advise retrying the unchanged command. Record the released version,
 request and visible reply. Workers do not install or change the live service.
+
+**#282 isolation evidence (R9, R16, §3, §9):** On source `250cae1`, manager's native allowlist drops `TASKQ_INSTALL` and `TASKQ_ROOT`; the recorder was not installed under the native command name. A harmless child using the exact baseline recorder and the production allowlist observed null install/root overrides and the ordinary HOME, against expected fixture `install`/`root` paths; it executed only a fake path reporter. Native command lookup also returned 127 in this sandbox. No ordinary TaskQ executable or state was touched. The existing Python guard then failed before the fix because a foreign installation reached a fake `service pause` (exit 0). Afterward `python3 tests/support/automatic_host.py` passes, covering sanitized native PATH dispatch, exact fixture install/root readback, foreign install/project refusal before dispatch, and retained reserved-host create/retry/cleanup fencing. `automatic::a40_native_manager_scope` additionally probes through the actual manager spawn with a fake app-server; its execution evidence is reported separately. No ordinary admission control or board mutation was used. This component evidence leaves live Codex and all fourteen A40 cases to #281 on the exact accepted merge; it proves no release/live acceptance.
