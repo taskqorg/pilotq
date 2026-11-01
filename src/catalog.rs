@@ -15,7 +15,7 @@ pub const CATALOG: &[Capability] = &[
     Capability { name: "/onboard", area: "projects", purpose: "Recheck registered project readiness; protected owner may override only PilotQ's gate", example: "/onboard pilotq", grant: "owner", ru: "Проверить готовность зарегистрированного проекта" },
     Capability { name: "/release", area: "operations", purpose: "Preview a registered project LIVE release; a separate Release button is required", example: "/release pilotq", grant: "owner+project+release", ru: "Предпросмотр выпуска проекта; требуется отдельная кнопка «Выпустить»" },
     Capability { name: "project_release_preview", area: "operations", purpose: "Preview a registered project LIVE release for the protected owner with a separate release grant. Never executes a release. A separate Release button is mandatory; do not repeat the preview card in final prose.", example: "preview release for pilotq", grant: "owner+project+release", ru: "Подготовить предпросмотр выпуска проекта для владельца" },
-    Capability { name: "task_plan", area: "tasks", purpose: "Revise this conversation's one open plan draft with its complete ticket list (1-3 tickets). Files nothing. A new draft starts only after the open one is launched or cancelled.", example: "plan reply improvements for pilotq", grant: "project+taskq", ru: "Обновить обсуждаемый план без создания задач" },
+    Capability { name: "task_plan", area: "tasks", purpose: "Revise this conversation's one open plan draft with its complete ticket list (1-3 tickets). Files nothing. A new draft starts only after the open one is launched or cancelled.", example: "plan reply improvements for pilotq", grant: "project", ru: "Обновить обсуждаемый план без создания задач" },
     Capability { name: "task_run_plan", area: "tasks", purpose: "Launch the current draft: PilotQ files its tickets held, reads them back and starts them after this turn, then replies with each task's board state. Only when the person, in a later message, asks to run it.", example: "run the plan", grant: "project+taskq", ru: "Запустить текущий согласованный план" },
     Capability { name: "discussion_choices", area: "tasks", purpose: "Offer a concrete discussion question with 2-4 choices. Choosing answers only, never launches work. The final reply appends the question and numbered options with Telegram buttons.", example: "show the available options", grant: "chat", ru: "Показать вопрос с вариантами ответа" },
     Capability { name: "task_answer", area: "tasks", purpose: "Forward only the person's own answer to a same-conversation subscribed question. Read task_status first. If destination or answer is ambiguous, clarify. Never choose for the person.", example: "answer task 12 in pilotq: use option 1", grant: "project+taskq", ru: "Передать ваш ответ на текущий вопрос работника" },
@@ -84,6 +84,12 @@ pub fn allowed(c: &Capability, j: &Journal, user: i64) -> Result<bool,String> {
                 for p in j.projects()? { permitted |= j.has(user,&format!("release:{}",p.0))? && (j.has(user,"projects")? || j.has(user,&format!("project:{}",p.0))?); }
                 permitted
             }, "owner"=>j.owner()?==Some(user),
+            // #267: a project owner decides only in owned projects, so `taskq` shows when any registered project allows it.
+            "taskq"=> {
+                let mut decides=false;
+                for p in j.projects()? { decides |= j.decides(user,&p.0)?; }
+                decides
+            },
             "project"=> {
                 let mut scoped=j.has(user,"projects")?;
                 for p in j.projects()? { scoped |= j.has(user,&format!("project:{}",p.0))?; }

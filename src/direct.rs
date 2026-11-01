@@ -453,7 +453,7 @@ mod context_tests {
         let r=j.ask(7,"compare pilotq#236 with cs #541",2).unwrap();
         assert!(context_project(&j,&r,7).unwrap_err().contains("Which project"),"only cited issues stay ambiguous");
         j.finish(&r,None,None,&crate::manager::Outcome::Answered("ok".into()),2).unwrap();
-        j.revoke(7,7,&["projects".into()],3).unwrap();
+        j.revoke(7,7,&["projects".into(),"admin".into()],3).unwrap();
         let r=j.ask(7,"is cs #541 on DEV?",4).unwrap();
         assert!(target_context(&j,&r,7,&json!({"issue":"541","project":"cyprusbz"})).is_err());
         drop(j);
@@ -538,7 +538,7 @@ mod context_tests {
         j.finish(&r,None,None,&crate::manager::Outcome::Answered("ok".into()),8).unwrap();
         let r = j.ask(7,"specify pilotq",9).unwrap();
         assert_eq!(target_context(&j,&r,7,&json!({"issue":"1"})).unwrap().0,"pilotq","own clarification disambiguates history");
-        j.revoke(7,7,&["projects".into()],10).unwrap();
+        j.revoke(7,7,&["projects".into(),"admin".into()],10).unwrap();
         assert!(target_context(&j,&r,7,&json!({"issue":"1","project":"pilotq"})).is_err(),"current grants are enforced");
         drop(j);
         let mut j = Journal::open(&dir.join("quotes.sqlite")).unwrap();

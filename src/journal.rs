@@ -11,8 +11,9 @@ const SCHEMA: i64 = 13;
 /// Delivery attempts per episode, persisted across restart (§ 7).
 pub const ATTEMPTS: i64 = 5;
 /// Named grants (§ 2, § 5, § 8). `chat` admits conversation only; every other grant is separate. `project:NAME` scopes a project;
-/// `projects` covers every project; `queue` pauses host admission.
-pub const GRANTS: [&str; 7] = ["chat", "users", "projects", "taskq", "audit", "queue", "shell"];
+/// `projects` covers every project; `queue` pauses host admission. Roles (#267): `admin` implies every named grant and every
+/// project; `owner:NAME` implies `project:NAME` and TaskQ writes there only. Neither implies `release:NAME`.
+pub const GRANTS: [&str; 8] = ["chat", "users", "projects", "taskq", "audit", "queue", "shell", "admin"];
 /// Section 7 health sources, each reported separately.
 pub const SOURCES: [&str; 5] = ["poll", "storage", "model", "taskq", "delivery"];
 /// §9 / #81 owner incidents: source, opening and recovery text. Plain lines, no internal IDs or raw errors (§4).
@@ -32,11 +33,52 @@ const DOWNTIME: i64 = 300;
 const PROGRESS_EDIT: i64 = 30;
 
 pub(crate) fn valid_grant(g: &str) -> bool {
-    GRANTS.contains(&g) || g.strip_prefix("release:").is_some_and(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))) || g.strip_prefix("project:").is_some_and(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)))
+    let name = |p: &str| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
+    GRANTS.contains(&g) || ["release:", "project:", "owner:"].iter().any(|k| g.strip_prefix(k).is_some_and(name))
 }
 
-pub(crate) fn has(c: &Connection, user: i64, grant: &str) -> Result<bool, String> {
+fn held(c: &Connection, user: i64, grant: &str) -> Result<bool, String> {
     c.query_row("SELECT 1 FROM grants WHERE user=?1 AND name=?2", params![user, grant], |_| Ok(())).optional().map(|r| r.is_some()).map_err(|e| e.to_string())
+}
+
+/// A stored grant or one its role implies (#267). `chat` stays the admission switch, so revoking it silences an admin too;
+/// `release:NAME` stays a separate owner grant (§ 5).
+pub(crate) fn has(c: &Connection, user: i64, grant: &str) -> Result<bool, String> {
+    if held(c, user, grant)? { return Ok(true); }
+    if let Some(p) = grant.strip_prefix("project:") && held(c, user, &format!("owner:{p}"))? { return Ok(true); }
+    Ok(grant != "chat" && !grant.starts_with("release:") && !grant.starts_with("owner:") && held(c, user, "admin")?)
+}
+
+/// TaskQ decisions in `project` (answer, start, steer, park, requeue, close, file): admin, its owner, or legacy `taskq` with project scope.
+pub(crate) fn decides(c: &Connection, user: i64, project: &str) -> Result<bool, String> {
+    Ok(has(c, user, &format!("owner:{project}"))? || has(c, user, "taskq")? && (has(c, user, "projects")? || has(c, user, &format!("project:{project}"))?))
+}
+
+/// #267 A4: the one refusal line for a person without decision rights in `project`.
+pub fn decide_refusal(project: &str) -> String {
+    format!("Only an admin or the owner of project {project} can decide or start its tasks; ask one of them. Nothing was written.")
+}
+
+/// #267 A6: legacy grants map onto roles once; the old grants stay, so no one's access narrows.
+/// `users` already allowed granting anything except release, so it maps to `admin`; `taskq` with project scope maps to project owner.
+fn map_roles(c: &Connection, at: i64) -> Result<(), String> {
+    let done: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM meta WHERE key='roles')", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+    if done { return Ok(()); }
+    let mut q = c.prepare("SELECT DISTINCT user FROM grants").map_err(|e| e.to_string())?;
+    let users: Vec<i64> = q.query_map([], |r| r.get(0)).and_then(Iterator::collect).map_err(|e| e.to_string())?;
+    let mut q = c.prepare("SELECT name FROM projects").map_err(|e| e.to_string())?;
+    let registered: Vec<String> = q.query_map([], |r| r.get(0)).and_then(Iterator::collect).map_err(|e| e.to_string())?;
+    for u in users {
+        let g = grants_of(c, u)?;
+        let mut add: Vec<String> = vec![];
+        if g.iter().any(|x| x == "users") { add.push("admin".into()); }
+        else if g.iter().any(|x| x == "taskq") {
+            if g.iter().any(|x| x == "projects") { add.extend(registered.iter().map(|p| format!("owner:{p}"))); }
+            add.extend(g.iter().filter_map(|x| x.strip_prefix("project:")).map(|p| format!("owner:{p}")));
+        }
+        Journal::change_in(c, None, u, at, |set| set.extend(add))?;
+    }
+    c.execute("INSERT INTO meta(key, value) VALUES ('roles', ?1)", [at]).map(drop).map_err(|e| e.to_string())
 }
 
 fn grants_of(c: &Connection, user: i64) -> Result<Vec<String>, String> {
@@ -187,7 +229,7 @@ fn accept_launch_control(tx: &Connection, i: &Input, sender: i64, session: &str,
         AND o.id=(SELECT max(z.id) FROM outbox z WHERE z.revision=o.revision AND z.kind='plan_problem')",
         params![delivery,i.message,i.chat,i.topic,session,sender],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(e)?;
     let (run,project,card)=row.ok_or("stale launch problem")?;
-    if retry && (!has(tx,sender,"taskq")? || !(has(tx,sender,"projects")? || has(tx,sender,&format!("project:{project}"))?)) {return Err("launch permission revoked".into());}
+    if retry && !decides(tx,sender,&project)? {return Err(decide_refusal(&project));}
     let at:i64=tx.query_row("SELECT received_at FROM requests WHERE id=?1",[request],|r|r.get(0)).map_err(e)?;
     let Some(run)=run else {
         tx.execute("UPDATE cards SET used_request=?2 WHERE id=?1",params![card,request]).map_err(e)?;
@@ -230,7 +272,7 @@ fn accept_card(tx: &Connection, i: &Input, sender: i64, session: &str, request: 
             let plan=plan.ok_or("not a plan button")?;
             let project:Option<String>=tx.query_row("SELECT project FROM plans p WHERE id=?1 AND revision=(SELECT max(revision) FROM plans WHERE session=?2) AND NOT EXISTS(SELECT 1 FROM plan_runs WHERE plan_id=p.id)",params![plan,session],|x|x.get(0)).optional().map_err(e)?;
             let project=project.ok_or("superseded or launched plan")?;
-            if !has(tx,sender,"taskq")? || !(has(tx,sender,"projects")? || has(tx,sender,&format!("project:{project}"))?) { return Err("missing taskq/project grant".into()); }
+            if !decides(tx,sender,&project)? { return Err(decide_refusal(&project)); }
             ("launch",format!("Run displayed plan ({project})"))
         }
         // #110: cancelling closes the open draft; no board effect, so no TaskQ grant is needed.
@@ -1703,6 +1745,9 @@ impl Journal {
 
     /// The owner from protected configuration holds every named grant; a message can never make someone the owner (§ 2).
     pub fn bootstrap(&mut self, owner: i64, at: i64) -> Result<(), String> {
+        let tx = self.0.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
+        map_roles(&tx, at)?;
+        tx.commit().map_err(|e| e.to_string())?;
         self.change(None, owner, at, |g| g.extend(GRANTS.map(String::from)))?;
         self.0.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('owner', ?1)", [owner]).map(drop).map_err(|e| e.to_string())
     }
@@ -1719,7 +1764,7 @@ impl Journal {
     /// Adds grants to `target`; the actor needs `users`. Returns the target's grants after the change.
     pub fn grant(&mut self, actor: i64, target: i64, names: &[String], at: i64) -> Result<Vec<String>, String> {
         if let Some(g) = names.iter().find(|g| !valid_grant(g)) {
-            return Err(format!("unknown grant {g}; use {} or project:NAME", GRANTS.join(", ")));
+            return Err(format!("unknown grant {g}; use {}, project:NAME or owner:NAME", GRANTS.join(", ")));
         }
         if names.iter().any(|g|g.starts_with("release:")) && (self.owner()?!=Some(actor) || actor!=target) {return Err("Only the protected owner can grant their release capability".into());}
         self.change(Some(actor), target, at, |g| g.extend(names.iter().cloned()))
@@ -2468,6 +2513,10 @@ impl Journal {
 
     pub fn has(&self, user: i64, grant: &str) -> Result<bool, String> {
         has(&self.0, user, grant)
+    }
+
+    pub fn decides(&self, user: i64, project: &str) -> Result<bool, String> {
+        decides(&self.0, user, project)
     }
 
     /// The sender of `request`.
@@ -5064,6 +5113,49 @@ mod tests {
         drop(j); let _=std::fs::remove_dir_all(p);
     }
 
+    // #267 A2-A6: legacy grants map onto roles once on upgrade without narrowing anyone; admin decides everywhere with shell,
+    // a project owner only in owned projects without shell, a member reads and proposes only.
+    #[test]
+    fn legacy_grants_map_onto_roles() {
+        let (mut j, p) = journal("roles");
+        j.0.execute_batch("DELETE FROM meta WHERE key='roles'; INSERT INTO projects(name,repo,root,by,at) VALUES ('alpha','invented/alpha','/invented/alpha',7,0),('beta','invented/beta','/invented/beta',7,0)").unwrap();
+        let legacy = |j: &mut Journal, u: i64, g: &[&str]| j.grant(7, u, &g.iter().map(|s| s.to_string()).collect::<Vec<_>>(), 0).unwrap();
+        legacy(&mut j, 20, &["chat", "users", "projects", "taskq", "shell"]); // Simon-like administrator
+        legacy(&mut j, 21, &["chat", "taskq", "project:alpha"]); // Lina-like project lead
+        legacy(&mut j, 22, &["chat", "taskq", "projects"]);
+        legacy(&mut j, 23, &["chat", "project:alpha"]); // member
+        let before: Vec<_> = [7, 20, 21, 22, 23].iter().map(|u| j.grants(*u).unwrap()).collect();
+        j.bootstrap(7, 1).unwrap();
+        j.bootstrap(7, 2).unwrap();
+        for (u, old) in [7, 20, 21, 22, 23].iter().zip(before) {
+            let now = j.grants(*u).unwrap();
+            assert!(old.iter().all(|g| now.contains(g)), "{u} keeps every legacy grant");
+        }
+        assert!(j.grants(7).unwrap().contains(&"admin".into()) && j.grants(20).unwrap().contains(&"admin".into()));
+        assert_eq!(j.grants(21).unwrap(), ["chat", "owner:alpha", "project:alpha", "taskq"]);
+        assert_eq!(j.grants(22).unwrap(), ["chat", "owner:alpha", "owner:beta", "projects", "taskq"]);
+        assert_eq!(j.grants(23).unwrap(), ["chat", "project:alpha"]);
+        assert_eq!(j.grant_log(21).unwrap().len(), 2, "the mapping is logged once and never repeats");
+        // Admin: every project, every named grant including shell, but no release grant.
+        j.grant(7, 30, &["chat".into(), "admin".into()], 3).unwrap();
+        assert!(j.decides(30, "alpha").unwrap() && j.decides(30, "beta").unwrap() && j.has(30, "shell").unwrap() && j.has(30, "users").unwrap());
+        assert!(!j.has(30, "release:alpha").unwrap());
+        j.revoke(7, 30, &["chat".into()], 3).unwrap();
+        assert!(!j.has(30, "chat").unwrap(), "revoking chat still silences an admin");
+        j.grant(7, 30, &["chat".into()], 3).unwrap();
+        // Project owner: owned project only, no shell or administration until an admin grants shell explicitly.
+        j.grant(30, 31, &["chat".into(), "owner:alpha".into()], 4).unwrap();
+        assert!(j.decides(31, "alpha").unwrap() && j.has(31, "project:alpha").unwrap());
+        assert!(!j.decides(31, "beta").unwrap() && !j.has(31, "project:beta").unwrap() && !j.has(31, "shell").unwrap() && !j.has(31, "users").unwrap());
+        assert!(j.grant(31, 23, &["owner:alpha".into()], 5).is_err(), "a project owner cannot appoint owners");
+        j.grant(30, 31, &["shell".into()], 5).unwrap();
+        assert!(j.has(31, "shell").unwrap());
+        // Member reads and proposes, never decides; the refusal names whom to ask.
+        assert!(j.has(23, "project:alpha").unwrap() && !j.decides(23, "alpha").unwrap());
+        assert!(decide_refusal("alpha").contains("admin or the owner of project alpha"));
+        drop(j); let _ = std::fs::remove_dir_all(p);
+    }
+
     // F10, F17: revoking `chat` while a request waits cancels it at dispatch without a reply, blocks a pending delivery, and keeps
     // the completed record; another person's work is unaffected.
     #[test]
@@ -5770,7 +5862,7 @@ mod tests {
             j.admit(&[(id,input(sender,chat,topic,m,plan))],3).unwrap();
             assert_eq!(j.request(id).unwrap().0,"failed");
         }
-        j.revoke(7,7,&["taskq".into()],4).unwrap();
+        j.revoke(7,7,&["taskq".into(),"admin".into()],4).unwrap();
         j.admit(&[(6,input(7,-100,Some(5),*message,plan))],4).unwrap();
         assert_eq!(j.request(6).unwrap().0,"failed");
         assert_eq!(count(&j,"SELECT count(*) FROM cards WHERE used_request IS NOT NULL"),0);
