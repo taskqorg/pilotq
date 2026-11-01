@@ -1,12 +1,13 @@
-//! Manager runtimes through CoreQ `agent` (pilotq.md § 3, § 4 Runs, § 12 Runtime): Codex over CoreQ's app-server compatibility
-//! transport, Claude Code through CoreQ CLI turns (`claude.rs`). One process per turn: the process is the fault boundary, so stop
+//! Manager runtimes through AgentQ (pilotq.md § 3, § 4 Runs, § 12 Runtime): Codex over its app-server compatibility
+//! transport, Claude Code through CLI turns (`claude.rs`). One process per turn: the process is the fault boundary, so stop
 //! and deadlines end it, and its native session ID carries the conversation to the next turn.
 
 use crate::journal::{Journal, Run};
-use coreq::agent::{AppServer, AppSession, Client, Spec};
+use agentq_runtime::agent::{AppServer, AppSession, Client, Spec};
+use agentq_runtime::optimization::Intent;
+use pilotq::{base, prepare};
 use serde_json::{Value, json};
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -32,6 +33,7 @@ pub struct Codex {
     /// PilotQ's own Codex home: its subscription login and an empty config, so no personal MCP server or plugin loads.
     pub home: PathBuf,
     pub limits: Limits,
+    pub optimization: Intent,
 }
 
 /// #265: the installation runtime (default Codex), per-route overrides and optional TaskQ host slots (§ 3, § 7).
@@ -63,10 +65,11 @@ pub enum Outcome {
     Fenced,
 }
 
-/// CoreQ's shared app-server transport plus PilotQ's process-group ownership: dropping it ends the whole group.
+/// AgentQ's shared app-server transport plus PilotQ's process-group ownership: dropping it ends the whole group.
 struct Proc {
     server: AppServer,
     session: AppSession,
+    optimization: agentq_runtime::optimization::Optimization,
 }
 
 /// Held from spawn until Codex answers `initialize`. Found in the A8 run: app-servers started together on a fresh Codex home race
@@ -111,19 +114,6 @@ fn native_access(j:&Journal,user:i64)->Result<bool,String> {
     Ok(j.owner()?==Some(user) || j.has(user,"shell")?)
 }
 
-/// Only what a runtime needs: found in the A7 run, Codex wrote its environment into shell snapshots under its home, and the
-/// host's GitHub token was there. No host credential or API key reaches the model's side, so no paid API fallback exists (R9, § 8).
-pub(crate) fn base(bin: &str) -> Command {
-    let mut c = Command::new(bin);
-    c.env_clear();
-    for k in ["PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR", "SSL_CERT_FILE"] {
-        if let Some(v) = std::env::var_os(k) { c.env(k, v); }
-    }
-    #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(&mut c, 0);
-    c
-}
-
 impl Codex {
     fn spawn(&self, native: bool, thread: Option<&str>) -> Result<Proc, String> {
         std::fs::create_dir_all(&self.workspace).map_err(|e| format!("workspace: {e}"))?;
@@ -134,13 +124,14 @@ impl Codex {
             args.extend(["--disable".into(), f.into()]);
         }
         args.extend(["-c".into(), "forced_login_method=\"chatgpt\"".into(), "-c".into(), if native {"web_search=\"live\""} else {"web_search=\"disabled\""}.into()]);
-        let spec = Spec { client: Client::Codex, root: self.workspace.clone(), session: thread.unwrap_or("-").into(), resume: thread.is_some(),
+        let mut spec = Spec { client: Client::Codex, root: self.workspace.clone(), session: thread.unwrap_or("-").into(), resume: thread.is_some(),
             args, home: Some(self.home.clone()), env: vec![] };
+        let optimization = prepare(self.optimization, &mut spec);
         // Codex diagnostics can name paths or account details: operator log only, never a reply, the journal or telemetry.
         let server = AppServer::start(base(&self.bin), &spec, &self.home.join("app-server.log"))
             .map_err(|e| { crate::host::log("codex app-server",&e); format!("codex app-server did not start: {e}") })?;
         let session = AppSession::new(&spec)?;
-        Ok(Proc { server, session })
+        Ok(Proc { server, session, optimization })
     }
 
     /// #106: catalogue read only; it never creates a thread or starts inference (R9).
@@ -244,6 +235,7 @@ impl Codex {
             Err(e) => return Ok((None, None, Outcome::Failed(e))),
         };
         observation("spawned", &json!(p.server.id()));
+        observation("optimization", &p.optimization.json());
         let (mut thread, mut answer, mut tooled, mut model) = (resume.map(str::to_string), String::new(), false, None::<String>);
         let (mut first, mut last, mut error) = (false, start, None::<String>);
         let (mut draft_item, mut draft) = (String::new(), String::new());
@@ -334,7 +326,7 @@ impl Codex {
                 match p.session.start_turn(params) { Ok(req) => { started = true; p.send(&req); }, Err(e) => return Ok((thread, model, Outcome::Failed(e))) }
             }
             if m.get("id").is_some() && m["id"] == quota_read && opened.is_null() {
-                // The thread opens once the optional quota read settled; CoreQ keeps one client request in flight.
+                // The thread opens once the optional quota read settled; AgentQ keeps one client request in flight.
                 let mut params = json!({"cwd": self.workspace, "approvalPolicy": "never", "sandbox": if native {"danger-full-access"} else {"read-only"}});
                 if let Some(model) = selected_model { params["model"] = json!(model); }
                 if let Some((tools, instructions)) = dynamic {
@@ -366,7 +358,7 @@ impl Codex {
                 "turn/completed" if started => {
                     let t = &m["params"]["turn"];
                     // A5: one CoreQ usage observation per completed turn, attributed to this route
-                    let ctx = coreq::agent::Context { product: "pilotq", version: env!("CARGO_PKG_VERSION"), project: "other", task: None, route: Some(route), account: "default" };
+                    let ctx = agentq_runtime::agent::Context { product: "pilotq", version: env!("CARGO_PKG_VERSION"), project: "other", task: None, route: Some(route), account: "default" };
                     record(&|store| p.session.record(&ctx, store).map(drop));
                     if let Some(r) = p.session.report() { model = r.usage.model.or(model); }
                     let outcome = match t["status"].as_str() {
@@ -663,6 +655,7 @@ fn observe(j: &Mutex<Journal>, r: &Run, d: &crate::direct::Direct, now: &impl Fn
     },
     "context" => footer.context(data, now()),
     "quota" => footer.quota(data, now()),
+    "optimization" => if let Err(e)=j.lock().unwrap().optimization(r,data,now()) { eprintln!("run {} optimization: {e}",r.id); },
     "spawned" => if slot { crate::slots::spawned(j, r.id, data.as_u64().unwrap_or(0) as u32); },
     _ => {},
 }
@@ -850,8 +843,8 @@ mod tests {
         let mut journal=Journal::open(std::path::Path::new(":memory:")).unwrap();
         journal.bootstrap(7,0).unwrap();
         let j=Mutex::new(journal);
-        let codex=Codex{bin:"must-not-spawn".into(),workspace:"/invented".into(),home:"/invented".into(),limits:Limits{first_event:Duration::from_secs(1),silent:Duration::from_secs(1),deadline:Duration::from_secs(1)}};
-        let c=Runtime{codex,claude:crate::claude::Claude{bin:"must-not-spawn".into(),home:None,logs:"/invented".into(),models:vec![]},default:Client::Codex,routes:Default::default(),slots:None};
+        let codex=Codex{bin:"must-not-spawn".into(),workspace:"/invented".into(),home:"/invented".into(),optimization:Intent::Off,limits:Limits{first_event:Duration::from_secs(1),silent:Duration::from_secs(1),deadline:Duration::from_secs(1)}};
+        let c=Runtime{codex,claude:crate::claude::Claude{bin:"must-not-spawn".into(),home:None,logs:"/invented".into(),models:vec![],optimization:Intent::Off},default:Client::Codex,routes:Default::default(),slots:None};
         let d=crate::direct::Direct{keys:crate::keys::Keys(std::env::temp_dir().join("pilotq-213-invented-absent-keys"))};
         for tooled in [false,true] {
             let r=j.lock().unwrap().ask(7,"invented control",1).unwrap();
@@ -916,7 +909,7 @@ for line in sys.stdin:
   send({'method':'turn/completed','params':{'turn':{'status':'interrupted'}}})
 "#).unwrap();
         std::fs::set_permissions(&bin,std::fs::Permissions::from_mode(0o700)).unwrap();
-        let c=Codex{bin:bin.to_str().unwrap().into(),workspace:dir.clone(),home:dir.join("home"),limits:Limits{first_event:Duration::from_secs(2),silent:Duration::from_millis(200),deadline:Duration::from_millis(50)}};
+        let c=Codex{bin:bin.to_str().unwrap().into(),workspace:dir.clone(),home:dir.join("home"),optimization:Intent::Off,limits:Limits{first_event:Duration::from_secs(2),silent:Duration::from_millis(200),deadline:Duration::from_millis(50)}};
         let run=|native:bool,thread:Option<&str>,mode:&str,stop:bool| {
             let started=Instant::now();
             c.turn(native,thread,None,&json!([{"type":"text","text":mode}]),Some((&json!([]),"test granted tools")),

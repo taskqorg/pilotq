@@ -210,7 +210,8 @@ fn config(t: &Tool) -> Result<Option<Config>, String> {
     let api_url = v["api_url"].as_str().map(url::Url::parse).transpose().map_err(|e| format!("config.json: api_url: {e}"))?;
     let secs = |k: &str, d: u64| v["codex_limits"][k].as_u64().map_or(Ok(Duration::from_secs(d)), |n| if n > 0 { Ok(Duration::from_secs(n)) } else { Err(format!("config.json: codex_limits.{k} must be positive")) });
     let limits = manager::Limits { first_event: secs("first_event", 600)?, silent: secs("silent", 600)?, deadline: secs("deadline", 600)? };
-    let codex = manager::Codex { bin: v["codex"].as_str().unwrap_or("codex").to_string(), workspace: t.install.join("workspace"), home: t.install.join("codex"), limits };
+    let optimization = pilotq::optimization(&v["optimization"])?;
+    let codex = manager::Codex { bin: v["codex"].as_str().unwrap_or("codex").to_string(), workspace: t.install.join("workspace"), home: t.install.join("codex"), limits, optimization };
     // § 5: the TaskQ CLI and the project root whose taskq.json names the board; absent, the manager has no TaskQ tools
     let tq = &v["taskq"];
     let taskq = match (tq["bin"].as_str(), tq["root"].as_str()) {
@@ -227,14 +228,14 @@ fn config(t: &Tool) -> Result<Option<Config>, String> {
         _ => return Err("config.json: voice needs recognizer and model".into()),
     };
     // #265 A2: installation runtime (default Codex), per-route overrides and optional TaskQ host slots
-    let client = |v: &Value, k: &str| v.as_str().map_or(Ok(coreq::agent::Client::Codex), |s| coreq::agent::Client::parse(s).ok_or(format!("config.json: {k} must be codex or claude")));
+    let client = |v: &Value, k: &str| v.as_str().map_or(Ok(agentq_runtime::agent::Client::Codex), |s| agentq_runtime::agent::Client::parse(s).ok_or(format!("config.json: {k} must be codex or claude")));
     let default = client(&v["runtime"], "runtime")?;
     let mut routes = std::collections::BTreeMap::new();
     for (route, value) in v["runtime_routes"].as_object().into_iter().flatten() { routes.insert(route.clone(), client(value, "runtime_routes")?); }
     let claude = claude::Claude { bin: v["claude"].as_str().unwrap_or("claude").into(),
         // "default" keeps the service user's own Claude login; otherwise PilotQ's isolated home, like Codex
         home: match v["claude_home"].as_str() { Some("default") => None, Some(p) => Some(p.into()), None => Some(t.install.join("claude")) },
-        logs: t.install.join("claude-sessions"),
+        logs: t.install.join("claude-sessions"), optimization,
         models: match v["claude_models"].as_array() {
             Some(a) => a.iter().map(|m| m.as_str().filter(|s| !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b))).map(str::to_string).ok_or("config.json: claude_models are model codes")).collect::<Result<_, _>>()?,
             None => ["opus", "sonnet", "haiku"].map(String::from).to_vec(),
@@ -331,9 +332,9 @@ fn doctor(t: &Tool) -> Value {
         });
     checks["codex"] = json!(if login { "ok" } else { "failed" });
     // #265: a Claude route needs a Claude subscription login in PilotQ's own Claude home; API-key login does not qualify (R9)
-    let uses_claude = c.runtime.default == coreq::agent::Client::Claude || c.runtime.routes.values().any(|r| *r == coreq::agent::Client::Claude);
+    let uses_claude = c.runtime.default == agentq_runtime::agent::Client::Claude || c.runtime.routes.values().any(|r| *r == agentq_runtime::agent::Client::Claude);
     let claude = !uses_claude || {
-        let mut cmd = manager::base(&c.runtime.claude.bin);
+        let mut cmd = pilotq::base(&c.runtime.claude.bin);
         if let Some(home) = &c.runtime.claude.home { cmd.env("CLAUDE_CONFIG_DIR", home); }
         cmd.args(["auth", "status", "--json"]);
         host::output_with_budget(&mut cmd, Duration::from_secs(10)).ok().and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())

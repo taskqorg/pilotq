@@ -2370,6 +2370,14 @@ impl Journal {
         tx.commit().map_err(e)
     }
 
+    pub fn optimization(&self, r: &Run, state: &Value, at: i64) -> Result<(), String> {
+        let tx = self.0.unchecked_transaction().map_err(|e|e.to_string())?;
+        if self.fenced(r)? { return Ok(()); }
+        tx.execute("UPDATE runs SET agentq=?2 WHERE id=?1",params![r.id,state["effective"].as_str().unwrap_or("unknown")]).map_err(|e|e.to_string())?;
+        tx.execute("INSERT INTO audit_events(request_id,run_id,at,kind,result) VALUES (?1,?2,?3,'optimization',?4)",params![r.request,r.id,at,state.to_string()]).map_err(|e|e.to_string())?;
+        tx.commit().map_err(|e|e.to_string())
+    }
+
     pub fn keep_finding(&self, r: &Run, text: &str, at: i64) -> Result<(),String> {
         self.0.execute("INSERT INTO audit_events(request_id,run_id,at,kind,result) VALUES (?1,?2,?3,'kept_finding',?4)",params![r.request,r.id,at,text]).map(drop).map_err(|e|e.to_string())
     }
@@ -3825,6 +3833,25 @@ mod tests {
         let mut j = Journal::open(&d.join("journal.sqlite")).unwrap();
         j.bootstrap(7, 0).unwrap();
         (j, d)
+    }
+
+    // R17, §6/#294: effective optimization and its reason survive restart without changing schema or old fenced runs.
+    #[test]
+    fn optimization_294_audit_survives_restart_and_fence() {
+        let (mut j,p)=journal("optimization294");
+        let run=j.ask(7,"invented optimization request",1).unwrap();
+        let state=json!({"intent":"on","effective":"unknown","reason":"unreadable_state"});
+        j.optimization(&run,&state,2).unwrap();
+        drop(j);
+        let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
+        assert_eq!(j.0.query_row("SELECT agentq FROM runs WHERE id=?1",[run.id],|r|r.get::<_,String>(0)).unwrap(),"unknown");
+        assert_eq!(j.0.query_row("SELECT result FROM audit_events WHERE run_id=?1 AND kind='optimization'",[run.id],|r|r.get::<_,String>(0)).unwrap(),state.to_string());
+        let _new=j.ask(7,"replacement request",3).unwrap();
+        j.optimization(&run,&json!({"effective":"on"}),4).unwrap();
+        assert_eq!(j.0.query_row("SELECT agentq FROM runs WHERE id=?1",[run.id],|r|r.get::<_,String>(0)).unwrap(),"unknown");
+        assert_eq!(count(&j,"SELECT count(*) FROM audit_events WHERE kind='optimization'"),1);
+        assert_eq!(j.0.query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),13);
+        drop(j); std::fs::remove_dir_all(p).unwrap();
     }
 
     // #213 / R5, §9: a retired run must not leave an undrainable request,

@@ -106,7 +106,7 @@ pub fn report(c: Option<&crate::Config>) -> Value {
         probe("curl",Some("curl"),&["--version"],"7.68.0","curl ","Install curl 7.68 or newer on the service PATH"),
     ];
     // #265: Claude Code only where the installation or a route runs the manager on it
-    if let Some(c) = c.filter(|c| c.runtime.default == coreq::agent::Client::Claude || c.runtime.routes.values().any(|r| *r == coreq::agent::Client::Claude)) {
+    if let Some(c) = c.filter(|c| c.runtime.default == agentq_runtime::agent::Client::Claude || c.runtime.routes.values().any(|r| *r == agentq_runtime::agent::Client::Claude)) {
         checks.push(probe("claude",Some(&c.runtime.claude.bin),&["--version"],"2.1.0","","Install Claude Code 2.1.0 or newer; set config.json claude to its absolute path"));
     }
     if cfg!(target_os="linux") {
