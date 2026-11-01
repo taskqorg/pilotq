@@ -3388,6 +3388,64 @@ fn telegram_intake_259() {
     stop(c,d);
 }
 
+// #344 / §9: staging new explicit speech paths must not hot-swap the running Voice;
+// cold activation selects them, and retaining/restoring legacy fields permits rollback.
+#[test]
+fn voice_config_activation_344() {
+    let (d, st) = setup("voice-activation-344", vec![]);
+    use_codex(&d, &script(&d, "fake-codex", FAKE));
+    use_voice(&d);
+    let config = d.join("config.json");
+    let original = fs::read(&config).unwrap();
+    let mut c = spawn(&d, None);
+    let send = |id| push(&st, voice_update(id, OWNER, "voice", json!({"file_id":format!("invented-voice-{id}"),"file_unique_id":format!("invented-{id}"),"file_size":24,"duration":3,"mime_type":"audio/ogg"})));
+    send(1);
+    wait("old voice captured", 15, || try_query(&d, "SELECT count(*) FROM requests WHERE state='answered'") == Some(1));
+    let next = script(&d, "next-recognizer", r#"while [ "$1" != --output-file ]; do shift; done
+echo '{"transcription":[{"text":"New speech engine."}]}' > "$2.json""#);
+    let mut staged: Value = serde_json::from_slice(&original).unwrap();
+    let legacy = staged["voice"].clone();
+    staged["voice"]["whisper_recognizer"] = json!(next);
+    staged["voice"]["whisper_model"] = json!(d.join("next-model"));
+    // Match protected atomic config activation; legacy fields and all other settings remain.
+    let save = |bytes: &[u8]| {
+        use std::os::unix::fs::PermissionsExt;
+        let pending = d.join("config.pending");
+        fs::write(&pending, bytes).unwrap();
+        fs::set_permissions(&pending, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::rename(pending, &config).unwrap();
+    };
+    save(staged.to_string().as_bytes());
+    let saved: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    for field in ["recognizer", "model", "threads", "ffmpeg"] { assert_eq!(saved["voice"][field], legacy[field]); }
+    send(2);
+    wait("staging leaves captured voice", 15, || try_query(&d, "SELECT count(*) FROM audit_events WHERE kind='transcript' AND item='Проверь место на диске.'") == Some(2));
+    wait("captured work completed before activation", 15, || try_query(&d, "SELECT count(*) FROM requests WHERE state='answered'") == Some(2));
+    c.kill().unwrap(); c.wait().unwrap();
+    let mut partial = staged.clone();
+    partial["voice"].as_object_mut().unwrap().remove("whisper_model");
+    save(partial.to_string().as_bytes());
+    use std::os::unix::process::CommandExt;
+    let mut refused = Svc(service(&d, None).stderr(Stdio::piped()).process_group(0).spawn().unwrap());
+    wait("partial voice paths refused", 5, || refused.try_wait().unwrap().is_some());
+    assert!(!refused.wait().unwrap().success());
+    let mut error = String::new();
+    refused.stderr.take().unwrap().read_to_string(&mut error).unwrap();
+    assert!(error.contains("both whisper_recognizer and whisper_model"));
+    save(staged.to_string().as_bytes());
+    c = spawn(&d, None);
+    send(3);
+    wait("cold activation uses new voice", 15, || try_query(&d, "SELECT count(*) FROM audit_events WHERE kind='transcript' AND item='New speech engine.'") == Some(1));
+    wait("new voice answered", 15, || try_query(&d, "SELECT count(*) FROM requests WHERE state='answered'") == Some(3));
+    c.kill().unwrap(); c.wait().unwrap();
+    save(&original); // Restore protected voice fields before the rollback process starts.
+    c = spawn(&d, None);
+    send(4);
+    wait("rollback voice answered", 15, || try_query(&d, "SELECT count(*) FROM requests WHERE state='answered'") == Some(4));
+    assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE kind='transcript' AND item='Проверь место на диске.'"), 3);
+    stop(c, d);
+}
+
 // #104 A2/A3 / R13, R17: an OGG/Opus voice note, an audio file with a caption and an audio document reach the model as the
 // sender's marked transcript; the journal keeps file identity and transcript; no audio, URL or token reaches Codex.
 // Regression risk: voice falls back to the unsupported reply, or a transcript loses its caption, marker or audit record.

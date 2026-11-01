@@ -68,14 +68,19 @@ fn update_refuses_a_release_whose_selftest_fails() {
 
 #[test]
 fn update_installs_a_release_whose_selftest_passes() {
-    let d = scratch("update-good");
-    let install = d.join("install");
-    let out = update(&d, "9.0.0", &fs::read(env!("CARGO_BIN_EXE_pilotq")).unwrap());
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "update: 9.0.0");
-    assert_eq!(fs::read_to_string(install.join("current")).unwrap(), "9.0.0");
-    assert!(install.join("releases/9.0.0/pilotq").is_file() && install.join("pilotq").is_file());
-    fs::remove_dir_all(d).unwrap();
+    // #344 / §9: a verified external new-version runner still updates an older installed
+    // current; its own version must not bypass the normal checksum/selftest/activation path.
+    for ver in ["9.0.0", env!("CARGO_PKG_VERSION")] {
+        let d = scratch(&format!("update-good-{ver}"));
+        fs::create_dir_all(d.join("install/releases/0.0.1")).unwrap();
+        fs::write(d.join("install/current"), "0.0.1").unwrap();
+        let out = update(&d, ver, &fs::read(env!("CARGO_BIN_EXE_pilotq")).unwrap());
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), format!("update: {ver}"));
+        assert_eq!(fs::read_to_string(d.join("install/current")).unwrap(), ver);
+        assert!(d.join(format!("install/releases/{ver}/pilotq")).is_file() && d.join("install/pilotq").is_file());
+        fs::remove_dir_all(d).unwrap();
+    }
 }
 
 #[test]
