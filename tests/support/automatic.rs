@@ -146,6 +146,58 @@ fn a40_admission_startup_onboarding() {
     fs::remove_dir_all(d).unwrap();
 }
 
+// §5: prepare only the synthetic install through the protected owner's supported control.
+// Keep actual findings: an override permits launch, never asserts that setup passed.
+fn prepare_readiness(d: &Path) -> Value {
+    wait("completed startup findings", 30, || try_query(d, "SELECT count(*) FROM meta WHERE key='onboarding:pilotq' AND json_extract(CAST(value AS TEXT),'$.pending')=0") == Some(1));
+    let saved = || -> Value {
+        serde_json::from_str(&query_text(d, "SELECT CAST(value AS TEXT) FROM meta WHERE key='onboarding:pilotq'")).unwrap()
+    };
+    let before = saved();
+    assert_eq!(before["pending"], false);
+    assert!(before["report"].is_object(), "startup findings required");
+    let receipt = ok(cli(d, &["ask", "/onboard pilotq override", "--json"]));
+    assert_eq!(receipt["state"], "answered");
+    let after = saved();
+    for key in ["board", "root", "epoch", "pending", "ready", "report"] {
+        assert_eq!(after[key], before[key], "override changed {key}");
+    }
+    assert_eq!(after["override"]["actor"], OWNER);
+    assert_eq!(after["override"]["request"], receipt["request"]);
+    assert_eq!(after["override"]["report"], before["report"]);
+    assert_eq!(query(d, "SELECT count(*) FROM audit_events WHERE kind='onboarding_override' AND target='pilotq'"), 1);
+    json!({"request":receipt["request"], "ready":after["ready"], "report":after["report"], "override":after["override"]})
+}
+
+// §5 / #288: real startup findings must not prevent this synthetic management fixture
+// from reaching create/start; R10 admission still runs before owner preparation.
+#[test]
+fn a40_readiness_create_start() {
+    let (d, st) = tq_setup("a40-readiness-create", true);
+    let db = rusqlite::Connection::open(d.join("journal.sqlite")).unwrap();
+    db.execute("DELETE FROM meta WHERE key='onboarding:pilotq'", []).unwrap();
+    drop(db);
+    let svc = Svc(service(&d, None).spawn().unwrap());
+    wait("startup onboarding", 15, || try_query(&d, "SELECT count(*) FROM requests WHERE kind='onboarding' AND state='answered'") == Some(1));
+    push(&st, text(1, CHAT, TOPIC, 9, "Do not admit this synthetic stranger."));
+    wait("ignored stranger", 15, || try_query(&d, "SELECT count(*) FROM updates WHERE update_id=1 AND disposition='ignored'") == Some(1));
+    assert_stranger_ignored(&d, &st, 1);
+    let evidence = prepare_readiness(&d);
+    assert_eq!(evidence["ready"], false, "fixture must retain real gaps");
+    assert!(!evidence["report"]["gaps"].as_array().unwrap().is_empty());
+    assert!(!tq_calls(&d).iter().any(|a| a[0] == "add"));
+    push(&st, call(2, CHAT, TOPIC, OWNER, "task_plan", plan(&["A40 synthetic docs"])));
+    wait("saved plan", 15, || try_query(&d, "SELECT count(*) FROM plans WHERE revision=1") == Some(1));
+    push(&st, call(3, CHAT, TOPIC, OWNER, "task_run_plan", json!({"revision":1})));
+    wait("launch outcome", 15, || try_query(&d, "SELECT count(*) FROM requests WHERE update_id=3 AND state IN ('answered','failed')") == Some(1));
+    assert_eq!(query(&d, "SELECT count(*) FROM plan_runs WHERE state='started'"), 1, "{:?}", texts(&st));
+    assert_eq!(query(&d, "SELECT count(*) FROM tickets WHERE started=1 AND task IS NOT NULL"), 1);
+    assert!(tq_calls(&d).iter().any(|a| a[0] == "add"));
+    assert!(tq_calls(&d).iter().any(|a| a[0] == "start"));
+    drop(svc);
+    fs::remove_dir_all(d).unwrap();
+}
+
 impl Run {
     // TaskQ §2 permits trusted hand-authored entries. These are scripted fixtures, never real worker/reviewer claims.
     fn event(&mut self, body: &str, state: &str) -> i64 {
@@ -491,6 +543,10 @@ fn a40_live_management() {
             assert_eq!(query(&h.d, &format!("SELECT sender FROM requests WHERE id={id}")), 8);
             json!({"ignored_update":1,"startup_onboarding_request":onboarding,"second_user_request":id})
         });
+        // R10 admission is already verified. Prepare the private fixture before planning/launch;
+        // this changes neither host setup nor TaskQ admission checks (§5).
+        h.data["readiness_preparation"] = prepare_readiness(&h.d);
+        h.save();
         h.case("discussion", |h| {
             let (id, reply) = h.model("Use project_list to show which registered projects I may access, then discuss briefly why release checks matter. Do not plan or execute anything.");
             assert_eq!(query(&h.d,"SELECT count(*) FROM plans"),0);
