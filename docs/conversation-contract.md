@@ -38,7 +38,12 @@ retry budgets.
 Deadline replies retain readable findings from completed reads and offer to plan the remainder (§5);
 findings never turn an uncertain write into success. Completion cards retain the trusted TaskQ
 closing result and limitations after the effect line; unavailable verdicts remain explicitly
-unconfirmed. Recovered reply refusals use the same localized line as live refusals; the original
+unconfirmed. Closed notifications resolve `Repeats: publish <id>` through installed TaskQ
+closed-status verdicts (§5). Bind the exact trusted, unedited source and close identities to the
+same task URL and stable closed inbox revision. Missing, foreign, edited or unverifiable findings
+remain explicitly unavailable; this read adds no effects or route changes.
+
+Recovered reply refusals use the same localized line as live refusals; the original
 reason and remedy stay in audit.
 
 Normal replies have no model/context/quota footer. These observations belong to `/status`, scoped to
