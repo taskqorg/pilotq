@@ -60,8 +60,9 @@ pub fn frames(v: &Voice, video: &[u8], budget: Duration) -> Result<Vec<Vec<u8>>,
     if !container { return Err("the video container is not MP4, MOV, WebM, MKV or AVI".into()); }
     let until = Instant::now() + budget;
     let (dir, input) = workdir(video).map_err(str::to_string)?;
+    // Round partial intervals up so short clips survive; JPEG requires full-range YUV.
     run(Command::new(&v.ffmpeg).args(["-nostdin", "-loglevel", "error", "-protocol_whitelist", "file", "-i"]).arg(&input)
-        .args(["-vf", "fps=1/15,scale='min(1280,iw)':-2", "-frames:v", &FRAMES.to_string(), "-q:v", "4"]).arg(dir.0.join("frame%d.jpg")), &dir.0.join("out"), until)
+        .args(["-vf", "fps=1/15:round=up,scale='min(1280,iw)':-2", "-frames:v", &FRAMES.to_string(), "-pix_fmt", "yuvj420p", "-q:v", "4"]).arg(dir.0.join("frame%d.jpg")), &dir.0.join("out"), until)
         .map_err(|e| if e == "failed" { "the video could not be decoded".to_string() } else { format!("video {e}") })?;
     let frames: Vec<Vec<u8>> = (1..=FRAMES).map_while(|k| std::fs::read(dir.0.join(format!("frame{k}.jpg"))).ok()).collect();
     if frames.is_empty() { Err("the video has no picture frames".into()) } else { Ok(frames) }
@@ -190,12 +191,20 @@ mod tests {
         let path = dir.join("v.mp4");
         let made = std::process::Command::new("ffmpeg").args(["-nostdin", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=duration=62:size=320x240:rate=5", "-pix_fmt", "yuv420p"]).arg(&path).status().unwrap();
         assert!(made.success());
-        let v = super::Voice { ffmpeg: "ffmpeg".into(), recognizer: "none".into(), model: dir.clone(), threads: 1 };
+        let v = super::Voice { ffmpeg: "/usr/bin/ffmpeg".into(), recognizer: "none".into(), model: dir.clone(), threads: 1 };
         let frames = super::frames(&v, &std::fs::read(&path).unwrap(), std::time::Duration::from_secs(30)).unwrap();
         assert_eq!(frames.len(), super::FRAMES);
         assert!(frames.iter().all(|f| f.starts_with(b"\xff\xd8\xff")));
         assert!(super::frames(&v, b"#EXTM3U\nfile:///etc/passwd", std::time::Duration::from_secs(10)).unwrap_err().contains("container"));
         assert!(super::frames(&v, b"\0\0\0\x18ftypmp42 broken", std::time::Duration::from_secs(10)).unwrap_err().contains("could not be decoded"));
+        // §1 / #341: real short H264 must yield a picture, without inventing absent audio.
+        let short = dir.join("short.mp4");
+        assert!(std::process::Command::new("/usr/bin/ffmpeg").args(["-nostdin", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=duration=3:size=320x180:rate=10", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an"]).arg(&short).status().unwrap().success());
+        let bytes = std::fs::read(short).unwrap();
+        let pictures = super::frames(&v, &bytes, std::time::Duration::from_secs(30)).unwrap();
+        assert_eq!(pictures.len(), 1);
+        assert!(pictures[0].starts_with(b"\xff\xd8\xff"));
+        assert!(super::transcribe(&v, &bytes, std::time::Duration::from_secs(30)).unwrap_err().contains("could not be decoded"));
         let _ = std::fs::remove_dir_all(dir);
     }
 }
