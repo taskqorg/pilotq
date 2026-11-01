@@ -1615,7 +1615,7 @@ impl Journal {
                         WHEN kind='release_result' THEN (SELECT s.sent_message FROM outbox s WHERE s.request_id=o.revision AND s.kind='release_preview' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
                         WHEN kind='onboarding' THEN (SELECT s.sent_message FROM outbox s WHERE s.request_id=o.request_id AND s.kind='onboarding' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
                         WHEN kind='choice_answered' THEN o.reply_to
-                        WHEN kind='question_answered' THEN (SELECT s.sent_message FROM outbox s WHERE s.task=o.task AND s.project=o.project AND s.chat=o.chat AND s.topic IS o.topic
+                        WHEN kind IN ('question_answered','question_superseded') THEN (SELECT s.sent_message FROM outbox s WHERE s.task=o.task AND s.project=o.project AND s.chat=o.chat AND s.topic IS o.topic
                         AND s.kind='question' AND s.revision=o.revision AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
                         WHEN kind IN ('draft_closed','plan_answered','plan_progress','plan_problem') THEN (SELECT s.sent_message FROM outbox s JOIN cards c ON c.id=o.revision WHERE ((s.request_id=c.request_id AND s.kind IN ('rich','rich_part')) OR (s.revision=c.id AND s.kind IN ('plan_answered','plan_progress','plan_problem'))) AND s.state='delivered' ORDER BY s.id DESC LIMIT 1) END, kind {heads} AND next_at<=?1 AND coalesce((SELECT value FROM meta WHERE key='telegram-cooldown:' || o.chat),0)<=?1 ORDER BY (kind='reaction') DESC,id LIMIT 1"
                 ),
@@ -3249,6 +3249,16 @@ impl Journal {
             notice(&tx, request, chat, topic, "status", project, task, revision, &text, at)?;
         }
         if let (Some(q), "ask") = (question, state) {
+            // §2/§4: retirement is presentation, never an accepted-answer receipt.
+            // Queue it before the replacement so route ordering also covers unsent questions.
+            let ru: bool = tx.query_row("SELECT coalesce(language,'en') LIKE 'ru%' FROM requests WHERE id=?1", [request], |r| r.get(0)).map_err(e)?;
+            let text = if ru { "Вопрос заменён новым; используйте текущий вопрос." } else { "Superseded by a newer question; use the current question." };
+            tx.execute("INSERT INTO outbox(request_id,chat,topic,text,html,next_at,kind,project,task,revision)
+                SELECT request_id,chat,topic,text || char(10) || char(10) || ?7,NULL,?8,'question_superseded',project,task,revision FROM outbox o
+                WHERE request_id=?1 AND project=?2 AND task=?3 AND chat=?4 AND topic IS ?5 AND kind='question' AND revision<?6
+                AND NOT EXISTS (SELECT 1 FROM outbox a WHERE a.request_id=o.request_id AND a.project=o.project AND a.task=o.task
+                    AND a.chat=o.chat AND a.topic IS o.topic AND a.revision=o.revision AND a.kind IN ('question_answered','question_superseded'))",
+                params![request,project,task,chat,topic,revision,text,at]).map_err(e)?;
             notice(&tx, request, chat, topic, "question", project, task, revision, q, at)?;
             tx.execute("UPDATE outbox SET question=?1 WHERE id=last_insert_rowid()", [card]).map_err(e)?;
         }
@@ -4351,6 +4361,54 @@ mod tests {
         assert_eq!(text,"Ответ не сохранён; проверьте актуальный вопрос и права.");
         assert!(j.0.query_row("SELECT result FROM audit_events WHERE kind='task'",[],|r|r.get::<_,String>(0)).unwrap().contains("invented CLI error"));
         drop(j);std::fs::remove_dir_all(p).unwrap();
+    }
+
+    // #324 / §2, §4: pending or delivered questions retire only in their saved route;
+    // restart/fallback retain ordered edits, accepted receipts remain factual and deduplicated.
+    #[test]
+    fn question_supersession_324_restart_routes_and_order() {
+        for delivered in [false,true] {
+            let (mut j,p)=journal(if delivered {"324-delivered"} else {"324-pending"});
+            j.admit(&[(1,msg(7,7,1))],0).unwrap();
+            j.0.execute("DELETE FROM outbox",[]).unwrap();
+            j.0.execute("INSERT INTO tasks(number,request_id,chat,topic,state,revision,observed) VALUES (19,1,7,NULL,'ask',10,1)",[]).unwrap();
+            for (chat,topic,revision) in [(7,None,10),(8,None,9),(7,Some(5),9),(7,None,8)] {
+                notice(&j.0,1,chat,topic,"question","pilotq",19,revision,"Invented question",1).unwrap();
+            }
+            j.answer_question("pilotq",19,8,"Answered by invented actor: saved choice",1).unwrap();
+            if delivered {
+                while let Some(d)=j.due(1).unwrap().0 {j.record(d.id,&Sent::Ok(100+d.id),1).unwrap();}
+            }
+            assert!(j.observe("pilotq",19,"ask",20,None,"ignored",Some("Invented replacement"),2).unwrap());
+            assert!(!j.observe("pilotq",19,"ask",20,None,"ignored",Some("Invented replacement"),2).unwrap());
+            assert_eq!(count(&j,"SELECT count(*) FROM outbox WHERE kind='question_superseded'"),1);
+            assert_eq!(j.question_answer("pilotq",19,10).unwrap(),None,"retirement is no answer receipt");
+            drop(j);
+            let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
+            let mut retired=false;
+            while let Some(d)=j.due(10).unwrap().0 {
+                if d.kind=="question_superseded" {
+                    assert_eq!((d.chat,d.topic),(7,None));
+                    assert!(d.edit.is_some(),"an unsent original must acquire its receipt before retirement");
+                    assert!(d.text.contains("Invented question") && d.text.contains("Superseded") && !d.text.contains("Answered by"));
+                    assert!(d.buttons.is_empty());
+                    j.record(d.id,&Sent::RichFallback,10).unwrap();
+                    let html=j.due(10).unwrap().0.unwrap();
+                    assert_eq!(html.id,d.id);assert_eq!(html.edit,d.edit);assert!(!html.rich);assert!(html.html.is_some());
+                    j.record(d.id,&Sent::Plain,10).unwrap();
+                    drop(j);
+                    j=Journal::open(&p.join("journal.sqlite")).unwrap();
+                    let plain=j.due(10).unwrap().0.unwrap();
+                    assert_eq!(plain.id,d.id);assert_eq!(plain.edit,d.edit);assert!(!plain.rich);assert!(plain.html.is_none());
+                    retired=true;
+                }
+                if d.kind=="question" && d.text=="Invented replacement" {assert!(retired,"retirement precedes replacement");}
+                j.record(d.id,&Sent::Ok(d.edit.unwrap_or(100+d.id)),10).unwrap();
+            }
+            assert!(retired);
+            assert_eq!(j.question_answer("pilotq",19,8).unwrap().as_deref(),Some("Answered by invented actor: saved choice"));
+            drop(j);std::fs::remove_dir_all(p).unwrap();
+        }
     }
 
     // #165 A5: two tasks from one launch share a status receipt even as they

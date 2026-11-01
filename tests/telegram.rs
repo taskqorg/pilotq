@@ -1493,9 +1493,21 @@ fn u07_question_relay_and_bound_answers() {
     wait("first question", 15, || question("short ★").is_some());
     let q1 = question("short ★").unwrap();
     assert_eq!((q1["chat_id"].as_i64(), q1["message_thread_id"].as_i64()), (Some(-100), Some(5)), "the question reaches the originating topic");
-    set_task(&d, 19, |t| t["card"] = json!("Done: drafted twice\nProblem: pick again\n1. tiny ★\n2. huge"));
+    // #324 / §2, §4: an unanswered question loses controls after a fresh ask,
+    // while stale/foreign replies and the current accepted receipt retain their fences.
+    set_task(&d, 19, |t| { t["state"]=json!("ready"); t["card"]=Value::Null; });
+    set_task(&d, 19, |t| t["state"]=json!("doing"));
+    set_task(&d, 19, |t| { t["state"]=json!("ask"); t["card"] = json!("Done: drafted twice\nProblem: pick again\n1. tiny ★\n2. huge"); });
     wait("second question", 15, || question("tiny ★").is_some());
     let q2 = question("tiny ★").unwrap();
+    wait("superseded unanswered controls removed", 15, || sent(&st).iter().any(|m|
+        m["edit"]==true && m["id"]==q1["id"] && m["text"].as_str().is_some_and(|s|s.contains("Superseded"))));
+    let retired=sent(&st).into_iter().find(|m|m["edit"]==true && m["id"]==q1["id"]).unwrap();
+    assert_eq!(retired["reply_markup"]["inline_keyboard"],json!([]));
+    assert_eq!(retired["chat_id"],-100);
+    assert!(!retired["text"].as_str().unwrap().contains("Answered by"));
+    assert_eq!(q2["reply_markup"]["inline_keyboard"].as_array().unwrap().len(),2);
+
     wait("A40 current delivered revision", 15, || automatic::current_question(&d,&sent(&st),19).is_some_and(|(id,_)|q2["id"]==id));
     assert_ne!(automatic::current_question(&d,&sent(&st),19).unwrap().0,q1["id"].as_i64().unwrap());
 
@@ -1521,6 +1533,17 @@ fn u07_question_relay_and_bound_answers() {
     assert_eq!(confirmed,query_text(&d,"SELECT text FROM outbox WHERE task=19 AND kind='question_answered' LIMIT 1"));
     assert!(confirmed.starts_with("Answered by ") && confirmed.contains("huge"));
     assert_eq!(tq_calls(&d).iter().filter(|c|c[0]=="answer").count(),1);
+    drop(c);
+    let c=spawn(&d,None);
+    // Saved stale and repeated callback identities remain fenced after restart;
+    // copying a current message into another topic grants no route authority.
+    for (id,route,message) in [(8,topic,q1["id"].as_i64().unwrap()),(9,topic,q2["id"].as_i64().unwrap()),(10,Some(6),q2["id"].as_i64().unwrap())] {
+        push(&st,press(id,-100,route,OWNER,message,"answer:1"));
+        wait("callback disposed",15,||query(&d,&format!("SELECT count(*) FROM updates WHERE update_id={id}"))==1);
+    }
+    wait("callbacks settled",15,||query(&d,"SELECT count(*) FROM requests WHERE update_id IN (8,9,10) AND state IN ('queued','running')")==0);
+    assert_eq!(tq_calls(&d).iter().filter(|c|c[0]=="answer").count(),1,"stale/repeated/foreign-route callbacks never write");
+    assert_eq!(sent(&st).iter().filter(|m|m["edit"]==true && m["id"]==q1["id"]).count(),1,"restart never repeats retirement");
     stop(c, d);
 }
 

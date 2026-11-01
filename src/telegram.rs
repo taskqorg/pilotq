@@ -432,7 +432,7 @@ pub(crate) async fn send(bot: &Bot, j: &Shared, d: &Delivery) -> Sent {
         }
         if !d.buttons.is_empty() {
             r=r.reply_markup(InlineKeyboardMarkup::new(d.buttons.iter().map(|(data,label)|vec![InlineKeyboardButton::callback(label,data)])));
-        } else if matches!(d.kind.as_str(), "question_answered" | "choice_answered" | "plan_answered" | "plan_progress" | "plan_problem" | "onboarding" | "release_result") { r = r.reply_markup(InlineKeyboardMarkup::new(Vec::<Vec<InlineKeyboardButton>>::new())); }
+        } else if matches!(d.kind.as_str(), "question_answered" | "question_superseded" | "choice_answered" | "plan_answered" | "plan_progress" | "plan_problem" | "onboarding" | "release_result") { r = r.reply_markup(InlineKeyboardMarkup::new(Vec::<Vec<InlineKeyboardButton>>::new())); }
         match r.await {
             Ok(m) => return Sent::Ok(m.id.0 as i64),
             Err(RequestError::Api(ApiError::MessageNotModified)) => return Sent::Ok(m),
