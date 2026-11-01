@@ -109,6 +109,43 @@ fn a40_final_reply_delivery() {
     fs::remove_dir_all(d).unwrap();
 }
 
+// R10 / §2: only the owner's §5 startup onboarding may precede the first admitted input.
+// Scope stranger checks to ingress identity, rather than suppressing legitimate service work.
+fn assert_stranger_ignored(d: &Path, st: &State, update: i64) {
+    assert_eq!(query(d, &format!("SELECT count(*) FROM updates WHERE update_id={update} AND disposition='ignored' AND request_id IS NULL")), 1);
+    assert_eq!(query(d, &format!("SELECT count(*) FROM requests WHERE update_id={update} OR sender=9")), 0);
+    assert_eq!(query(d, "SELECT count(*) FROM requests WHERE NOT (front='service' AND kind='onboarding' AND state='answered' AND sender=7 AND chat=7 AND topic IS NULL AND update_id<0)"), 0);
+    assert_eq!(query(d, "SELECT count(*) FROM outbox WHERE kind<>'onboarding' OR chat<>7 OR topic IS NOT NULL"), 0);
+    assert_eq!(query(d, "SELECT count(*) FROM runs"), 0, "stranger must not start a model");
+    assert_eq!(query(d, "SELECT count(*) FROM plans"), 0);
+    assert_eq!(query(d, "SELECT count(*) FROM tickets"), 0, "stranger must not file a task");
+    let f = st.lock().unwrap();
+    assert!(f.sent.iter().all(|m| m["chat_id"] == OWNER && m["message_thread_id"].is_null()), "only owner onboarding messages are allowed");
+    assert!(f.actions.is_empty(), "stranger must not trigger typing");
+    assert!(f.reactions.is_empty(), "stranger must not trigger a reaction");
+}
+
+// R10 / §5: exercise the admission fixture with real startup onboarding and fake dependencies.
+#[test]
+fn a40_admission_startup_onboarding() {
+    let (d, st) = tq_setup("a40-admission-startup", true);
+    let db = rusqlite::Connection::open(d.join("journal.sqlite")).unwrap();
+    db.execute("DELETE FROM meta WHERE key='onboarding:pilotq'", []).unwrap();
+    drop(db);
+    let svc = Svc(service(&d, None).spawn().unwrap());
+    wait("startup onboarding", 15, || try_query(&d, "SELECT count(*) FROM requests WHERE kind='onboarding' AND state='answered'") == Some(1));
+    push(&st, text(1, CHAT, TOPIC, 9, "Do not admit this synthetic stranger."));
+    wait("ignored stranger", 15, || try_query(&d, "SELECT count(*) FROM updates WHERE update_id=1 AND disposition='ignored' AND request_id IS NULL") == Some(1));
+    assert_stranger_ignored(&d, &st, 1);
+    assert!(!fs::read_to_string(d.join("codex.log")).unwrap_or_default().contains("turn/start"));
+    for line in fs::read_to_string(d.join("taskq.log")).unwrap_or_default().lines() {
+        let call: Value = serde_json::from_str(line).unwrap();
+        assert_ne!(call["args"][0], "add", "stranger must not call TaskQ add");
+    }
+    drop(svc);
+    fs::remove_dir_all(d).unwrap();
+}
+
 impl Run {
     // TaskQ §2 permits trusted hand-authored entries. These are scripted fixtures, never real worker/reviewer claims.
     fn event(&mut self, body: &str, state: &str) -> i64 {
@@ -444,13 +481,15 @@ fn a40_live_management() {
             h.update += 1;
             push(&h.st, text(h.update, CHAT, TOPIC, 9, "Do not admit this synthetic stranger."));
             h.wait("ignored person", 30, || try_query(&h.d, "SELECT count(*) FROM updates WHERE update_id=1 AND disposition='ignored'") == Some(1));
-            assert_eq!(query(&h.d, "SELECT count(*) FROM requests"), 0);
-            assert!(sent(&h.st).is_empty() && h.st.lock().unwrap().actions.is_empty());
+            h.wait("startup onboarding", 30, || try_query(&h.d, "SELECT count(*) FROM requests WHERE front='service' AND kind='onboarding' AND state='answered'") == Some(1));
+            assert_stranger_ignored(&h.d, &h.st, h.update);
+            assert!(!h.calls().iter().any(|c| c["args"][0] == "add"));
+            let onboarding = query(&h.d, "SELECT id FROM requests WHERE front='service' AND kind='onboarding'");
             ok(cli(&h.d, &["users","grant","8","chat"]));
             ok(cli(&h.d, &["routes","set","-100:5","shared"]));
             let (id, _) = h.request(8, "Reply hello in one word; do not call a tool.", None);
             assert_eq!(query(&h.d, &format!("SELECT sender FROM requests WHERE id={id}")), 8);
-            json!({"ignored_update":1,"second_user_request":id})
+            json!({"ignored_update":1,"startup_onboarding_request":onboarding,"second_user_request":id})
         });
         h.case("discussion", |h| {
             let (id, reply) = h.model("Use project_list to show which registered projects I may access, then discuss briefly why release checks matter. Do not plan or execute anything.");
