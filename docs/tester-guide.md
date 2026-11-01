@@ -108,6 +108,8 @@ The default install directory is `$HOME/.local/share/pilotq`. Use the dedicated 
 
 ## Activate multilingual speech on an existing GigaAM installation
 
+**Superseded, do not execute.** Owner note 6563703776 retains the working Russian model and permits English only if that same model supports it; Hebrew is no longer required. This unaccepted Whisper recipe is historical. Preserve installed assets/configuration and do not stage, activate or restart for this task.
+
 This is a PM/operator procedure for an approved, merged release under §9. The worker must not execute it on the installed service. Retain existing 0.39 data and all original GigaAM bytes. The running service captures `Voice` once at startup; it does not hot-reload speech paths. Old updater and rollback processes do read configuration again, so replacing their original paths with whisper.cpp 1.8.2 would fail the old Sherpa 2.0.1 version gate.
 
 1. Wait for #344 and all compatible pending 0.40 fixes to be merged, then run one final-source reserved-host A40 and cleanup before the normal release. Do not duplicate that PM qualification while #344 is open. Pause automatic updates through the existing protected `pilotq update --pause` control before the new release becomes eligible on this host. Publish only through §9’s accepted release path, with staging complete before activation.

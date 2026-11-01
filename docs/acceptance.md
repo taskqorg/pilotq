@@ -776,9 +776,21 @@ The same binaries with the exact production arguments confirmed: a garbage file 
 
 Retained risk: FLEURS is read speech; spontaneous, noisy Telegram voice notes from real users were not measured. The non-Russian reply depends on the model following the §12 instruction; it is not a language detector.
 
-### Multilingual speech, task #344
+### Existing-model speech scope, task #344
 
-Sections 1 and 3 replace the Russian-only speech decision with local Russian, English and Hebrew recognition. [The qualification report](research/344.md) retains the original failure, rejected Sherpa alternatives, verified assets, resource measurements, known spelling/technical-word errors and PM checklist. Historical #104 measurements above describe the old Russian-only engine.
+Owner note 6563703776 supersedes the earlier ru/en/he goal: preserve the working installed GigaAM-v3 Russian model and use that same model for English only if supported. Hebrew is no longer required. No CTC confirmation policy or replacement engine is approved. [The current capability finding](research/344.md#revised-owner-scope-and-existing-model-capability) distinguishes Russian v3 from the separate multilingual family.
+
+| Case | Required boundary and evidence |
+|---|---|
+| Speech344-Current-01 | Keep existing Russian assets/configuration and behavior across voice notes, audio files, true Ogg/Opus documents and video speech. No installed change, restart or release is authorized. Existing #104 evidence remains historical, not new live qualification. |
+| Speech344-Current-02 | Verify same-model English capability from official model/engine documentation before implementation or claiming support. Current v3 documentation identifies a Russian model; no English acceptance is claimed. A different multilingual model requires another owner decision. |
+| Speech344-Current-03 | Preserve source-as-data, chat-language replies, admission, grants, 20 MiB/five-minute limits, chunking, deadlines, fencing, redaction, receipts and cleanup. Missing/unsupported recognition remains an honest localized failure. |
+
+The existing branch's Whisper implementation and tests remain an unaccepted earlier candidate pending the capability decision; they must not be merged or activated as the selected Russian path. Independent review, merge-result CI and any later PM final-source/release/live qualification remain separate (§9, R19). The 0.40 live acceptance is unaffected.
+
+#### Historical superseded ru/en/he candidate cases
+
+The following cases record the earlier candidate and its evidence only; Hebrew is no longer a release requirement. Retain the tests/references and failed experiments as history, not permission to rerun them or weaken their assertions.
 
 | Case | Boundary and evidence |
 |---|---|

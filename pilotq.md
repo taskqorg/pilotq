@@ -30,7 +30,7 @@ Owner and explicit shell-grant routes may run authorized conversational loops un
 
 **Proposed scope:** one Linux host, one Telegram bot, one manager runtime, existing TaskQ boards and explicitly registered project roots. The input choices below are mandatory within that scope.
 
-Accept text, replies, task links, inline decisions, photos and image documents with captions retained. Recognize voice notes, audio files and audio documents locally as Russian, English and Hebrew speech. Photos and arbitrary documents may be TaskQ reply attachments through answer, steer and owner requeue.
+Accept text, replies, task links, inline decisions, photos and image documents with captions retained. Recognize voice notes, audio files and audio documents locally in Russian; English only if the same model supports it. Hebrew is not required. Photos and arbitrary documents may be TaskQ reply attachments through answer, steer and owner requeue.
 
 Other documents up to 20 MiB reach the turn as readable original files with a PDF text, ZIP listing or plain-text preview, else the exact reason. The scoped `reads_document` tool pages current UTF-8 attachments beyond the preview without shell access; videos and video notes as frames plus recognized speech.
 An album is one durable request retaining every file and caption. Audio is recognized in bounded segments within the recording and turn limits. Larger files get one short file-limit line; other input one unsupported-input line, both in the chat's language.
@@ -68,7 +68,7 @@ Plain-language controls are primary. `/status`, `/stop` and `/new` remain availa
 
 ## 3. Architecture and authority
 
-**Mandatory:** one Rust binary on CoreQ; teloxide only for the Bot API; manager turns via pinned `agentq-runtime` on Codex (app-server path) or Claude Code, per the installation `runtime` (default Codex) or a route override; SQLite journal; installed TaskQ CLI for execution; ffmpeg and CPU-only whisper.cpp with Whisper small Q5_1 for local original-language recognition.
+**Mandatory:** one Rust binary on CoreQ; teloxide only for the Bot API; manager turns via pinned `agentq-runtime` on Codex (app-server path) or Claude Code, per the installation `runtime` (default Codex) or a route override; SQLite journal; installed TaskQ CLI for execution; ffmpeg and static `sherpa-onnx-offline` with the existing GigaAM v3 RNNT-punct int8 for local Russian recognition.
 
 [Architecture detail](docs/runtime-contract.md#3-architecture-and-ownership) assigns journal, runtime, proposal, TaskQ and agentq authority. PilotQ owns durable input and delivery; TaskQ owns admitted execution. Registered roots and host policy own capacity. Never discover roots or silently enroll projects.
 
@@ -239,7 +239,7 @@ Workers never install live; shadow findings authorize no board mutations or prod
 
 Doctor is read-only: bot identity, isolated ChatGPT login, complete matching TaskQ board, required executable versions and bounded local voice decode/recognition probe. It never polls updates, changes grants or starts a model. Offline selftest remains setup-independent; setup success proves neither subscription entitlement nor full task flow.
 
-Supported managed host: Linux x86_64. Minimums: Codex 0.162.0, Claude Code 2.1.0 where a route uses it, TaskQ CLI 4.6.46/service 4.6.40, ffmpeg 6.1.0, whisper.cpp 1.8.2, curl 7.68.0, systemd 245, procps-ng kill 3.3.17, hostname 3.23 and Git 2.25.0 for registered releases. Each approved command/release executable declares its own minimum.
+Supported managed host: Linux x86_64. Minimums: Codex 0.162.0, Claude Code 2.1.0 where a route uses it, TaskQ CLI 4.6.46/service 4.6.40, ffmpeg 6.1.0, sherpa-onnx-offline 2.0.1, curl 7.68.0, systemd 245, procps-ng kill 3.3.17, hostname 3.23 and Git 2.25.0 for registered releases. Each approved command/release executable declares its own minimum.
 
 Use executable `--version`; only tools without that command use owner-provisioned version/SHA256 receipts. Verify recognizer bytes before trusting its receipt. Missing/unparseable/old tools refuse installed startup, install and update; report an exact operator remedy. Never provision tools, elevate privileges or change logins automatically.
 
