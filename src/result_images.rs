@@ -47,7 +47,11 @@ pub fn call(d:&Direct,tq:Option<&Taskq>,j:&Mutex<Journal>,r:&Run,args:&Value)->(
         };
         fetch(d,tq.ok_or("TaskQ unavailable")?,j,&binding,n,args["key"].as_str(),Some(r),false)
     })();
-    match result {Ok(t)=>(true,t),Err(e)=>(false,d.keys.scrub(&e))}
+    match result {Ok(t)=>(true,t),Err(e)=>{
+        let j=j.lock().unwrap();
+        let language:Option<String>=j.0.query_row("SELECT language FROM requests WHERE id=?1",[r.request],|q|q.get(0)).ok().flatten();
+        (false,public_gap(&e,language.as_deref().unwrap_or("en").starts_with("ru")).into())
+    }}
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -69,7 +73,20 @@ fn fetch(d:&Direct,tq:&Taskq,j:&Mutex<Journal>,binding:&Binding,n:i64,key_name:O
         let before=bound.inbox(n)?;
         let source_revision=before["revision"].as_i64().filter(|n|*n>0).ok_or("Current task revision unavailable; no images queued")?;
         let issue=read_issue()?;
-        let refs:Vec<_>=references(&issue).into_iter().filter(|(_,u)|u.contains("/uploads/")).collect();
+        let mut refs:Vec<_>=references(&issue).into_iter().filter(|(_,u)|u.contains("/uploads/")).collect();
+        // A non-image outcome is ordinary board activity, not a request for image credentials.
+        if !refs.iter().any(|(_,reference)|upload_url(&base,&board,reference).is_ok_and(|u|image_reference(&u))) {
+            let current_issue=read_issue()?;
+            let current=bound.inbox(n)?;
+            if current["revision"]!=before["revision"] || current["open"]!=before["open"] || current["state"]!=before["state"] || current_issue!=issue {return Err("Task question changed during image retrieval; read its current card".into());}
+            let j=j.lock().unwrap();
+            if run.is_some_and(|r|j.fenced(r).unwrap_or(true)) {return Err("Image request stopped".into());}
+            binding.active(&j)?;
+            if j.task(&binding.project,n)?.is_some_and(|(_,r,_)|r!=source_revision) {return Err("Task question changed during image retrieval; read its current card".into());}
+            if !automatic {queue(&j,binding,n,&[],Some("Image-only source unavailable; no supported direct image attachments"),&[],Some(source_revision))?;}
+            return Ok(if automatic {"No supported direct image attachments in the current outcome".into()} else {"Queued one explicit unavailable image gap".into()});
+        }
+        if automatic {refs.retain(|(_,reference)|upload_url(&base,&board,reference).is_ok_and(|u|image_reference(&u)));}
         let (key,secret)={let j=j.lock().unwrap();binding.active(&j)?;d.keys.take(key_name,"issue_read",binding.user,&j.route(binding.request)?,&binding.project,crate::now() as i64)?};
         let active=|| {
             let j=j.lock().unwrap();
@@ -269,8 +286,31 @@ fn unpack(label:&str,bytes:&[u8])->Result<Vec<(String,Vec<u8>)>,String> {
     Ok(vec![(label.to_string(),bytes.to_vec())])
 }
 
+// External diagnostics stay out of Telegram. These categories deliberately use fixed text.
+fn public_gap(error:&str,ru:bool)->&'static str {
+    let (en,rus)=if error.starts_with("Several authorized keys") {
+        ("Several authorized image keys are available; specify which key to use", "Доступны несколько разрешённых ключей для изображений; укажите, какой использовать")
+    } else if error.starts_with("no key ") {
+        ("No authorized image key is available for this request", "Для этого запроса нет разрешённого ключа изображений")
+    } else if error.starts_with("Image-only") || error.contains("not a JPEG or PNG") || error.contains("Unsupported") {
+        ("Image-only source unavailable; only direct JPEG and PNG attachments are supported", "Источник изображения недоступен; поддерживаются только прямые вложения JPEG и PNG")
+    } else if error.contains("MiB") || error.contains("limit") {
+        ("Image delivery exceeds the supported size or batch limit", "Превышен допустимый размер или количество изображений")
+    } else if error.contains("changed") || error.contains("revoked") || error.contains("stopped") {
+        ("Image access, task or destination changed; read the current task card", "Доступ, задача или адресат изменились; откройте текущую карточку задачи")
+    } else if error.contains("timed out") {
+        ("Image retrieval timed out", "Истекло время получения изображений")
+    } else {
+        ("Image retrieval is unavailable; check the task attachments and authorized image key", "Изображения недоступны; проверьте вложения задачи и разрешённый ключ изображений")
+    };
+    if ru {rus} else {en}
+}
+
 fn queue(j:&Journal,b:&Binding,n:i64,images:&[(String,Vec<u8>)],gap:Option<&str>,sources:&[Value],expected_revision:Option<i64>)->Result<(),String> {
     b.active(j)?;
+    if let Some(expected)=expected_revision {
+        if j.task(&b.project,n)?.is_some_and(|(_,current,_)|current!=expected) {return Err("Task question changed during image retrieval; read its current card".into());}
+    }
     let tx=j.0.unchecked_transaction().map_err(|e|e.to_string())?;
     let revision:i64=expected_revision.unwrap_or(tx.query_row("SELECT coalesce((SELECT revision FROM tasks WHERE project=?1 AND number=?2),0)",params![b.project,n],|r|r.get(0)).map_err(|e|e.to_string())?);
     let tag=format!("result-images:{}:{n}:{revision}",b.request);
@@ -289,8 +329,9 @@ fn queue(j:&Journal,b:&Binding,n:i64,images:&[(String,Vec<u8>)],gap:Option<&str>
     }
     if let Some(gap)=gap {
         let language:Option<String>=tx.query_row("SELECT language FROM requests WHERE id=?1",[b.request],|r|r.get(0)).map_err(|e|e.to_string())?;
+        let gap=public_gap(gap,language.as_deref().unwrap_or("en").starts_with("ru"));
         let text=if language.as_deref().unwrap_or("en").starts_with("ru") {format!("{} #{n}: изображения доставлены не полностью. {gap}",b.project)} else {format!("{} #{n}: {gap}. Image delivery is incomplete.",b.project)};
-        tx.execute("INSERT INTO outbox(request_id,chat,topic,text,next_at,kind,project,task) VALUES (?1,?2,?3,?4,?5,'result_image_gap',?6,?7)",params![b.request,b.chat,b.topic,text,at,b.project,n]).map_err(|e|e.to_string())?;
+        tx.execute("INSERT INTO outbox(request_id,chat,topic,text,next_at,kind,project,task,revision) VALUES (?1,?2,?3,?4,?5,'result_image_gap',?6,?7,?8)",params![b.request,b.chat,b.topic,text,at,b.project,n,revision]).map_err(|e|e.to_string())?;
         let id=tx.last_insert_rowid();
         tx.execute("INSERT INTO meta(key,value) VALUES (?1,?2)",params![format!("result-image-binding:{id}"),serde_json::to_string(b).map_err(|e|e.to_string())?]).map_err(|e|e.to_string())?;
     }
@@ -337,6 +378,56 @@ pub fn answer_actor(j:&Journal,project:&str,n:i64,revision:i64,sender:i64,argv:&
 #[cfg(test)]
 mod tests {
     use super::*;
+    // #316 A2/A3: automatic non-image outcomes must not select either eligible
+    // key or emit a gap; real images fail closed until a key is named explicitly.
+    #[cfg(unix)]
+    #[test]
+    fn result_images_316_nonimage_and_ambiguous_keys() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir=std::env::temp_dir().join(format!("pilotq-images-316-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("taskq.json"),json!({"repo":"invented/csgo"}).to_string()).unwrap();
+        std::fs::write(dir.join("status.json"),json!({"complete":true,"board":{"repo":"invented/csgo","kind":"gitlab","host":"gitlab.example.test"},"tasks":[]}).to_string()).unwrap();
+        std::fs::write(dir.join("inbox.json"),json!({"schema":1,"task":444,"open":false,"state":"closed","revision":43,"answers":[]}).to_string()).unwrap();
+        let bin=dir.join("taskq");
+        std::fs::write(&bin,"#!/bin/sh\ncase \"$1\" in\nstatus) cat status.json;;\nissue) cat issue.json;;\ninbox) cat inbox.json;;\n*) exit 1;;\nesac\n").unwrap();
+        std::fs::set_permissions(&bin,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut journal=Journal::open(&dir.join("journal.sqlite")).unwrap();journal.bootstrap(7,0).unwrap();
+        journal.add_project(7,"csgo","invented/csgo",dir.to_str().unwrap(),0).unwrap();
+        let r=journal.ask(7,"show csgo 444",1).unwrap();
+        journal.0.execute("UPDATE requests SET front='telegram',chat=-100,topic=5 WHERE id=?1",[r.request]).unwrap();
+        journal.0.execute("DELETE FROM outbox",[]).unwrap();
+        let b=Binding{request:r.request,user:7,project:"csgo".into(),board:"invented/csgo".into(),root:dir.to_str().unwrap().into(),chat:-100,topic:Some(5)};
+        let keys=crate::keys::Keys(dir.join("keys.json"));
+        for name in ["first","second"] {keys.add(name,"invented fixture",&["issue_read".into()],&format!("invented-{name}-value")).unwrap();keys.grant(name,&["7".into()]).unwrap();}
+        let d=Direct{keys};let tq=Taskq{bot:None,bin,root:dir.clone(),poll:Duration::from_secs(1)};let j=Mutex::new(journal);
+        for body in ["taskq: result\nNo images", "taskq: result\n[bundle](/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/review.zip)"] {
+            std::fs::write(dir.join("issue.json"),json!({"number":444,"url":"https://gitlab.example.test/invented/csgo/-/issues/444","comments":[{"trusted":true,"body":body}]}).to_string()).unwrap();
+            assert!(fetch(&d,&tq,&j,&b,444,None,None,true).is_ok(),"automatic non-image result must skip key selection");
+            assert_eq!(j.lock().unwrap().0.query_row("SELECT count(*) FROM outbox",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        }
+        assert!(d.keys.list().unwrap().as_array().unwrap().iter().all(|k|k["last_use"].is_null()));
+        std::fs::write(dir.join("issue.json"),json!({"number":444,"url":"https://gitlab.example.test/invented/csgo/-/issues/444","comments":[{"trusted":true,"body":"taskq: result\n![A](/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/review.png)"}]}).to_string()).unwrap();
+        let error=fetch(&d,&tq,&j,&b,444,None,None,true).unwrap_err();
+        assert_eq!(error,"Several authorized keys are available; specify which key to use");
+        for (language,expected) in [("en","Several authorized image keys"),("ru","Доступны несколько разрешённых ключей")] {
+            let journal=j.lock().unwrap();
+            journal.0.execute("UPDATE requests SET language=?1 WHERE id=?2",params![language,r.request]).unwrap();
+            queue(&journal,&b,444,&[],Some(&error),&[],Some(43)).unwrap();
+            let text:String=journal.0.query_row("SELECT text FROM outbox WHERE kind='result_image_gap'",[],|r|r.get(0)).unwrap();
+            assert!(text.contains(expected) && !text.contains("issue_read") && !text.contains("first") && !text.contains("granted to 7"),"{text}");
+            journal.0.execute("DELETE FROM outbox",[]).unwrap();
+            journal.0.execute("DELETE FROM meta WHERE key LIKE 'result-image%'",[]).unwrap();
+        }
+        // An explicit image request still reports unsupported sources without choosing a key.
+        std::fs::write(dir.join("issue.json"),json!({"number":444,"url":"https://gitlab.example.test/invented/csgo/-/issues/444","comments":[{"trusted":true,"body":"taskq: result\n[bundle](/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/review.zip)"}]}).to_string()).unwrap();
+        assert!(fetch(&d,&tq,&j,&b,444,Some("first"),Some(&r),false).is_ok());
+        let gap:String=j.lock().unwrap().0.query_row("SELECT text FROM outbox WHERE kind='result_image_gap'",[],|r|r.get(0)).unwrap();
+        assert!(gap.contains("JPEG") && !gap.contains("issue_read"));
+        assert!(d.keys.take(Some("first"),"issue_read",7,"-100:5","csgo",2).is_ok());
+        drop(j);std::fs::remove_dir_all(dir).unwrap();
+    }
+
     // A2/A3: a closed result absent from open status still reaches artifact retrieval;
     // issue/inbox readback, not absence, establishes its identity and revision.
     #[cfg(unix)]

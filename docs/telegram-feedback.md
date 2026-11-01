@@ -79,7 +79,7 @@ before network dispatch; opaque upload IDs require image metadata from HEAD befo
 Missing or unsupported metadata yields a gap, never a bundle-download fallback. ZIPs,
 including image-only archives, are not fetched or unpacked. Individual photos are bounded
 to 10 MiB, batches to 20 MiB and 32 images. Only the latest trusted outcome selects
-artifacts, including an outcome with no attachments. Source variant labels identify
+artifacts, including an outcome with no attachments. Automatic observations with no supported direct image references skip credential selection and image warnings. Explicit image requests retain unavailable or unsupported gaps. Ambiguous eligible keys require explicit authorized selection and a localized explanation, never a false no-access claim or raw diagnostics. Source variant labels identify
 variants; sequential photo numbers are delivery order, never invented choice IDs.
 
 Each photo has an immutable outbox destination, current access checks and an individual
