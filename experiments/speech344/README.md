@@ -169,3 +169,67 @@ PYTHONDONTWRITEBYTECODE=1 python3 experiments/speech344/check-cpp-english.py
 PYTHONDONTWRITEBYTECODE=1 python3 experiments/speech344/check-sherpa-english.py
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_probe_speech_344.py
 ```
+
+## Prepared contiguous300 CPP English stress and controls
+
+Note6564345386 authorizes preparation only; no inference. This replaces the
+unexecuted padded25s-block proposal. Private handoff:
+`target/pm344-cpp-en-long-handoff/manifest.json`, SHA256
+`d413a35cd1e77eac8b110a8ab83fb34b0569138b8ae1620bae3af50b33ec0a95`.
+It pins original engine/model/MIT notices, human fixture and scripts/helpers.
+PM must independently match all identities in its namespace before dispatch.
+No new assets/build, installed writes, routing or model selection.
+
+Exact inner argv, from the worktree root, **only after PM review** through its
+existing host runner with actual1280M/1024M/256M/CPU150%/Tasks256:
+
+```sh
+python3 experiments/speech344/probe-cpp-english-long.py \
+  --engine target/pm344-assets/whisper-cli \
+  --assets target/pm344-assets \
+  --output target/pm344-cpp-en-long-v1
+```
+
+Output must be new. Effective-cap/engine/model/license/source guards precede
+child dispatch. Readiness, controls, stress construction/decode, all segments and
+readback share one600s deadline. Readiness and standalone zero silence each also
+have10s inclusive decode/readback. Only generated verified zero PCM uses context50;
+its JSON/text stays nondelivered. Ordinary speech uses full context, CPU/threads4,
+fixeden/processors1/beam1/bestof1/no-fallback/no prompt. Corrupt ffmpeg refusal and
+301s decoded-duration refusal must precede ASR. Explicit cancellation kills/reaps
+one ordinary full-context engine process after0.1s, records PID/group and no
+readback/delivery; it proves early cancellation only, not decoder-phase or
+callback cancellation. A process that exits before cancellation fails the control.
+
+The stress is unchanged humanEnglish PCM repeated **contiguously** to exactly
+4,800,000 samples, truncating only the last source copy. No silence padding,
+stretching or reference-aware segment placement. Construction/decoded/full and
+segment hashes, source offset/sample count and12 true25s windows are retained.
+Each engine result has a unique prefix and strict-UTF8 readback. Any empty speech,
+process/format/cap/deadline failure stops with partial evidence and no retries.
+
+The complete ordered text is compared against all complete source-reference
+repetitions plus every possible word prefix for the final partial source copy.
+All error counts remain observations. There is no timed word alignment for the
+cut final phrase: the harness explicitly reports fidelity **unknown**, never
+picks the lowest error prefix as quality PASS. With no partial tail an exact
+reference is available and a mismatch fails. Segment boundaries can also split
+words; raw ordered transcripts and true offsets remain available for PM fidelity
+review. Successful processing is budget-stress completion only. It does not
+qualify full-quality300s, shared media, installed/live or product behavior.
+
+The shared helper fences/reaps process groups on exit/error/timeout/SIGTERM.
+Generated WAV/segments/control files live only under this run's `work` directory,
+removed in `finally` with readback; private JSON/stdout/stderr remain evidence.
+PM must verify unit inactive/MainPID0, wrapper/group/cgroup gone, actual peak/OOM
+and unchanged ordinary service identities/restarts. Outer termination or missing
+cleanup evidence remains a gap. The harness never claims independent host cleanup.
+
+No-ASR preparation checks:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 experiments/speech344/check-cpp-english-long.py
+PYTHONDONTWRITEBYTECODE=1 python3 experiments/speech344/check-cpp-english.py
+PYTHONDONTWRITEBYTECODE=1 python3 experiments/speech344/check-sherpa-english.py
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_probe_speech_344.py
+```
