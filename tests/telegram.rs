@@ -1422,6 +1422,8 @@ fn u07_question_relay_and_bound_answers() {
     set_task(&d, 19, |t| t["card"] = json!("Done: drafted twice\nProblem: pick again\n1. tiny ★\n2. huge"));
     wait("second question", 15, || question("tiny ★").is_some());
     let q2 = question("tiny ★").unwrap();
+    wait("A40 current delivered revision", 15, || automatic::current_question(&d,&sent(&st),19).is_some_and(|(id,_)|q2["id"]==id));
+    assert_ne!(automatic::current_question(&d,&sent(&st),19).unwrap().0,q1["id"].as_i64().unwrap());
 
     push(&st, reply(4, -100, topic, OWNER, q1["id"].as_i64().unwrap(), "short"));
     wait("stale answer refused", 15, || sent_has(&st, "Answer was not saved; check the current question and your access."));
@@ -1438,6 +1440,13 @@ fn u07_question_relay_and_bound_answers() {
     assert!(answers[0].iter().any(|a| a.starts_with("pilotq-") && a.contains("-a")), "{answers:?}");
     assert!(sent(&st).iter().filter(|s| s["text"].as_str().unwrap().contains("written")).all(|s| s["message_thread_id"] == 5));
     assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE kind='answer'"), 3, "each reply is one recorded request");
+    // §5: an answered card returns its saved actor/choice; a different repeated choice never writes.
+    push(&st, reply(7, -100, topic, OWNER, q2["id"].as_i64().unwrap(), "1"));
+    wait("repeat receipt", 15, || query(&d,"SELECT count(*) FROM requests WHERE update_id=7 AND state='answered'")==1);
+    let confirmed=query_text(&d,"SELECT reply FROM requests WHERE update_id=7");
+    assert_eq!(confirmed,query_text(&d,"SELECT text FROM outbox WHERE task=19 AND kind='question_answered' LIMIT 1"));
+    assert!(confirmed.starts_with("Answered by ") && confirmed.contains("huge"));
+    assert_eq!(tq_calls(&d).iter().filter(|c|c[0]=="answer").count(),1);
     stop(c, d);
 }
 

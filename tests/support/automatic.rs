@@ -75,6 +75,44 @@ fn request_delivered(d: &Path, update: i64) -> bool {
     try_query(d, &format!("SELECT count(*) FROM requests q WHERE update_id={update} AND state IN ('answered','failed','uncertain') AND EXISTS (SELECT 1 FROM outbox o WHERE o.request_id=q.id AND (o.kind IN ('rich','rich_part','plan_answered','plan_problem') OR (o.kind='reply' AND o.text=q.reply)) AND o.state='delivered') AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.request_id=q.id AND o.kind IN ('rich','rich_part','plan_answered','plan_problem') AND o.state NOT IN ('delivered','superseded'))")) == Some(1)
 }
 
+// §5 / A40: observe the current delivered question, never a historical text hit.
+pub(super) fn current_question(d: &Path, messages: &[Value], task: i64) -> Option<(i64, i64)> {
+    let revision = try_query(d, &format!("SELECT revision FROM tasks WHERE project='pilotq' AND number={task} AND state='ask' AND closed=0"))?;
+    let id = try_query(d, &format!("SELECT sent_message FROM outbox WHERE project='pilotq' AND task={task} AND revision={revision} AND kind='question' AND state='delivered' AND chat={CHAT} AND topic=5 ORDER BY id DESC LIMIT 1"))?;
+    let message = messages.iter().rev().find(|m| m["id"] == id)?;
+    (message["chat_id"] == CHAT && message["message_thread_id"] == 5
+        && message["text"].as_str()?.starts_with("? "))
+        .then_some((id, revision))
+}
+
+// R8 / §5: regression for run7; canonical question receipt plus exact revision/route.
+#[test]
+fn a40_current_question_delivery() {
+    let d = std::env::temp_dir().join(format!("pilotq-a40-question-{}", std::process::id()));
+    fs::create_dir_all(&d).unwrap();
+    let c = rusqlite::Connection::open(d.join("journal.sqlite")).unwrap();
+    c.execute_batch("DROP TABLE IF EXISTS tasks; DROP TABLE IF EXISTS outbox;
+        CREATE TABLE tasks(project TEXT, number INTEGER, state TEXT, closed INTEGER, revision INTEGER);
+        CREATE TABLE outbox(project TEXT, task INTEGER, revision INTEGER, kind TEXT, state TEXT, chat INTEGER, topic INTEGER, id INTEGER, sent_message INTEGER);
+        INSERT INTO tasks VALUES('pilotq',19,'ask',0,42);
+        INSERT INTO outbox VALUES('pilotq',19,42,'question','delivered',-100,5,1,77);").unwrap();
+    let mut messages = vec![json!({"id":77,"chat_id":CHAT,"message_thread_id":5,"text":"? <a href=\"https://github.com/taskqorg/pilotq/issues/19\">pilotq#19 — Docs</a>\n✓ drafted\n⚑ choose\n1. short ★\n2. long"})];
+    assert_eq!(current_question(&d, &messages, 19), Some((77,42)), "current canonical card must be reachable");
+    for sql in ["UPDATE outbox SET state='pending'", "UPDATE outbox SET revision=41", "UPDATE outbox SET task=20", "UPDATE outbox SET project='other'", "UPDATE outbox SET kind='status'", "UPDATE outbox SET topic=6", "UPDATE tasks SET state='doing'", "UPDATE tasks SET closed=1"] {
+        c.execute_batch(sql).unwrap();
+        assert_eq!(current_question(&d, &messages, 19), None, "{sql}");
+        c.execute_batch("UPDATE tasks SET state='ask', closed=0;
+            UPDATE outbox SET project='pilotq', task=19, revision=42, kind='question', state='delivered', topic=5;").unwrap();
+    }
+    messages[0]["message_thread_id"] = json!(6);
+    assert_eq!(current_question(&d, &messages, 19), None);
+    messages[0]["message_thread_id"] = json!(5);
+    messages[0]["id"] = json!(78);
+    assert_eq!(current_question(&d, &messages, 19), None);
+    drop(c);
+    fs::remove_dir_all(d).unwrap();
+}
+
 // §4 / A40: final delivery must not be confused with a privacy notice or a partial fallback.
 #[test]
 fn a40_final_reply_delivery() {
@@ -200,6 +238,12 @@ fn a40_readiness_create_start() {
 }
 
 impl Run {
+    fn status_message(&self, message: &Value, label: &str) -> bool {
+        let id=try_query(&self.d,&format!("SELECT sent_message FROM outbox WHERE request_id={} AND kind='status' AND state='delivered' ORDER BY id LIMIT 1",self.run_request));
+        id.is_some_and(|id|message["id"]==id) && message["chat_id"]==CHAT && message["message_thread_id"]==5
+            && message["text"].as_str().is_some_and(|t|t.contains(label) && t.contains(self.data["task_url"].as_str().unwrap()))
+    }
+
     // TaskQ §2 permits trusted hand-authored entries. These are scripted fixtures, never real worker/reviewer claims.
     fn event(&mut self, body: &str, state: &str) -> i64 {
         let path = format!("repos/taskqorg/pilotq/issues/{}/comments", self.task);
@@ -730,29 +774,43 @@ fn a40_live_management() {
         let mut question = 0;
         h.case("question_foreign", |h| {
             let attempt = h.data["fixture_attempt"].as_i64().unwrap();
-            h.event(&format!("taskq: ask attempt {attempt}\nDone: Scripted A40 fixture; no implementation requested.\nProblem: Choose wording for this synthetic navigation check.\n1. Short link ★\n2. Descriptive link\nTo answer: `taskq answer {}.K`",h.task), "ask");
-            h.wait("worker question (required)",1800,|| h.state("ask") && sent(&h.st).iter().any(|s| s["text"].as_str().is_some_and(|t| t.starts_with(&format!("Task #{} asks:",h.task)))));
-            // Only use the question at the currently observed revision, not one superseded by requeue.
-            let revision = query(&h.d,&format!("SELECT revision FROM tasks WHERE number={}",h.task));
-            question = query(&h.d,&format!("SELECT sent_message FROM outbox WHERE task={} AND revision={revision} AND kind='question' AND state='delivered' ORDER BY id DESC LIMIT 1",h.task));
+            let revision = h.event(&format!("taskq: ask attempt {attempt}\nDone: Scripted A40 fixture; no implementation requested.\nProblem: Choose wording for this synthetic navigation check.\n1. Short link ★\n2. Descriptive link\nTo answer: `taskq answer {}.K`",h.task), "ask");
+            h.wait("worker question (required)",1800,|| current_question(&h.d, &sent(&h.st), h.task).is_some_and(|(_,r)| r == revision));
+            question = current_question(&h.d, &sent(&h.st), h.task).unwrap().0;
             let count = h.calls().iter().filter(|c| c["args"][0] == "answer").count();
             let (id, reply) = h.request(8,"1",Some(question));
-            assert!(reply.contains("no project:pilotq grant") || reply.contains("no taskq grant"),"{reply}");
+            assert_eq!(reply, "Answer was not saved; check the current question and your access.");
+            assert_eq!(query_text(&h.d,&format!("SELECT error FROM requests WHERE id={id}")), "not authorized");
             assert_eq!(h.calls().iter().filter(|c| c["args"][0] == "answer").count(),count);
             json!({"message":question,"revision":revision,"foreign_request":id,"refusal":reply})
         });
         h.case("answer_stale", |h| {
-            let (id, answer) = h.request(OWNER,"1",Some(question));
-            assert!(answer.contains(&format!("Answer written to task #{}",h.task)),"{answer}");
+            let attempt = h.data["fixture_attempt"].as_i64().unwrap();
+            let revision = h.event(&format!("taskq: ask attempt {attempt}\nDone: Scripted wording revised.\nProblem: Choose current wording.\n1. Short link ★\n2. Descriptive link\nTo answer: `taskq answer {}.K`",h.task), "ask");
+            h.wait("revised question",60,|| current_question(&h.d,&sent(&h.st),h.task).is_some_and(|(_,r)|r==revision));
+            let current = current_question(&h.d,&sent(&h.st),h.task).unwrap().0;
+            assert_ne!(question,current);
+            let before = h.calls().iter().filter(|c|c["args"][0]=="answer").count();
+            let (stale, refusal) = h.request(OWNER,"1",Some(question));
+            assert_eq!(refusal,"Answer was not saved; check the current question and your access.");
+            assert_eq!(query_text(&h.d,&format!("SELECT error FROM requests WHERE id={stale}")),"stale question");
+            assert_eq!(h.calls().iter().filter(|c|c["args"][0]=="answer").count(),before);
+            let (id, answer) = h.request(OWNER,"1",Some(current));
+            assert!(answer.starts_with("Answered by ") && answer.contains("Short link") && answer.contains("TaskQ:"),"{answer}");
             let calls = h.calls();
             let rc = calls.iter().find(|c| c["args"][0] == "answer" && c["receipt"]["outcome"] == "accepted").expect("accepted answer receipt");
-            assert!(rc["args"].as_array().unwrap().contains(&json!("--revision")));
+            let args=rc["args"].as_array().unwrap();
+            let fence=args.iter().position(|a|a=="--revision").unwrap();
+            assert_eq!(args[fence+1],revision.to_string());
+            assert_eq!(rc["receipt"]["task"],h.task);
             assert!(rc["receipt"]["op_id"].as_str().unwrap().starts_with("pilotq-"));
             let before = calls.iter().filter(|c| c["args"][0] == "answer").count();
-            let (stale, refusal) = h.request(OWNER,"1",Some(question));
-            assert!(refusal.contains("no longer current; nothing was written"),"{refusal}");
+            let (repeat, confirmed) = h.request(OWNER,"2",Some(current));
+            let receipt=query_text(&h.d,&format!("SELECT text FROM outbox WHERE task={} AND revision={revision} AND kind='question_answered' LIMIT 1",h.task));
+            assert!(receipt.starts_with("Answered by ") && receipt.contains("Short link"));
+            assert_eq!(confirmed,receipt,"repeated reply returns the saved actor/choice, never a new decision");
             assert_eq!(h.calls().iter().filter(|c| c["args"][0] == "answer").count(),before);
-            json!({"request":id,"receipt":rc["receipt"],"stale_request":stale,"refusal":refusal})
+            json!({"request":id,"receipt":rc["receipt"],"stale_request":stale,"refusal":refusal,"repeat_request":repeat,"repeat_receipt":confirmed})
         });
         h.case("reviewer", |h| {
             // The accepted answer resumes the same synthetic attempt; no ordinary worker runs.
@@ -762,13 +820,13 @@ fn a40_live_management() {
             assert_eq!(folded["attempt"],h.data["fixture_attempt"]);
             let candidate = h.data["candidate"].as_str().unwrap().to_string();
             h.event(&format!("taskq: result {candidate} attempt {attempt}\nChanged: Scripted A40 fixture reached result; no code changed or published.\nChecks: Synthetic management lifecycle only.\nOpen: none"), "review");
-            h.wait("review delivery",60,|| sent(&h.st).iter().any(|s|s["text"].as_str().is_some_and(|t|t.contains("Result is being reviewed") && t.contains(h.data["task_url"].as_str().unwrap()))));
+            h.wait("review delivery",60,|| sent(&h.st).iter().any(|s|h.status_message(s,"Result is being reviewed")));
             let host = h.data["isolated_host"].as_str().unwrap();
             let reviewer = h.event(&format!("taskq: spawn reviewer codex:a40-scripted-review {host}\nA40 synthetic reviewer; no process is launched."), "review");
             h.event(&format!("taskq: close attempt {reviewer}\nChanged: Scripted A40 reviewer outcome; no code review or publication claimed.\nChecks: Management notification fixture.\nOpen: none"), "closed");
             h.github("PATCH", &format!("repos/taskqorg/pilotq/issues/{}",h.task), json!({"state":"closed","state_reason":"completed"}));
-            h.wait("reviewer outcome",7200,|| sent(&h.st).iter().any(|s| s["text"].as_str().is_some_and(|t|t.contains("Task closed; see the result") && t.contains(h.data["task_url"].as_str().unwrap()))));
-            assert!(sent(&h.st).iter().any(|s|s["text"].as_str().is_some_and(|t|t.contains("Result is being reviewed") && t.contains(h.data["task_url"].as_str().unwrap()))));
+            h.wait("reviewer outcome",7200,|| sent(&h.st).iter().any(|s| h.status_message(s,"Task closed; see the result")));
+            assert!(sent(&h.st).iter().any(|s|h.status_message(s,"Result is being reviewed")));
             let issue = gh_json(&format!("repos/taskqorg/pilotq/issues/{}",h.task));
             assert_eq!((&issue["state"],&issue["state_reason"]),(&json!("closed"),&json!("completed")));
             let inbox = h.taskq(&["inbox".into(),h.task.to_string()]).unwrap();
@@ -793,7 +851,7 @@ fn a40_live_management() {
             assert!(request_delivered(&h.d, update), "audit requires final delivery, not a privacy notice");
             let messages = sent(&h.st);
             assert!(messages.iter().all(|m|m["chat_id"] == CHAT && m["message_thread_id"] == 5));
-            let terminal = messages.iter().find(|m|m["text"].as_str().is_some_and(|t|t.contains("Task closed; see the result") && t.contains(h.data["task_url"].as_str().unwrap()))).unwrap();
+            let terminal = messages.iter().find(|m|h.status_message(m,"Task closed; see the result")).unwrap();
             assert_eq!(terminal["edit"],true,"#165 closure edits the launch status card");
             let status = query(&h.d,&format!("SELECT sent_message FROM outbox WHERE request_id={} AND kind='status' AND state='delivered' ORDER BY id LIMIT 1",h.run_request));
             assert_eq!(terminal["id"],status);
