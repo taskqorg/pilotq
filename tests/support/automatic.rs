@@ -148,6 +148,81 @@ fn a40_final_reply_delivery() {
     fs::remove_dir_all(d).unwrap();
 }
 
+// §4–5 / A40: an owner DM is allowed only by its exact startup onboarding receipt.
+fn routed_message(d: &Path, m: &Value) -> bool {
+    let (Some(id), Some(chat)) = (m["id"].as_i64(), m["chat_id"].as_i64()) else { return false; };
+    let topic = match m.get("message_thread_id") {
+        None | Some(Value::Null) => None,
+        Some(value) => match value.as_i64() { Some(topic) => Some(topic), None => return false },
+    };
+    let c = rusqlite::Connection::open(d.join("journal.sqlite")).unwrap();
+    let mut stmt=c.prepare("SELECT o.text,o.html FROM outbox o JOIN requests q ON q.id=o.request_id
+        WHERE o.sent_message=?1 AND o.chat=?2 AND o.topic IS ?3 AND o.state='delivered'
+        AND ((o.chat=-100 AND o.topic=5 AND q.chat=-100 AND q.topic=5)
+          OR (o.chat=7 AND o.topic IS NULL AND o.kind='onboarding' AND o.project='pilotq'
+            AND q.front='service' AND q.kind='onboarding' AND q.state='answered'
+            AND q.sender=7 AND q.chat=7 AND q.topic IS NULL AND q.update_id<0))").unwrap();
+    stmt.query_map(rusqlite::params![id,chat,topic], |r| Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?))).unwrap()
+        .any(|row| {
+            let (text,html)=row.unwrap();
+            let expected=if m.get("rich_message").is_some() {
+                telegram_text::markdown(&text).replace("  \n","\n")
+            } else if m["parse_mode"]=="HTML" {
+                html.unwrap_or_else(||telegram_text::html(&text))
+            } else { text };
+            m["text"].as_str()==Some(expected.as_str())
+        })
+}
+
+#[test]
+fn a40_final_route_receipts() {
+    let d = std::env::temp_dir().join(format!("pilotq-a40-route-{}", std::process::id()));
+    fs::create_dir_all(&d).unwrap();
+    let c = rusqlite::Connection::open(d.join("journal.sqlite")).unwrap();
+    c.execute_batch("DROP TABLE IF EXISTS requests; DROP TABLE IF EXISTS outbox;
+      CREATE TABLE requests(id INTEGER,front TEXT,kind TEXT,state TEXT,sender INTEGER,chat INTEGER,topic INTEGER,update_id INTEGER);
+      CREATE TABLE outbox(request_id INTEGER,sent_message INTEGER,chat INTEGER,topic INTEGER,state TEXT,kind TEXT,project TEXT,text TEXT,html TEXT);
+      INSERT INTO requests VALUES(1,'service','onboarding','answered',7,7,NULL,-1);
+      INSERT INTO outbox VALUES(1,903,7,NULL,'delivered','onboarding','pilotq','Onboard pilotq',NULL);").unwrap();
+    let mut m=json!({"id":903,"chat_id":7,"text":"Onboard pilotq"});
+    assert!(routed_message(&d,&m), "run7 verified owner onboarding is not a topic leak");
+    for (key,value) in [("id",json!(904)),("chat_id",json!(8)),("message_thread_id",json!(5)),("text",json!("foreign content"))] {
+        let mut wrong=m.clone(); wrong[key]=value;
+        assert!(!routed_message(&d,&wrong), "reject changed {key}");
+    }
+    for sql in ["UPDATE requests SET front='telegram'", "UPDATE requests SET sender=8", "UPDATE requests SET update_id=1", "UPDATE requests SET kind='text'", "UPDATE requests SET state='running'", "UPDATE outbox SET kind='reply'", "UPDATE outbox SET state='pending'", "UPDATE outbox SET project='other'"] {
+        c.execute_batch(sql).unwrap();
+        assert!(!routed_message(&d,&m), "{sql}");
+        c.execute_batch("UPDATE requests SET front='service',sender=7,update_id=-1,kind='onboarding',state='answered'; UPDATE outbox SET kind='onboarding',state='delivered',project='pilotq'").unwrap();
+    }
+    c.execute_batch("INSERT INTO requests VALUES(2,'telegram','text','answered',7,-100,5,2);
+      INSERT INTO outbox VALUES(2,907,-100,5,'delivered','status','pilotq','Task closed; see the result',NULL);").unwrap();
+    let topic=json!({"id":907,"chat_id":CHAT,"message_thread_id":5,"text":"Task closed; see the result"});
+    assert!(routed_message(&d,&topic));
+    let mut wrong=topic.clone(); wrong["text"]=json!("foreign content");
+    assert!(!routed_message(&d,&wrong), "topic content also needs its exact receipt");
+    wrong=topic.clone(); wrong["message_thread_id"]=json!(6);
+    assert!(!routed_message(&d,&wrong), "foreign topic is never admitted");
+    c.execute_batch("INSERT INTO outbox VALUES(2,907,-100,5,'delivered','status','pilotq','Task is doing',NULL);").unwrap();
+    let mut historical=topic.clone(); historical["text"]=json!("Task is doing"); historical["edit"]=json!(true);
+    assert!(routed_message(&d,&historical), "historical edits retain their own exact receipt content");
+    for text in ["Task closed; see the result", "Read docs/my file.md & <raw>\n[task](https://example.invalid)"] {
+        c.execute("UPDATE outbox SET text=?1 WHERE sent_message=907",[text]).unwrap();
+        let mut rich=topic.clone();
+        let markdown=telegram_text::markdown(text);
+        rich["rich_message"]=json!({"markdown":markdown});
+        rich["text"]=json!(markdown.replace("  \n","\n"));
+        assert!(routed_message(&d,&rich), "exact rich rendering");
+        rich["text"]=json!("foreign content");
+        assert!(!routed_message(&d,&rich));
+        let mut html=topic.clone(); html["parse_mode"]=json!("HTML"); html["text"]=json!(telegram_text::html(text));
+        assert!(routed_message(&d,&html), "exact HTML fallback");
+    }
+    m["id"]=json!(910); m["text"]=Value::Null;
+    assert!(!routed_message(&d,&m), "run7 phantom delete is not a delivery");
+    drop(c); fs::remove_dir_all(d).unwrap();
+}
+
 // R10 / §2: only the owner's §5 startup onboarding may precede the first admitted input.
 // Scope stranger checks to ingress identity, rather than suppressing legitimate service work.
 fn assert_stranger_ignored(d: &Path, st: &State, update: i64) {
@@ -850,7 +925,7 @@ fn a40_live_management() {
             let update = query(&h.d, &format!("SELECT update_id FROM requests WHERE id={}", h.run_request));
             assert!(request_delivered(&h.d, update), "audit requires final delivery, not a privacy notice");
             let messages = sent(&h.st);
-            assert!(messages.iter().all(|m|m["chat_id"] == CHAT && m["message_thread_id"] == 5));
+            assert!(messages.iter().all(|m|routed_message(&h.d,m)), "every visible message needs an originating-route or verified startup onboarding receipt");
             let terminal = messages.iter().find(|m|h.status_message(m,"Task closed; see the result")).unwrap();
             assert_eq!(terminal["edit"],true,"#165 closure edits the launch status card");
             let status = query(&h.d,&format!("SELECT sent_message FROM outbox WHERE request_id={} AND kind='status' AND state='delivered' ORDER BY id LIMIT 1",h.run_request));
@@ -859,7 +934,7 @@ fn a40_live_management() {
             let latest=messages.iter().rev().find(|m|m["id"]==status).unwrap();
             assert!(latest["text"].as_str().unwrap().contains("Task closed; see the result"),"terminal outcome cannot be overwritten");
             h.data["audit"] = audit;
-            json!({"trace":format!("pilotq.request.{}",h.run_request),"all_messages_in_originating_topic":true})
+            json!({"trace":format!("pilotq.request.{}",h.run_request),"all_messages_have_route_receipts":true})
         });
     }));
     h.finish(result);

@@ -3,6 +3,7 @@
 // and injects send faults; a shell script speaks the app-server JSON-RPC lines. Live test-bot and real Codex runs are separate evidence.
 #![cfg(unix)]
 #[path="support/host.rs"] mod host_support;
+#[path="../src/telegram_text.rs"] mod telegram_text;
 
 use serde_json::{Value, json};
 use std::collections::VecDeque;
@@ -23,6 +24,8 @@ struct Fake {
     updates: Vec<Value>,
     /// Accepted messages and edits with their effective destination, including a lost send response.
     sent: Vec<Value>,
+    /// Successful deleteMessage targets; sent remains immutable delivery history.
+    deleted: Vec<Value>,
     attempts: usize,
     faults: VecDeque<&'static str>,
     conflict: bool,
@@ -149,6 +152,15 @@ fn handle(stream: std::net::TcpStream, st: &State) {
         f.rate_method = None;
         return respond(&mut out,429,r#"{"ok":false,"error_code":429,"description":"Too Many Requests","parameters":{"retry_after":3}}"#);
     }
+    if method == "deletemessage" {
+        let target = json!({"chat_id":body["chat_id"],"message_id":body["message_id"]});
+        let exists = body["chat_id"].as_i64().is_some() && body["message_id"].as_i64().is_some()
+            && f.sent.iter().any(|m|m["chat_id"]==body["chat_id"] && m["id"]==body["message_id"] && m.get("edit").is_none())
+            && !f.deleted.contains(&target);
+        if !exists { return respond(&mut out,400,r#"{"ok":false,"error_code":400,"description":"Bad Request: message to delete not found"}"#); }
+        f.deleted.push(target);
+        return respond(&mut out,200,r#"{"ok":true,"result":true}"#);
+    }
     if method == "answercallbackquery" || method == "editmessagereplymarkup" {
         return respond(&mut out,200,r#"{"ok":true,"result":true}"#);
     }
@@ -168,7 +180,7 @@ fn handle(stream: std::net::TcpStream, st: &State) {
         body["text"] = json!(body["rich_message"]["markdown"].as_str().unwrap().replace("  \n", "\n"));
     }
     if method == "editmessagetext" {
-        if f.edit_gone {
+        if f.edit_gone || f.deleted.contains(&json!({"chat_id":body["chat_id"],"message_id":body["message_id"]})) {
             return respond(&mut out, 400, r#"{"ok":false,"error_code":400,"description":"Bad Request: message to edit not found"}"#);
         }
         // editMessageText identifies an existing message, not a new destination. Telegram
@@ -203,6 +215,33 @@ fn handle(stream: std::net::TcpStream, st: &State) {
             respond(&mut out, 200, &ok.to_string());
         }
     }
+}
+
+// §4 / A40: deletes retain target identity/API evidence without inventing a send.
+#[tokio::test]
+async fn a40_delete_message_receipt() {
+    let (d,st)=setup("a40-delete",vec![]);
+    let cfg:Value=serde_json::from_slice(&fs::read(d.join("config.json")).unwrap()).unwrap();
+    let client=reqwest::Client::new();
+    let url=cfg["api_url"].as_str().unwrap();
+    let send:Value=client.post(format!("{url}sendMessage")).json(&json!({"chat_id":-100,"message_thread_id":5,"text":"status"})).send().await.unwrap().json().await.unwrap();
+    let id=send["result"]["message_id"].as_i64().unwrap();
+    for target in [json!({"chat_id":7,"message_id":id}),json!({"chat_id":-100,"message_id":id+1})] {
+        let r:Value=client.post(format!("{url}deleteMessage")).json(&target).send().await.unwrap().json().await.unwrap();
+        assert_eq!(r["ok"],false,"wrong targets cannot delete");
+    }
+    let target=json!({"chat_id":-100,"message_id":id});
+    let r:Value=client.post(format!("{url}deleteMessage")).json(&target).send().await.unwrap().json().await.unwrap();
+    assert_eq!(r,json!({"ok":true,"result":true}));
+    let again:Value=client.post(format!("{url}deleteMessage")).json(&target).send().await.unwrap().json().await.unwrap();
+    assert_eq!(again["ok"],false,"deleted identity is no longer a valid target");
+    let edit:Value=client.post(format!("{url}editMessageText")).json(&json!({"chat_id":-100,"message_id":id,"text":"changed"})).send().await.unwrap().json().await.unwrap();
+    assert_eq!(edit["ok"],false,"deleted cards cannot be edited");
+    let f=st.lock().unwrap();
+    assert_eq!(f.sent.len(),1,"delete must never create a visible message");
+    assert_eq!(f.sent[0]["id"],id);
+    assert_eq!(f.api.iter().filter(|(method,_,_)|method=="deletemessage").count(),4);
+    drop(f); fs::remove_dir_all(d).unwrap();
 }
 
 /// Starts the fake Bot API and an install directory whose owner-only config points at it.
