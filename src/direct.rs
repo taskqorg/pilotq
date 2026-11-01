@@ -152,9 +152,9 @@ fn project_role(text: &str, name: &str) -> (bool,bool) {
         // A repo/URL is one reference: its final name inherits the qualifier
         // before the whole token, not the owner/path component immediately before it.
         let qualifier=if prefix.ends_with('/') { prefix.rsplit_once(' ').map_or("",|(head,_)|head) } else { &prefix };
-        let reference=ends(qualifier,&["для проверки", "для тестирования", "to test", "to test the", "for testing", "for testing the",
+        let reference=ends(qualifier,&["проверяем продукт", "testing product", "testing the product", "для проверки", "для тестирования", "to test", "to test the", "for testing", "for testing the",
             "from project", "из проекта", "reference to", "re"]);
-        let explicit=ends(qualifier,&["task for", "tasks for", "plan for", "in project", "on board", "задачи", "задачу", "задача", "план для", "в проекте", "на доске"]);
+        let explicit=ends(qualifier,&["task for", "tasks for", "plan for", "in project", "on board", "задачи", "задачу", "задача", "план для", "проект назначения задачи — только", "в проекте", "на доске"]);
         let mut joined=String::new();
         for word in &words[i..] {
             joined.push_str(word.trim_end_matches('.'));
