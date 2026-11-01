@@ -1225,3 +1225,25 @@ the fix and passes after it (R5, R11, R13). Live Telegram behavior still needs t
 - Restart reply: not reproduced. The live check read request 299 at 02:06:04 UTC, 35 seconds after the replacement
   started at 02:05:29 UTC. The reply is sent only after the replacement's healthy start at 60 seconds (§9).
   `u106_restart_receipt_requires_healthy_replacement` protects that timing and the no-replay rule.
+
+## Missing-project onboarding usage (#274)
+
+Under R13/R17 and §9, `cargo test --locked onboard_274_usage_reply` admits an owner
+Telegram request, executes the deterministic command, and checks the failed request's
+audit error, localized reply and durable outbox text. It covers Russian and English,
+with and without the Telegram `@bot` suffix. Unknown diagnostics and a diagnostic
+with the usage string as a prefix retain the generic short Russian failure.
+
+Before the fix, the regression on 0.2.37 source (`8aded5b`) failed: the audit error was
+`Use /onboard NAME or /onboard NAME override`, while the Russian reply was
+`Команда не выполнена; проверьте /status и повторите позже.` This reproduces the
+reported request 356 behavior locally; the historical live audit was not inspected.
+After the fix, the same filtered check passes all four language/suffix cases and
+the diagnostic fallback cases. The fix adds only an exact-match Russian translation
+to the existing reply path.
+
+PM qualification remains open under §9: after the ordinary merged release, send
+`/onboard` in the owner's Russian live DM. Verify that it explains
+`/onboard NAME` and `/onboard NAME override`, identifies NAME as the project name,
+and does not advise retrying the unchanged command. Record the released version,
+request and visible reply. Workers do not install or change the live service.

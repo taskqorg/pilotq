@@ -4390,6 +4390,37 @@ mod tests {
         Some(Input { files: vec![], callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat, topic: None, sender: Some(sender), name: None, message, kind: "text", text: Some("hi".into()), reply_to: None })
     }
 
+    // #274 A2–A4 / R13/R17, §9: usage survives the command reply path;
+    // unrelated diagnostics retain the short Russian fallback and never leak into delivery.
+    #[test]
+    fn onboard_274_usage_reply() {
+        for (lang,expected) in [
+            ("ru", "Используйте /onboard NAME или /onboard NAME override, где NAME — имя проекта."),
+            ("en", "Use /onboard NAME or /onboard NAME override"),
+        ] {
+            for command in ["/onboard", "/onboard@PilotQBot"] {
+                let (mut j,p)=journal(&format!("onboard-274-{lang}-{}",command.len()));
+                let mut input=msg(7,7,1).unwrap();
+                input.text=Some(command.into());input.language=Some(lang.into());
+                j.admit(&[(1,Some(input))],0).unwrap();
+                let request=j.builtin_next().unwrap().unwrap();let id=request.id;
+                let shared=std::sync::Arc::new(std::sync::Mutex::new(j));
+                crate::builtins::execute(&crate::tool(),&shared,&request,false).unwrap();
+                let j=shared.lock().unwrap();
+                let (state,reply,error)=j.request(id).unwrap();
+                assert_eq!(state,"failed");
+                assert_eq!(error.as_deref(),Some("Use /onboard NAME or /onboard NAME override"));
+                assert_eq!(reply.as_deref(),Some(expected));
+                let delivered:String=j.0.query_row("SELECT text FROM outbox WHERE request_id=?1 AND text=?2",params![id,expected],|r|r.get(0)).unwrap();
+                assert_eq!(delivered,expected);
+                drop(j);drop(shared);std::fs::remove_dir_all(p).unwrap();
+            }
+        }
+        for diagnostic in ["invented internal error /private/path", "Use /onboard NAME or /onboard NAME override: invented-secret"] {
+            assert_eq!(crate::builtins::localized(diagnostic,Some("ru"),true),"Команда не выполнена; проверьте /status и повторите позже.");
+        }
+    }
+
     fn count(j: &Journal, sql: &str) -> i64 {
         j.0.query_row(sql, [], |r| r.get(0)).unwrap()
     }
