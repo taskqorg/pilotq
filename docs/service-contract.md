@@ -190,11 +190,18 @@ activation exits the service with code 75; the coreq Linux unit restarts it thro
 `pilotq update --pause` and `--resume` persist and read back automatic-update admission; pausing
 does not stop health or conversations. Manual updates remain available.
 
-This release retains coreq `v0.18.0` (locked in `Cargo.lock`) and journal schema 12. It opens
-existing schemas 0–12 through the current migrations and refuses newer schemas; rollback to a binary
+This release retains coreq `v0.18.0` (locked in `Cargo.lock`) and journal schema 13. It opens
+existing schemas 0–13 through the current migrations and refuses newer schemas; rollback to a binary
 that cannot read the resulting schema is unsafe. The installation owner runs the user service and
 owns its protected configuration. See the [tester guide](tester-guide.md) for installation,
-checks and current limitations. A published release and successful selftest do not qualify
+checks and current limitations. The prior shipped 0.2.37 source
+`3a581fff3e3336fa1bc60bf7178629598c52052e` already supports schema 13, as does
+`1a87c6fc86ab8b979435d1c6b5cf9f9b37129144`: `src/journal.rs` declares `SCHEMA = 13`,
+migrates older journals by adding `outbox.question` when absent, and refuses `user_version > 13`
+before schema writes. This source evidence establishes compatibility, not a restore or live qualification.
+Existing protection includes `schema_1_journal_upgrades`, `schema_9_existing_image_columns_preserve_rows`,
+`u93_schema_10_keeps_work_and_refreshes_tools` and `newer_schema_and_corrupt_journal_are_refused`
+in `src/journal.rs`; no migration or guarding assertion changes here. A published release and successful selftest do not qualify
 production cutover or the open decisions in section 11.
 
 ### Development
