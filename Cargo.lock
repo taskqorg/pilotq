@@ -1229,6 +1229,8 @@ name = "pilotq"
 version = "0.2.38"
 dependencies = [
  "coreq",
+ "crc32fast",
+ "flate2",
  "lopdf",
  "reqwest",
  "rusqlite",

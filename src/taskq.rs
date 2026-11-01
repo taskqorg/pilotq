@@ -785,7 +785,7 @@ fn reconcile_effect(tq: &Taskq, j: &Mutex<Journal>, op: &str, board: &str, args:
     if !j.lock().unwrap().has(sender,"chat")? || !j.lock().unwrap().effect_dispatchable(op)? {return Err("Access revoked or request stopped; reply retained, no download or dispatch authorized".into());}
     let cache=j.lock().unwrap().reply_cache(op)?;
     let budget=j.lock().unwrap().reply_budget(op,now())?;
-    let argv=handoff_files(tq,args,&cache,budget).map_err(|e|format!("Reply retained; not dispatched: {e}. Restore download access or resend a file below 20 MiB; check task status before a new reply."))?;
+    let mut argv=handoff_files(tq,args,&cache,budget).map_err(|e|format!("Reply retained; not dispatched: {e}. Restore download access or resend a file below 20 MiB; check task status before a new reply."))?;
     let sender=j.lock().unwrap().sender(request)?;
     allowed(&j.lock().unwrap(),sender,&project,true)?;
     if !j.lock().unwrap().effect_dispatchable(op)? {return Err("Request stopped; reply retained, no dispatch authorized".into());}
@@ -793,6 +793,11 @@ fn reconcile_effect(tq: &Taskq, j: &Mutex<Journal>, op: &str, board: &str, args:
     if registered_board!=board || registered.root!=tq.root {return Err("Task registration changed; restore registration before retrying".into());}
     if !j.lock().unwrap().has(sender,"chat")? {return Err("access revoked; reply retained, ask an administrator to restore access".into());}
     if args[0]=="requeue" && args.iter().any(|a|a=="--telegram-file") && j.lock().unwrap().owner()?!=Some(sender) {return Err("owner access required for file requeue".into());}
+    if args[0]=="answer" {
+        let n=args[1].split('.').next().and_then(|s|s.parse::<i64>().ok()).unwrap_or(0);
+        let revision=args.iter().position(|s|s=="--revision").and_then(|i|args.get(i+1)).and_then(|s|s.parse::<i64>().ok()).unwrap_or(0);
+        crate::result_images::answer_actor(&j.lock().unwrap(),&project,n,revision,sender,&mut argv)?;
+    }
     let rc = match tq.write(argv, op) {
         Ok(rc) => rc,
         Err(e) => return Err(format!("TaskQ effect {op} is uncertain ({e}); recovery reconciles the same operation ID{}",if args[0]=="answer" {". Check task status before another answer."} else {""})),

@@ -72,9 +72,7 @@ Plain-language controls are primary. `/status`, `/stop` and `/new` remain availa
 
 [Architecture detail](docs/runtime-contract.md#3-architecture-and-ownership) assigns journal, runtime, proposal, TaskQ and agentq authority. PilotQ owns durable input and delivery; TaskQ owns admitted execution. Registered roots and host policy own capacity. Never discover roots or silently enroll projects.
 
-Use a neutral workspace and scoped registry tools; no process-wide project directory switch or universal runtime
-framework. Native shell, live web search and danger-full-access start only for a turn whose principal is the configured
-owner_id or holds an explicit shell grant. Other turns disable native shell and web search and use a read-only sandbox;
+Use a neutral workspace and scoped registry tools; no process-wide project directory switch or universal runtime framework. Native shell, live web search and danger-full-access start only for a turn whose principal is the configured owner_id or holds an explicit shell grant. Other turns disable native shell and web search and use a read-only sandbox;
 PilotQ’s own granted tools remain available.
 Admission and current grants still gate turns; model and effort are unchanged. Grammy, Pi and a new runtime framework
 remain out of scope. Hermes gateway patterns are reference material; this work does not change Hermes.
@@ -106,7 +104,10 @@ For the owner or an explicit shell grantee, native tools may perform requested w
 
 Member report access, full closing reports, open dependents and durable PM/owner blocker escalation follow the [member tools boundary](docs/taskq-tool-contract.md#member-reports-and-blockers); members never receive owner or PM work.
 Task status reports observed issue state, trusted closing verdict, report, proposed follow-ups and verified existing follow-ups; missing facts stay unavailable. Diagnose, research and investigate plans retain TaskQ `--type research`. Open-snapshot absence proves neither closure nor nonexistence.
-Board-event cards (§2) reuse task subscriptions: a button or reply answer writes through TaskQ without a model turn; Explain or a text reply to a status card starts one model turn in that route with the card as quoted context.
+Board-event cards (§2) reuse task subscriptions: a button or reply answer writes through TaskQ without a model turn; Explain or a text reply to a status card starts one model turn in that route with the card as quoted context. Task-result images are retrieved only from trusted TaskQ question/result attachment references for one authorized registered board, including board-only
+roots. Artifact bytes may use that board’s authenticated HTTPS GitLab upload API (upload ID or secret/filename), with protected key injection, no redirects and bounded image-only ZIP reading; this narrow exception to the no-forge-adapter rule never reads board state, repositories or asset trees. Send the actual images inline in the original authorized route with task identity
+and source variant labels; persist individual delivery outcomes and recheck route/project access before retrieval and sending. Missing, oversized, unsupported or inaccessible images produce one explicit gap, never an invented pending decision. Visual choices reuse the existing TaskQ question, revision, actor and answer receipt; verified readback finalizes its original card and
+stale/repeated taps cannot write again. PM qualification uses real result images and a disposable choice after release (§9), never a real artistic decision.
 
 TaskQ reply files retain identity/caption, protected downloads, a 20 MiB cap, original target/revision/operation and same-operation reconciliation. Target/grants are validated before downloading and again at dispatch. Requeue with files requires the protected owner. Text is optional when files exist; refusals and uncertainty retain the reply and remedy.
 

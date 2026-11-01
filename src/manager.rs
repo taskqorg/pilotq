@@ -614,7 +614,8 @@ fn tool_call(j: &Mutex<Journal>, r: &Run, tq: Option<&crate::taskq::Taskq>, d: &
                     Ok(text)=>(true,text), Err(error)=>(false,error),
                 }}
             },
-            _ if name == "asana_read" => crate::asana::call(d,j,r,args,command_deadline),
+            _ if name == "task_result_images" => crate::result_images::call(d,tq,j,r,args),
+                    _ if name == "asana_read" => crate::asana::call(d,j,r,args,command_deadline),
             _ if crate::admin::NAMES.contains(&name) => crate::admin::call(d,j,r,name,args,command_deadline,tq),
             _ if crate::commands::NAMES.contains(&name) => crate::commands::call(d,j,r,name,args,command_deadline,tq),
             _ if direct::NAMES.contains(&name) => direct::call(d, j, r, name, args, tq),

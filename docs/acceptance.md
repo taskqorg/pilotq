@@ -1302,3 +1302,41 @@ This is component evidence, not the §9 release qualification. Task #281 must ru
 Open for the PM under §9 after the ordinary release: A4 Codex on pds18 through the installed service (Telegram turn,
 `/model`, drafts, restart and update with the same thread ID), and A5 with `slot_root` once the installed TaskQ
 advertises `slots_protocol: 1`. No Claude runs on pds18.
+
+### A273 — Board-only task result images and visual choices
+
+Owner requirement: [task #273](https://github.com/taskqorg/pilotq/issues/273).
+Amended contract: §5 (result artifact retrieval, inline delivery and visual answers),
+applying R4, R5, R8, R10, R13, R16 and R17. The contract changes precede implementation.
+
+Local qualification uses `cargo test --locked --bin pilotq result_images_273` for
+project/API reference confinement, upload-ID requests, protected HTTP authentication,
+redirect/404/size refusal, ZIP traversal/symlink/corruption/inflation limits, retained
+photo bytes and receipts, route/project rebinding, revocation and exact option/actor
+annotation. A multipart Bot API trace checks actual photo bytes, task/variant caption
+and original topic. Existing `u07_question_relay_and_bound_answers`,
+`u39_registered_boards_steer_requeue_and_stale_answer`, `u94_answer_elsewhere_closes_question`
+and `u108_semantic_answer_receipt` retain question/revision and original-card protections.
+
+PM after merged release, in the authorized PilotQ CSLP route:
+
+1. Confirm the installed release identity and the CSGO board-only registration. Keep
+   private artifact references and credentials out of public evidence. No CSGO checkout,
+   repository archive, asset sync or local CSGO worker is needed or permitted for this check.
+2. Request images for an existing accepted CSGO result (task 444 when suitable). Compare
+   the inline sheets and variant labels with its existing accepted manifest. Retain the
+   Telegram screenshots and each photo delivery receipt. Links/ZIPs alone fail this case.
+3. Use a disposable TaskQ visual question with two clearly labelled options. Confirm its
+   current task, question revision and route; choose an option as an authorized owner.
+   Read back TaskQ's exact selection and Telegram actor, then capture the original card
+   finalized with its buttons removed. Never answer a real artistic question for this test.
+4. Tap the old button again and attempt a stale revision and an unauthorized actor.
+   Read back that no additional board answer or task execution occurred. Revoke project
+   access before a queued send and confirm it remains held at its original destination.
+5. Exercise missing, unsupported, inaccessible and oversized attachments; each result
+   has one clear gap and no invented pending decision. Restore temporary test grants and
+   remove only the disposable test data through authorized TaskQ operations.
+
+Status: local checks are implementation evidence only. Real image appearance, CSLP
+routing and the disposable choice round trip remain unqualified until the PM records
+post-release evidence; production cutover remains unauthorized (R19, §9).
