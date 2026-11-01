@@ -12,7 +12,7 @@ pub fn tools() -> Vec<Value> {
     let tool = |name, description, properties, required| json!({"type":"function","name":name,"description":description,
         "inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}});
     let mut tools = vec![tool("project_register", crate::catalog::purpose("project_register"),
-        json!({"project":{"type":"string"},"repo":{"type":"string","description":"Exact owner/name from the caller's own text or repository link, without .git or trailing slash"},"board":{"type":"string","enum":["github","gitlab"]},"host":{"type":"string","description":"Exact host from that same repository link or own text, e.g. github.com"}}), json!(["project","repo","board","host"]))];
+        json!({"project":{"type":"string"},"repo":{"type":"string","description":"Exact owner/name from the caller's own text or repository link, without .git or trailing slash"},"board":{"type":"string","enum":["github","gitlab"]},"host":{"type":"string","description":"Exact host from that same repository link or own text, e.g. github.com"},"checkout":{"type":"boolean","description":"Default false (board-only). True only when the caller explicitly asks to clone or check out code from their repository link"}}), json!(["project","repo","board","host"]))];
     for name in ["user_grant", "user_revoke"] {
         tools.push(tool(name,crate::catalog::purpose(name),
             json!({"user":{"type":"integer"},"grants":{"type":"array","minItems":1,"items":{"type":"string"}},"route":{"type":"string","description":"CLI only: exact CHAT:TOPIC named by caller"}}),json!(["user","grants"])));
@@ -99,6 +99,13 @@ fn shared_requested(text: &str) -> bool {
     let words:Vec<_>=own.split(|c:char|!c.is_alphanumeric() && c!='\'').filter(|w|!w.is_empty()).collect();
     if words.iter().any(|w|["not","no","never","don't","dont","не","нет","без"].contains(w)) { return false; }
     words.windows(2).any(|w|matches!((w[0],w[1]),("shared","topic"|"conversation")|("общую","тему")|("общий","разговор")))
+}
+// #266: registration is board-only unless the caller's own words ask for code on this host.
+fn checkout_requested(text: &str) -> bool {
+    let own=crate::direct::own_text(text).to_lowercase();
+    let words:Vec<_>=own.split(|c:char|!c.is_alphanumeric() && c!='\'').filter(|w|!w.is_empty()).collect();
+    if words.iter().any(|w|["not","no","never","don't","dont","without","не","нет","без"].contains(w)) { return false; }
+    words.iter().any(|w|["clone","checkout","склонируй","клонируй","клонировать"].contains(w)) || words.windows(2).any(|w|w==["check","out"])
 }
 fn seen(j: &Journal, _r: &Run, target: i64, chat: i64, topic: i64) -> Result<bool,String> {
     // A quote is trusted Telegram envelope metadata, never the quoted text or a forwarded author.
@@ -287,7 +294,9 @@ fn register(d: &Direct, j: &Mutex<Journal>, r: &Run, args: &Value, deadline: Ins
     let own=crate::direct::own_text(&r.text);
     let link=own.split_whitespace().map(|w|w.trim_matches([',',';','(',')','<','>','[',']']))
         .find(|w|repository_links(w).iter().any(|(h,p)|h==host && p==repo));
-    let root=if let Some(url)=link {
+    let root=if args["checkout"]==true {
+        if !checkout_requested(&r.text) {return Err("A checkout needs the caller's own clone or checkout request; register board-only (checkout false) unless they ask for code on this host.".into());}
+        let url=link.ok_or("A checkout needs the caller's repository link; register board-only or ask for the link.")?;
         config_root_with_git(d,project,&config,url.trim_end_matches('/'),git,deadline,&active)?
     } else {config_root(d,project,&config)?};
     // Same bounded executor as installed reads: deadline, grant revocation, process group and output cap.
@@ -630,8 +639,8 @@ mod tests {
         std::fs::write(&bin,"#!/bin/sh\nprintf '%s' '{\"complete\":true,\"board\":{\"repo\":\"invented/demo\",\"kind\":\"gitlab\",\"host\":\"gitlab.example.test\"}}'\n").unwrap();
         std::fs::set_permissions(&bin,std::fs::Permissions::from_mode(0o700)).unwrap();
         let t=Taskq{bin,..tq(None)};
-        let r=run(&mut j,7,1,&format!("register demo from {url}"));let m=Mutex::new(j);
-        let mut args=config.clone();args["project"]=json!("demo");
+        let r=run(&mut j,7,1,&format!("clone and register demo from {url}"));let m=Mutex::new(j);
+        let mut args=config.clone();args["project"]=json!("demo");args["checkout"]=json!(true);
         let registered=register(&d,&m,&r,&args,end(),&t,&git).unwrap();
         let root=std::path::PathBuf::from(registered["root"].as_str().unwrap());
         assert_eq!(std::fs::read_to_string(dir.join("clone-url")).unwrap(),url,"clone must use the caller's exact link");
@@ -654,6 +663,58 @@ mod tests {
         let failure=config_root_with_git(&d,"auth-failed",&config,url,&fail,end(),||true).unwrap_err();
         assert!(failure.contains("authentication failed") && failure.contains("128") && !failure.contains("invented-secret-never-return"),"{failure}");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // #266 A2/A4 / §5: a linked repository registers board-only unless the caller asks for code here;
+    // onboarding never attaches the root to the local service and readiness follows board heartbeats.
+    #[cfg(unix)]
+    #[test]
+    fn project_266_board_only_registration() {
+        use std::os::unix::fs::PermissionsExt;
+        let (mut j,dir,d)=setup();
+        let git=dir.join("git-must-not-run");
+        std::fs::write(&git,format!("#!/bin/sh\ntouch '{}/git-ran'\nexit 1\n",dir.display())).unwrap();
+        std::fs::set_permissions(&git,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let bin=dir.join("fake-taskq");
+        std::fs::write(&bin,format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{0}/calls'\n[ \"$1\" = status ] && cat '{0}/board.json' || exit 42\n",dir.display())).unwrap();
+        std::fs::set_permissions(&bin,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let now=crate::now() as i64;
+        let board=|updated:i64|json!({"complete":true,"observed":now,"board":{"repo":"alex/csgo","kind":"gitlab","host":"gitlab.example.test"},
+            "hosts":[{"name":"mac","version":"4.6.58","updated":updated},{"name":"win","version":"4.6.58","updated":updated}]});
+        std::fs::write(dir.join("board.json"),board(now-400).to_string()).unwrap();
+        let doctor=dir.join("doctor-fixture");
+        std::fs::write(&doctor,format!("#!/bin/sh\nprintf '%s' '{}'\n",json!({"ok":true,"checks":{"configuration":"ok","telegram":"ok","codex":"ok","taskq":"ok","voice":"ok","host_tools":"ok"}}))).unwrap();
+        std::fs::set_permissions(&doctor,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let t=Taskq{bin,..tq(None)};
+        let url="https://gitlab.example.test/alex/csgo";
+        let args=json!({"project":"csgo","repo":"alex/csgo","board":"gitlab","host":"gitlab.example.test"});
+        let r=run(&mut j,7,1,&format!("connect csgo board {url}"));let m=Mutex::new(j);
+        let mut clone=args.clone();clone["checkout"]=json!(true);
+        let refused=register(&d,&m,&r,&clone,end(),&t,&git).unwrap_err();
+        assert!(refused.contains("checkout"),"model-selected checkout without caller request: {refused}");
+        assert!(!dir.join("projects/csgo").exists() && !dir.join("git-ran").exists());
+        finish(&mut m.lock().unwrap(),&r);
+        let r=run(&mut m.lock().unwrap(),7,2,&format!("connect csgo board {url}"));
+        let (ok,out)=call_with_doctor(&d,&m,&r,"project_register",&args,end(),Some(&t),&doctor);assert!(ok,"{out}");
+        let root=dir.join("projects/csgo");
+        assert!(!dir.join("git-ran").exists() && !root.join(".git").exists(),"board-only registration must not clone");
+        assert_eq!(std::fs::read_dir(&root).unwrap().map(|e|e.unwrap().file_name()).collect::<Vec<_>>(),["taskq.json"],"no focus, state or code in a board-only root");
+        let report=serde_json::from_str::<Value>(&out).unwrap()["onboarding"].clone();
+        let checks:Vec<_>=report["gaps"].as_array().unwrap().iter().map(|g|g["check"].as_str().unwrap()).collect();
+        assert_eq!(checks,["claim","host","issue_read_key"],"stale heartbeats warn once; no local service or Codex gaps: {report}");
+        let mut config:Value=serde_json::from_slice(&std::fs::read(root.join("taskq.json")).unwrap()).unwrap();
+        config["create_claim_issue"]=json!(5);std::fs::write(root.join("taskq.json"),config.to_string()).unwrap();
+        d.keys.add("pilotq-gitlab","invented",&["issue_read".into()],"invented-not-a-real-credential").unwrap();
+        d.keys.grant("pilotq-gitlab",&["project:csgo".into()]).unwrap();
+        let held=crate::onboarding::check_with(&d,&t,&m,"csgo",end(),&doctor).unwrap();
+        assert_eq!(held["ready"],false,"{held}");
+        assert!(crate::onboarding::gate(&m.lock().unwrap(),"csgo").is_err(),"no serving host must hold launch");
+        std::fs::write(dir.join("board.json"),board(now-10).to_string()).unwrap();
+        let ft=Taskq{root:m.lock().unwrap().projects().unwrap()[0].2.clone().into(),..Taskq{bin:t.bin.clone(),..tq(None)}};
+        assert!(crate::onboarding::launch_gate(&ft,&m,"csgo",Some("en"),end()).is_ok(),"a fresh heartbeat reopens launch without owner action");
+        let calls=std::fs::read_to_string(dir.join("calls")).unwrap();
+        assert!(calls.lines().all(|c|matches!(c,"status --json"|"service status --json")),"{calls}");
+        drop(m);std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn checkout_fixture(root:&Path,url:&str) {
