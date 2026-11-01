@@ -47,6 +47,7 @@ fn input(kind: &UpdateKind) -> Option<Input> {
             .or_else(||data.strip_prefix("onboard:").map(|s|format!("/onboard-button {s}")));
         let (kind,k) = if let Some(k)=model_command.as_deref() { ("text",k) }
             else if let Some(k)=data.strip_prefix("answer:") { ("button",k) }
+            else if data.starts_with("explain:") { ("explain",data) }
             else if data.starts_with("plan:") || data.starts_with("cancel:") || data.starts_with("choice:") || data.starts_with("retry:") || data.starts_with("cancel_launch:") { ("action",data) }
             else { return None };
         return Some(Input { files: vec![], callback: Some(q.id.0.clone()),

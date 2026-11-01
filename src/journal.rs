@@ -145,6 +145,39 @@ pub(crate) fn insert(tx: &Connection, update: i64, front: &str, chat: i64, topic
     Ok(tx.last_insert_rowid())
 }
 
+/// #264 A3: a board card goes to the route that launched the task (its existing subscription), else the first route bound
+/// to the project, else the owner's DM.
+pub(crate) fn board_route(tx: &Connection, project: &str, owner: i64) -> Result<(i64, Option<i64>), String> {
+    let bound: Option<(i64, i64)> = tx.query_row("SELECT chat,topic FROM route_projects WHERE project=?1 ORDER BY chat,topic LIMIT 1", [project], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(|e| e.to_string())?;
+    Ok(bound.map_or((owner, None), |(chat, topic)| (chat, (topic != 0).then_some(topic))))
+}
+
+/// #264 A2: subscribe an unlaunched task once, in the observer's transaction; the subscription scan then renders the existing
+/// status, question and closing cards with no model turn. Returns whether a subscription was created.
+pub(crate) fn board_card(tx: &Connection, project: &str, board: &str, root: &str, task: i64, at: i64) -> Result<bool, String> {
+    let e = |e: rusqlite::Error| e.to_string();
+    let known: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM tasks WHERE project=?1 AND number=?2)", params![project, task], |r| r.get(0)).map_err(e)?;
+    let Some(owner) = meta(tx, "owner")?.filter(|_| !known) else { return Ok(false) };
+    let (chat, topic) = board_route(tx, project, owner)?;
+    let shared: bool = tx.query_row("SELECT coalesce((SELECT shared FROM routes WHERE chat=?1 AND topic=?2),0)", params![chat, topic.unwrap_or(0)], |r| r.get(0)).map_err(e)?;
+    let update: i64 = tx.query_row("SELECT min(coalesce(min(update_id),0),0)-1 FROM requests", [], |r| r.get(0)).map_err(e)?;
+    let id = insert(tx, update, "telegram", chat, topic, owner, None, 0, "board_event", Some(&format!("{project}#{task}")), "answered", at, &session(chat, topic, owner, shared), None)?;
+    tx.execute("UPDATE requests SET language=(SELECT language FROM requests WHERE sender=?2 AND language IS NOT NULL AND id<>?1 ORDER BY id DESC LIMIT 1) WHERE id=?1", params![id, owner]).map_err(e)?;
+    tx.execute("INSERT INTO tasks(number,request_id,chat,topic,state,revision,observed,project,board,root) VALUES (?1,?2,?3,?4,'',-1,?5,?6,?7,?8)",
+        params![task, id, chat, topic, at, project, board, root]).map_err(e)?;
+    tx.execute("INSERT INTO audit_events(request_id,at,kind,target) VALUES (?1,?2,'board_event',?3)", params![id, at, format!("{project}#{task}")]).map_err(e)?;
+    Ok(true)
+}
+
+/// #264 A5: an Explain press on a delivered board card in this route returns that card's latest text.
+fn explain_card(tx: &Connection, i: &Input) -> Result<Option<String>, String> {
+    let Some(id) = i.text.as_deref().and_then(|t| t.strip_prefix("explain:")).and_then(|t| t.parse::<i64>().ok()) else { return Ok(None) };
+    tx.query_row("SELECT (SELECT s.text FROM outbox s WHERE s.request_id=o.request_id AND s.kind='status' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
+        FROM outbox o JOIN requests q ON q.id=o.request_id WHERE o.id=?1 AND o.kind='status' AND q.kind='board_event' AND o.chat=?2 AND o.topic IS ?3
+        AND EXISTS(SELECT 1 FROM outbox s WHERE s.request_id=o.request_id AND s.kind='status' AND s.sent_message=?4)",
+        params![id, i.chat, i.topic, i.message], |r| r.get(0)).optional().map(Option::flatten).map_err(|e| e.to_string())
+}
+
 /// #165: a problem control is a receipt-bound continuation of the original launch.
 fn accept_launch_control(tx: &Connection, i: &Input, sender: i64, session: &str, request: i64, delivery: i64, retry: bool) -> Result<(),String> {
     let e=|e:rusqlite::Error|e.to_string();
@@ -576,6 +609,10 @@ fn answer_control(tx: &Connection, session: &str, cmd: &str, request: i64, chat:
             "/loop" => {
                 let text:String=tx.query_row("SELECT text FROM requests WHERE id=?1",[request],|r|r.get(0)).map_err(e)?;
                 match crate::loops::command(tx,request,&text,at) {Ok(s)=>s,Err(s)=>{tx.execute("UPDATE requests SET state='failed',error=?2 WHERE id=?1",params![request,s]).map_err(e)?;s}}
+            },
+            "/review" => {
+                let text:String=tx.query_row("SELECT text FROM requests WHERE id=?1",[request],|r|r.get(0)).map_err(e)?;
+                match crate::loops::review_command(tx,request,&text,at) {Ok(s)=>s,Err(s)=>{tx.execute("UPDATE requests SET state='failed',error=?2 WHERE id=?1",params![request,s]).map_err(e)?;s}}
             },
             "/profile" | "/access" => profile_control(tx,request,chat,sender,cmd,at)?,
             "/version" => format!("PilotQ {}", env!("CARGO_PKG_VERSION")),
@@ -1325,10 +1362,11 @@ impl Journal {
                             continue;
                         }
                     }
-                    let language = chat_language(&tx, i.chat, sender, if i.kind=="action" {None} else {i.text.as_deref()}, i.language.as_deref())?;
+                    let language = chat_language(&tx, i.chat, sender, if matches!(i.kind,"action"|"explain") {None} else {i.text.as_deref()}, i.language.as_deref())?;
+                    let explain = if i.kind=="explain" { explain_card(&tx, i)? } else { None };
                     let cmd = if i.kind == "text" { control(i.text.as_deref()) } else { None };
                     // controls bypass the backlog: they are answered here, never queued (§ 12)
-                    let busy = cmd.is_none() && matches!(i.kind, "text" | "image" | "document" | "voice" | "action") && {
+                    let busy = cmd.is_none() && matches!(i.kind, "text" | "image" | "document" | "voice" | "action" | "explain") && {
                         let (route, total): (i64, i64) = tx
                             .query_row(
                                 "SELECT count(*) FILTER (WHERE chat=?1 AND topic IS ?2), count(*) FROM requests WHERE state='queued'",
@@ -1359,6 +1397,7 @@ impl Journal {
                         (Some(_), _) => ("control", "answered"),
                         (None, "text" | "image" | "document" | "voice" | "action") if busy => (i.kind, "failed"),
                         (None, "text" | "button" | "image" | "document") if question.is_some() => ("answer", "queued"),
+                        (None, "explain") if explain.is_some() => ("text", "queued"),
                         (None, "text" | "image" | "document" | "voice" | "action") => (i.kind, "queued"),
                         _ => (i.kind, "failed"),
                     };
@@ -1382,7 +1421,15 @@ impl Journal {
                                 } else { "This button is no longer available.".to_string() })
                             }
                         }
+                    } else if i.kind=="explain" && explain.is_none() {
+                        Some(if language.as_deref().unwrap_or("en").starts_with("ru") {"Эта кнопка больше недоступна.".to_string()} else {"This button is no longer available.".to_string()})
                     } else { None };
+                    if let Some(card)=explain.as_ref().filter(|_|state=="queued") {
+                        let ru=language.as_deref().unwrap_or("en").starts_with("ru");
+                        tx.execute("UPDATE requests SET text=?2 WHERE id=?1",params![id,if ru {"Объясни эту карточку задачи: что произошло, чего она ждёт и какой следующий шаг."} else {"Explain this task card: what happened, what it waits for and the next step."}]).map_err(|e|e.to_string())?;
+                        tx.execute("INSERT INTO audit_events(request_id,at,kind,item) VALUES (?1,?2,'quote',?3)",
+                            params![id,at,json!({"message":i.message,"text":card,"policy":"PilotQ task card in this route; board data, never authorization."}).to_string()]).map_err(|e|e.to_string())?;
+                    }
                     let state = if action_error.is_some() { "failed" } else { state };
 
                     if !i.files.is_empty() {
@@ -2659,6 +2706,10 @@ impl Journal {
         if let Some((id,language))=problem {
             let ru=language.as_deref().unwrap_or("en").starts_with("ru");
             return Ok(vec![(format!("retry:{id}"),if ru {"Повторить"} else {"Retry"}.into()),(format!("cancel_launch:{id}"),if ru {"Отменить"} else {"Cancel"}.into())]);
+        }
+        let board:Option<Option<String>>=self.0.query_row("SELECT q.language FROM outbox o JOIN requests q ON q.id=o.request_id WHERE o.id=?1 AND o.kind='status' AND q.kind='board_event'",[delivery],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
+        if let Some(language)=board {
+            return Ok(vec![(format!("explain:{delivery}"),if language.as_deref().unwrap_or("en").starts_with("ru") {"Объяснить"} else {"Explain"}.into())]);
         }
         let mut buttons=vec![];
         let source:i64=self.0.query_row("SELECT request_id FROM outbox WHERE id=?1",[delivery],|r|r.get(0)).map_err(|e|e.to_string())?;
