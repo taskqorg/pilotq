@@ -1,0 +1,81 @@
+--- a/src/whisper.cpp
++++ b/src/whisper.cpp
+@@ -5938,6 +5938,7 @@
+ 
+         /*.language          =*/ "en",
+         /*.detect_language   =*/ false,
++        /*.experimental_first_window_reuse =*/ false,
+ 
+         /*.suppress_blank    =*/ true,
+         /*.suppress_nst      =*/ false,
+@@ -6804,6 +6805,13 @@
+         }
+     }
+ 
++    // Function-local, never carried across recordings or failed detection.
++    bool reuse_first_window = false;
++    const bool reuse_eligible = params.experimental_first_window_reuse &&
++        n_samples > 0 && params.offset_ms == 0 && params.audio_ctx == 0 &&
++        state->exp_n_audio_ctx == 0 && !ctx->params.use_gpu &&
++        params.no_context && !params.detect_language;
++
+     // auto-detect language if not specified
+     if (params.language == nullptr || strlen(params.language) == 0 || strcmp(params.language, "auto") == 0 || params.detect_language) {
+         std::vector<float> probs(whisper_lang_max_id() + 1, 0.0f);
+@@ -6813,6 +6821,7 @@
+             WHISPER_LOG_ERROR("%s: failed to auto-detect language\n", __func__);
+             return -3;
+         }
++        reuse_first_window = reuse_eligible;
+         state->lang_id = lang_id;
+         params.language = whisper_lang_str(lang_id);
+ 
+@@ -7012,8 +7021,20 @@
+             }
+         }
+ 
++        // Keep encoder_begin_callback above and the original decoder reset below.
++        // Consume even on a nonmatching seek: never reuse at a later window.
++        const bool reuse_now = reuse_first_window && seek == 0 && state->exp_n_audio_ctx == 0;
++        reuse_first_window = false;
++        // The original encoder checks cancellation at completion. Skipping its
++        // work must still check it; cancellation never decodes cached features.
++        if (reuse_now && params.abort_callback && params.abort_callback(params.abort_callback_user_data)) {
++            return -6;
++        }
++        if (reuse_now) {
++            WHISPER_LOG_INFO("%s: experimental first-window reuse offset=0 audio_ctx=0\n", __func__);
++        }
+         // encode audio features starting at offset seek
+-        if (!whisper_encode_internal(*ctx, *state, seek, params.n_threads, params.abort_callback, params.abort_callback_user_data)) {
++        if (!reuse_now && !whisper_encode_internal(*ctx, *state, seek, params.n_threads, params.abort_callback, params.abort_callback_user_data)) {
+             WHISPER_LOG_ERROR("%s: failed to encode\n", __func__);
+             return -6;
+         }
+--- a/include/whisper.h
++++ b/include/whisper.h
+@@ -533,6 +533,10 @@
+         const char * language;
+         bool detect_language;
+ 
++        // EXPERIMENT ONLY: caller guarantees callbacks do not mutate encoder state.
++        // Default false; not a stable API or production selection.
++        bool experimental_first_window_reuse;
++
+         // common decoding parameters:
+         bool suppress_blank; // ref: https://github.com/openai/whisper/blob/f82bc59f5ea234d4b97fb2860842ed38519f7e65/whisper/decoding.py#L89
+         bool suppress_nst;   // non-speech tokens, ref: https://github.com/openai/whisper/blob/7858aa9c08d98f75575035ecd6481f462d66ca27/whisper/tokenizer.py#L224-L253
+--- a/examples/cli/cli.cpp
++++ b/examples/cli/cli.cpp
+@@ -1265,6 +1265,11 @@
+                 wparams.abort_callback_user_data = &is_aborted;
+             }
+ 
++#ifdef PILOTQ_344_EXPERIMENT
++            // Only this pinned CLI's non-mutating callbacks opt in. Library
++            // callers stay off. Never use parallel states for this experiment.
++            wparams.experimental_first_window_reuse = params.n_processors == 1 && !params.vad;
++#endif
+             if (whisper_full_parallel(ctx, wparams, pcmf32.data(), pcmf32.size(), params.n_processors) != 0) {
+                 fprintf(stderr, "%s: failed to process audio\n", argv[0]);
+                 return 10;

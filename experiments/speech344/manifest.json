@@ -1,0 +1,14 @@
+{
+  "upstream": "https://github.com/ggml-org/whisper.cpp",
+  "commit": "4979e04f5dcaccb36057e059bbaed8a2f5288315",
+  "license": "MIT",
+  "status": "unbuilt; no inference or production qualification",
+  "source_sha256": {
+    "src/whisper.cpp": "02566a39137a14e0798ec0d88e78bd626f21e7549bc27d1cb5e4a30b101a0f7e",
+    "include/whisper.h": "0525b758571ab71c00ddd8ea2845f74af7c62dfa5100c5586655f75bdc5ef4be",
+    "examples/cli/cli.cpp": "307b5b77fcc265ffed5e02ff0853afb95786001fd81fbc605672e604f0bb4904"
+  },
+  "patch_sha256": "8cfaf6e6830af59c68c2e266eabaea848768e4477bf2370f6ed269e5622b1f4b",
+  "baseline_binary_sha256": "30ab87ffca69ba2e03f6c9c110c158cc5d7e4099eaa0179793559215b99aed70",
+  "archive_sha256": "ec8e33f4c838ed459ad0a23da255c0262f150a6f54839a17e504ddf1495305d5"
+}
