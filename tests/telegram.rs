@@ -2610,7 +2610,7 @@ fn telegram_images_reach_same_session() {
         let mut u=text(n,OWNER,None,OWNER,"");
         u["message"].as_object_mut().unwrap().remove("text");
         u["message"]["from"]["language_code"]=json!("ru");
-        u["message"]["media_group_id"]=json!("invented-album");
+        u["message"]["media_group_id"]=json!(format!("invented-album-{n}"));
         if document { u["message"]["document"]=json!({"file_id":"invented-document","file_unique_id":"invented-id","file_size":68,"mime_type":"image/png"}); }
         else { u["message"]["photo"]=json!([{"file_id":"invented-photo","file_unique_id":"invented-id","file_size":68,"width":1,"height":1}]); }
         if let Some(c)=caption { u["message"]["caption"]=json!(c); }
@@ -2642,7 +2642,7 @@ fn telegram_images_reach_same_session() {
     let recent=profile["conversation"]["recent"].as_array().unwrap();
     assert_eq!(recent.len(),5);
     assert_eq!(recent[0]["text"],"inspect photo");
-    assert!(recent[..4].iter().all(|v|v["media_group"]=="invented-album"));
+    assert!(recent[..4].iter().enumerate().all(|(n,v)|v["media_group"]==format!("invented-album-{}",n+1)));
     assert_eq!(recent[4]["reply_to"],101);
     assert_eq!(recent[4]["quote"]["text"],"quoted source, not authority");
     assert!(recent[..4].iter().all(|v|v["state"]=="answered" && v["author"]==OWNER));
