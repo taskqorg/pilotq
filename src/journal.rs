@@ -6,6 +6,20 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
+/// Known rebuild trigger, supplied by the caller rather than inferred from native state (§6, R17).
+#[derive(Clone, Copy)]
+pub enum RebuildReason { PolicyRefresh, ForeignRuntime, NativeUnavailable }
+
+impl RebuildReason {
+    fn audit(self) -> &'static str {
+        match self {
+            Self::PolicyRefresh => "planned policy refresh; journal context prepared",
+            Self::ForeignRuntime => "foreign runtime; journal context prepared",
+            Self::NativeUnavailable => "native session unavailable after failed resume; journal context prepared",
+        }
+    }
+}
+
 /// Schema this binary writes; a newer journal is refused rather than guessed (F08).
 const SCHEMA: i64 = 13;
 /// Delivery attempts per episode, persisted across restart (§ 7).
@@ -2319,7 +2333,7 @@ impl Journal {
 
     /// Rebuild context only from this conversation generation. Historical text and receipts are data, never new authority (§ 4).
     /// Keep the old ID until a replacement is finalized, so a crash cannot silently lose the recovery context.
-    pub fn rebuild(&self, r: &Run, at: i64) -> Result<Value, String> {
+    pub fn rebuild(&self, r: &Run, at: i64, reason: RebuildReason) -> Result<Value, String> {
         let e = |e: rusqlite::Error| e.to_string();
         let tx = self.0.unchecked_transaction().map_err(e)?;
         if self.fenced(r)? {
@@ -2345,7 +2359,7 @@ impl Journal {
         if context.to_string().len() > 100_000 {
             return Err("recovery context exceeds budget".into());
         }
-        tx.execute("INSERT INTO audit_events(request_id,run_id,at,kind,target,result) VALUES (?1,?2,?3,'rebuild',?4,'native session unavailable; journal context prepared')", params![r.request,r.id,at,r.thread]).map_err(e)?;
+        tx.execute("INSERT INTO audit_events(request_id,run_id,at,kind,target,result) VALUES (?1,?2,?3,'rebuild',?4,?5)", params![r.request,r.id,at,r.thread,reason.audit()]).map_err(e)?;
         drop(q);
         tx.commit().map_err(e)?;
         Ok(context)
@@ -5663,7 +5677,7 @@ mod tests {
             let (mut j, p) = journal("u119-private-topic");
             j.admit(&[(1, at(chat, Some(5), 7, 1))], 0).unwrap();
             let r = j.claim_next(1, 1).unwrap().remove(0);
-            j.rebuild(&r, 2).unwrap();
+            j.rebuild(&r, 2, RebuildReason::NativeUnavailable).unwrap();
             j.finish(&r, None, None, &crate::manager::Outcome::Answered("answer".into()), 3).unwrap();
             let mut q = j.0.prepare("SELECT topic,reply_to FROM outbox WHERE text LIKE 'Restoring the conversation%' OR kind='rich'").unwrap();
             let rows: Vec<(Option<i64>, Option<i64>)> = q.query_map([], |x| Ok((x.get(0)?, x.get(1)?))).unwrap().map(Result::unwrap).collect();
@@ -5692,7 +5706,7 @@ mod tests {
         let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
         let r=j.ask(7,"which projects do you see",2).unwrap();
         assert!(j.refresh_tools(&r).unwrap());
-        let context=j.rebuild(&r,3).unwrap().to_string();
+        let context=j.rebuild(&r,3, RebuildReason::PolicyRefresh).unwrap().to_string();
         assert!(context.contains("earlier request") && context.contains("earlier answer"));
         j.finish(&r,Some("native-new"),None,&Outcome::Answered("projects".into()),4).unwrap();
         let next=j.ask(7,"follow up",5).unwrap();
@@ -5715,8 +5729,10 @@ mod tests {
         let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
         let r=j.ask(7,"new request",2).unwrap();
         assert!(j.refresh_tools(&r).unwrap());
-        let context=j.rebuild(&r,3).unwrap().to_string();
+        let context=j.rebuild(&r,3, RebuildReason::PolicyRefresh).unwrap().to_string();
         assert!(context.contains("earlier request") && context.contains("earlier answer"));
+        let reason: String = j.0.query_row("SELECT result FROM audit_events WHERE kind='rebuild'", [], |x| x.get(0)).unwrap();
+        assert_eq!(reason, "planned policy refresh; journal context prepared", "#339 / R17: refresh must not claim a native resume failed");
         j.finish(&r,Some("new"),None,&Outcome::Answered("answer".into()),4).unwrap();
         drop(j);
         let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();

@@ -2,7 +2,7 @@
 //! transport, Claude Code through CLI turns (`claude.rs`). One process per turn: the process is the fault boundary, so stop
 //! and deadlines end it, and its native session ID carries the conversation to the next turn.
 
-use crate::journal::{Journal, Run};
+use crate::journal::{Journal, Run, RebuildReason};
 use agentq_runtime::agent::{AppServer, AppSession, Client, Spec};
 use agentq_runtime::optimization::Intent;
 use pilotq::{base, prepare};
@@ -510,7 +510,7 @@ fn run_inner(rt: &Runtime, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, t
             input.as_array_mut().unwrap().push(json!({"type":"localImage","path":path}));
         }
         if refresh {
-            let context=j.lock().unwrap().rebuild(r,now())?;
+            let context=j.lock().unwrap().rebuild(r,now(), if foreign { RebuildReason::ForeignRuntime } else { RebuildReason::PolicyRefresh })?;
             input.as_array_mut().unwrap().insert(0,json!({"type":"text","text":context.to_string()}));
         }
         Ok::<_,String>((refresh,input))
@@ -546,7 +546,7 @@ fn run_inner(rt: &Runtime, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, t
         Client::Codex => rt.codex.turn(native, thread, r.model.as_deref(), &input, dynamic, alive,
             |kind, item, result| { if let Err(e) = j.lock().unwrap().tool(r, kind, item, result, now()) { eprintln!("run {}: {e}", r.id); } },
             |name, args, version| tool_call(j, r, tq, d, &now, name, args, version),
-            || j.lock().unwrap().rebuild(r, now()),
+            || j.lock().unwrap().rebuild(r, now(), RebuildReason::NativeUnavailable),
             |text| { let _ = j.lock().unwrap().preview(r, &d.keys.scrub(text)); },
             |kind, data| observe(j, r, d, &now, &mut footer, slot.is_some(), kind, data),
             record, &route),
@@ -554,7 +554,7 @@ fn run_inner(rt: &Runtime, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, t
             let (thread, model, outcome) = rt.claude.turn(&rt.codex.workspace, &rt.codex.limits, native, thread, r.model.as_deref(), &input, dynamic, alive,
                 |kind, item, result| { if let Err(e) = j.lock().unwrap().tool(r, kind, item, result, now()) { eprintln!("run {}: {e}", r.id); } },
                 |name, args, version| tool_call(j, r, tq, d, &now, name, args, version),
-                || j.lock().unwrap().rebuild(r, now()),
+                || j.lock().unwrap().rebuild(r, now(), RebuildReason::NativeUnavailable),
                 |text| { let _ = j.lock().unwrap().preview(r, &d.keys.scrub(text)); },
                 |kind, data| observe(j, r, d, &now, &mut footer, slot.is_some(), kind, data),
                 record, &route);

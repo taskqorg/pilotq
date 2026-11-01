@@ -527,7 +527,7 @@ mod tests {
         let r=j.ask(7,"administer",3).unwrap();
         j.catalogue(&r,&ordinary).unwrap();assert!(!j.refresh_tools(&r).unwrap());
         j.catalogue(&r,&json!(tools())).unwrap();assert!(j.refresh_tools(&r).unwrap());
-        j.rebuild(&r,4).unwrap();
+        j.rebuild(&r,4, crate::journal::RebuildReason::NativeUnavailable).unwrap();
         j.finish(&r,Some("invented-replacement-thread"),None,&crate::manager::Outcome::Answered("ready".into()),5).unwrap();
         assert!(!j.refresh_tools(&r).unwrap());
         let _=std::fs::remove_dir_all(dir);
@@ -615,7 +615,7 @@ mod tests {
         m.lock().unwrap().0.execute_batch("DROP TRIGGER fail_receipt").unwrap();
         assert!(call(&d,&m,&r,"user_grant",&args,end(),None).0);
         drop(m);let mut j=Journal::open(&dir.join("journal.sqlite")).unwrap();recover(&mut j,5).unwrap();assert!(j.has(8,"users").unwrap());
-        let rebuilt=j.rebuild(&r,6).unwrap();
+        let rebuilt=j.rebuild(&r,6, crate::journal::RebuildReason::NativeUnavailable).unwrap();
         assert!(rebuilt["receipts"].as_array().unwrap().iter().any(|e|e["kind"]=="admin" && e["result"].as_str().and_then(|s|serde_json::from_str::<Value>(s).ok()).is_some_and(|v|v["outcome"]=="accepted")),"native recovery must retain administration receipts rather than repeat effects");
         let _=std::fs::remove_dir_all(dir);
     }
