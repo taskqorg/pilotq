@@ -130,6 +130,45 @@ pub(crate) fn named_own(text: &str, name: &str) -> bool {
     })
 }
 
+/// R4 / §5: a qualified test subject or source is a reference, not a destination.
+/// Keep every unclassified occurrence: uncertain wording must still ask, never guess.
+pub(crate) fn named_target(text: &str, name: &str) -> bool { project_role(text,name).0 }
+
+// (unqualified destination mention, explicit destination construction)
+fn project_role(text: &str, name: &str) -> (bool,bool) {
+    let own=own_text(text).to_lowercase();
+    let words:Vec<_>=own.split(|c:char| !(c.is_alphanumeric() || "-_.".contains(c)))
+        .filter(|w|!w.is_empty()).collect();
+    let mut spellings=vec![name.to_lowercase().replace('/', "")];
+    spellings.extend(PROJECT_ALIASES.iter().filter(|(_,canonical)|name.eq_ignore_ascii_case(canonical)).map(|(alias,_)|alias.to_string()));
+    let mut offset=0;
+    let mut result=(false,false);
+    let ends=|prefix:&str,phrases:&[&str]|phrases.iter().any(|phrase|prefix.strip_suffix(phrase)
+        .is_some_and(|head|head.is_empty() || head.ends_with(|c:char| !c.is_alphanumeric())));
+    for (i,word) in words.iter().enumerate() {
+        let start=offset+own[offset..].find(word).unwrap();
+        offset=start+word.len();
+        let prefix=own[..start].split_whitespace().collect::<Vec<_>>().join(" ");
+        // A repo/URL is one reference: its final name inherits the qualifier
+        // before the whole token, not the owner/path component immediately before it.
+        let qualifier=if prefix.ends_with('/') { prefix.rsplit_once(' ').map_or("",|(head,_)|head) } else { &prefix };
+        let reference=ends(qualifier,&["для проверки", "для тестирования", "to test", "to test the", "for testing", "for testing the",
+            "from project", "из проекта", "reference to", "re"]);
+        let explicit=ends(qualifier,&["task for", "tasks for", "plan for", "in project", "on board", "задачи", "задачу", "задача", "план для", "в проекте", "на доске"]);
+        let mut joined=String::new();
+        for word in &words[i..] {
+            joined.push_str(word.trim_end_matches('.'));
+            if spellings.contains(&joined) {
+                result.0 |= !reference;
+                result.1 |= explicit && !reference;
+                break;
+            }
+            if spellings.iter().all(|s|s.len()<=joined.len()) { break; }
+        }
+    }
+    result
+}
+
 // §5 / #157: only numbered items define the mapping; introductory mentions do not.
 fn numbered_project(reply: &str, options: &[String], answer: usize) -> Option<String> {
     let bytes = reply.as_bytes();
@@ -167,30 +206,42 @@ fn project_option_numbers_ignore_introductory_mentions() {
     }
 }
 
-pub(crate) fn context_project(j: &Journal, r: &Run, user: i64) -> Result<Option<String>, String> {
-    let projects: Vec<_> = j.projects()?.into_iter().filter(|p| allowed(j,user,&p.0).is_ok()).collect();
-    let select = |texts: &[String]| -> Result<Option<String>,String> {
-        let matches: Vec<String> = projects.iter().filter(|p| texts.iter().any(|text| named_own(text,&p.0) || named_own(text,&p.1))).map(|p|p.0.clone()).collect();
-        match matches.as_slice() {
-            [] => Ok(None),
-            [one] => Ok(Some(one.clone())),
-            // #257: a cited issue such as `pilotq#236` does not compete with a project the text names plainly.
-            // ponytail: the plain name wins even when the cited issue was the intended target; both cited stays a question.
-            many if let [one] = many.iter().filter(|p| texts.iter().any(|t| named_own(&without_issue_refs(t),p))).collect::<Vec<_>>().as_slice() => Ok(Some((*one).clone())),
-            many => {
-                j.project_question(r,many)?;
-                Err(format!("Which project: {}? Nothing was done.", many.join(", ")))
-            }
+fn select_project(j: &Journal, r: &Run, user: i64, texts: &[String]) -> Result<Option<String>, String> {
+    let projects=j.projects()?;
+    let roles:Vec<_>=projects.iter().map(|p| {
+        let target=texts.iter().any(|t|named_target(t,&p.0) || named_target(t,&p.1));
+        let explicit=texts.iter().any(|t|project_role(t,&p.0).1 || project_role(t,&p.1).1);
+        let mentioned=texts.iter().any(|t|named_own(t,&p.0) || named_own(t,&p.1));
+        (p.0.clone(),target,explicit,mentioned)
+    }).collect();
+    // A reference can yield to a proved destination, never promote a remaining
+    // unclassified name: "tasks to test A and B" must still ask about both.
+    let uncertain=roles.iter().filter(|p|p.3).count()>1 && !roles.iter().any(|p|p.2)
+        && roles.iter().any(|p|p.3 && !p.1);
+    let matches:Vec<String>=roles.into_iter().filter(|p|if uncertain {p.3} else {p.1}).map(|p|p.0).collect();
+    match matches.as_slice() {
+        [] => Ok(None),
+        [one] => { allowed(j,user,one)?; Ok(Some(one.clone())) },
+        // #257: a cited issue such as `pilotq#236` does not compete with a project the text names plainly.
+        // ponytail: the plain name wins even when the cited issue was the intended target; both cited stays a question.
+        many if !uncertain && let [one] = many.iter().filter(|p| texts.iter().any(|t| named_target(&without_issue_refs(t),p))).collect::<Vec<_>>().as_slice() => { allowed(j,user,one)?; Ok(Some((*one).clone())) },
+        many => {
+            for project in many { allowed(j,user,project)?; }
+            j.project_question(r,many)?;
+            Err(format!("Which project: {}? Nothing was done.", many.join(", ")))
         }
-    };
-    if let Some(p) = select(&[r.text.clone()])? { return Ok(Some(p)); }
+    }
+}
+
+pub(crate) fn context_project(j: &Journal, r: &Run, user: i64) -> Result<Option<String>, String> {
+    if let Some(p) = select_project(j,r,user,&[r.text.clone()])? { return Ok(Some(p)); }
     // #157: a bare number answers PilotQ's own question from this person's previous request, numbered as its reply listed them.
     if let Ok(k) = own_text(&r.text).trim().trim_end_matches(['.',')']).parse::<usize>()
         && let Some((options, reply)) = j.open_project_question(r)? {
         if let Some(p) = numbered_project(&reply, &options, k)
-            && projects.iter().any(|x| x.0 == p) { return Ok(Some(p)); }
+            && j.projects()?.iter().any(|x| x.0 == p) && allowed(j,user,&p).is_ok() { return Ok(Some(p)); }
     }
-    select(&j.own_project_inputs(r)?)
+    select_project(j,r,user,&j.own_project_inputs(r)?)
 }
 
 pub(crate) fn target_context(j: &Journal, r: &Run, user: i64, args: &Value) -> Result<(String,String,i64),String> {
@@ -223,13 +274,16 @@ fn target_inner(j: &Journal, r: &Run, user: i64, args: &Value, context: bool) ->
         && explicit != url {
         return Err("project and issue URL name different registered projects; nothing was done".into());
     }
-    let inferred = if context { context_project(j,r,user)? } else { None };
+    let inferred = if context { context_project(j,r,user)? } else { select_project(j,r,user,&[r.text.clone()])? };
     let name = match explicit.map(str::to_string).or(by_url) {
         Some(p) => {
             let (name, repo, ..) = projects.iter().find(|x| x.0 == p).ok_or(format!("{p} is not a registered project; nothing was done"))?;
             allowed(j,user,name)?;
+            if inferred.as_deref().is_some_and(|selected|selected!=name) {
+                return Err("project contradicts the person's target; nothing was done".into());
+            }
             let mentioned = if context { inferred.as_deref() == Some(name) }
-                else { named_own(&r.text,name) || named_own(&r.text,repo) || linked.as_ref().is_some_and(|t|t.0==*name && own_url(&r.text,issue.trim())) };
+                else { named_target(&r.text,name) || named_target(&r.text,repo) || linked.as_ref().is_some_and(|t|t.0==*name && own_url(&r.text,issue.trim())) };
             if current.as_deref() != Some(name) && !mentioned {
                 return Err(format!("project {name} was not named in the person's message and is not this conversation's current project; nothing was done"));
             }
