@@ -434,7 +434,6 @@ fn run_inner(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, 
     }
     use crate::direct;
     let mut tools = direct::tools();
-    tools.push(crate::files::tool());
     let instructions = match tq {
         Some(_) => {
             tools.extend(crate::taskq::tools().as_array().cloned().unwrap_or_default());

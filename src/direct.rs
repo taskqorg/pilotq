@@ -42,6 +42,7 @@ pub fn tools() -> Vec<Value> {
         tool("issue_label", crate::catalog::purpose("issue_label"),
             json!({"type": "object", "properties": {"project": project, "issue": issue, "label": {"type": "string"}, "key": key}, "required": ["issue", "label"]})),
     ];
+    tools.push(crate::files::tool());
     tools.push(crate::asana::tool());
     tools.extend(crate::commands::tools());
     tools.extend(crate::admin::tools());
