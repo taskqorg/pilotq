@@ -54,7 +54,10 @@ Persist follow-ups immediately and process them in order after the active turn. 
 
 **Owner decision, [task #220](https://github.com/taskqorg/pilotq/issues/220):** “PilotQ works like the PM Claude session: a loop timer to start/stop, task follow-up, telemetry, moving tasks, in several topics at once.”
 
-This authorizes route-local loops only for the configured owner and explicit shell grantees; it does not authorize worker scheduling, automatic answers to owner questions or production cutover. [Loop protocol](docs/conversation-contract.md#route-loops-and-board-wakes) defines durable ticks, dynamic delay, scoped board observation and recovery. CLI and Telegram share this boundary (R13, R18).
+This authorizes route-local loops only for the configured owner and explicit shell grantees; it does not authorize worker scheduling, automatic answers to owner questions or production cutover.
+**Owner decision, [task #264](https://github.com/taskqorg/pilotq/issues/264):** “one board observer, model-free delivery, and one event-woken PM review per person who turns it on.”
+Loops remain a manual tool, not the base board mechanism: one observer watches every registered board, task events become cards without a model turn, and `/review on` gives its owner or shell-grant caller one PM review of all their projects in that route ([board events](docs/conversation-contract.md#board-events-cards-and-pm-review)).
+[Loop protocol](docs/conversation-contract.md#route-loops-and-board-wakes) defines durable ticks, dynamic delay, scoped board observation and recovery. CLI and Telegram share this boundary (R13, R18).
 
 Plain-language controls are primary. `/status`, `/stop` and `/new` remain available outside the model backlog. Reset fences old runs without erasing task links, subscriptions, grants or receipts. Resolve stop scope explicitly; a manager stop, task park and queue pause differ.
 
@@ -98,6 +101,7 @@ For the owner or an explicit shell grantee, native tools may perform requested w
 
 Member report access, full closing reports, open dependents and durable PM/owner blocker escalation follow the [member tools boundary](docs/taskq-tool-contract.md#member-reports-and-blockers); members never receive owner or PM work.
 Task status reports observed issue state, trusted closing verdict, report, proposed follow-ups and verified existing follow-ups; missing facts stay unavailable. Diagnose, research and investigate plans retain TaskQ `--type research`. Open-snapshot absence proves neither closure nor nonexistence.
+Board-event cards (§2) reuse task subscriptions: a button or reply answer writes through TaskQ without a model turn; Explain or a text reply to a status card starts one model turn in that route with the card as quoted context.
 
 TaskQ reply files retain identity/caption, protected downloads, a 20 MiB cap, original target/revision/operation and same-operation reconciliation. Target/grants are validated before downloading and again at dispatch. Requeue with files requires the protected owner. Text is optional when files exist; refusals and uncertainty retain the reply and remedy.
 
@@ -185,13 +189,8 @@ Owner and `audit` administrators read via CLI; people read their own `/audit` on
 
 ## 9. CLI, releases and service operations
 
-**Owner, task #163:** one code catalog owns capability names, areas, purposes, examples and required
-grants for slash controls, operator commands and manager tools. Help and manager tool descriptions
-render from that catalog; schemas and dispatch checks remain at their existing boundaries (R13,
-R17). Areas are conversation, projects, tasks, reads, people and operations. Slash commands are
-deterministic controls; plain requests select authorized manager tools. Operator-only commands are
-labelled and never imply chat authority. Tool names use `area_verb`; existing names remain
-compatible.
+**Owner, task #163:** one code catalog owns capability names, areas, purposes, examples and required grants for slash controls, operator commands and manager tools. Help and manager tool descriptions render from that catalog; schemas and dispatch checks remain at their existing boundaries (R13, R17).
+Areas are conversation, projects, tasks, reads, people and operations. Slash commands are deterministic controls; plain requests select authorized manager tools. Operator-only commands are labelled and never imply chat authority. Tool names use `area_verb`; existing names remain compatible.
 
 `/help` and `pilotq help` show short grouped commands, an introduction, how to ask, three examples on separate lines and one line per
 accessible area. `/help AREA` and `pilotq help AREA` show purposes, examples and grants for that

@@ -14,19 +14,29 @@ pub struct Loop {
     pub front: String, pub chat: i64, pub topic: Option<i64>, pub author: i64,
     pub session: String, pub generation: i64, pub prompt: String, pub interval: Option<i64>,
     pub next: i64, pub revision: i64, pub source: i64, pub pending: Option<i64>, pub watches: Vec<Watch>,
+    // #264: a person's event-woken PM review reuses the tick path; `changes` holds board moves since its last tick.
+    #[serde(default)] pub review: bool, #[serde(default)] pub changes: Vec<String>,
 }
+/// #264 A6: fallback between event wakes, inside the owner's 1-2 h window.
+pub const REVIEW_FALLBACK: i64 = 5400;
+const STUCK: i64 = 7200;
+const REVIEW: &str = "Synthetic PM review. Review every registered project you can access through installed TaskQ commands and taskq profile telemetry, starting from the changes below; report stuck work, failures, asks, reviews with options and freed capacity with held tasks, with verified task links. Follow the bound PM pack when present. Never answer an owner's question on their behalf. Do not call loop tools.";
 fn err(e: rusqlite::Error) -> String { e.to_string() }
 fn key(front: &str, chat: i64, topic: Option<i64>) -> String { format!("loop:{front}:{chat}:{}", topic.unwrap_or(0)) }
+fn lkey(l: &Loop) -> String { if l.review {format!("review:{}",l.author)} else {key(&l.front,l.chat,l.topic)} }
 fn save(c: &Connection, l: &Loop) -> Result<(), String> {
-    c.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?1,?2)", params![key(&l.front,l.chat,l.topic),serde_json::to_string(l).map_err(|e|e.to_string())?]).map(drop).map_err(err)
+    c.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?1,?2)", params![lkey(l),serde_json::to_string(l).map_err(|e|e.to_string())?]).map(drop).map_err(err)
 }
 fn read(c: &Connection, k: &str) -> Result<Option<Loop>, String> {
     c.query_row("SELECT CAST(value AS TEXT) FROM meta WHERE key=?1",[k],|r|r.get::<_,String>(0)).optional().map_err(err)?
         .map(|s|serde_json::from_str(&s).map_err(|e|format!("loop state unavailable: {e}"))).transpose()
 }
-pub fn all(c: &Connection) -> Result<Vec<Loop>, String> {
-    let mut q=c.prepare("SELECT CAST(value AS TEXT) FROM meta WHERE key LIKE 'loop:%' ORDER BY key").map_err(err)?;
-    q.query_map([],|r|r.get::<_,String>(0)).map_err(err)?.map(|s|serde_json::from_str(&s.map_err(err)?).map_err(|e|e.to_string())).collect()
+pub fn all(c: &Connection) -> Result<Vec<Loop>, String> { stored(c,"loop:%") }
+/// #264: one PM review per person.
+pub fn reviews(c: &Connection) -> Result<Vec<Loop>, String> { stored(c,"review:%") }
+fn stored(c: &Connection, pattern: &str) -> Result<Vec<Loop>, String> {
+    let mut q=c.prepare("SELECT CAST(value AS TEXT) FROM meta WHERE key LIKE ?1 ORDER BY key").map_err(err)?;
+    q.query_map([pattern],|r|r.get::<_,String>(0)).map_err(err)?.map(|s|serde_json::from_str(&s.map_err(err)?).map_err(|e|e.to_string())).collect()
 }
 fn allowed(c: &Connection, user: i64) -> Result<bool, String> {
     let owner:Option<i64>=c.query_row("SELECT value FROM meta WHERE key='owner'",[],|r|r.get(0)).optional().map_err(err)?;
@@ -51,7 +61,7 @@ fn remove(c:&Connection,l:&Loop,at:i64,reason:&str)->Result<(),String> {
     cancel_pending(c,l)?;
     c.execute("UPDATE outbox SET state='superseded' WHERE state<>'delivered' AND request_id IN (SELECT request_id FROM audit_events WHERE kind='loop_tick' AND item=?1)",[l.revision.to_string()]).map_err(err)?;
     c.execute("DELETE FROM previews WHERE run IN (SELECT id FROM runs WHERE request_id IN (SELECT request_id FROM audit_events WHERE kind='loop_tick' AND item=?1))",[l.revision.to_string()]).map_err(err)?;
-    c.execute("DELETE FROM meta WHERE key=?1",[key(&l.front,l.chat,l.topic)]).map_err(err)?;
+    c.execute("DELETE FROM meta WHERE key=?1",[lkey(l)]).map_err(err)?;
     audit(c,l.source,at,"loop_stopped",reason)
 }
 /// Called in the caller's admission transaction. Stop is route-local even in per-person sessions.
@@ -124,7 +134,7 @@ fn apply(c:&Connection,request:i64,name:&str,args:&Value,at:i64)->Result<String,
             }
             if let Some(l)=old {remove(c,&l,at,"replaced")?;}
             // The source request is globally unique and a replay returns its receipt below.
-            let l=Loop{front,chat,topic,author:user,session:session.clone(),generation:generation(c,&session)?,prompt:prompt.into(),interval,next:at+interval.unwrap_or(300),revision:request,source:request,pending:None,watches};
+            let l=Loop{front,chat,topic,author:user,session:session.clone(),generation:generation(c,&session)?,prompt:prompt.into(),interval,next:at+interval.unwrap_or(300),revision:request,source:request,pending:None,watches,review:false,changes:vec![]};
             save(c,&l)?;
             c.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?1,?2)",params![fence_key,request]).map_err(err)?;
             let mode=match (ru,interval) {
@@ -172,11 +182,12 @@ pub fn command(c:&Connection,request:i64,text:&str,at:i64)->Result<String,String
 fn valid(c:&Connection,l:&Loop)->Result<bool,String> {
     let shared:bool=c.query_row("SELECT coalesce((SELECT shared FROM routes WHERE chat=?1 AND topic=?2),0)",params![l.chat,l.topic.unwrap_or(0)],|r|r.get(0)).map_err(err)?;
     let session=if l.front=="cli" {format!("cli:{}",l.author)} else if l.chat==l.author {format!("dm:{}",l.chat)} else if shared {format!("{}:{}",l.chat,l.topic.unwrap_or(0))} else {format!("{}:{}:{}",l.chat,l.topic.unwrap_or(0),l.author)};
-    Ok(allowed(c,l.author)? && generation(c,&l.session)?==l.generation && session==l.session)
+    // #264: a PM review belongs to its person and survives /new; a route loop does not.
+    Ok(allowed(c,l.author)? && (l.review || generation(c,&l.session)?==l.generation) && session==l.session)
 }
 /// Called inside claim's transaction too, closing the grant/reset race between enqueue and dispatch.
 pub fn maintain(c:&Connection,at:i64)->Result<(),String> {
-    for mut l in all(c)? {
+    for mut l in all(c)?.into_iter().chain(reviews(c)?) {
         if !valid(c,&l)? {
             remove(c,&l,at,"author access or conversation changed")?;
             // A public stop notice contains no revoked user's input. Route service delivery has its own durable record.
@@ -184,7 +195,10 @@ pub fn maintain(c:&Connection,at:i64)->Result<(),String> {
                 let owner:i64=c.query_row("SELECT value FROM meta WHERE key='owner'",[],|r|r.get(0)).map_err(err)?;
                 let update:i64=c.query_row("SELECT min(coalesce(min(update_id),0),0)-1 FROM requests",[],|r|r.get(0)).map_err(err)?;
                 let language:Option<String>=c.query_row("SELECT language FROM requests WHERE id=?1",[l.source],|r|r.get(0)).map_err(err)?;
-                let text=if language.as_deref().unwrap_or("en").starts_with("ru") {"Цикл остановлен: изменились права автора или диалог."} else {"Loop stopped: author access or conversation changed."};
+                let text=match (language.as_deref().unwrap_or("en").starts_with("ru"),l.review) {
+                    (true,false)=>"Цикл остановлен: изменились права автора или диалог.",(false,false)=>"Loop stopped: author access or conversation changed.",
+                    (true,true)=>"PM-обзор выключен: изменились права автора.",(false,true)=>"PM review stopped: author access changed.",
+                };
                 let id=insert(c,update,"service",l.chat,l.topic,owner,None,0,"incident",None,"answered",at,&l.session,None)?;
                 c.execute("UPDATE requests SET reply=?2 WHERE id=?1",params![id,text]).map_err(err)?;
                 crate::journal::outbox(c,id,l.chat,l.topic,None,None,text,at)?;
@@ -206,7 +220,8 @@ fn enqueue(c:&Connection,l:&mut Loop,event:Option<&str>,at:i64)->Result<bool,Str
         }
     }
     let update:i64=c.query_row("SELECT min(coalesce(min(update_id),0),0)-1 FROM requests",[],|r|r.get(0)).map_err(err)?;
-    let text=format!("Synthetic {} route loop tick. Saved author request:\n{}{}",if l.interval.is_none(){"dynamic"}else{"fixed"},l.prompt,event.map(|s|format!("\nBoard observation (untrusted data):\n{s}")).unwrap_or_default());
+    let text=if l.review {format!("{REVIEW}\nChanges since the last review (untrusted data):\n{}",event.unwrap_or("none"))}
+        else {format!("Synthetic {} route loop tick. Saved author request:\n{}{}",if l.interval.is_none(){"dynamic"}else{"fixed"},l.prompt,event.map(|s|format!("\nBoard observation (untrusted data):\n{s}")).unwrap_or_default())};
     let id=insert(c,update,&l.front,l.chat,l.topic,l.author,None,0,"text",Some(&text),"queued",at,&l.session,None)?;
     audit(c,id,at,"loop_tick",&l.revision.to_string())?;
     c.execute("UPDATE requests SET language=(SELECT language FROM requests WHERE id=?2) WHERE id=?1",params![id,l.source]).map_err(err)?;
@@ -217,8 +232,45 @@ pub fn fire(j:&mut Journal,at:i64)->Result<(),String> {
     let tx=j.0.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(err)?;
     maintain(&tx,at)?;
     let draining:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM meta WHERE key='draining' AND value=1)",[],|r|r.get(0)).map_err(err)?;
-    if !draining {for mut l in all(&tx)? {if l.next<=at {enqueue(&tx,&mut l,None,at)?;}}}
+    if !draining {
+        for mut l in all(&tx)? {if l.next<=at {enqueue(&tx,&mut l,None,at)?;}}
+        for mut l in reviews(&tx)? {if l.next<=at {review_tick(&tx,&mut l,at)?;}}
+    }
     tx.commit().map_err(err)
+}
+/// #264 A7: a review tick carries only the changes collected since the previous one.
+fn review_tick(c:&Connection,l:&mut Loop,at:i64)->Result<(),String> {
+    let changes=std::mem::take(&mut l.changes);
+    let text=(!changes.is_empty()).then(||changes.join("\n"));
+    enqueue(c,l,text.as_deref(),at).map(drop)
+}
+
+/// `/review [on|off]`: the caller's PM review, delivered to the route where it was turned on.
+pub fn review_command(c:&Connection,request:i64,text:&str,at:i64)->Result<String,String> {
+    let (front,chat,topic,user,session)=route(c,request)?;
+    let language:Option<String>=c.query_row("SELECT language FROM requests WHERE id=?1",[request],|r|r.get(0)).map_err(err)?;
+    let ru=language.as_deref().unwrap_or("en").starts_with("ru");
+    if !allowed(c,user)? {return Err(if ru {"PM-обзор доступен владельцу или участнику с правом shell."} else {"PM review requires owner or shell access and chat access."}.into());}
+    let old=read(c,&format!("review:{user}"))?;
+    match text.split_whitespace().nth(1).unwrap_or("") {
+        ""=>Ok(match (old,ru) {
+            (Some(l),true)=>format!("PM-обзор включён · события доски или резервный запуск через {} с.",l.next.saturating_sub(at).max(0)),
+            (Some(l),false)=>format!("PM review is on · board events or fallback run in {} s.",l.next.saturating_sub(at).max(0)),
+            (None,true)=>"PM-обзор выключен. Включить: /review on.".into(),(None,false)=>"PM review is off. Turn it on with /review on.".into(),
+        }),
+        "on"=>{
+            if let Some(l)=old {remove(c,&l,at,"replaced")?;}
+            let l=Loop{front,chat,topic,author:user,session:session.clone(),generation:generation(c,&session)?,prompt:String::new(),interval:Some(REVIEW_FALLBACK),next:at+REVIEW_FALLBACK,revision:request,source:request,pending:None,watches:vec![],review:true,changes:vec![]};
+            save(c,&l)?;
+            Ok(if ru {"PM-обзор включён здесь: все ваши проекты, запуск по сбоям, блокировкам, зависшим задачам, проверкам с вариантами и освободившимся местам при отложенных задачах; иначе раз в 90 минут. Выключить: /review off."}
+                else {"PM review is on here: all your projects, woken by failed, blocked or stuck tasks, reviews with options and freed capacity with held tasks; otherwise every 90 minutes. Use /review off to stop."}.into())
+        },
+        "off"=>{
+            if let Some(l)=old {remove(c,&l,at,"requested stop")?;}
+            Ok(if ru {"PM-обзор выключен."} else {"PM review is off."}.into())
+        },
+        _=>Err("Use /review, /review on or /review off.".into()),
+    }
 }
 
 /// Current scoped bindings only. A registration change cannot retarget an existing watch.
@@ -226,26 +278,58 @@ fn watching(c:&Connection,l:&Loop,w:&Watch)->Result<bool,String> {
     let bound:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM projects WHERE name=?1 AND repo=?2 AND root=?3)",params![w.project,w.board,w.root],|r|r.get(0)).map_err(err)?;
     Ok(bound && (has(c,l.author,"projects")? || has(c,l.author,&format!("project:{}",w.project))?))
 }
+/// The #220 wake set, which #264 also turns into model-free cards.
+fn event(t:&Value)->bool {
+    let state=t["state"].as_str().unwrap_or("");
+    let review_options=t["question"]["choices"].as_array().is_some_and(|a|!a.is_empty()) || t["options"].as_array().is_some_and(|a|!a.is_empty());
+    matches!(state,"ask"|"closed"|"close"|"failed"|"blocked"|"waiting") || blocked(t) || (state=="review" && review_options)
+}
+fn blocked(t:&Value)->bool {t["state"]=="blocked" || t["state"]=="waiting" || t["blocked"].as_array().is_some_and(|a|!a.is_empty())}
 /// Complete snapshots only; missing tasks must already have been qualified through issue readback.
+/// #264: one pass serves route watches, model-free cards and PM reviews from one cursor per board.
 fn observe(j:&mut Journal,w:&Watch,tasks:&Value,at:i64)->Result<(),String> {
     let tx=j.0.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(err)?;
     maintain(&tx,at)?;
     let k=format!("loop-board:{}",w.board);
     let previous:Option<String>=tx.query_row("SELECT CAST(value AS TEXT) FROM meta WHERE key=?1",[&k],|r|r.get(0)).optional().map_err(err)?;
     let before:Option<Value>=previous.map(|s|serde_json::from_str(&s).map_err(|e|e.to_string())).transpose()?;
+    let current=tasks.as_object().ok_or("Board tasks unavailable")?;
     let mut events=vec![];
-    if let Some(before)=before {
-        for (number,t) in tasks.as_object().ok_or("Board tasks unavailable")? {
-            if before.get(number).is_none_or(|old|old!=t) {
+    // PM review lines: every move, plus whether it is a wake reason.
+    let mut changes=vec![];let mut wake=false;
+    let age_key=format!("board-age:{}",w.board);
+    let mut ages:serde_json::Map<String,Value>=tx.query_row("SELECT CAST(value AS TEXT) FROM meta WHERE key=?1",[&age_key],|r|r.get::<_,String>(0)).optional().map_err(err)?
+        .and_then(|s|serde_json::from_str(&s).ok()).unwrap_or_default();
+    if let Some(before)=&before {
+        for (number,t) in current {
+            let old=before.get(number);
+            if old.is_none_or(|old|old!=t) {
                 let state=t["state"].as_str().unwrap_or("");
-                let options=&t["question"]["choices"];
-                let review_options=options.as_array().is_some_and(|a|!a.is_empty()) || t["options"].as_array().is_some_and(|a|!a.is_empty());
-                if matches!(state,"ask"|"closed"|"close"|"failed"|"blocked"|"waiting") || t["blocked"].as_array().is_some_and(|a|!a.is_empty()) || (state=="review" && review_options) {
+                if event(t) {
                     events.push(format!("TaskQ {} #{}: {}\n{}",w.board,number,state,t));
+                    if let Ok(n)=number.parse() {crate::journal::board_card(&tx,&w.project,&w.board,&w.root,n,at)?;}
                 }
-            }
+                let from=old.and_then(|o|o["state"].as_str()).unwrap_or("new");
+                if from!=state || event(t) {
+                    let reason=match state {"failed"=>" (wake: failed)",_ if blocked(t)=>" (wake: blocked)",_ if state=="review" && event(t)=>" (wake: review with options)",_=>""};
+                    wake|=!reason.is_empty();
+                    changes.push(format!("TaskQ {} #{number}: {from} -> {state}{reason}",w.board));
+                }
+                ages.insert(number.clone(),json!([at,false]));
+            } else if let Some(age)=ages.get_mut(number) {
+                // ponytail: no movement means an unchanged observation; a TaskQ heartbeat field would refine doing.
+                if t["state"]!="closed" && age[1]==false && at.saturating_sub(age[0].as_i64().unwrap_or(at))>=STUCK {
+                    age[1]=json!(true);wake=true;
+                    changes.push(format!("TaskQ {} #{number}: {} with no movement for 2 h (wake: stuck)",w.board,t["state"].as_str().unwrap_or("")));
+                }
+            } else {ages.insert(number.clone(),json!([at,false]));}
         }
-    }
+        let doing=|v:&Value|v.as_object().map_or(0,|m|m.values().filter(|t|t["state"]=="doing").count());
+        if doing(tasks)<doing(before) && current.values().any(|t|t["state"]=="held") {
+            wake=true;changes.push(format!("TaskQ {}: worker capacity freed while tasks are held (wake: capacity)",w.board));
+        }
+    } else {for number in current.keys() {ages.insert(number.clone(),json!([at,false]));}}
+    ages.retain(|n,_|current.contains_key(n));
     let draining:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM meta WHERE key='draining' AND value=1)",[],|r|r.get(0)).map_err(err)?;
     // Preserve both event cursor and due work during drain, so the first resumed observation wakes once.
     if draining {return Ok(());}
@@ -259,7 +343,17 @@ fn observe(j:&mut Journal,w:&Watch,tasks:&Value,at:i64)->Result<(),String> {
             }
         }
     }
+    if !changes.is_empty() {
+        for mut l in reviews(&tx)? {
+            if !(has(&tx,l.author,"projects")? || has(&tx,l.author,&format!("project:{}",w.project))?) {continue;}
+            // ponytail: 200 lines per review; a summary line replaces older moves on a flooded board.
+            l.changes.extend(changes.iter().cloned());
+            if l.changes.len()>200 {let dropped=l.changes.len()-199;l.changes.drain(..dropped);l.changes.insert(0,format!("{dropped} older moves omitted"));}
+            if wake {review_tick(&tx,&mut l,at)?;} else {save(&tx,&l)?;}
+        }
+    }
     tx.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?1,?2)",params![k,tasks.to_string()]).map_err(err)?;
+    tx.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?1,?2)",params![age_key,Value::Object(ages).to_string()]).map_err(err)?;
     tx.commit().map_err(err)
 }
 
@@ -298,11 +392,7 @@ fn collect(bound:Result<(crate::taskq::Taskq,String),String>,j:&std::sync::Mutex
 fn observer_pass(tq:&crate::taskq::Taskq,j:&std::sync::Mutex<Journal>,w:&Watch,failures:&mut u32)->Option<u64> {
     let selected={
         let guard=j.lock().unwrap();
-        match all(&guard.0) {
-            Ok(ls)=>ls.iter().find_map(|l|l.watches.iter().find(|x|x.board==w.board && watching(&guard.0,l,x).unwrap_or(false)).cloned())
-                .map(|current|(tq.registered(&guard,&current.project),current)),
-            Err(_)=>None,
-        }
+        registered(&guard).ok().and_then(|ws|ws.into_values().find(|x|x.board==w.board)).map(|current|(tq.registered(&guard,&current.project),current))
     };
     let (bound,current)=selected?;
     match collect(bound,j,&current) {
@@ -317,16 +407,17 @@ fn observer_pass(tq:&crate::taskq::Taskq,j:&std::sync::Mutex<Journal>,w:&Watch,f
     Some(if *failures==0 {5} else {(5u64 << failures.saturating_sub(1).min(4)).min(60)})
 }
 
+/// #264 A2: every registered board is observed, with or without a loop; the first project by name on a board names it.
+fn registered(j:&Journal)->Result<std::collections::BTreeMap<String,Watch>,String> {
+    let mut watches=std::collections::BTreeMap::new();
+    for (project,board,root,_,_) in j.projects()? {watches.entry(board.clone()).or_insert(Watch{project,board,root});}
+    Ok(watches)
+}
 /// A concrete board has one collector, shared by every route; slow boards never hold journal locks or other boards.
 pub fn watch_boards(tq:std::sync::Arc<crate::taskq::Taskq>,j:crate::telegram::Shared) {
     let mut observers=std::collections::HashMap::<String,std::thread::JoinHandle<()>>::new();
     loop {
-        let watches=(||{
-            let guard=j.lock().unwrap();
-            let mut watches=std::collections::BTreeMap::new();
-            for l in all(&guard.0)? {for w in &l.watches {if watching(&guard.0,&l,w)? {watches.entry(w.board.clone()).or_insert_with(||w.clone());}}}
-            Ok::<_,String>(watches)
-        })();
+        let watches=registered(&j.lock().unwrap());
         if let Ok(watches)=watches {
             // Join finished collectors before starting replacements; there is never a duplicate board collector.
             let finished=observers.iter().filter(|(_,h)|h.is_finished()).map(|(k,_)|k.clone()).collect::<Vec<_>>();
@@ -678,6 +769,106 @@ mod tests {
         j.0.execute("INSERT OR REPLACE INTO meta(key,value) VALUES ('draining',1)",[]).unwrap();
         let closed=json!({"1":{"state":"closed"}});observe(&mut j,&a,&closed,67).unwrap();assert_eq!(pending(&j),1);
         j.0.execute("DELETE FROM meta WHERE key='draining'",[]).unwrap();observe(&mut j,&a,&closed,68).unwrap();assert_eq!(pending(&j),2);
+        drop(j);std::fs::remove_dir_all(p).unwrap();
+    }
+
+    fn ticks(j:&Journal)->Vec<String> {
+        let mut q=j.0.prepare("SELECT text FROM requests WHERE id IN (SELECT request_id FROM audit_events WHERE kind='loop_tick') ORDER BY id").unwrap();
+        q.query_map([],|r|r.get(0)).unwrap().map(Result::unwrap).collect()
+    }
+    fn watch(project:&str)->Watch {Watch{project:project.into(),board:format!("invented/{project}"),root:format!("/invented/{project}")}}
+    // #264 A2/A3/A4/A7: with no loop, every registered board turns event moves into one subscription in the launching
+    // route, else the project route, else the owner DM; quiet boards make no model input; restart keeps baselines.
+    #[test]
+    fn board_264_cards_routes_and_quiet_hour() {
+        let (mut j,p)=journal("board264");
+        j.0.execute("INSERT INTO projects(name,repo,root,by,at) VALUES ('alpha','invented/alpha','/invented/alpha',7,0),('beta','invented/beta','/invented/beta',7,0),('gamma','invented/gamma','/invented/gamma',7,0)",[]).unwrap();
+        j.0.execute("INSERT INTO route_projects(chat,topic,project) VALUES (-100,5,'alpha')",[]).unwrap();
+        let launch=admitted(&mut j,1,9,7,"launch gamma work",0);
+        j.0.execute("UPDATE requests SET state='answered' WHERE id=?1",[launch]).unwrap();
+        j.0.execute("INSERT INTO tasks(number,request_id,chat,topic,state,revision,observed,project,board,root) VALUES (3,?1,-100,9,'doing',1,0,'gamma','invented/gamma','/invented/gamma')",[launch]).unwrap();
+        let review=admitted(&mut j,2,9,7,"/review on",0);
+        assert_eq!(j.0.query_row("SELECT state FROM requests WHERE id=?1",[review],|r|r.get::<_,String>(0)).unwrap(),"answered");
+        let (a,b,g)=(watch("alpha"),watch("beta"),watch("gamma"));
+        let quiet=json!({"1":{"state":"doing","revision":1}});
+        observe(&mut j,&a,&quiet,0).unwrap();observe(&mut j,&b,&json!({"2":{"state":"doing","revision":1}}),0).unwrap();observe(&mut j,&g,&json!({"3":{"state":"doing","revision":1}}),0).unwrap();
+        let before:i64=j.0.query_row("SELECT max(id) FROM requests",[],|r|r.get(0)).unwrap();
+        // A4: one quiet hour of five-second passes and timer checks admits nothing and starts no run.
+        for at in (5..=3600).step_by(5) {observe(&mut j,&a,&quiet,at).unwrap();fire(&mut j,at).unwrap();}
+        assert_eq!(j.0.query_row("SELECT count(*) FROM requests WHERE id>?1",[before],|r|r.get::<_,i64>(0)).unwrap(),0);
+        assert_eq!(j.0.query_row("SELECT count(*) FROM runs",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        let ask=json!({"1":{"state":"ask","revision":2,"question":{"text":"owner choice","choices":[{"id":1,"label":"go"}]}}});
+        observe(&mut j,&a,&ask,3601).unwrap();
+        observe(&mut j,&b,&json!({"2":{"state":"failed","revision":2}}),3601).unwrap();
+        observe(&mut j,&g,&json!({"3":{"state":"failed","revision":2}}),3601).unwrap();
+        let route=|project:&str|j.0.query_row("SELECT t.chat,t.topic,q.kind FROM tasks t JOIN requests q ON q.id=t.request_id WHERE t.project=?1",[project],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,Option<i64>>(1)?,r.get::<_,String>(2)?))).unwrap();
+        assert_eq!(route("alpha"),(-100,Some(5),"board_event".into()),"project-bound route");
+        assert_eq!(route("beta"),(7,None,"board_event".into()),"owner DM fallback");
+        assert_eq!(route("gamma"),(-100,Some(9),"text".into()),"launching route keeps its card");
+        // Repeats and a restart deliver nothing twice.
+        observe(&mut j,&a,&ask,3602).unwrap();drop(j);let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();observe(&mut j,&a,&ask,3603).unwrap();
+        assert_eq!(j.0.query_row("SELECT count(*) FROM requests WHERE kind='board_event'",[],|r|r.get::<_,i64>(0)).unwrap(),2);
+        // The subscription scan renders the existing question card with its answer buttons in the bound route.
+        let q=ask["1"]["question"].to_string();
+        assert!(j.observe("alpha",1,"ask",2,Some(&q),"",Some("Task #1 asks: owner choice"),3604).unwrap());
+        let cards:Vec<(String,i64,Option<i64>)>={let mut s=j.0.prepare("SELECT o.kind,o.chat,o.topic FROM outbox o JOIN requests q ON q.id=o.request_id WHERE q.kind='board_event' ORDER BY o.id").unwrap();s.query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap().map(Result::unwrap).collect()};
+        assert_eq!(cards,vec![("status".into(),-100,Some(5)),("question".into(),-100,Some(5))]);
+        assert_eq!(j.0.query_row("SELECT count(*) FROM runs",[],|r|r.get::<_,i64>(0)).unwrap(),0,"cards need no model turn");
+        // A6: the failure woke the owner's review once, in the route where it was turned on.
+        let t=ticks(&j);assert_eq!(t.len(),1);assert!(t[0].contains("Synthetic PM review") && t[0].contains("invented/beta #2: doing -> failed"));
+        drop(j);std::fs::remove_dir_all(p).unwrap();
+    }
+    // #264 A5: Explain on a delivered board card starts one model input in that route with the card as quoted context.
+    #[test]
+    fn board_264_explain_button() {
+        let (mut j,p)=journal("explain264");
+        j.0.execute("INSERT INTO projects(name,repo,root,by,at) VALUES ('alpha','invented/alpha','/invented/alpha',7,0)",[]).unwrap();
+        j.0.execute("INSERT INTO route_projects(chat,topic,project) VALUES (-100,5,'alpha')",[]).unwrap();
+        let a=watch("alpha");
+        observe(&mut j,&a,&json!({"1":{"state":"doing","revision":1}}),0).unwrap();
+        observe(&mut j,&a,&json!({"1":{"state":"failed","revision":2}}),1).unwrap();
+        assert!(j.observe("alpha",1,"failed",2,None,"",None,2).unwrap());
+        let mut card=None;
+        while let Some(d)=j.due(3).unwrap().0 {if d.kind=="status" {card=Some((d.id,d.buttons.clone()));} j.record(d.id,&crate::journal::Sent::Ok(500),3).unwrap();}
+        let (id,buttons)=card.unwrap();assert_eq!(buttons,vec![(format!("explain:{id}"),"Explain".into())]);
+        let press=|data:&str,message:i64|{let mut i=input(5,7,data);i.kind="explain";i.message=message;i.reply_to=Some(message);i.callback=Some("invented-callback".into());i};
+        j.admit(&[(10,Some(press(&format!("explain:{id}"),500)))],4).unwrap();
+        let (kind,state,text,quote):(String,String,String,String)=j.0.query_row("SELECT q.kind,q.state,q.text,a.item FROM requests q JOIN audit_events a ON a.request_id=q.id AND a.kind='quote' WHERE q.update_id=10",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+        assert_eq!((kind.as_str(),state.as_str()),("text","queued"));assert!(text.starts_with("Explain this task card"));
+        assert!(quote.contains("#1"),"the card is the turn's context: {quote}");
+        // A press on another message or a forged delivery ID starts nothing.
+        j.admit(&[(11,Some(press(&format!("explain:{id}"),501)))],5).unwrap();
+        assert_eq!(j.0.query_row("SELECT state FROM requests WHERE update_id=11",[],|r|r.get::<_,String>(0)).unwrap(),"failed");
+        drop(j);std::fs::remove_dir_all(p).unwrap();
+    }
+    // #264 A6/A7: one review per person covers all their projects; each tick holds only moves since the previous one.
+    #[test]
+    fn review_264_wakes_and_changes_since_last() {
+        let (mut j,p)=journal("review264");
+        j.0.execute("INSERT INTO projects(name,repo,root,by,at) VALUES ('alpha','invented/alpha','/invented/alpha',7,0),('beta','invented/beta','/invented/beta',7,0)",[]).unwrap();
+        admitted(&mut j,1,1,7,"/review on",0);
+        let (a,b)=(watch("alpha"),watch("beta"));
+        let mut snap=json!({"1":{"state":"doing","revision":1},"2":{"state":"doing","revision":1},"4":{"state":"held","revision":1}});
+        observe(&mut j,&a,&snap,0).unwrap();observe(&mut j,&b,&json!({"9":{"state":"ready","revision":1}}),0).unwrap();
+        snap["5"]=json!({"state":"review","revision":1});observe(&mut j,&a,&snap,10).unwrap();
+        assert!(ticks(&j).is_empty(),"a review without options only accumulates");
+        observe(&mut j,&b,&json!({"9":{"state":"failed","revision":2}}),20).unwrap();
+        let t=ticks(&j);assert_eq!(t.len(),1);assert!(t[0].contains("invented/alpha #5: new -> review\n") && t[0].contains("invented/beta #9: ready -> failed (wake: failed)"));
+        j.0.execute("UPDATE requests SET state='answered' WHERE id IN (SELECT request_id FROM audit_events WHERE kind='loop_tick')",[]).unwrap();
+        // Worker #2 finishes while #4 is held: capacity wake carries only this move.
+        snap["2"]=json!({"state":"review","revision":2,"options":["merge","retry"]});observe(&mut j,&a,&snap,30).unwrap();
+        let t=ticks(&j);assert_eq!(t.len(),2);assert!(t[1].contains("(wake: review with options)") && t[1].contains("(wake: capacity)"));
+        assert!(!t[1].contains("#5:") && !t[1].contains("#9:"),"only changes since the last review: {}",t[1]);
+        j.0.execute("UPDATE requests SET state='answered' WHERE id IN (SELECT request_id FROM audit_events WHERE kind='loop_tick')",[]).unwrap();
+        observe(&mut j,&a,&snap,30+STUCK).unwrap();
+        let t=ticks(&j);assert_eq!(t.len(),3);assert!(t[2].contains("#4: held with no movement for 2 h (wake: stuck)"));
+        j.0.execute("UPDATE requests SET state='answered' WHERE id IN (SELECT request_id FROM audit_events WHERE kind='loop_tick')",[]).unwrap();
+        observe(&mut j,&a,&snap,60+STUCK).unwrap();assert_eq!(ticks(&j).len(),3,"stuck wakes once per unchanged observation");
+        let next=reviews(&j.0).unwrap()[0].next;assert_eq!(next,30+STUCK+REVIEW_FALLBACK);
+        fire(&mut j,next).unwrap();let t=ticks(&j);assert_eq!(t.len(),4);assert!(t[3].ends_with("(untrusted data):\nnone"));
+        // /new keeps the person's review; /review off stops it.
+        admitted(&mut j,2,1,7,"/new",next+1);crate::loops::maintain(&j.0,next+1).unwrap();assert_eq!(reviews(&j.0).unwrap().len(),1);
+        admitted(&mut j,3,1,7,"/review off",next+2);assert!(reviews(&j.0).unwrap().is_empty());
         drop(j);std::fs::remove_dir_all(p).unwrap();
     }
 }
