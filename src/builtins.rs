@@ -217,6 +217,7 @@ pub fn localized(text:&str,language:Option<&str>,failed:bool)->String {
         "This model selector is stale or belongs to another person; use /model."=>"Эта кнопка устарела или принадлежит другому человеку; используйте /model.".into(),
         "Conversation was reset; use /model again."=>"Диалог сброшен; используйте /model заново.".into(),
         "Model is not in the current Codex catalogue; choice unchanged."=>"Модели нет в текущем каталоге Codex; выбор не изменён.".into(),
+        "Use /onboard NAME or /onboard NAME override"=>"Используйте /onboard NAME или /onboard NAME override, где NAME — имя проекта.".into(),
         "Use /model, /model MODEL or /model default."=>"Используйте /model, /model MODEL или /model default.".into(),
         _ if failed=>"Команда не выполнена; проверьте /status и повторите позже.".into(),
         _=>text.into(),
