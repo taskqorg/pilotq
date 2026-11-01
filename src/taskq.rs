@@ -343,14 +343,14 @@ fn now() -> i64 {
     crate::now() as i64
 }
 
-/// Checks the caller's grants at dispatch (§ 8): project scope, plus `taskq` for a write.
+/// Checks the caller's grants at dispatch (§ 8): project scope, plus admin or project-owner decision rights for a write (#267).
 fn allowed(j: &Journal, user: i64, project: &str, write: bool) -> Result<(), String> {
     let grant = format!("project:{project}");
     if !(j.has(user, &grant)? || j.has(user, "projects")?) {
         return Err(format!("{user} has no {grant} grant; nothing was done"));
     }
-    if write && !j.has(user, "taskq")? {
-        return Err(format!("{user} has no taskq grant; nothing was written"));
+    if write && !j.decides(user, project)? {
+        return Err(crate::journal::decide_refusal(project));
     }
     Ok(())
 }
@@ -1447,7 +1447,7 @@ print(json.dumps(dict(task=19,op_id=op,outcome='accepted',state='doing',revision
         assert!(dispatch(&tq,&j,&r,"project_status",&json!({})).is_err());
         snapshot(BOARD,true,Value::Null);
         assert!(dispatch(&tq,&j,&r,"project_status",&json!({})).unwrap_err().contains("unknown"));
-        j.lock().unwrap().revoke(7,7,&["projects".into()],4).unwrap();
+        j.lock().unwrap().revoke(7,7,&["projects".into(),"admin".into()],4).unwrap();
         assert!(dispatch(&tq,&j,&r,"project_status",&json!({"project":"pilotq"})).is_err());
         drop(j);
         std::fs::remove_dir_all(dir).unwrap();
@@ -1519,7 +1519,7 @@ print(json.dumps(dict(task=19,op_id=op,outcome='accepted',state='doing',revision
         let text=dispatch(&tq,&j,&r,"project_status",&json!({})).unwrap();
         let result:Value=serde_json::from_str(&text).unwrap();
         assert!(result["boards"].as_array().unwrap().iter().any(|b|b["project"]=="tight" && b["unavailable"].is_string() && b["tasks"].is_null()));
-        j.lock().unwrap().revoke(7,7,&["projects".into()],4).unwrap();
+        j.lock().unwrap().revoke(7,7,&["projects".into(),"admin".into()],4).unwrap();
         assert!(dispatch(&tq,&j,&r,"project_status",&json!({})).is_err());
         j.lock().unwrap().grant(7,7,&["project:pilotq".into()],5).unwrap();
         let text=dispatch(&tq,&j,&r,"project_status",&json!({})).unwrap();

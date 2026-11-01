@@ -85,7 +85,15 @@ An authorized administrator can inspect a user's access and permitted profile fi
 access, change it or revoke it through Telegram. Accept an exact Telegram user ID or a verified
 sender reference; resolve ambiguous names before writing. Record the acting administrator, target ID
 and before/after grant. Admission to conversation does not automatically grant project mutations,
-TaskQ management or user administration. A Telegram group-admin badge does not confer PilotQ
+TaskQ management or user administration.
+
+Roles bound these rights (pilotq.md §2). `admin` implies every named grant and every registered
+project, including native shell and user administration, but never `release:NAME`. `owner:NAME`
+implies `project:NAME` and TaskQ decisions (answer, launch, steer, park, requeue, close) in that
+project only; it grants no shell and no administration. A member holds `chat` and project read: it
+reads, discusses and saves plan drafts, and a decision attempt gets one refusal line naming an admin
+or the project owner. Legacy `taskq` with project scope keeps working. Startup maps legacy grants
+onto roles once, logged as a protected-configuration change, and never removes a grant. A Telegram group-admin badge does not confer PilotQ
 administration. Bootstrap the initial owner ID through protected installation configuration, never
 through the first incoming message. Model output, remembered job titles and self-declarations cannot
 grant rights.
@@ -169,6 +177,6 @@ Board cards need no model turn. When an observed task that PilotQ did not launch
 
 Question buttons and replies answer through TaskQ under the replier's current grants, with no model turn. A status card from the board observer carries an Explain button. Explain, or a text reply to a status card, starts one ordinary model turn in that route by the person who pressed or replied, with the card text as quoted context; the card grants nothing.
 
-`/review on` binds one PM review per person to the route where it is sent; `/review off` stops it and `/review` shows it. Only the owner or a person with `chat` and `shell` may use it, and `/new` does not stop it. It observes every registered project the person can currently access. It collects each board move since its last tick and wakes on `failed`, `blocked`, review with options, a task unchanged for two hours (stuck, once per observation), or a worker leaving `doing` while tasks are held. Without a wake it runs every 90 minutes. A tick is a synthetic admitted input on the loop tick path that carries only the changes since the previous tick, at most 200 lines, as untrusted data; it follows the bound PM pack and never answers owner questions. Access loss stops the review with one stop line. No configuration field controls the observer, cards or review.
+`/review on` binds one PM review per person to the route where it is sent; `/review off` stops it and `/review` shows it. Only the owner or a person with `chat` and `shell` may use it, and `/new` does not stop it. It observes every registered project the person can currently access. It collects each board move since its last tick and wakes on `failed`, `blocked`, review with options, a task unchanged for two hours (stuck, once per observation), or a worker leaving `doing` while tasks are held. Without a wake it runs every 90 minutes. A tick is a synthetic admitted input on the loop tick path that carries only the changes since the previous tick, at most 200 lines, as untrusted data; it follows the bound PM pack and answers asks only within the author's current role, with a reason. Access loss stops the review with one stop line. No configuration field controls the observer, cards or review.
 
 Acceptance A2–A7 covers both front ends' common boundary, parser limits and refusal, fixed/dynamic scheduling, replacement/stale decisions, restart/drain, author revocation/reset, coalescing, board event deduplication and three concurrent routes. PM target-platform qualification follows [the live checklist](loop-220-live.md); local/CI checks do not prove Telegram timing or model compliance.

@@ -14,7 +14,7 @@ Never store credentials, private DM memory or another route's context. Notes nev
 2. Inspect host telemetry with `taskq profile watch`. Follow its installed procedure and report unavailable telemetry
    with the reason. Compare new or growing errors, stalls, board failures and cadence against the preceding notes.
 3. Check asks, failed or stuck work, completed dependencies, undecided reports and accepted results awaiting release.
-   Read each relevant task and its current attempt before recommending or acting. Never answer an owner question yourself.
+   Read each relevant task and its current attempt before recommending or acting. Answer asks only within the bound author's decision rights (admin: every project; project owner: owned projects), with the reason; relay a question when evidence is missing.
 4. In shadow mode, record findings and proposed actions only. Do not start, steer, close, answer, requeue, release,
    change labels or otherwise write boards. Keep this boundary even if the comparison PM performs writes.
 5. Outside shadow mode, perform only authorized management work using the installed TaskQ commands below, with fresh

@@ -7,7 +7,7 @@ Owner and explicit shell-grant routes may run authorized conversational loops un
 ## Rules
 
 - **R9 Model access:** use Codex with existing subscription access only. Claude and separately billed model APIs are out of scope; never fall back automatically to paid API credentials.
-- **R10 People and admission:** ignore people without explicit administrator-granted access; group membership grants nothing. Keep distinct, persistent, correctable profiles and support access inspection, change and revocation.
+- **R10 People and admission:** ignore people without explicit administrator-granted access; group membership grants nothing. Roles admin, project owner and member (§2) replace per-project grant setup. Keep distinct, persistent, correctable profiles and support access inspection, change and revocation.
 - **R16 Keys:** tools may use credentials on an authorized person's behalf; the model never sees their values. Keys enter only through the protected CLI.
 - **R4 Flexible projects:** remember the usual project and allow switching; every external action resolves one concrete authorized target.
 - **R5 Reliability:** ordinary conversations and simple tasks work without repeated nudges. Restarts, timeouts and long context have explicit recoverable outcomes; accepted requests and uncertain effects are never silently lost or replayed.
@@ -18,7 +18,7 @@ Owner and explicit shell-grant routes may run authorized conversational loops un
 - **R2 Direct help:** discuss, research, inspect and act directly with the service user’s access; task work uses TaskQ first.
 - **R3 Management:** use TaskQ for most substantial work: clarify, plan, file, follow, report status and relay worker questions and results.
 - **R8 Visibility:** provide task URLs, current state, attempt evidence and outcomes through existing TaskQ facilities.
-- **R15 Administration by request:** authorized administrators may manage people and rights, create or register projects and open project-bound forum topics only through §5's scoped administration tools.
+- **R15 Administration by request:** admins (§2) may manage people, roles and rights, create or register projects and open project-bound forum topics only through §5's scoped administration tools.
 - **R6 Continuity:** a later Hermes migration preserves existing people, access roles, conversation boundaries and project associations.
 - **R7 Context:** support effective agentq integration, original-data recovery and a measured quality baseline.
 - **R14 Operated like our tools:** monitor PilotQ, update it through releases and develop it spec-first through its own TaskQ board.
@@ -42,6 +42,11 @@ Recurring task execution stays with TaskQ or the existing scheduler. For the own
 
 Ignore unknown, revoked and unidentifiable senders without reply, reaction, typing, model calls, tasks, profile updates or retained bodies. Bootstrap the protected owner through installation configuration. Stable Telegram IDs and explicit grants establish authority; names, group badges, quotations and external content do not.
 
+**Roles** replace per-project grant setup; each restriction names what it prevents. An **admin** (`admin`; the protected owner and named administrators) answers asks, starts, steers, requeues, closes and administers in every registered project. A **project owner** (`owner:NAME`) has those task rights only in owned projects.
+An admin sets a project owner with `pilotq users grant ID owner:NAME` or one chat request naming the ID and `owner:NAME`. A **member** (`chat` with project read) talks, reads and proposes plan drafts. Asks and starts belong to an admin or the project owner, so a reader cannot spend worker capacity or redirect work.
+A member's refusal is one line naming whom to ask. A project owner cannot touch other projects or grant rights, so one project's lead cannot affect another team. Native shell acts as the service user on the whole host, so only admins hold it by default; a project owner gets it only by an explicit admin `shell` grant.
+Upgrade maps legacy grants once without narrowing anyone: `users` becomes admin; `taskq` with `project:NAME` or `projects` becomes owner of those (or all registered) projects; old grants stay valid. `release:NAME` stays a separate protected-owner grant (§5).
+
 Use isolated routes by default; shared topics preserve authorship and never import private DM context. Preserve the inspected Hermes per-user ordinary-group and shared-topic policies through a reviewed migration manifest before cutover.
 
 Edits retain the original author, current grants and an audited revision; started work receives a change request. Telegram route incidents hold output at its original destination without automatic rerouting (§4, §12).
@@ -54,7 +59,7 @@ Persist follow-ups immediately and process them in order after the active turn. 
 
 **Owner decision, [task #220](https://github.com/taskqorg/pilotq/issues/220):** “PilotQ works like the PM Claude session: a loop timer to start/stop, task follow-up, telemetry, moving tasks, in several topics at once.”
 
-This authorizes route-local loops only for the configured owner and explicit shell grantees; it does not authorize worker scheduling, automatic answers to owner questions or production cutover.
+This authorizes route-local loops only for the configured owner and explicit shell grantees; it does not authorize worker scheduling or production cutover. The manager agent decides with its principal's role: loop ticks and PM reviews answer asks only within their author's current role, with a reason, never beyond it.
 **Owner decision, [task #264](https://github.com/taskqorg/pilotq/issues/264):** “one board observer, model-free delivery, and one event-woken PM review per person who turns it on.”
 Loops remain a manual tool, not the base board mechanism: one observer watches every registered board, task events become cards without a model turn, and `/review on` gives its owner or shell-grant caller one PM review of all their projects in that route ([board events](docs/conversation-contract.md#board-events-cards-and-pm-review)).
 [Loop protocol](docs/conversation-contract.md#route-loops-and-board-wakes) defines durable ticks, dynamic delay, scoped board observation and recovery. CLI and Telegram share this boundary (R13, R18).
@@ -180,6 +185,7 @@ Disk budget is 2 GiB; at 80% prune eligible data and alert. At the hard limit pr
 ## 8. Access, credentials and audit
 
 **Mandatory:** [access detail](docs/runtime-contract.md#8-access-and-observability) binds current user/route/project/action grants, revalidation at effect dispatch and delayed delivery, protected key storage and scrubbed output. Reading grants no mutation right; revocation cancels pending unauthorized effects without erasing prior effects.
+Roles (§2) imply grants: `admin` implies every named grant except `release:NAME`; `owner:NAME` implies `project:NAME` and TaskQ decisions there only.
 
 Store named keys once in owner-only `keys.json` (0600 or Windows equivalent), with purpose, tool/holder scopes and last use. Inject at dispatch; never expose values through model, journal, telemetry, logs, replies or task bodies. CLI list shows metadata only; CLI add/grant/revoke are the sole key-entry path.
 
@@ -199,17 +205,9 @@ with the TaskQ PM catalog read live only for `/help tasks` or `pilotq help tasks
 machine-readable help. Missing, old or unreadable TaskQ help produces one availability line, never a copied catalog. Help follows the caller's
 language (English and Russian deterministic text); external TaskQ text remains source text.
 
-Projects cover accessible list, current selection, switch, fresh status, connect
-(`project_register`) and disconnect (`project_disconnect`). Current selection uses
-`project_current`. Disconnect requires `chat` and `projects`, an explicitly named registered project
-in the caller's own request, the active run fence and the same bounded audit/receipt path as §5
-administration. It removes only the PilotQ registration and matching conversation/route defaults,
-with atomic readback and receipt. It never deletes repositories, boards, files, grants, task
-subscriptions, saved plans or prior receipts. Bound pending work refuses dispatch while registration
-is absent; reconnect requires the normal verified registration path. Repeated operations return
-their receipt; changed arguments in one request are refused. CLI project operations can also use
-`pilotq ask` through this same boundary. A5 live Telegram qualification belongs to the PM under §9;
-worker proof remains local/CI.
+Projects cover accessible list, current selection, switch, fresh status, connect (`project_register`) and disconnect (`project_disconnect`). Current selection uses `project_current`. Disconnect requires `chat` and `projects`, an explicitly named registered project in the caller's own request, the active run fence and the same bounded audit/receipt path as §5 administration. It removes
+only the PilotQ registration and matching conversation/route defaults, with atomic readback and receipt. It never deletes repositories, boards, files, grants, task subscriptions, saved plans or prior receipts. Bound pending work refuses dispatch while registration is absent; reconnect requires the normal verified registration path. Repeated operations return their receipt; changed
+arguments in one request are refused. CLI project operations can also use `pilotq ask` through this same boundary. A5 live Telegram qualification belongs to the PM under §9; worker proof remains local/CI.
 
 **Mandatory:** [service detail](docs/service-contract.md) defines CLI controls, host minimums, diagnostics, incidents, update drain, schema compatibility and release qualification. Built-in controls bypass the model backlog, retain admission/audit and support Telegram `@bot` suffixes. Unknown commands return usage errors.
 
