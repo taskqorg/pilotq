@@ -453,3 +453,23 @@ incomplete failure evidence. AST/help pass only; supplement runtime, rejection
 paths and actual graph facts are **not run**, pending required PM review.
 Numerical formula derivation waits for returned actual constants; source
 predictions below are not substituted for that readback (§9/R19).
+
+### Supplement result and next reference-only boundary
+
+PM note6565196828 reports actual supplement PASS1.775s/noOOM/high0; retained
+JSON SHA256 `3e34742ea05fddb049997dc8d794692b739d2e9d1c7a502638950f84c27c92c1`.
+Do not repeat the supplement or setup. The [integer derivation](giga-length-derivation.json)
+uses its actual-1/2/1 scalars and two stride2/kernel5/pad2 ConvInteger stages.
+For1–12,99–101 and actual25s2499 feature frames, encoded length is
+`(L+3)//4`, including625 rather than Sherpa's624 at2499. No model operators
+were executed. This closes the omitted static-constant/ConvInteger evidence,
+not frontend compatibility or transcription qualification (§9/R19).
+
+The [current report](../../docs/research/344.md#smallest-numerical-frontend-reference-plan-after-supplement)
+defines the next proposed NumPy-only reference episode, fixtures, exact
+framing/mel/log conventions and limits. No runnable numerical harness or
+approval to build an engine/accessor is implied. Retained tools cannot emit
+actual KNF features or official Torch arrays: reference cross-checks must not
+be reported as engine parity. No new model/runtime/tools are needed for the
+proposed reference-only preparation; actual engine parity remains a separate
+reviewed boundary. Installed Russian assets/settings remain unchanged.
