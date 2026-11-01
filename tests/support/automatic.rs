@@ -162,11 +162,16 @@ fn routed_message(d: &Path, m: &Value, launched_task: i64) -> bool {
           OR (o.chat=7 AND o.topic IS NULL AND o.kind='onboarding' AND o.project='pilotq'
             AND q.front='service' AND q.kind='onboarding' AND q.state='answered'
             AND q.sender=7 AND q.chat=7 AND q.topic IS NULL AND q.update_id<0)
-          OR (o.chat=7 AND o.topic IS NULL AND o.project='pilotq' AND o.kind IN ('status','question')
+          OR (o.chat=7 AND o.topic IS NULL AND o.kind IN ('status','question')
             AND q.front='telegram' AND q.kind='board_event' AND q.state='answered'
             AND q.sender=7 AND q.chat=7 AND q.topic IS NULL AND q.update_id<0
             AND EXISTS(SELECT 1 FROM tasks t JOIN audit_events a ON a.request_id=t.request_id
-              WHERE t.request_id=q.id AND t.project=o.project AND t.number=o.task AND t.number<>?4
+              WHERE t.request_id=q.id AND t.project='pilotq' AND t.number<>?4
+              AND ((t.project=o.project AND t.number=o.task)
+                OR (o.project='' AND o.task=0 AND EXISTS(SELECT 1 FROM outbox original
+                  WHERE original.request_id=o.request_id AND original.sent_message=o.sent_message
+                  AND original.chat=o.chat AND original.topic IS o.topic AND original.state='delivered'
+                  AND original.kind=o.kind AND original.project=t.project AND original.task=t.number)))
               AND t.chat=o.chat AND t.topic IS o.topic AND q.text=t.project||'#'||t.number
               AND a.kind='board_event' AND a.target=q.text)))").unwrap();
     stmt.query_map(rusqlite::params![id,chat,topic,launched_task], |r| Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?))).unwrap()
@@ -233,6 +238,21 @@ fn a40_final_route_receipts() {
       INSERT INTO outbox VALUES(12,921,7,NULL,'delivered','status','pilotq','Task 294 status',NULL,294);").unwrap();
     let event=json!({"id":921,"chat_id":7,"text":"Task 294 status"});
     assert!(routed_message(&d,&event,298), "run7 board observer owns its owner-DM fallback");
+    // Run7 outbox39 owns message921; refreshes42/43/44 omit project/task metadata.
+    for (row, text) in [(42,"Task 294 refreshed"),(43,"Task 294 reviewed"),(44,"Task 294 closed")] {
+        c.execute("INSERT INTO outbox VALUES(12,921,7,NULL,'delivered','status','','temporary',NULL,0)", []).unwrap();
+        c.execute("UPDATE outbox SET text=?1 WHERE rowid=(SELECT max(rowid) FROM outbox)",[text]).unwrap();
+        let refresh=json!({"id":921,"chat_id":7,"text":text});
+        assert!(routed_message(&d,&refresh,298), "run7 refresh outbox{row} uses original ownership receipt");
+        for sql in ["UPDATE outbox SET state='pending' WHERE task=294", "UPDATE outbox SET sent_message=922 WHERE task=294", "UPDATE outbox SET request_id=13 WHERE task=294", "UPDATE outbox SET chat=8 WHERE task=294", "UPDATE outbox SET topic=5 WHERE task=294", "UPDATE outbox SET kind='question' WHERE task=294"] {
+            c.execute_batch(sql).unwrap();
+            assert!(!routed_message(&d,&refresh,298), "refresh must retain original identity: {sql}");
+            c.execute_batch("UPDATE outbox SET state='delivered',sent_message=921,request_id=12,chat=7,topic=NULL,kind='status' WHERE task=294").unwrap();
+        }
+        let mut wrong=refresh.clone(); wrong["text"]=json!("task 298 leaked");
+        assert!(!routed_message(&d,&wrong,298));
+
+    }
     for sql in ["UPDATE tasks SET request_id=13", "UPDATE tasks SET number=298", "UPDATE tasks SET chat=-100", "UPDATE tasks SET topic=5", "UPDATE tasks SET project='other'", "UPDATE audit_events SET target='pilotq#298'", "UPDATE requests SET text='pilotq#298' WHERE id=12", "UPDATE requests SET sender=8 WHERE id=12", "UPDATE requests SET update_id=12 WHERE id=12", "UPDATE outbox SET task=298 WHERE sent_message=921"] {
         c.execute_batch(sql).unwrap();
         assert!(!routed_message(&d,&event,298), "reject unowned service destination: {sql}");

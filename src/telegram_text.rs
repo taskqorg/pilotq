@@ -205,4 +205,3 @@ pub(crate) fn markdown(text: &str) -> String {
     }
     out
 }
-
