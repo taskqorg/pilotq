@@ -2,7 +2,7 @@
   "upstream": "https://github.com/ggml-org/whisper.cpp",
   "commit": "4979e04f5dcaccb36057e059bbaed8a2f5288315",
   "license": "MIT",
-  "status": "unbuilt; no inference or production qualification",
+  "status": "PM uninstrumented build passed; instrumented API boundary proof not run",
   "source_sha256": {
     "src/whisper.cpp": "02566a39137a14e0798ec0d88e78bd626f21e7549bc27d1cb5e4a30b101a0f7e",
     "include/whisper.h": "0525b758571ab71c00ddd8ea2845f74af7c62dfa5100c5586655f75bdc5ef4be",
@@ -10,5 +10,14 @@
   },
   "patch_sha256": "8cfaf6e6830af59c68c2e266eabaea848768e4477bf2370f6ed269e5622b1f4b",
   "baseline_binary_sha256": "30ab87ffca69ba2e03f6c9c110c158cc5d7e4099eaa0179793559215b99aed70",
-  "archive_sha256": "ec8e33f4c838ed459ad0a23da255c0262f150a6f54839a17e504ddf1495305d5"
+  "archive_sha256": "ec8e33f4c838ed459ad0a23da255c0262f150a6f54839a17e504ddf1495305d5",
+  "pm_experimental_binary_sha256": "a3e6f4ae6303793b89adfba1edbbc25c4a6477ea1428e67f92831612d6927d9a",
+  "boundary_inputs_sha256": {
+    "first-window.patch": "8cfaf6e6830af59c68c2e266eabaea848768e4477bf2370f6ed269e5622b1f4b",
+    "instrumentation.patch": "4072a3f140514f5a9011a580c361b788343c5871f0e1ccc14054aab701b360db",
+    "boundary.cpp": "1070cd69800d69a6f11eeeeb324b801e56f6c8d5476e791626520fb29d136ce3",
+    "prepare-boundaries.py": "7c85b4be1e21bfa569bd2c3f9ffa9f45bb449622c6ee440149342ac5f395de84",
+    "run-boundaries.py": "1de9256a1b0eaf55d051d68f143ff15e99a17a134c20476219d6dc22f3a7ad4b",
+    "check-observer.py": "e66e351765f6e7f093b750a5174ba603b002ec5a171b182dab07fff232439e41"
+  }
 }
