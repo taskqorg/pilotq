@@ -391,3 +391,65 @@ AST/help and existing tiny owned-process cleanup checks pass; v2 download,
 bootstrap, import, external-data guard, static checker and cap measurements
 remain **not run** pending PM review. No model inference/export/build or product
 activation is included. Record the eventual failure/pass without erasing v1.
+
+### Targeted static supplement after actual v2 parse
+
+PM note6565033244 reports v2 setup/static parse PASS21.537s/noOOM under
+original caps; `memory.high`357 is an event count, not megabytes. The retained
+v2 reports match `giga-static-supplement-manifest.json`; neither is rewritten.
+The old inspector omitted FLOAT/DOUBLE constants and filtered `Conv` rather
+than actual `ConvInteger`. New `supplement-giga-static.py` fills only those
+static evidence gaps: complete capped `encoded_lengths` ancestry, finite
+scalar/small numeric constants (at most16 elements), actual pre_encode
+ConvInteger structural attributes/weight dimensions, functions/training counts.
+It never evaluates operators, performs shape inference, repeats setup/schema
+checking, or loads external data. Missing/nonfinite/oversize length constants,
+truncated ancestry or missing subsampling nodes refuse. Unresolved weight
+producers are reported explicitly, never guessed. No inference/build/install.
+
+Script SHA256:
+`a455804450c1ce2d3a34a725fd90fe9f28b46ee12ee2384fce0025ce32975e15`.
+The committed manifest pins script/base/guard and both unchanged v2 reports.
+PM first verifies every `files` entry using standard `hashlib.file_digest`;
+any mismatch stops before the following exact inner argv. From worktree root,
+inside PM's existing isolated runner with **hard600s including verification**,
+actual MemoryMax1280M/High1024M/Swap256M/CPU150%/Tasks256:
+
+```sh
+target/pm344-giga-static-tools-v2/venv/bin/python -I \
+  experiments/speech344/supplement-giga-static.py \
+  --assets target/pm344-giga-multilingual-assets \
+  --output target/pm344-giga-static-supplement-v1
+```
+
+Exact standard-library identity preflight (inside that same outer600s, before
+the inner argv above; no ONNX import):
+
+```sh
+python3 -I - <<'PYVERIFY'
+import hashlib, json
+from pathlib import Path
+manifest = json.loads(Path('experiments/speech344/giga-static-supplement-manifest.json').read_text())
+for name, expected in manifest['files'].items():
+    with Path(name).open('rb') as stream:
+        actual = hashlib.file_digest(stream, 'sha256').hexdigest()
+    if actual != expected:
+        raise SystemExit('identity mismatch: ' + name)
+print('All supplement and retained-v2 identities match')
+PYVERIFY
+```
+
+Do not dispatch the inner argv if this preflight fails. PM verifies the
+committed manifest against the reviewed source revision before trusting it.
+
+Output must not exist. This reuses exact private versions and verifies all six
+candidate identities before ONNX import/parse. Effective-cap guard runs first;
+process-local math threads remain4. An in-process600s alarm bounds parsing;
+PM's earlier outer deadline remains authoritative, with no reset/retry. No
+subprocess is created, so termination has no child process group to leak.
+PM still independently checks wrapper/unit/MainPID/cgroup/descendants and
+ordinary service identities. Preserve `supplement.json`, raw stderr and
+incomplete failure evidence. AST/help pass only; supplement runtime, rejection
+paths and actual graph facts are **not run**, pending required PM review.
+Numerical formula derivation waits for returned actual constants; source
+predictions below are not substituted for that readback (§9/R19).
