@@ -2777,6 +2777,9 @@ impl Journal {
                     params![run.request,format!("{} start #{n}",run.board)],|x|x.get::<_,String>(0)).optional().map_err(|e|e.to_string())?.unwrap_or_default()
             } else { "held".into() };
             let status=crate::conversation::task_state(&board_state,false,language.as_deref()).to_lowercase();
+            // #263: the placement TaskQ accepted with the held filing
+            let status=[("host",&ticket.plan["host"]),("runtime",&ticket.plan["runtime"])].iter()
+                .filter_map(|(k,v)|v.as_str().map(|v|format!(" · {k} {v}"))).fold(status,|s,x|s+&x);
             text+=&format!("\n- {}: {status}",crate::taskq::task_link(&run.board,n,ticket.plan["title"].as_str(),self.task_url(&run.project,n)?.as_deref()));
         }
         Ok(Some(text))
@@ -5513,7 +5516,7 @@ mod tests {
         let (mut j,p)=journal("u93-display");
         j.admit(&[(1,msg(7,7,1))],0).unwrap();
         let r=j.claim_next(4,0).unwrap().remove(0);
-        j.save_plan(&r,&json!([{"title":"Reply improvements","goal":"Keep line breaks","acceptance":["Buttons work"],"scope":["No audio"]}]),"pilotq","taskqorg/pilotq","",1).unwrap();
+        j.save_plan(&r,&json!([{"title":"Reply improvements","goal":"Keep line breaks","acceptance":["Buttons work"],"scope":["No audio"],"host":"mac","runtime":"codex"}]),"pilotq","taskqorg/pilotq","",1).unwrap();
         j.finish(&r,None,None,&Outcome::Answered("Saved.".into()),2).unwrap();
         let reply=j.request(r.request).unwrap().1.unwrap();
         assert_eq!(reply,"**Reply improvements**\nWe will: Keep line breaks\nDone when: Buttons work");
@@ -5529,6 +5532,8 @@ mod tests {
         j.run_outcome(&run,"started",None,None,0,4).unwrap();
         let reply=j.launch_reply(&launch).unwrap().unwrap();
         assert!(reply.contains("queued for a worker") && !reply.contains("started") && reply.contains("pilotq#19 — Reply improvements"),"{reply}");
+        // #263: the receipt names the requested host and runtime the ticket was filed with.
+        assert!(reply.contains(" · host mac · runtime codex"),"{reply}");
         j.0.execute("UPDATE requests SET language='ru' WHERE id=?1",[launch.request]).unwrap();
         let reply=j.launch_reply(&launch).unwrap().unwrap();
         assert!(reply.contains("в очеред") && !reply.contains("запущен") && reply.contains("pilotq#19 — Reply improvements"),"{reply}");
