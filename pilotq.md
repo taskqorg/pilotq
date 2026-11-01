@@ -6,7 +6,7 @@ Owner and explicit shell-grant routes may run authorized conversational loops un
 
 ## Rules
 
-- **R9 Model access:** use Codex with existing subscription access only. Claude and separately billed model APIs are out of scope; never fall back automatically to paid API credentials.
+- **R9 Model access:** use the Codex or Claude Code CLI with its existing subscription login only. Separately billed model APIs are out of scope; never fall back automatically to paid API credentials.
 - **R10 People and admission:** ignore people without explicit administrator-granted access; group membership grants nothing. Roles admin, project owner and member (§2) replace per-project grant setup. Keep distinct, persistent, correctable profiles and support access inspection, change and revocation.
 - **R16 Keys:** tools may use credentials on an authorized person's behalf; the model never sees their values. Keys enter only through the protected CLI.
 - **R4 Flexible projects:** remember the usual project and allow switching; every external action resolves one concrete authorized target.
@@ -68,7 +68,7 @@ Plain-language controls are primary. `/status`, `/stop` and `/new` remain availa
 
 ## 3. Architecture and authority
 
-**Mandatory:** one Rust binary on CoreQ; teloxide only for the Bot API; Codex `app-server` with subscription login and one small adapter; SQLite journal; installed TaskQ CLI for execution; ffmpeg and static `sherpa-onnx-offline` with GigaAM v3 RNNT-punct int8 for local CPU recognition.
+**Mandatory:** one Rust binary on CoreQ; teloxide only for the Bot API; manager turns via CoreQ `agent` on Codex (app-server path) or Claude Code, per the installation `runtime` (default Codex) or a route override; SQLite journal; installed TaskQ CLI for execution; ffmpeg and static `sherpa-onnx-offline` with GigaAM v3 RNNT-punct int8 for local CPU recognition.
 
 [Architecture detail](docs/runtime-contract.md#3-architecture-and-ownership) assigns journal, runtime, proposal, TaskQ and agentq authority. PilotQ owns durable input and delivery; TaskQ owns admitted execution. Registered roots and host policy own capacity. Never discover roots or silently enroll projects.
 
@@ -167,6 +167,8 @@ Users inspect, correct and forget non-authoritative preferences; administrators 
 
 Preserve identities, grants, revocations, project references, operation IDs, task URLs, pending questions, plan revisions, prohibitions and receipts outside lossy summaries. Use fresh TaskQ reads for task state.
 
+Each conversation keeps one native session of its runtime: every turn resumes it by ID and exits, across restart and update. A changed route runtime starts a new session rebuilt from the journal.
+
 Native compaction is the functional baseline. Agentq tool compression and conversation summarization have separate owners; preserve call/result associations and scoped original recovery. Qualify identical scenarios off/on for completion, constraints, recovery, provider tokens where available, latency and interventions. Byte reduction alone proves no savings or long-conversation correctness.
 
 ## 7. Proposed operating budgets and storage
@@ -178,6 +180,7 @@ without a runtime event, with the exact reason; cancellation acknowledgement ≤
 grace; recovery within thirty seconds of readiness. Runtime events renew the inactivity clock; typing and progress
 timers do not. One topic progress message is updated no more often than every thirty seconds.
 
+With `slot_root` set, each manager turn holds one TaskQ host slot (`taskq service slots`) until its runtime and tools end. Each turn records one CoreQ usage observation with its route code.
 Start with four concurrent conversations, one run each, round-robin routes; pending caps are fifty per route and 1,000 total. Safe dependency attempts total at most three within the original deadline; delivery attempts at most five per episode across restarts. Task notifications follow a fresh observed transition within fifteen seconds when Telegram is reachable.
 
 SQLite uses WAL, `synchronous=FULL`, one writer, local disk and bounded transactions. Raw conversations/native inactive sessions retain thirty days; audit metadata 365 days and text ninety days; reconciled receipts ninety days; diagnostics seven days; temporary attachments seven days, 20 MiB each. Preserve active/unresolved work and replay-preventing tombstones.
@@ -213,7 +216,7 @@ arguments in one request are refused. CLI project operations can also use `pilot
 
 **Mandatory:** [service detail](docs/service-contract.md) defines CLI controls, host minimums, diagnostics, incidents, update drain, schema compatibility and release qualification. Built-in controls bypass the model backlog, retain admission/audit and support Telegram `@bot` suffixes. Unknown commands return usage errors.
 
-`/help`, `/version`, `/doctor`, `/model`, `/restart`, `/skills` and `/skill` keep their specified bounded paths. Model selection uses the configured Codex catalogue, persists per conversation across reset/restart and affects only subsequently claimed runs. Catalogue presence proves no subscription entitlement; no model/provider fallback or worker-default change exists.
+`/help`, `/version`, `/doctor`, `/model`, `/restart`, `/skills` and `/skill` keep their specified bounded paths. Model selection uses the route runtime catalogue (Codex list, Claude aliases), persists per conversation across reset/restart and affects only subsequently claimed runs. Catalogue presence proves no subscription entitlement; no model/provider fallback or worker-default change exists.
 
 Only the protected owner restarts the installed service; acknowledge, drain and report completion after healthy restart. Source runs refuse. Only the owner-installed PM pack described below is approved; other native manager skills need a contract decision. CLI asks use the same controls. Every writing command prints readback, supports JSON and fails nonzero on failure.
 
@@ -237,11 +240,11 @@ Workers never install live; shadow findings authorize no board mutations or prod
 
 Doctor is read-only: bot identity, isolated ChatGPT login, complete matching TaskQ board, required executable versions and bounded local voice decode/recognition probe. It never polls updates, changes grants or starts a model. Offline selftest remains setup-independent; setup success proves neither subscription entitlement nor full task flow.
 
-Supported managed host: Linux x86_64. Minimums: Codex 0.162.0, TaskQ CLI 4.6.46/service 4.6.40, ffmpeg 6.1.0, sherpa-onnx-offline 2.0.1, curl 7.68.0, systemd 245, procps-ng kill 3.3.17, hostname 3.23 and Git 2.25.0 for registered releases. Each approved command/release executable declares its own minimum.
+Supported managed host: Linux x86_64. Minimums: Codex 0.162.0, Claude Code 2.1.0 where a route uses it, TaskQ CLI 4.6.46/service 4.6.40, ffmpeg 6.1.0, sherpa-onnx-offline 2.0.1, curl 7.68.0, systemd 245, procps-ng kill 3.3.17, hostname 3.23 and Git 2.25.0 for registered releases. Each approved command/release executable declares its own minimum.
 
 Use executable `--version`; only tools without that command use owner-provisioned version/SHA256 receipts. Verify recognizer bytes before trusting its receipt. Missing/unparseable/old tools refuse installed startup, install and update; report an exact operator remedy. Never provision tools, elevate privileges or change logins automatically.
 
-Retain CoreQ v0.14.6 and journal schema 12; open schemas 0–12 through migrations, refuse newer schemas and refuse unsafe downgrade. The installation owner owns the user service/configuration. Releases use CoreQ versioned directories, checksum verification, selftest and rollback after three unhealthy starts.
+Retain CoreQ v0.18.0 and journal schema 12; open schemas 0–12 through migrations, refuse newer schemas and refuse unsafe downgrade. The installation owner owns the user service/configuration. Releases use CoreQ versioned directories, checksum verification, selftest and rollback after three unhealthy starts.
 
 Publish only by fast-forwarding `live` to a merge-queue-accepted main commit. That workflow builds/verifies static linux-x86_64 and publishes tag, binary, SHA256SUMS and latest.json. Tags alone do not publish. The PM updates the test pilot and records source/binary identity, status, selftest, doctor and request/journal continuity; production cutover is not authorized.
 

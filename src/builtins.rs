@@ -68,7 +68,8 @@ pub fn execute(t:&Tool,j:&Shared,r:&Request,installed:bool) -> Result<(),String>
             }
             "/model"|"/model-button"=> {
                 let config=crate::config(t)?.ok_or("PilotQ configuration unavailable")?;
-                let models=config.codex.models()?;
+                let route=j.lock().unwrap().route(r.id)?;
+                let models=config.runtime.models(&route)?;
                 j.lock().unwrap().builtin_models(r,&models,crate::now() as i64)?;
                 return Ok(None);
             }
