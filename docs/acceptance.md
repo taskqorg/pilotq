@@ -557,7 +557,7 @@ The run exercises queue pause on the selected host/project and restores it with 
 
 | Case | Required observation |
 |---|---|
-| A40.01 admission | Person 9 is ignored with no request, outgoing message or typing; person 8 has chat only |
+| A40.01 admission | Person 9 is ignored with no request, outgoing message, reaction, typing, model call or task; the owner's answered startup onboarding remains distinct; person 8 has chat only |
 | A40.02 discussion | Codex answers a discussion without saving a plan or filing a task |
 | A40.03 plan | A separate request saves one revision and files nothing |
 | A40.04 create/start | Next request files exactly one ticket held, reads it back and starts it; board log and journal agree; exactly one reserved host label; no service spawn |
@@ -1269,3 +1269,12 @@ and does not advise retrying the unchanged command. Record the released version,
 request and visible reply. Workers do not install or change the live service.
 
 **#282 isolation evidence (R9, R16, §3, §9):** On source `250cae1`, manager's native allowlist drops `TASKQ_INSTALL` and `TASKQ_ROOT`; the recorder was not installed under the native command name. A harmless child using the exact baseline recorder and the production allowlist observed null install/root overrides and the ordinary HOME, against expected fixture `install`/`root` paths; it executed only a fake path reporter. Native command lookup also returned 127 in this sandbox. No ordinary TaskQ executable or state was touched. The existing Python guard then failed before the fix because a foreign installation reached a fake `service pause` (exit 0). Afterward `python3 tests/support/automatic_host.py` passes, covering sanitized native PATH dispatch, exact fixture install/root readback, foreign install/project refusal before dispatch, and retained reserved-host create/retry/cleanup fencing. `automatic::a40_native_manager_scope` additionally probes through the actual manager spawn with a fake app-server; its execution evidence is reported separately. No ordinary admission control or board mutation was used. This component evidence leaves live Codex and all fourteen A40 cases to #281 on the exact accepted merge; it proves no release/live acceptance.
+
+
+### A40 startup admission fixture (#286)
+
+R10 and §2 require silent stranger ingress; §5 also requires startup onboarding for registered projects. On baseline `40a87b2147a1a7aa47b57525870910a132b3c3d5`, A40 incorrectly expected zero total requests. The #281 PM report records ignored update 1 alongside one answered onboarding request for synthetic owner 7, failure at `automatic.rs:447`, cleanup passing and twelve later cases not run.
+
+The local regression command `cargo test --locked --test telegram automatic::a40_admission_startup_onboarding -- --exact --nocapture` reproduced the original assertion after real service startup with fake dependencies: `left: 1`, `right: 0` (exit 101). After the fixture repair, the same command passed (1 test). A40 and the regression now share checks for ignored update identity, no sender-9 request, only owner service onboarding records/deliveries, no reactions or typing, and no model run, plan or ticket. The regression additionally checks the fake model protocol and TaskQ log for absence of a turn or task creation. Production admission and policy are unchanged.
+
+This is component evidence, not the §9 release qualification. Task #281 must run all fourteen A40 cases, including cleanup, on the exact accepted merge containing this repair. Its reserved host, fixture-only TaskQ controls, original admission restoration and copied-login/board-credential cleanup remain required. No live controls, installation or release is authorized by this check.
