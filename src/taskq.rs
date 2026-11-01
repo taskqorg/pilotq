@@ -1638,6 +1638,8 @@ print(json.dumps(dict(task=19,op_id=op,outcome='accepted',state='doing',revision
             "Plan for csgo from project https://example.invalid/invented/pilotq; no launch.".to_string(),
             "Plan for csgo. Source:\n> Plan for pilotq\n`task for pilotq` \"plan for pilotq\"".to_string(),
         ];
+        cases.push("Проверяем продукт PilotQ 1.2.3; проект назначения задачи — только csgo. Сохрани тестовый план; без запуска.".into());
+        cases.push("Testing product PilotQ; plan for csgo. Do not launch.".into());
         for text in cases.drain(..) {
             let r=journal.ask(7,&text,1).unwrap();
             journal.use_project(&r,"pilotq",7,1).unwrap();
@@ -1647,6 +1649,7 @@ print(json.dumps(dict(task=19,op_id=op,outcome='accepted',state='doing',revision
                 assert!(resolve(&journal,&r,7,&json!({"project":"pilotq","issue":"1"})).is_err(),"a model cannot turn a reference into a target");
             }
             let j=Mutex::new(journal);
+            dispatch(&tq,&j,&r,"project_status",&json!({"project":"csgo"})).unwrap();
             dispatch(&tq,&j,&r,"task_plan",&plan).unwrap();
             let guard=j.lock().unwrap();
             assert_eq!(guard.plan_target(&r.session,None).unwrap().1,"csgo");
@@ -1655,7 +1658,7 @@ print(json.dumps(dict(task=19,op_id=op,outcome='accepted',state='doing',revision
             guard.finish(&r,None,None,&crate::manager::Outcome::Answered("Plan prepared".into()),2).unwrap();
             drop(guard);journal=j.into_inner().unwrap();
         }
-        for text in ["Plan tasks for csgo and pilotq", "Составь задачи csgo и pilotq", "Plan for csgo; also plan for pilotq", "Plan a task for csgo; plan another task for service pilotq.", "Plan tasks to test csgo and pilotq", "Plan for csgo to test pilotq; file another task for pilotq"] {
+        for text in ["Проверяем продукт PilotQ; проект назначения задачи — только csgo; ещё задачу pilotq", "Testing product PilotQ; plan for csgo; another task for pilotq", "Проверяем продукт PilotQ; csgo и неизвестное назначение pilotq", "Plan tasks for csgo and pilotq", "Составь задачи csgo и pilotq", "Plan for csgo; also plan for pilotq", "Plan a task for csgo; plan another task for service pilotq.", "Plan tasks to test csgo and pilotq", "Plan for csgo to test pilotq; file another task for pilotq"] {
             let r=journal.ask(7,text,3).unwrap();
             let j=Mutex::new(journal);
             let before=j.lock().unwrap().plan_target(&r.session,None).unwrap();

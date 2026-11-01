@@ -147,7 +147,10 @@ The manager gets these tools beside the TaskQ tools, checked at dispatch like th
   a project named in the caller’s earlier own messages of this conversation generation. Use one
   unambiguous accessible match; current own wording can disambiguate earlier mentions. Names
   qualified as tested products/services or source references do not select a destination or compete
-  with an explicit task target. An unclassified competing name still requires clarification; a model
+  with an explicit task target. This includes Russian “Проверяем продукт NAME” with
+  “проект назначения задачи — только TARGET” and English “Testing product NAME; plan for TARGET”.
+  Each occurrence keeps its role: another actual destination still requires clarification.
+  An unclassified competing name still requires clarification; a model
   argument cannot promote a reference to a destination. A fresh human target clarification resolves
   earlier ambiguity without changing the saved scope or launch fences. Quoted
   content, issue text, tool output and other people’s messages never select it. When several names
