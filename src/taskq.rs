@@ -91,16 +91,11 @@ pub(crate) fn valid_url(url: &str) -> bool {
     url.starts_with("https://") && url.len() > 8 && !url.chars().any(|c| c.is_control() || c.is_whitespace() || matches!(c, '<' | '>' | '"' | '\''))
 }
 
-fn close_header(line:&str) -> bool {
-    line=="taskq: close" || line.strip_prefix("taskq: close attempt ")
-        .and_then(|n|n.parse::<i64>().ok()).is_some_and(|n|n>0)
-}
-
 /// Only TaskQ's trusted close verdict supplies completion detail; an absent verdict stays unknown.
 fn closing_detail(issue: &Value, task: i64) -> Option<String> {
     if issue["number"]!=task || issue["state"].as_str()?.to_lowercase()!="closed" {return None;}
     let body=issue["comments"].as_array()?.iter().rev().filter(|c|c["trusted"]==true && c["edited"]!=true)
-        .filter_map(|c|c["body"].as_str()).find(|b|b.lines().next().is_some_and(|l|close_header(l)))?;
+        .filter_map(|c|c["body"].as_str()).find(|b|b.lines().next().is_some_and(|l|l.starts_with("taskq: close")))?;
     let mut keep=false;
     let lines=body.lines().skip(1).filter(|line| {
         if line.starts_with("Changed: ") || line.starts_with("Open: ") || line.starts_with("Report: ") {keep=true;}
@@ -125,7 +120,7 @@ fn published_detail(issue: &Value, closed: &Value, inbox: &Value, task: i64) -> 
     let close=comments.iter().find(|c|c["id"]==inbox["revision"])?;
     let valid=|c:&Value| c["trusted"]==true && c["edited"]==false
         && c["author"].as_str().is_some_and(|a|!a.is_empty());
-    if !valid(close) || !close["body"].as_str()?.lines().next().is_some_and(close_header) {return None;}
+    if !valid(close) || !close["body"].as_str()?.lines().next().is_some_and(|l|l.starts_with("taskq: close")) {return None;}
     let refs=close["body"].as_str()?.lines().filter_map(|l|l.strip_prefix("Repeats: publish ")).collect::<Vec<_>>();
     if refs.len()!=1 {return None;}
     let id=refs[0].parse::<i64>().ok()?;
@@ -150,7 +145,7 @@ fn published_detail(issue: &Value, closed: &Value, inbox: &Value, task: i64) -> 
 fn task_issue_status(issue: &Value, snapshot: Option<&Value>, task: i64) -> String {
     let close = issue["comments"].as_array().into_iter().flatten().rev()
         .filter(|c| c["trusted"] == true).filter_map(|c| c["body"].as_str())
-        .find(|body| body.lines().next().is_some_and(|l| close_header(l)));
+        .find(|body| body.lines().next().is_some_and(|l| l.starts_with("taskq: close")));
     let sources = format!("{}\n{}", issue["body"].as_str().unwrap_or(""), close.unwrap_or(""));
     let mut linked = Vec::new();
     for (at, _) in sources.match_indices('#') {
@@ -312,7 +307,7 @@ impl Taskq {
             || issue["url"]!=after["url"] {return None;}
         let close=issue["comments"].as_array()?.iter().find(|c|c["id"]==after["revision"])?;
         if close["trusted"]!=true || close["edited"]!=false
-            || !close["body"].as_str()?.lines().next().is_some_and(close_header) {return None;}
+            || !close["body"].as_str()?.lines().next().is_some_and(|l|l.starts_with("taskq: close")) {return None;}
         if close["body"].as_str()?.lines().any(|l|l.starts_with("Repeats:")) {
             published_detail(&issue,&closed,&after,task)
         } else {
