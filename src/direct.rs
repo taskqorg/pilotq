@@ -10,6 +10,11 @@ use std::sync::Mutex;
 /// §5: product aliases, resolved only against registered projects and current grants.
 pub(crate) const PROJECT_ALIASES: &[(&str, &str)] = &[("cs", "cyprusbz")];
 
+pub(crate) fn canonical_project(name: &str) -> &str {
+    PROJECT_ALIASES.iter().find(|(alias, _)| name.eq_ignore_ascii_case(alias))
+        .map_or(name, |(_, canonical)| *canonical)
+}
+
 pub(crate) fn alias_instructions() -> String {
     let aliases = PROJECT_ALIASES.iter().map(|(alias,name)|format!("{alias} = {name}")).collect::<Vec<_>>().join(", ");
     format!("Project aliases: {aliases}. Use the canonical registered project name in tools; do not ask what an alias means. Registration and current grants still apply.")
@@ -212,12 +217,13 @@ fn target_inner(j: &Journal, r: &Run, user: i64, args: &Value, context: bool) ->
     let by_url=linked.as_ref().map(|t|t.0.clone());
     let n=linked.as_ref().map(|t|t.2).or_else(||issue.trim().trim_start_matches('#').parse::<i64>().ok())
         .filter(|n|*n>0).ok_or(format!("{issue} is not a task number or a verified TaskQ URL"))?;
-    if let (Some(explicit), Some(url)) = (args["project"].as_str(), by_url.as_deref())
+    let explicit = args["project"].as_str().map(canonical_project);
+    if let (Some(explicit), Some(url)) = (explicit, by_url.as_deref())
         && explicit != url {
         return Err("project and issue URL name different registered projects; nothing was done".into());
     }
     let inferred = if context { context_project(j,r,user)? } else { None };
-    let name = match args["project"].as_str().map(str::to_string).or(by_url) {
+    let name = match explicit.map(str::to_string).or(by_url) {
         Some(p) => {
             let (name, repo, ..) = projects.iter().find(|x| x.0 == p).ok_or(format!("{p} is not a registered project; nothing was done"))?;
             allowed(j,user,name)?;
@@ -281,7 +287,7 @@ fn dispatch(d: &Direct, j: &Mutex<Journal>, r: &Run, name: &str, args: &Value, t
             } else { Ok(json!({"projects":projects,"capability":crate::catalog::purpose("project_list")}).to_string()) }
         }
         "project_use" => {
-            let p = args["project"].as_str().ok_or("project is required")?;
+            let p = canonical_project(args["project"].as_str().ok_or("project is required")?);
             let j = j.lock().unwrap();
             let projects = j.projects()?;
             let Some((name, repo, ..)) = projects.iter().find(|x| x.0 == p) else {
@@ -450,6 +456,49 @@ mod context_tests {
         j.revoke(7,7,&["projects".into()],3).unwrap();
         let r=j.ask(7,"is cs #541 on DEV?",4).unwrap();
         assert!(target_context(&j,&r,7,&json!({"issue":"541","project":"cyprusbz"})).is_err());
+        drop(j);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // #275 / §5: tool aliases retain own-message, grant and registered-target checks.
+    #[test]
+    fn alias_tool_275() {
+        let dir = std::env::temp_dir().join(format!("pilotq-alias275-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut j = Journal::open(&dir.join("journal.sqlite")).unwrap();
+        j.bootstrap(7,0).unwrap();
+        j.add_project(7,"cyprusbz","invented/cyprusbz","/invented/cyprusbz",0).unwrap();
+        j.add_project(7,"other","invented/other","/invented/other",0).unwrap();
+        let r=j.ask(7,"is cs #541 on DEV?",1).unwrap();
+        let args=json!({"issue":"541","project":"cs"});
+        assert_eq!(target_context(&j,&r,7,&args).unwrap(),target_context(&j,&r,7,&json!({"issue":"541","project":"cyprusbz"})).unwrap());
+        assert_eq!(target(&j,&r,7,&args).unwrap().0,"cyprusbz");
+        for (project,board,root,n) in [("cyprusbz","invented/cyprusbz","/invented/cyprusbz",541),("other","invented/other","/invented/other",542)] {
+            j.0.execute("INSERT INTO tasks(number,request_id,chat,state,revision,observed,project,board,root) VALUES (?1,?2,7,'doing',1,1,?3,?4,?5)",rusqlite::params![n,r.request,project,board,root]).unwrap();
+        }
+        let url="https://example.invalid/issues/541";
+        j.remember_task_url("cyprusbz",541,Some(url),1).unwrap();
+        assert_eq!(target_context(&j,&r,7,&json!({"issue":url,"project":"cs"})).unwrap().0,"cyprusbz");
+        j.remember_task_url("other",542,Some("https://example.invalid/issues/542"),1).unwrap();
+        assert!(target_context(&j,&r,7,&json!({"issue":"https://example.invalid/issues/542","project":"cs"})).unwrap_err().contains("different registered projects"));
+        assert!(target_context(&j,&r,7,&json!({"issue":"https://example.invalid/issues/543","project":"cs"})).is_err());
+        assert!(j.current_project(&r.session).unwrap().is_none());
+        let shared=Mutex::new(j);
+        let d=Direct{keys:Keys(dir.join("keys.json"))};
+        assert!(call(&d,&shared,&r,"project_use",&json!({"project":"cs"}),None).0);
+        let mut j=shared.into_inner().unwrap();
+        assert_eq!(j.current_project(&r.session).unwrap().as_deref(),Some("cyprusbz"));
+        j.use_project(&r,"other",7,2).unwrap();
+        j.finish(&r,None,None,&crate::manager::Outcome::Answered("ok".into()),3).unwrap();
+        j.0.execute("UPDATE conversations SET generation=generation+1 WHERE session=?1",[&r.session]).unwrap();
+        let r=j.ask(7,"> cs #541 on DEV?",4).unwrap();
+        assert!(target_context(&j,&r,7,&args).is_err());
+        j.finish(&r,None,None,&crate::manager::Outcome::Answered("ok".into()),5).unwrap();
+        let r=j.ask(7,"is cs #541 on DEV?",6).unwrap();
+        j.revoke(7,7,&["projects".into()],7).unwrap();
+        assert!(target_context(&j,&r,7,&args).is_err());
+        j.0.execute("DELETE FROM projects WHERE name='cyprusbz'",[]).unwrap();
+        assert!(target_context(&j,&r,7,&args).unwrap_err().contains("not a registered project"));
         drop(j);
         std::fs::remove_dir_all(dir).unwrap();
     }

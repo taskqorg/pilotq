@@ -537,7 +537,7 @@ fn dispatch_until(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Va
         let (cached,projects,own)={
             let guard=j.lock().unwrap();
             let projects=guard.projects()?.into_iter().filter(|p| allowed(&guard,sender,&p.0,false).is_ok()
-                && args["project"].as_str().is_none_or(|name|name==p.0)).collect::<Vec<_>>();
+                && args["project"].as_str().map(crate::direct::canonical_project).is_none_or(|name|name==p.0)).collect::<Vec<_>>();
             let mut own=guard.own_project_inputs(r)?;own.push(r.text.clone());
             (guard.url_target(url)?,projects,own)
         };
@@ -567,12 +567,12 @@ fn dispatch_until(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Va
         if let Some(target) = &link_target {
             target.clone()
         } else if let Some((_, project, _, _)) = &saved {
-            if args["project"].as_str().is_some_and(|p| p != project) { return Err("saved plan cannot be retargeted; nothing was filed".into()); }
+            if args["project"].as_str().map(crate::direct::canonical_project).is_some_and(|p| p != project) { return Err("saved plan cannot be retargeted; nothing was filed".into()); }
             allowed(&j, sender, project, true)?;
             (project.clone(), saved.as_ref().unwrap().2.clone(), 0)
         } else if matches!(name,"task_status" | "task_steer" | "task_answer") {
             let inferred = if name == "task_answer" || args["project"].is_string() { None } else { crate::direct::context_project(&j,r,sender)? };
-            match j.related_target(r,args["task"].as_str().ok_or("task is required")?,args["project"].as_str().or(inferred.as_deref()))? {
+            match j.related_target(r,args["task"].as_str().ok_or("task is required")?,args["project"].as_str().map(crate::direct::canonical_project).or(inferred.as_deref()))? {
                 Some(target) => target,
                 None => if name == "task_answer" { crate::direct::target(&j,r,sender,&target)? } else { crate::direct::target_context(&j,r,sender,&target)? },
             }
@@ -1688,6 +1688,34 @@ print(json.dumps(dict(task=19,op_id=op,outcome='accepted',state='doing',revision
         drop(j);
         std::fs::remove_dir_all(dir).unwrap();
     }
+    // #275 / §5: alias arguments reach fresh TaskQ reads and real release-unavailable reasons.
+    #[cfg(unix)]
+    #[test]
+    fn alias_status_275() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir=std::env::temp_dir().join(format!("pilotq-status275-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("taskq.json"),r#"{"repo":"invented/cyprusbz"}"#).unwrap();
+        let bin=dir.join("taskq");
+        std::fs::write(&bin,"#!/bin/sh\ncase \"$1\" in\nstatus) cat snapshot.json;;\nissue) cat issue.json;;\ninbox) echo '{\"schema\":1,\"task\":541,\"answers\":[],\"progress\":\"working\"}';;\n*) exit 99;;\nesac\n").unwrap();
+        std::fs::set_permissions(&bin,std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(dir.join("snapshot.json"),json!({"schema":1,"complete":true,"observed":5,"board":{"repo":"invented/cyprusbz"},"tasks":[{"n":541,"title":"Invented task","state":"doing","revision":8}]}).to_string()).unwrap();
+        std::fs::write(dir.join("issue.json"),json!({"number":541,"url":"https://example.invalid/issues/541","title":"Invented task","state":"open","comments":[]}).to_string()).unwrap();
+        let mut journal=Journal::open(&dir.join("journal.sqlite")).unwrap();journal.bootstrap(7,0).unwrap();
+        journal.add_project(7,"cyprusbz","invented/cyprusbz",dir.to_str().unwrap(),0).unwrap();
+        let r=journal.ask(7,"is cs #541 on DEV?",1).unwrap();let j=Mutex::new(journal);
+        let tq=Taskq{bot:None,bin,root:dir.clone(),poll:Duration::from_secs(1)};
+        for project in ["cs","cyprusbz"] {
+            let board:Value=serde_json::from_str(&dispatch(&tq,&j,&r,"project_status",&json!({"project":project,"include_release":true})).unwrap()).unwrap();
+            assert_eq!(board["project"],"cyprusbz");
+            assert_eq!(board["board"],"invented/cyprusbz");
+            let status=dispatch(&tq,&j,&r,"task_status",&json!({"project":project,"task":"541","include_release":true})).unwrap();
+            assert!(status.contains("working") && status.contains("Release configuration missing"),"{status}");
+        }
+        assert!(j.lock().unwrap().current_project(&r.session).unwrap().is_none());
+        drop(j);std::fs::remove_dir_all(dir).unwrap();
+    }
+
     // #144 / R4, R8, R13: GitLab uses exactly the same registered CLI path, links and grants as existing projects.
     #[cfg(unix)]
     #[test]
