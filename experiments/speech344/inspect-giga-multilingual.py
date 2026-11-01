@@ -160,11 +160,17 @@ def main():
     parser.add_argument('--assets', type=Path)
     parser.add_argument('--output', type=Path)
     parser.add_argument('--selftest', action='store_true')
+    parser.add_argument('--deadline-monotonic', type=float)
     args = parser.parse_args()
     spec = importlib.util.spec_from_file_location('guard344', REPO / 'scripts/probe-speech-344.py')
     guard = importlib.util.module_from_spec(spec); spec.loader.exec_module(guard)
     isolation = guard.limits()  # Actual effective caps before importing parser or loading graph.
     started = time.monotonic(); deadline = started + 600
+    if args.deadline_monotonic is not None:
+        import math
+        if not math.isfinite(args.deadline_monotonic):
+            raise ValueError('invalid inherited deadline')
+        deadline = min(deadline, args.deadline_monotonic)
     def bounded():
         if time.monotonic() >= deadline:
             raise TimeoutError('static inspection shared600s')

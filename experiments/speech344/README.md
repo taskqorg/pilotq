@@ -318,3 +318,76 @@ Never remove retained ASR assets or previous failures. External-data refusal,
 parse/check/schema/import failure, resource/deadline failure and missing host
 cleanup remain failures/gaps, not model-quality results. No inference or
 production activation follows automatically (R19).
+
+## Revised no-ensurepip combined static setup (v2)
+
+Note6564967418 supersedes the unexecuted setup commands above. PM's actual v1
+attempt failed `python3 -m venv` because ensurepip was absent:0.488s/exit1,
+no OOM/high0, before wheel acquisition/import/model parse. Unit997ae32c4ccf
+inactive/PID0, wrapper428931 and cgroup gone. Preserve that partial private venv
+as failure evidence; do not repair/reuse/delete it. This is tooling failure,
+not a verdict on candidate compatibility or speech quality.
+
+Prepared v2 uses only standard `venv --without-pip`, zipimport/runpy and the
+pinned official PyPI pip25.3 wheel. Bootstrap metadata is committed in
+`onnx-inspector-bootstrap.json`: `pip-25.3-py3-none-any.whl`,1,778,622bytes,
+SHA256 `9655943313a94722b7774661c21049070f6bbb0a1516bf02f7c8d5d9201514cd`,
+Python>=3.9, no external dependencies (pip bundles its vendored code). The five
+inspector packages/wheel versions/digests and complete non-extra dependency
+closure stay unchanged. No ensurepip/get-pip, apt, global/system pip installation,
+upgrade, PATH change, source build or extra runtime. Pip executes directly from
+its verified wheel in the new private interpreter; pip itself is not installed
+or used to upgrade any preexisting tool.
+
+Private prepared handoff `target/pm344-giga-static-handoff-v2/manifest.json`
+SHA256 `589b33d8fc035ccbe4c749f6082c61ca4ba4ff1110005c1754f3d033f4ff3cad`
+pins wrapper/inspector/bootstrap/locks/helpers and retained asset manifest. The
+old v1 handoff remains history and does not identify this revised inspector.
+Verify v2 hashes before execution. No tooling wheels have been acquired and
+no v2 setup/import/checker/model parse has run in the worker.
+
+Exact **combined** PM inner argv from the worktree root, after review and only
+inside the existing host isolation runner's original actual caps/hard600s:
+
+```sh
+python3 experiments/speech344/setup-giga-static.py \
+  --root target/pm344-giga-static-tools-v2 \
+  --assets target/pm344-giga-multilingual-assets
+```
+
+The v2 root must not exist. The wrapper requires standard-GIL CPython3.14 Linux
+x86_64, validates effective1280M/1024M/256M/CPU150%/Tasks256 and pinned tooling
+locks/candidate identities before setup. It acquires **only** six listed wheels
+from exact official files.pythonhosted.org URLs, refuses redirects/oversize/hash
+mismatch and never executes a `.part` file. It creates0700 directories/files0600
+under its new root. The argument arrays use this sequence:
+
+1. `python -I -m venv --without-pip ROOT/venv`.
+2. `ROOT/venv/bin/python -I -c` with standard `runpy.run_module('pip')` and the
+   verified pip wheel inserted in that subprocess's `sys.path`; record version.
+3. That zip-loaded pip installs only the five locked wheels offline using
+   `--isolated --disable-pip-version-check --no-cache-dir install --no-index
+   --find-links ROOT/wheels --only-binary=:all: --require-hashes --no-deps -r LOCK`.
+4. The same pip runs `check`; the inspector additionally verifies exact installed
+   distribution versions before importing ONNX. Missing/wrong closure refuses.
+5. The private interpreter runs `inspect-giga-multilingual.py --assets ASSETS
+   --output ROOT/inspection --deadline-monotonic DEADLINE` with the **same
+   absolute monotonic deadline** started before asset verification/wheel/setup
+   work. The inspector takes the earlier deadline, never a fresh600s extension.
+
+ROOT/LOCK/ASSETS/DEADLINE in this numbered explanation are placeholders resolved
+by the combined script, not additional shell commands to run manually. PM's
+outer hard600s remains authoritative during blocking network/parser calls.
+Every child uses the shared tested process-group fencing/reaping helper and
+remaining budget; no retries/fallback. Failures retain setup-result.json, raw
+logs, partial downloads/venv and original v1 evidence. The script never installs
+outside its new root or deletes generic temp directories. PM independently
+verifies unit inactive/MainPID0, wrapper/descendants/cgroup gone and unchanged
+ordinary service PIDs/restarts; retained private files are not live activation.
+
+Readback evidence is `ROOT/setup-result.json`, child stdout/stderr and, only if
+static inspection reaches completion, `ROOT/inspection/inspection.json`.
+AST/help and existing tiny owned-process cleanup checks pass; v2 download,
+bootstrap, import, external-data guard, static checker and cap measurements
+remain **not run** pending PM review. No model inference/export/build or product
+activation is included. Record the eventual failure/pass without erasing v1.
