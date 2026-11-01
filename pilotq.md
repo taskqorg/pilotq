@@ -73,8 +73,7 @@ Plain-language controls are primary. `/status`, `/stop` and `/new` remain availa
 [Architecture detail](docs/runtime-contract.md#3-architecture-and-ownership) assigns journal, runtime, proposal, TaskQ and agentq authority. PilotQ owns durable input and delivery; TaskQ owns admitted execution. Registered roots and host policy own capacity. Never discover roots or silently enroll projects.
 
 Use a neutral workspace and scoped registry tools; no process-wide project directory switch or universal runtime framework. Native shell, live web search and danger-full-access start only for a turn whose principal is the configured owner_id or holds an explicit shell grant. Other turns disable native shell and web search and use a read-only sandbox;
-PilotQ’s own granted tools remain available.
-Admission and current grants still gate turns; model and effort are unchanged. Grammy, Pi and a new runtime framework
+PilotQ’s own granted tools remain available. Admission and current grants still gate turns; model and effort are unchanged. Grammy, Pi and a new runtime framework
 remain out of scope. Hermes gateway patterns are reference material; this work does not change Hermes.
 
 ## 4. Durable requests, effects and delivery

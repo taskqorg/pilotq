@@ -82,9 +82,7 @@ fn fetch(d:&Direct,tq:&Taskq,j:&Mutex<Journal>,binding:&Binding,n:i64,key_name:O
         let j=j.lock().unwrap();
         if run.is_some_and(|r|j.fenced(r).unwrap_or(true)) {return Err("Image request stopped".into());}
         binding.active(&j)?;
-        {
-            if j.task(&binding.project,n)?.is_some_and(|(_,r,_)|r!=source_revision) {return Err("Task question changed during image retrieval; read its current card".into());}
-        }
+        if j.task(&binding.project,n)?.is_some_and(|(_,r,_)|r!=source_revision) {return Err("Task question changed during image retrieval; read its current card".into());}
         // One gap accompanies a partial batch, and also covers an empty/failed batch.
         let (images,gap)=match images {Ok(v)=>v,Err(e)=>(vec![],Some(e))};
         let (images,sources):(Vec<_>,Vec<_>)=images.into_iter().map(|(label,bytes,source)|((d.keys.scrub(&label),bytes),source)).unzip();
@@ -283,7 +281,8 @@ pub fn payload(j:&Journal,id:i64)->Result<Vec<u8>,String> {
 }
 
 pub fn prune(j:&Journal,at:i64)->Result<(),String> {
-    j.0.execute("DELETE FROM meta WHERE (key LIKE 'result-image:%' OR key LIKE 'result-image-binding:%') AND CAST(substr(key,instr(key,':')+1) AS INTEGER) IN (SELECT id FROM outbox WHERE kind IN ('result_image','result_image_gap') AND state IN ('delivered','failed','superseded') AND next_at<?1)",[at-7*86400]).map(drop).map_err(|e|e.to_string())
+    j.0.execute("DELETE FROM meta WHERE key LIKE 'result-image-source:%' AND CAST(substr(key,instr(key,':')+1) AS INTEGER) IN (SELECT id FROM outbox WHERE state IN ('delivered','failed','superseded','exhausted') AND next_at<?1)",[at-90*86400]).map_err(|e|e.to_string())?;
+    j.0.execute("DELETE FROM meta WHERE (key LIKE 'result-image:%' OR key LIKE 'result-image-binding:%') AND CAST(substr(key,instr(key,':')+1) AS INTEGER) IN (SELECT id FROM outbox WHERE kind IN ('result_image','result_image_gap') AND state IN ('delivered','failed','superseded','exhausted') AND next_at<?1)",[at-7*86400]).map(drop).map_err(|e|e.to_string())
 }
 
 /// Visual option answers carry the exact selection and stable Telegram identity on the board.
