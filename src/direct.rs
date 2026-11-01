@@ -495,7 +495,7 @@ mod context_tests {
         assert!(target_context(&j,&r,7,&args).is_err());
         j.finish(&r,None,None,&crate::manager::Outcome::Answered("ok".into()),5).unwrap();
         let r=j.ask(7,"is cs #541 on DEV?",6).unwrap();
-        j.revoke(7,7,&["projects".into()],7).unwrap();
+        j.revoke(7,7,&["projects".into(),"admin".into()],7).unwrap();
         assert!(target_context(&j,&r,7,&args).is_err());
         j.0.execute("DELETE FROM projects WHERE name='cyprusbz'",[]).unwrap();
         assert!(target_context(&j,&r,7,&args).unwrap_err().contains("not a registered project"));
