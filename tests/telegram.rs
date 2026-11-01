@@ -43,7 +43,8 @@ struct Fake {
     image_bad: bool,
     image_large: bool,
     rate_method: Option<&'static str>,
-
+    /// A chat whose sends always answer 403 "bot was blocked" and never take a queued fault (F05).
+    blocked: Option<i64>,
 }
 
 type State = Arc<Mutex<Fake>>;
@@ -181,6 +182,9 @@ fn handle(stream: std::net::TcpStream, st: &State) {
             body["message_thread_id"] = topic.clone();
         }
         body["edit"] = json!(true);
+    }
+    if f.blocked.is_some() && body["chat_id"].as_i64() == f.blocked {
+        return respond(&mut out, 403, r#"{"ok":false,"error_code":403,"description":"Forbidden: bot was blocked by the user"}"#);
     }
     f.attempts += 1;
     let id = if method == "editmessagetext" { body["message_id"].as_i64().unwrap() } else { 900 + f.attempts as i64 };
@@ -466,7 +470,9 @@ fn f05_delivery_faults_are_bounded() {
         f.sent.clear();
         // #189: exercise HTML/plain faults after an explicit rich rejection.
         f.rich_reject = true;
-        f.faults = VecDeque::from(["drop", "forbidden", "parse", "429", "down"]);
+        // #256: the blocked chat is fixed, so retry timing under CI load cannot hand chat 31 the 403.
+        f.blocked = Some(32);
+        f.faults = VecDeque::from(["drop", "parse", "429", "down"]);
         for (id, chat) in [(9, 31), (10, 32)] {
             let mut u = update(id, chat, OWNER);
             u["message"].as_object_mut().unwrap().remove("text");
