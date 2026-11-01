@@ -114,3 +114,58 @@ Engine arguments explicitly select CPU, four threads, transcribe, `en` and300 en
 Every child is launched in its own process group. Timeout, error, SIGINT/SIGTERM and normal early parent exit kill the group and reap the direct child; the PM still independently checks unit/cgroup/process cleanup, OOM accounting and ordinary-service continuity. Failures retain private stdout/stderr and `observations.json`; stop without retry, fallback, another model or larger budget. Passing these clips/readiness proves neither installed English nor five-minute throughput, shared-media/live acceptance or broad English accuracy (§9, R19).
 
 Local checks used **no ASR**: asset and token identities pass; the observer rejects truncated/final-phrase loss, foreign-script additions, wrong/contradictory numbers, wrong color and damaged text before accepting intact references. Tiny owned Python subprocesses prove timeout and descendant cleanup after normal parent exit. The existing synthetic cgroup-guard check passes. Actual readiness, English transcripts, resources and PM host cleanup remain unrun/unknown.
+
+## Prepared original CPP small English diagnostic
+
+Note6564218360 authorizes preparation only. No inference, model selection,
+configuration switch or installation is authorized. Use the original retained
+whisper.cpp1.8.2, never the experimental encoder-reuse binary. The exact private
+handoff is `target/pm344-cpp-en-handoff/manifest.json`, SHA256
+`aa8a47fa5e8875a5668c9bbc10f8a2c6964682710aaec1d99ce008cc46bfbf71`.
+It pins script/helpers, original engine/model/notices and both unchanged fixtures.
+The existing assets are in `target/pm344-assets`; no acquisition/build occurred.
+PM must verify manifest and all bytes in its namespace before running, retaining
+private synthetic audio and output privately.
+
+After review, PM uses its existing host isolation runner with actual
+MemoryMax1280M/MemoryHigh1024M/MemorySwapMax256M/CPU150%/Tasks256. The exact inner
+argv, from the worktree root, is:
+
+```sh
+python3 experiments/speech344/probe-cpp-english.py \
+  --engine target/pm344-assets/whisper-cli \
+  --assets target/pm344-assets \
+  --output target/pm344-cpp-en-v1
+```
+
+The output directory must not exist. This is an inner command, not permission to
+run outside the actual host limits. Stop after one failure, without retry or
+fallback. `guard.limits()` refuses absent/wrong effective limits before any child
+runs. Full asset/fixture hashes and sizes are checked before dispatch. Capture
+outer runner observations and independently verify unit/PID/cgroup cleanup.
+
+Readiness generates exactly one second of zero PCM, decodes it and runs the real
+model with `--audio-ctx 50` and fixed English. Its ten-second deadline includes
+decode/readback. Fresh JSON, raw stdout/stderr and any silence-generated words
+are retained as **nondelivered evidence**; an empty segment list is valid for
+silence only. Human/private calls construct fresh argv without `--audio-ctx`, so
+both use the engine's full default context. Every engine call uses CPU, threads4,
+processors1, fixeden, beam1/bestof1/no-fallback and no expected prompt. The pinned
+upstream CLI source confirms these flags. No audio padding or changed reference.
+
+One600s deadline covers readiness and both clips including decode/readback;
+recognition failure, malformed strict-UTF8 JSON, full-human mismatch (including
+Manta), numeric/color mismatch, timeout or cap failure stops immediately. Shared
+process-group fencing kills/reaps descendants on normal exit, error, timeout or
+SIGTERM. Each result has a fresh output prefix. Readback retains complete text,
+word-error/count evidence, argv and cumulative child RSS; actual cgroup peak/OOM
+and cleanup remain outer-runner evidence. Short results do not qualify300s/25s
+chunking, installed/live behavior or product selection. Russian stays unchanged.
+
+Preparation checks, without ASR:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 experiments/speech344/check-cpp-english.py
+PYTHONDONTWRITEBYTECODE=1 python3 experiments/speech344/check-sherpa-english.py
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_probe_speech_344.py
+```
