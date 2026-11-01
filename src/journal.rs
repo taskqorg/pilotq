@@ -1585,9 +1585,45 @@ impl Journal {
                 AND (o.state='pending' OR o.next_at>?1-30))",[at]).map(drop).map_err(|e|e.to_string())
     }
 
+    /// §§2,4 / #334: recover presentation from exact schema-13 receipts, never board mutations.
+    fn retire_question_controls(&self, at: i64) -> Result<(),String> {
+        let tx=self.0.unchecked_transaction().map_err(|e|e.to_string())?;
+        // A delayed accepted answer wins over an unsent supersession, including during retries.
+        tx.execute("UPDATE outbox AS o SET state='superseded' WHERE kind='question_superseded' AND state='pending'
+            AND EXISTS(SELECT 1 FROM outbox a WHERE a.request_id=o.request_id AND a.project=o.project AND a.task=o.task
+                AND a.chat=o.chat AND a.topic IS o.topic AND a.revision=o.revision AND a.kind='question_answered')",[]).map_err(|e|e.to_string())?;
+        // Recheck registration, original route and current access both when queuing and before dispatch.
+        let authorized="EXISTS(SELECT 1 FROM tasks t JOIN requests q ON q.id=t.request_id
+            JOIN projects p ON p.name=t.project AND p.repo=t.board AND p.root=t.root
+            WHERE t.request_id=o.request_id AND t.project=o.project AND t.number=o.task AND t.board<>'' AND t.root<>''
+            AND t.chat=o.chat AND t.topic IS o.topic AND q.chat=o.chat AND q.topic IS o.topic AND q.front='telegram'
+            AND EXISTS(SELECT 1 FROM grants g WHERE g.user=q.sender AND g.name='chat')
+            AND EXISTS(SELECT 1 FROM grants g WHERE g.user=q.sender AND g.name IN ('admin','projects','project:' || o.project,'owner:' || o.project)))";
+        tx.execute(&format!("UPDATE outbox AS o SET state='blocked',error='question recovery provenance or access unavailable'
+            WHERE kind='question_superseded' AND state='pending' AND reply_to IS NOT NULL AND NOT {authorized}"),[]).map_err(|e|e.to_string())?;
+        // ponytail: at most 64 repair obligations per scan; the existing delivery loop continues the backlog.
+        tx.execute(&format!("INSERT INTO outbox(request_id,chat,topic,reply_to,text,next_at,kind,project,task,revision)
+            SELECT o.request_id,o.chat,o.topic,o.sent_message,o.text || char(10) || char(10) ||
+                CASE WHEN (SELECT coalesce(language,'en') FROM requests WHERE id=o.request_id) LIKE 'ru%'
+                THEN 'Вопрос заменён новым; используйте текущий вопрос.' ELSE 'Superseded by a newer question; use the current question.' END,
+                ?1,'question_superseded',o.project,o.task,o.revision FROM outbox o
+            WHERE o.kind='question' AND o.state='delivered' AND o.sent_message>0 AND o.revision>0
+            AND json_valid(o.question) AND json_extract(o.question,'$.parsed')=1 AND {authorized}
+            AND (SELECT count(*) FROM outbox s WHERE s.request_id=o.request_id AND s.project=o.project AND s.task=o.task
+                AND s.chat=o.chat AND s.topic IS o.topic AND s.revision=o.revision AND s.kind='question')=1
+            AND EXISTS(SELECT 1 FROM outbox n WHERE n.request_id=o.request_id AND n.project=o.project AND n.task=o.task
+                AND n.chat=o.chat AND n.topic IS o.topic AND n.kind='question' AND n.id>o.id AND n.revision>o.revision
+                AND n.state IN ('pending','delivered') AND json_valid(n.question) AND json_extract(n.question,'$.parsed')=1)
+            AND NOT EXISTS(SELECT 1 FROM outbox a WHERE a.request_id=o.request_id AND a.project=o.project AND a.task=o.task
+                AND a.chat=o.chat AND a.topic IS o.topic AND a.revision=o.revision AND a.kind IN ('question_answered','question_superseded'))
+            ORDER BY o.id LIMIT 64"),[at]).map_err(|e|e.to_string())?;
+        tx.commit().map_err(|e|e.to_string())
+    }
+
     /// The next delivery due at `now`, else the earliest time one becomes due. Only the oldest pending row of a route
     /// (chat and topic) is eligible, so a retrying head keeps later replies in that route behind it.
     pub fn due(&self, now: i64) -> Result<(Option<Delivery>, Option<i64>), String> {
+        self.retire_question_controls(now)?;
         crate::result_images::prune(self,now)?;
         self.turn_progress(now)?;
         self.launch_progress(now)?;
@@ -1615,7 +1651,8 @@ impl Journal {
                         WHEN kind='release_result' THEN (SELECT s.sent_message FROM outbox s WHERE s.request_id=o.revision AND s.kind='release_preview' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
                         WHEN kind='onboarding' THEN (SELECT s.sent_message FROM outbox s WHERE s.request_id=o.request_id AND s.kind='onboarding' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
                         WHEN kind='choice_answered' THEN o.reply_to
-                        WHEN kind IN ('question_answered','question_superseded') THEN (SELECT s.sent_message FROM outbox s WHERE s.task=o.task AND s.project=o.project AND s.chat=o.chat AND s.topic IS o.topic
+                        WHEN kind='question_superseded' AND o.reply_to IS NOT NULL THEN o.reply_to
+                        WHEN kind IN ('question_answered','question_superseded') THEN (SELECT s.sent_message FROM outbox s WHERE s.request_id=o.request_id AND s.task=o.task AND s.project=o.project AND s.chat=o.chat AND s.topic IS o.topic
                         AND s.kind='question' AND s.revision=o.revision AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
                         WHEN kind IN ('draft_closed','plan_answered','plan_progress','plan_problem') THEN (SELECT s.sent_message FROM outbox s JOIN cards c ON c.id=o.revision WHERE ((s.request_id=c.request_id AND s.kind IN ('rich','rich_part')) OR (s.revision=c.id AND s.kind IN ('plan_answered','plan_progress','plan_problem'))) AND s.state='delivered' ORDER BY s.id DESC LIMIT 1) END, kind {heads} AND next_at<=?1 AND coalesce((SELECT value FROM meta WHERE key='telegram-cooldown:' || o.chat),0)<=?1 ORDER BY (kind='reaction') DESC,id LIMIT 1"
                 ),
@@ -2536,6 +2573,7 @@ impl Journal {
         }
         tx.execute("UPDATE runs SET state='interrupted', ended_at=?1 WHERE state='running'", [at]).map_err(e)?;
         tx.commit().map_err(e)?;
+        self.retire_question_controls(at)?;
         for (request, ..) in &stale {
             self.trace(*request, at);
         }
@@ -4361,6 +4399,111 @@ mod tests {
         assert_eq!(text,"Ответ не сохранён; проверьте актуальный вопрос и права.");
         assert!(j.0.query_row("SELECT result FROM audit_events WHERE kind='task'",[],|r|r.get::<_,String>(0)).unwrap().contains("invented CLI error"));
         drop(j);std::fs::remove_dir_all(p).unwrap();
+    }
+
+    // #334 / §§2,4,9: schema-13 receipts from before retirement existed must repair
+    // presentation after restart, including closed tasks, without manufacturing an answer.
+    #[test]
+    fn question_334_preupgrade_recovery() {
+        for (pending,current) in [(false,false),(true,false),(true,true)] {
+            let (mut j,p)=journal(&format!("334-recovery-{pending}-{current}"));
+            j.admit(&[(1,msg(7,7,1))],0).unwrap();
+            j.0.execute_batch(include_str!("fixtures/question-334-schema13.sql")).unwrap();
+            if pending {j.0.execute("UPDATE outbox SET state='pending',sent_message=NULL WHERE revision=10 AND kind='question'",[]).unwrap();}
+            if current {j.0.execute_batch("DELETE FROM outbox WHERE kind='question_answered'; UPDATE outbox SET state='pending',sent_message=NULL WHERE revision=20 AND kind='question'").unwrap();}
+            drop(j);
+            let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
+            assert_eq!(j.0.query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),13);
+            j.reconcile(10).unwrap();
+            let mut retired=false;
+            while let Some(d)=j.due(20).unwrap().0 {
+                if current && d.kind=="question" && d.text=="Invented current question" {
+                    assert_eq!(d.buttons.len(),1,"current controls retained");
+                    assert!(d.edit.is_none());
+                }
+                if d.kind=="question_superseded" {
+                    assert_eq!((d.chat,d.topic,d.edit),(7,None,Some(110)));
+                    assert!(d.buttons.is_empty());
+                    assert!(d.text.contains("Invented old question") && d.text.contains("Superseded"));
+                    assert!(!d.text.contains("Answered"));
+                    // Retry/fallback is the same edit after another restart.
+                    j.record(d.id,&Sent::Retry{after:2,ambiguous:false,error:"invented outage".into()},20).unwrap();
+                    assert!(j.due(21).unwrap().0.is_none(),"retrying route head keeps order");
+                    drop(j);j=Journal::open(&p.join("journal.sqlite")).unwrap();
+                    j.reconcile(23).unwrap();
+                    let retry=j.due(23).unwrap().0.unwrap();
+                    assert_eq!((retry.id,retry.edit),(d.id,Some(110)));
+                    j.record(d.id,&Sent::RichFallback,23).unwrap();
+                    let html=j.due(23).unwrap().0.unwrap();
+                    assert_eq!((html.id,html.edit),(d.id,Some(110)));
+                    j.record(d.id,&Sent::Plain,23).unwrap();
+                    let plain=j.due(23).unwrap().0.unwrap();
+                    assert_eq!((plain.id,plain.edit),(d.id,Some(110)));
+                    retired=true;
+                }
+                j.record(d.id,&Sent::Ok(d.edit.unwrap_or(if d.text=="Invented current question" {120} else {110})),23).unwrap();
+            }
+            assert!(retired,"pre-upgrade superseded controls must retire after restart");
+            assert_eq!(count(&j,"SELECT count(*) FROM outbox WHERE kind='question_superseded'"),1);
+            assert_eq!(j.question_answer("pilotq",19,10).unwrap(),None);
+            assert_eq!(j.question_answer("pilotq",19,20).unwrap().as_deref(),if current {None} else {Some("Answered by Invented Actor: option 1")});
+            assert_eq!(count(&j,"SELECT count(*) FROM outbox WHERE kind='result_image' AND state='delivered' AND sent_message=121"),1);
+            drop(j);std::fs::remove_dir_all(p).unwrap();
+        }
+    }
+
+    // #334 / §§2,4,8: foreign/missing provenance fails closed; a delayed accepted
+    // answer or revoked access prevents a queued recovery from editing the old card.
+    #[test]
+    fn question_334_provenance_and_answer_precedence() {
+        let cases=[
+            "UPDATE outbox SET chat=8 WHERE revision=20",
+            "UPDATE outbox SET topic=5 WHERE revision=20",
+            "UPDATE outbox SET request_id=999 WHERE revision=20",
+            "UPDATE outbox SET project='foreign' WHERE revision=20",
+            "UPDATE outbox SET task=99 WHERE revision=20",
+            "UPDATE outbox SET question=NULL WHERE revision=20",
+            "UPDATE outbox SET question='invalid' WHERE revision=20 AND kind='question'",
+            "UPDATE outbox SET question=NULL WHERE revision=10",
+            "UPDATE outbox SET sent_message=NULL WHERE revision=10",
+            "UPDATE outbox SET revision=9 WHERE revision=20",
+            "UPDATE outbox SET state='failed' WHERE revision=20 AND kind='question'",
+            "DELETE FROM tasks",
+            "DELETE FROM projects",
+            "UPDATE projects SET root='/invented/foreign'",
+            "UPDATE tasks SET board='invented/foreign'",
+            "DELETE FROM grants WHERE user=7 AND name<>'chat'",
+            "DELETE FROM grants WHERE user=7 AND name='chat'",
+            "INSERT INTO outbox(request_id,chat,text,state,next_at,sent_message,kind,project,task,revision,question) SELECT request_id,chat,text,state,next_at,sent_message,kind,project,task,revision,question FROM outbox WHERE revision=10",
+        ];
+        for (i,sql) in cases.iter().enumerate() {
+            let (mut j,p)=journal(&format!("334-guard-{i}"));
+            j.admit(&[(1,msg(7,7,1))],0).unwrap();
+            j.0.execute_batch(include_str!("fixtures/question-334-schema13.sql")).unwrap();
+            j.0.execute_batch(sql).unwrap();
+            j.reconcile(10).unwrap();j.due(10).unwrap();
+            assert_eq!(count(&j,"SELECT count(*) FROM outbox WHERE kind='question_superseded'"),0,"{sql}");
+            drop(j);std::fs::remove_dir_all(p).unwrap();
+        }
+        for after_queue in [false,true] {
+            for revoke in [false,true] {
+                let (mut j,p)=journal(&format!("334-precedence-{after_queue}-{revoke}"));
+                j.admit(&[(1,msg(7,7,1))],0).unwrap();
+                j.0.execute_batch(include_str!("fixtures/question-334-schema13.sql")).unwrap();
+                if after_queue {j.reconcile(10).unwrap();}
+                if revoke {j.0.execute("DELETE FROM grants WHERE user=7 AND name<>'chat'",[]).unwrap();}
+                else {j.answer_question("pilotq",19,10,"Answered by Invented Late Actor: option 2",11).unwrap();}
+                drop(j);let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
+                j.reconcile(12).unwrap();
+                while let Some(d)=j.due(12).unwrap().0 {
+                    assert_ne!(d.kind,"question_superseded","answer/access takes precedence");
+                    j.record(d.id,&Sent::Ok(d.edit.unwrap_or(199)),12).unwrap();
+                }
+                assert_eq!(count(&j,"SELECT count(*) FROM outbox WHERE kind='question_superseded' AND state='pending'"),0);
+                if !revoke {assert!(j.question_answer("pilotq",19,10).unwrap().unwrap().contains("Invented Late Actor"));}
+                drop(j);std::fs::remove_dir_all(p).unwrap();
+            }
+        }
     }
 
     // #324 / §2, §4: pending or delivered questions retire only in their saved route;

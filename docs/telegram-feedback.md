@@ -26,6 +26,8 @@ After saving a plan, the model ends the turn with a nonempty, short acknowledgem
 
 **Owner, task #97 (option 1):** Telegram worker questions follow TaskQ’s [answer-card layout](https://github.com/taskqorg/taskq/blob/8bea3bbcb35fba8664a9d42c46b53d0ed9607556/docs/design/answer-card.md#one-render), without a footer. Preserve source content and numbered options; buttons show only the number, label and recommendation star. Option details remain complete in the body. Visual-choice evidence keeps its source option numbers.
 
+Superseded unanswered cards keep their original question body plus a factual localized supersession line and lose their keyboard in rich, HTML and plain edits. [Recovery receipt guards](conversation-contract.md#board-events-cards-and-pm-review) also apply to pre-upgrade cards; retirement never attributes an answer or changes current choices, accepted authors or delivered images (§§2, 4, 5).
+
 **Owner, task #97 continuation:** review the code before live visual evidence. A3's live relay screenshot is a post-merge PM check: the PM releases, sends one live ask through FRA and attaches the Telegram screenshot to the release note. No owner check is required.
 
 **Owner, task #72:** send every user-visible message and private draft as rich Markdown, preserving model-authored paragraphs, lists, headings and bold. Keep safe escaped HTML and plain-text fallback from §4. Action replies lead with one short factual effect line under the Conversation contract. Plans use its three-line task summaries. Never claim that saving a plan created or started board work. Failures, limits and unsupported-input replies use one short sentence in the person’s language and omit internal request numbers; detailed diagnostics remain in the audit.
