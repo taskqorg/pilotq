@@ -10,6 +10,7 @@ mod asana;
 mod commands;
 mod journal;
 mod files;
+mod result_images;
 mod instructions;
 mod keys;
 mod manager;
@@ -400,12 +401,15 @@ fn service_run(t: &Tool) -> ! {
         let deadline = c.runtime.codex.limits.deadline;
         let tq = c.taskq.map(Arc::new);
         let (mj, mwake, rt, drain, mtq, d) = (j.clone(), wake.clone(), c.runtime, t.install.join(DRAIN), tq.clone(), Arc::new(c.direct));
+        let image_direct=d.clone();
         let (manager_bot, voice) = (bot.clone(), c.voice.map(Arc::new));
         std::thread::spawn(move || manager::serve(rt, mj, mwake, || now() as i64, drain, mtq, d, manager_bot, voice));
         if let Some(tq) = tq {
             let (wj, wwake) = (j.clone(), wake.clone());
             let ltq=tq.clone();let lj=wj.clone();
             std::thread::spawn(move || loops::watch_boards(ltq,lj));
+            let (itq,ij,iwake)=(tq.clone(),wj.clone(),wwake.clone());
+            std::thread::spawn(move || result_images::watch(itq,ij,image_direct,iwake));
             std::thread::spawn(move || taskq::watch(tq, wj, wwake));
         }
         std::thread::spawn(move || {

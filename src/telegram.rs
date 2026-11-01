@@ -560,11 +560,23 @@ async fn raw(bot: &Bot, j: &Shared, method: &str, body: Value) -> Result<Value, 
     Err(Sent::Failed("Bot API rejected request".into()))
 }
 
-async fn send(bot: &Bot, j: &Shared, d: &Delivery) -> Sent {
+pub(crate) async fn send(bot: &Bot, j: &Shared, d: &Delivery) -> Sent {
     if j.lock().unwrap().route_held(d.chat,d.topic).unwrap_or(true) {
         return Sent::Held("Telegram route held; administrator revalidation required".into());
     }
     let backoff = d.attempts + 1;
+    if d.kind=="result_image_gap" {
+        if let Err(e)=crate::result_images::authorize(&j.lock().unwrap(),d.id) {return Sent::Held(e);}
+    }
+    if d.kind=="result_image" {
+        if let Err(e)=crate::result_images::authorize(&j.lock().unwrap(),d.id) {return Sent::Held(e);}
+        let bytes=match crate::result_images::payload(&j.lock().unwrap(),d.id) {Ok(b)=>b,Err(e)=>return Sent::Failed(e)};
+        let photo=teloxide::types::InputFile::memory(bytes).file_name("review.jpg");
+        let mut request=bot.send_photo(ChatId(d.chat),photo).caption(&d.text);
+        if let Some(t)=d.topic {request=request.message_thread_id(ThreadId(MessageId(t as i32)));}
+        return match request.await {Ok(m)=>Sent::Ok(m.id.0 as i64),Err(e)=>failed(e,backoff)};
+    }
+
     if let Some(callback) = d.kind.strip_prefix("toast:") {
         // Bot API limits callback toasts to 200 characters; the complete receipt stays in the question and audit.
         let text: String = d.text.chars().take(200).collect();

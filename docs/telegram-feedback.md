@@ -63,3 +63,34 @@ PM live checklist (§9): on pds18 in PilotQ TEST, send one Russian voice questio
 Proposed presentation defaults: refresh typing at most every 4 seconds while the current run is active and within its inactivity bound, including long tool calls; stop refresh on cancellation, terminal state or waiting. Typing does not renew the runtime activity clock. A typing failure cannot block work. Topic run-progress and long-launch edits are coalesced and limited to one per thirty seconds per route, subject to stricter Telegram limits; the run-progress message is removed after the final reply. No periodic model calls generate reassurance. These are initial limits to qualify, not observed responsiveness.
 
 An outbound projection carries request ID, run generation and event revision. A delayed progress edit cannot overwrite a newer status or final answer. Final results, unanswered questions and actionable failures outrank cosmetic edits; delivery scheduling still preserves required per-request order. Persist long final answers as stable ordered chunks with individual receipts, so recovery does not regenerate or blindly resend every part. A missing/deleted status message permits a new status message in the same authorized route, without rerunning work. Telegram ambiguity and duplicate delivery remain bounded by section 4.
+
+## Task result images
+
+Under [§5](../pilotq.md#5-taskq-tools-and-project-administration), `task_result_images`
+sends trusted TaskQ question/result attachments as actual inline photos in the requesting
+route. Model-free delivery also follows existing task subscriptions at question, review
+and closing observations. Neither path reads checkout assets. GitLab upload references
+are translated to the registered board's API, including upload IDs and Markdown
+`full_path` references; HTTP redirects are refused. The existing `issue_read` key's
+person, route and project scopes gate protected credential injection.
+
+Only direct JPEG and PNG uploads are transferred. Named non-image files are refused
+before network dispatch; opaque upload IDs require image metadata from HEAD before GET.
+Missing or unsupported metadata yields a gap, never a bundle-download fallback. ZIPs,
+including image-only archives, are not fetched or unpacked. Individual photos are bounded
+to 10 MiB, batches to 20 MiB and 32 images. Only the latest trusted outcome selects
+artifacts, including an outcome with no attachments. Source variant labels identify
+variants; sequential photo numbers are delivery order, never invented choice IDs.
+
+Each photo has an immutable outbox destination, current access checks and an individual
+Telegram receipt joined by outbox ID to private source, task, revision, variant, download
+time, byte count and checksum evidence. Retained photo bytes live privately in the journal, without model-visible
+paths or credentials. Terminal photo bytes expire after seven days; unresolved delivery
+retains its bytes. A partial or unavailable batch has one explicit gap. Queued media is
+not delivered media, and a result image never establishes a pending decision.
+
+Visual questions retain TaskQ's original question revision and existing answer controls.
+An authorized answer records the exact selection and stable Telegram actor in TaskQ.
+Verified mutation receipts finalize the original answer card; stale/repeated controls use
+the existing refusal and operation reconciliation paths. Real Telegram layout and a
+disposable choice round trip remain PM qualification after release (§9).

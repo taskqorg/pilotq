@@ -21,6 +21,7 @@ pub const CATALOG: &[Capability] = &[
     Capability { name: "task_answer", area: "tasks", purpose: "Forward only the person's own answer to a same-conversation subscribed question. Read task_status first. If destination or answer is ambiguous, clarify. Never choose for the person.", example: "answer task 12 in pilotq: use option 1", grant: "project+taskq", ru: "Передать ваш ответ на текущий вопрос работника" },
     Capability { name: "discussion_answer", area: "tasks", purpose: "Save the person's own free-text answer to the current discussion card from journal context. Clarify ambiguity first. Never launches tasks.", example: "use option 1", grant: "chat", ru: "Сохранить ваш ответ на вопрос обсуждения" },
     Capability { name: "project_status", area: "projects", purpose: "Read the resolved project’s open tasks with state, runtime, session and read time. Use for project task status; do not ask for task numbers. With no project named in the current message and no current project or an unbound Telegram topic, read all accessible boards once; return one list without clarification.", example: "show tasks for pilotq", grant: "project", ru: "Прочитать свежий статус задач проекта" },
+    Capability { name: "task_result_images", area: "tasks", purpose: "Send trusted task review/result images inline in this route. Uses registered board attachment artifacts, including board-only roots; never reads checkout assets or chooses a variant. Requires project access and a scoped issue_read key.", example: "show review images for csgo task 444", grant: "project", ru: "Показать изображения результата задачи в этом чате" },
     Capability { name: "task_status", area: "tasks", purpose: "Read one registered task's current state from the board. Never creates anything.", example: "show status of task 12 in pilotq", grant: "project", ru: "Прочитать свежий статус одной задачи" },
     Capability { name: "task_park", area: "tasks", purpose: "Park one registered task (TaskQ later) with the person's reason.", example: "park task 12 in pilotq until its dependency is ready", grant: "project+taskq", ru: "Отложить задачу с вашей причиной" },
     Capability { name: "task_steer", area: "tasks", purpose: "Send the person's instructions to a doing task at its current revision.", example: "tell task 12 in pilotq to preserve line breaks", grant: "project+taskq", ru: "Передать ваши уточнения выполняемой задаче" },
@@ -104,7 +105,8 @@ pub fn allowed(c: &Capability, j: &Journal, user: i64) -> Result<bool,String> {
 pub fn visible(c:&Capability,j:&Journal,user:i64,keys:&crate::keys::Keys,route:&str)->Result<bool,String> {
     if !allowed(c,j,user)? {return Ok(false);}
     if crate::pm::NAMES.contains(&c.name) {return crate::pm::available(j,user,route);}
-    if !crate::keys::TOOLS.contains(&c.name) {return Ok(true);}
+    let key_tool=if c.name=="task_result_images" {"issue_read"} else {c.name};
+    if !crate::keys::TOOLS.contains(&key_tool) {return Ok(true);}
     let entries=keys.list()?;
     let projects=j.projects()?.into_iter().filter_map(|p| {
         match j.has(user,"projects").and_then(|all|Ok(all || j.has(user,&format!("project:{}",p.0))?)) {
@@ -112,7 +114,7 @@ pub fn visible(c:&Capability,j:&Journal,user:i64,keys:&crate::keys::Keys,route:&
         }
     }).collect::<Result<Vec<_>,String>>()?;
     Ok(entries.as_array().into_iter().flatten().any(|k| {
-        k["tools"].as_array().is_some_and(|v|v.iter().any(|v|v==c.name)) && (
+        k["tools"].as_array().is_some_and(|v|v.iter().any(|v|v==key_tool)) && (
             k["users"].as_array().is_some_and(|v|v.contains(&serde_json::json!(user))) ||
             k["routes"].as_array().is_some_and(|v|v.contains(&serde_json::json!(route))) ||
             k["projects"].as_array().is_some_and(|v|projects.iter().any(|p|v.contains(&serde_json::json!(p))))
@@ -322,9 +324,12 @@ mod behavior_tests {
         assert!(projects.contains("project_current") && projects.contains("project_status"));
         assert!(!projects.contains("project_disconnect") && !projects.contains("project_register"));
         assert!(!render(&j,8,Some("reads"),None,&keys,"cli").unwrap().contains("issue_read"));
+        // #273 / §9: image delivery shares issue_read key scope, including help visibility.
+        assert!(!render(&j,8,Some("tasks"),None,&keys,"cli").unwrap().contains("task_result_images"));
         keys.add("invented","invented fixture",&["issue_read".into()],"invented-not-a-secret").unwrap();
         keys.grant("invented",&["8".into()]).unwrap();
         assert!(render(&j,8,Some("reads"),None,&keys,"cli").unwrap().contains("issue_read"));
+        assert!(render(&j,8,Some("tasks"),None,&keys,"cli").unwrap().contains("task_result_images"));
         keys.revoke("invented",&["8".into()]).unwrap();
         assert!(!render(&j,8,Some("reads"),None,&keys,"cli").unwrap().contains("issue_read"));
         let admin=render(&j,7,Some("projects"),Some("ru"),&keys,"cli").unwrap();

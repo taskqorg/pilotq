@@ -1588,6 +1588,7 @@ impl Journal {
     /// The next delivery due at `now`, else the earliest time one becomes due. Only the oldest pending row of a route
     /// (chat and topic) is eligible, so a retrying head keeps later replies in that route behind it.
     pub fn due(&self, now: i64) -> Result<(Option<Delivery>, Option<i64>), String> {
+        crate::result_images::prune(self,now)?;
         self.turn_progress(now)?;
         self.launch_progress(now)?;
         self.task_progress(now)?;
@@ -1633,6 +1634,7 @@ impl Journal {
 
     /// Prepare content independently of card authority; callers resolve buttons before sending.
     fn prepare_delivery(&self,d:&mut Delivery)->Result<(),String> {
+        if d.kind=="result_image" { return Ok(()); }
         // Editing an answer/plan card must not erase the speech retained on that card.
         if let Some(message)=d.edit {
             let source:Option<String>=self.0.query_row("SELECT text FROM outbox WHERE chat=?1 AND topic IS ?2 AND sent_message=?3 AND text LIKE '> %' AND EXISTS(SELECT 1 FROM audit_events WHERE request_id=outbox.request_id AND kind='transcript') ORDER BY id LIMIT 1",params![d.chat,d.topic,message],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
@@ -1740,6 +1742,10 @@ impl Journal {
             params![id, state, now + after, error, ambiguous, message, matches!(sent, Sent::Plain)],
         )
         .map_err(|e| e.to_string())?;
+        if matches!(state,"failed"|"exhausted") {
+            tx.execute("INSERT INTO outbox(request_id,chat,topic,text,next_at,kind,project,task) SELECT request_id,chat,topic,project || ' #' || task || ': image could not be delivered; result images are incomplete.',?2,'result_image_gap',project,task FROM outbox o WHERE id=?1 AND kind='result_image' AND NOT EXISTS(SELECT 1 FROM outbox g WHERE g.request_id=o.request_id AND g.kind='result_image_gap')",params![id,now]).map_err(|e|e.to_string())?;
+            tx.execute("INSERT OR IGNORE INTO meta(key,value) SELECT 'result-image-binding:' || g.id,m.value FROM outbox o JOIN outbox g ON g.request_id=o.request_id AND g.kind='result_image_gap' JOIN meta m ON m.key='result-image-binding:' || o.id WHERE o.id=?1",[id]).map_err(|e|e.to_string())?;
+        }
         tx.commit().map_err(|e| e.to_string())
     }
 

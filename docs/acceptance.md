@@ -1302,3 +1302,46 @@ This is component evidence, not the §9 release qualification. Task #281 must ru
 Open for the PM under §9 after the ordinary release: A4 Codex on pds18 through the installed service (Telegram turn,
 `/model`, drafts, restart and update with the same thread ID), and A5 with `slot_root` once the installed TaskQ
 advertises `slots_protocol: 1`. No Claude runs on pds18.
+
+### A273 — Board-only task result images and visual choices
+
+Owner requirement: [task #273](https://github.com/taskqorg/pilotq/issues/273).
+Amended contract: §5 (result artifact retrieval, inline delivery and visual answers),
+applying R4, R5, R8, R10, R13, R16 and R17. The contract changes precede implementation.
+
+Local qualification uses `cargo test --locked --bin pilotq result_images_273` for
+project/API reference confinement, upload-ID requests, protected HTTP authentication,
+redirect/404/size refusal, exact-ID image filename metadata for octet-stream, rejection
+of non-image bodies and ZIP metadata before artifact transfer, latest-outcome isolation,
+closed-result retrieval without an open task and rejection of mid-fetch reopening, retained
+photo bytes and source/download/delivery receipts, route/project rebinding, revocation and exact option/actor
+annotation. A multipart Bot API trace checks actual photo bytes, task/variant caption
+and original topic. Existing `u07_question_relay_and_bound_answers`,
+`u39_registered_boards_steer_requeue_and_stale_answer`, `u94_answer_elsewhere_closes_question`
+and `u108_semantic_answer_receipt` retain question/revision and original-card protections.
+
+PM after merged release, in the authorized PilotQ CSLP route:
+
+1. Confirm the installed release identity and the CSGO board-only registration. Keep
+   private artifact references and credentials out of public evidence. No CSGO checkout,
+   repository archive, asset sync or local CSGO worker is needed or permitted for this check.
+2. Request direct image uploads for an existing accepted CSGO result (task 444 when suitable).
+   If only a mixed bundle exists, record the image-only-source gap; use the PM-prepared
+   image-only test attachments for the disposable scenario, never download that bundle. Compare
+   the inline sheets and variant labels with its existing accepted manifest. Retain the
+   Telegram screenshots and each photo delivery receipt. Links/ZIPs alone fail this case.
+3. Use a disposable TaskQ visual question with two clearly labelled options. Confirm its
+   current task, question revision and route; choose an option as an authorized owner.
+   Read back TaskQ's exact selection and Telegram actor, then capture the original card
+   finalized with its buttons removed. Never answer a real artistic question for this test.
+4. Tap the old button again and read back that no additional board answer or task
+   execution occurred. Stale-revision, unauthorized-actor and revoked-access negatives
+   use owned isolated fixtures only; do not change real CSGO/PilotQ grants, capacity,
+   models or services. Mark negatives not exercised live as unqualified.
+5. Exercise missing, unsupported, inaccessible and oversized attachments; each result
+   has one clear gap and no invented pending decision. Remove only disposable test data
+   through authorized TaskQ operations; this checklist grants no new actor or access authority.
+
+Status: local checks are implementation evidence only. Real image appearance, CSLP
+routing and the disposable choice round trip remain unqualified until the PM records
+post-release evidence; production cutover remains unauthorized (R19, §9).

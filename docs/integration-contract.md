@@ -450,3 +450,14 @@ stale grants require revalidation.
 The owner decision quoted in pilotq.md §5 enables Codex shell, network, live web search and full filesystem access with the service user’s OS permissions, including requested host settings and remote hosts. Task work uses TaskQ tools first; board state is read only through TaskQ. Other work is done directly. Existing typed tools keep target, grant, fence and receipt checks. Only admitted, currently granted people start tool turns. Model and effort remain unchanged; subscription login only (R9).
 
 Task status finishes its TaskQ board reads before starting a fresh ten-second DEV and delivery observation budget. Failures retain their exact source reason. Native effects are recorded as observed, never assumed idempotent or replayed after interruption.
+
+### Task result image metadata
+
+Under [§5](../pilotq.md#5-taskq-tools-and-project-administration), octet-stream uploads
+require a JPEG/PNG filename in the named reference or exact-ID board upload metadata
+before body transfer, then image signature validation; unavailable metadata yields a gap.
+Metadata reads are project-bound, authenticated, redirect-free and bounded to three
+100-entry pages of at most 256 KiB each. They select only the exact trusted attachment
+ID, never discover unrelated images. ZIP or unsupported filename metadata refuses
+artifact-body retrieval. JPEG/PNG signatures and the 10 MiB photo limit remain required
+regardless of the server MIME; a non-image body never enters the media outbox.
