@@ -94,7 +94,7 @@ pub(crate) fn valid_url(url: &str) -> bool {
 /// Only TaskQ's trusted close verdict supplies completion detail; an absent verdict stays unknown.
 fn closing_detail(issue: &Value, task: i64) -> Option<String> {
     if issue["number"]!=task || issue["state"].as_str()?.to_lowercase()!="closed" {return None;}
-    let body=issue["comments"].as_array()?.iter().rev().filter(|c|c["trusted"]==true)
+    let body=issue["comments"].as_array()?.iter().rev().filter(|c|c["trusted"]==true && c["edited"]!=true)
         .filter_map(|c|c["body"].as_str()).find(|b|b.lines().next().is_some_and(|l|l.starts_with("taskq: close")))?;
     let mut keep=false;
     let lines=body.lines().skip(1).filter(|line| {
@@ -103,6 +103,42 @@ fn closing_detail(issue: &Value, task: i64) -> Option<String> {
         keep
     }).collect::<Vec<_>>();
     if lines.is_empty() {None} else {Some(lines.join("\n"))}
+}
+
+/// §5: TaskQ owns acceptance. Compare its resolved verdict to the exact raw source,
+/// never fold the lifecycle here or follow a URL supplied in comment prose.
+fn published_detail(issue: &Value, closed: &Value, inbox: &Value, task: i64) -> Option<String> {
+    if issue["number"] != task || issue["state"] != "closed" || inbox["task"] != task
+        || inbox["state"] != "closed" || inbox["open"] != false || closed["schema"] != 1
+        || closed["source"] != "board" { return None; }
+    let rows=closed["tasks"].as_array()?;
+    if rows.len()!=1 {return None;}
+    let row=&rows[0];
+    if row["n"]!=task || row["state"]!="closed" || row["url"]!=issue["url"]
+        || inbox["url"]!=issue["url"] || !issue["url"].as_str().is_some_and(valid_url) {return None;}
+    let comments=issue["comments"].as_array()?;
+    let close=comments.iter().find(|c|c["id"]==inbox["revision"])?;
+    let valid=|c:&Value| c["trusted"]==true && c["edited"]==false
+        && c["author"].as_str().is_some_and(|a|!a.is_empty());
+    if !valid(close) || !close["body"].as_str()?.lines().next().is_some_and(|l|l.starts_with("taskq: close")) {return None;}
+    let refs=close["body"].as_str()?.lines().filter_map(|l|l.strip_prefix("Repeats: publish ")).collect::<Vec<_>>();
+    if refs.len()!=1 {return None;}
+    let id=refs[0].parse::<i64>().ok()?;
+    if id<=0 || id>=close["id"].as_i64()? {return None;}
+    let sources=comments.iter().filter(|c|c["id"]==id).collect::<Vec<_>>();
+    if sources.len()!=1 || !valid(sources[0]) {return None;}
+    let body=sources[0]["body"].as_str()?;
+    let (header,text)=body.split_once('\n')?;
+    if header!="taskq: publish" {
+        let attempt=header.strip_prefix("taskq: publish attempt ")?.parse::<i64>().ok()?;
+        if attempt<=0 || attempt>=id {return None;}
+    }
+    // The canonical verdict proves accepted attempt/revision/order, including rejected entries.
+    // Delivery may append a receipt; no other text substitution is accepted.
+    let accepted=row["conversation"]["verdict"].as_str()?;
+    if accepted!=text && !accepted.strip_prefix(text).is_some_and(|tail|tail.starts_with("\n\ndelivery ")) {return None;}
+    let synthetic=json!({"number":task,"state":"closed","comments":[{"trusted":true,"body":format!("taskq: close\n{text}")}]});
+    closing_detail(&synthetic,task)
 }
 
 /// Issue state and trusted close text are independent from presence on the open board.
@@ -260,6 +296,24 @@ impl Taskq {
             }
             Ok(v)
         })
+    }
+
+    fn closed_detail(&self, task:i64) -> Option<String> {
+        let before=self.inbox(task).ok()?;
+        let issue=self.issue(task).ok()?;
+        let closed:Value=serde_json::from_str(&self.cli(&["status".into(),"--closed".into(),"--task".into(),task.to_string(),"--json".into()]).ok()?).ok()?;
+        let after=self.inbox(task).ok()?;
+        if before!=after || issue!=self.issue(task).ok()? || after["state"]!="closed" || after["open"]!=false
+            || issue["url"]!=after["url"] {return None;}
+        let close=issue["comments"].as_array()?.iter().find(|c|c["id"]==after["revision"])?;
+        if close["trusted"]!=true || close["edited"]!=false
+            || !close["body"].as_str()?.lines().next().is_some_and(|l|l.starts_with("taskq: close")) {return None;}
+        if close["body"].as_str()?.lines().any(|l|l.starts_with("Repeats:")) {
+            published_detail(&issue,&closed,&after,task)
+        } else {
+            let exact=json!({"number":task,"state":"closed","comments":[close]});
+            closing_detail(&exact,task)
+        }
     }
 
     pub(crate) fn registered(&self, j: &Journal, project: &str) -> Result<(Self, String), String> {
@@ -1093,8 +1147,7 @@ fn scan(tq: &Taskq, j: &Mutex<Journal>) -> bool {
         let s = match snapshot { Ok(s) => s, Err(e) => { failure = Some(e.clone()); continue; } };
         reconcile_questions(&bound,j,&project,&board,n);
         let closing=if find(s,n).is_none() {
-            bound.cli(&["issue".into(),n.to_string(),"--json".into()]).ok()
-                .and_then(|s|serde_json::from_str::<Value>(&s).ok()).and_then(|v|closing_detail(&v,n))
+            bound.closed_detail(n)
         } else {None};
         let j = j.lock().unwrap();
         let r = match find(s, n) {
@@ -1240,6 +1293,99 @@ mod tests {
             }
         }
         assert!(parsed > 0 && unparsed > 0 && owner > 0 && evidence > 0 && failed > 0 && verdicts > 0, "fixture coverage: {parsed} {unparsed} {owner} {evidence} {failed} {verdicts}");
+    }
+
+    // #331 / §5: referenced publication findings must survive without trusting arbitrary comments.
+    #[test]
+    fn closed_publish_331() {
+        let issue=json!({"number":444,"state":"closed","comments":[
+            {"id":30,"trusted":true,"edited":false,"author":"invented","body":"taskq: publish attempt 20\nChanged: Invented outcome\nChecks: invented pass\nOpen: Sender originals unavailable"},
+            {"id":40,"trusted":true,"edited":false,"author":"invented","body":"taskq: close\nRepeats: publish 30"}
+        ]});
+        let mut issue=issue;
+        issue["url"]=json!("https://github.com/invented/project/issues/444");
+        let inbox=json!({"task":444,"url":issue["url"],"state":"closed","open":false,"revision":40});
+        let accepted="Changed: Invented outcome\nChecks: invented pass\nOpen: Sender originals unavailable";
+        let closed=json!({"schema":1,"source":"board","tasks":[{"n":444,"state":"closed","url":issue["url"],"conversation":{"verdict":accepted}}]});
+        let detail=published_detail(&issue,&closed,&inbox,444).expect("referenced accepted findings");
+        assert!(detail.contains("Changed: Invented outcome"));
+        assert!(detail.contains("Open: Sender originals unavailable"));
+        for (field,value) in [("trusted",json!(false)),("edited",json!(true)),("author",json!("")),("id",json!(31)),("body",json!("taskq: publish attempt 999\nChanged: Invented outcome"))] {
+            let mut bad=issue.clone();bad["comments"][0][field]=value;
+            assert!(published_detail(&bad,&closed,&inbox,444).is_none(),"bad publication {field}");
+        }
+        for (field,value) in [("trusted",json!(false)),("edited",json!(true)),("id",json!(41)),("body",json!("taskq: close\nRepeats: publish 31"))] {
+            let mut bad=issue.clone();bad["comments"][1][field]=value;
+            assert!(published_detail(&bad,&closed,&inbox,444).is_none(),"bad close {field}");
+        }
+        let mut reordered=issue.clone();reordered["comments"].as_array_mut().unwrap().reverse();
+        assert_eq!(published_detail(&reordered,&closed,&inbox,444).as_deref(),Some(detail.as_str()));
+        for (field,value) in [("task",json!(445)),("revision",json!(39)),("open",json!(true)),("url",json!("https://github.com/foreign/project/issues/444"))] {
+            let mut bad=inbox.clone();bad[field]=value;
+            assert!(published_detail(&issue,&closed,&bad,444).is_none(),"bad inbox {field}");
+        }
+        let mut bad=closed.clone();bad["tasks"][0]["conversation"]["verdict"]=json!("Changed: Different accepted attempt");
+        assert!(published_detail(&issue,&bad,&inbox,444).is_none());
+        let mut receipt=closed.clone();receipt["tasks"][0]["conversation"]["verdict"]=json!(format!("{accepted}\n\ndelivery publish r0: delivered"));
+        assert_eq!(published_detail(&issue,&receipt,&inbox,444).as_deref(),Some(detail.as_str()));
+        let mut full=issue.clone();full["comments"][1]["body"]=json!(format!("taskq: close\n{accepted}"));
+        assert_eq!(closing_detail(&full,444).as_deref(),Some(detail.as_str()));
+        full["comments"][1]["body"]=json!(format!("taskq: close attempt 20\n{accepted}"));
+        assert_eq!(closing_detail(&full,444).as_deref(),Some(detail.as_str()));
+
+    }
+
+    // #331 / §4–5: the observer must retain one route-bound closing effect across restart.
+    #[cfg(unix)]
+    #[test]
+    fn closed_publish_331_observer_restart() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir=std::env::temp_dir().join(format!("pilotq-close-331-{}",std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("taskq.json"),json!({"repo":BOARD,"create_claim_issue":1}).to_string()).unwrap();
+        let bin=dir.join("taskq");
+        std::fs::write(&bin,"#!/bin/sh\ncase \"$1\" in\nstatus) if [ \"$2\" = --closed ]; then cat closed.json; else cat snapshot.json; fi;;\nissue) cat issue.json;;\ninbox) if [ -f drift ] && [ -f inbox-read ]; then cat changed.json; else touch inbox-read; cat inbox.json; fi;;\n*) exit 1;;\nesac\n").unwrap();
+        std::fs::set_permissions(&bin,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let tq=Taskq{bot:None,bin,root:dir.clone(),poll:Duration::from_secs(15)};
+        let path=dir.join("journal.sqlite");
+        let mut journal=Journal::open(&path).unwrap();
+        journal.bootstrap(7,0).unwrap();
+        journal.add_project(7,"pilotq",BOARD,&dir.to_string_lossy(),0).unwrap();
+        let plan=journal.ask(7,"plan",1).unwrap();
+        journal.save_plan(&plan,&json!([{"title":"Invented task"}]),"pilotq",BOARD,&dir.to_string_lossy(),1).unwrap();
+        let request=journal.ask(7,"run plan",2).unwrap();
+        let id=journal.authorize(&request,1,7,LEASE,2).unwrap();
+        let run=journal.plan_run(id).unwrap();
+        journal.filed(&run,1,444,10,3).unwrap();
+        journal.started(&run,1,444,"ready",4).unwrap();
+        journal.run_outcome(&run,"started",None,None,0,4).unwrap();
+        let url="https://github.com/taskqorg/pilotq/issues/444";
+        let verdict="Changed: Invented accepted outcome\nChecks: invented pass\nOpen: Invented remaining limit";
+        let issue=json!({"number":444,"title":"Invented task","state":"closed","url":url,"comments":[
+            {"id":30,"trusted":true,"edited":false,"author":"invented","body":format!("taskq: publish attempt 20\n{verdict}")},
+            {"id":40,"trusted":true,"edited":false,"author":"invented","body":"taskq: close\nRepeats: publish 30"}]});
+        for (file,value) in [("snapshot.json",json!({"complete":true,"board":{"repo":BOARD},"tasks":[]})),
+            ("issue.json",issue),
+            ("inbox.json",json!({"schema":1,"task":444,"url":url,"open":false,"state":"closed","revision":40,"answers":[]})),
+            ("closed.json",json!({"schema":1,"source":"board","tasks":[{"n":444,"state":"closed","url":url,"conversation":{"verdict":verdict}}]}))] {
+            std::fs::write(dir.join(file),value.to_string()).unwrap();
+        }
+        std::fs::write(dir.join("drift"),"").unwrap();
+        std::fs::write(dir.join("changed.json"),json!({"schema":1,"task":444,"url":url,"open":true,"state":"doing","revision":41,"answers":[]}).to_string()).unwrap();
+        assert!(tq.closed_detail(444).is_none(),"revision changes during retrieval stay unknown");
+        std::fs::remove_file(dir.join("drift")).unwrap();
+        let j=Mutex::new(journal);
+        assert!(scan(&tq,&j));
+        let count=|j:&Mutex<Journal>|j.lock().unwrap().0.query_row("SELECT count(*) FROM outbox WHERE task=444 AND text LIKE '%Changed: Invented accepted outcome%'",[],|r|r.get::<_,i64>(0)).unwrap();
+        assert!(count(&j)>0,"accepted findings must reach durable delivery");
+        let before=count(&j);
+        assert!(!scan(&tq,&j));assert_eq!(count(&j),before);
+        drop(j);
+        let j=Mutex::new(Journal::open(&path).unwrap());
+        assert!(!scan(&tq,&j));assert_eq!(count(&j),before);
+        let routes:i64=j.lock().unwrap().0.query_row("SELECT count(DISTINCT chat) FROM outbox WHERE task=444 AND text LIKE '%Changed: Invented accepted outcome%'",[],|r|r.get(0)).unwrap();
+        assert_eq!(routes,1);
+        drop(j);std::fs::remove_dir_all(dir).unwrap();
     }
 
     // #170 / R8, R13: retained protection against lost close evidence and research routing.
