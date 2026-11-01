@@ -1210,11 +1210,20 @@ impl Journal {
                         continue;
                     }
                     let original:Option<(i64,String,String,String)>=tx.query_row(
-                        "SELECT id,state,session,kind FROM requests WHERE front='telegram' AND chat=?1 AND topic IS ?2 AND message=?3 AND sender=?4 ORDER BY id LIMIT 1",
+                        "SELECT q.id,q.state,q.session,q.kind FROM requests q WHERE q.front='telegram' AND q.chat=?1 AND q.topic IS ?2 AND (q.message=?3 OR EXISTS(SELECT 1 FROM audit_events a WHERE a.request_id=q.id AND a.kind='album_member' AND json_extract(a.item,'$.message')=?3)) AND q.sender=?4 ORDER BY q.id LIMIT 1",
                         params![i.chat,i.topic,i.message,sender],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(|e|e.to_string())?;
                     if let Some((id,state,session,kind))=original {
+                        // §2: durable album membership identifies the source, but cannot revive a reset generation.
+                        let album_generation:Option<i64>=tx.query_row("SELECT cast(item AS INTEGER) FROM audit_events WHERE request_id=?1 AND kind='album_generation' ORDER BY id LIMIT 1",[id],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
+                        if let Some(generation)=album_generation {
+                            let current:i64=tx.query_row("SELECT coalesce((SELECT generation FROM conversations WHERE session=?1),0)",[&session],|r|r.get(0)).map_err(|e|e.to_string())?;
+                            if generation!=current {
+                                tx.execute("INSERT INTO updates(update_id,disposition,at) VALUES (?1,'ignored',?2)",params![update,at]).map_err(|e|e.to_string())?;
+                                continue;
+                            }
+                        }
                         let before:Option<String>=tx.query_row("SELECT text FROM requests WHERE id=?1",[id],|r|r.get(0)).map_err(|e|e.to_string())?;
-                        let revision=json!({"update":update,"author":sender,"before":before,"text":i.text,"image":i.image,"voice":i.voice,"files":i.files,"quote":i.quote,"media_group":i.media_group});
+                        let revision=json!({"update":update,"message":i.message,"author":sender,"before":before,"text":i.text,"image":i.image,"voice":i.voice,"files":i.files,"quote":i.quote,"media_group":i.media_group});
                         let previous:Option<String>=tx.query_row("SELECT item FROM audit_events WHERE request_id=?1 AND kind='input_revision' ORDER BY id DESC LIMIT 1",[id],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
                         let same=if let Some(previous)=previous {
                             let mut previous:Value=serde_json::from_str(&previous).map_err(|e|e.to_string())?;
@@ -1228,8 +1237,8 @@ impl Journal {
                         }
                         // Every prior request for this source is stale, including earlier change requests.
                         // Already admitted launches retain their immutable plan and operation identities.
-                        tx.execute("INSERT OR IGNORE INTO meta(key,value) SELECT 'edited-request:' || q.id,?5 FROM requests q WHERE q.front='telegram' AND q.chat=?1 AND q.topic IS ?2 AND q.message=?3 AND q.sender=?4",params![i.chat,i.topic,i.message,sender,at]).map_err(|e|e.to_string())?;
-                        tx.execute("INSERT OR IGNORE INTO meta(key,value) SELECT 'edited-plan:' || p.id,?5 FROM plans p JOIN requests q ON q.id=p.request_id WHERE q.front='telegram' AND q.chat=?1 AND q.topic IS ?2 AND q.message=?3 AND q.sender=?4 AND NOT EXISTS(SELECT 1 FROM plan_runs x WHERE x.plan_id=p.id)",params![i.chat,i.topic,i.message,sender,at]).map_err(|e|e.to_string())?;
+                        tx.execute("INSERT OR IGNORE INTO meta(key,value) SELECT 'edited-request:' || q.id,?5 FROM requests q WHERE q.front='telegram' AND q.chat=?1 AND q.topic IS ?2 AND (q.message=?3 OR q.message=(SELECT message FROM requests WHERE id=?6) OR q.id=?6 OR q.message IN (SELECT json_extract(a.item,'$.message') FROM audit_events a WHERE a.request_id=?6 AND a.kind='album_member')) AND q.sender=?4",params![i.chat,i.topic,i.message,sender,at,id]).map_err(|e|e.to_string())?;
+                        tx.execute("INSERT OR IGNORE INTO meta(key,value) SELECT 'edited-plan:' || p.id,?5 FROM plans p JOIN requests q ON q.id=p.request_id WHERE q.front='telegram' AND q.chat=?1 AND q.topic IS ?2 AND (q.message=?3 OR q.message=(SELECT message FROM requests WHERE id=?6) OR q.id=?6 OR q.message IN (SELECT json_extract(a.item,'$.message') FROM audit_events a WHERE a.request_id=?6 AND a.kind='album_member')) AND q.sender=?4 AND NOT EXISTS(SELECT 1 FROM plan_runs x WHERE x.plan_id=p.id)",params![i.chat,i.topic,i.message,sender,at,id]).map_err(|e|e.to_string())?;
                         tx.execute("UPDATE cards SET used_request=?1 WHERE used_request IS NULL AND plan_id IN (SELECT p.id FROM plans p JOIN meta m ON m.key='edited-plan:' || p.id)",[id]).map_err(|e|e.to_string())?;
                         tx.execute("INSERT INTO audit_events(request_id,at,kind,item) VALUES (?1,?2,'input_revision',?3)",params![id,at,revision.to_string()]).map_err(|e|e.to_string())?;
                         let unclaimed:bool=tx.query_row("SELECT NOT EXISTS(SELECT 1 FROM runs WHERE request_id=?1)",[id],|r|r.get(0)).map_err(|e|e.to_string())?;
@@ -4281,6 +4290,44 @@ mod tests {
         let mut other=album(5,None).unwrap(); other.sender=Some(8);
         j.admit(&[(5,Some(other))],6).unwrap();
         assert_eq!(count(&j,"SELECT count(*) FROM requests"),2,"different authors cannot merge");
+        drop(j); let _=std::fs::remove_dir_all(p);
+    }
+
+    // #259 A2 / §2: later album members remain editable after restart, without crossing authority boundaries.
+    #[test]
+    fn album_member_edit_259() {
+        let (mut j,p)=journal("album-edit-259");
+        let member=|message,kind,text:&str| {
+            let mut i=msg(7,7,message).unwrap();
+            i.kind=kind; i.text=Some(text.into());
+            i.media_group=Some("invented-edit-album".into());
+            if kind=="document" {i.files=vec![json!({"id":format!("invented-{message}"),"name":"notes.txt","media":"document"})];}
+            Some(i)
+        };
+        j.admit(&[(1,member(10,"document","caption")),(2,member(11,"document",""))],0).unwrap();
+        drop(j); let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
+        j.grant(7,8,&["chat".into()],1).unwrap();
+        let mut foreign=member(11,"edit","forged").unwrap(); foreign.sender=Some(8);
+        let mut route=member(11,"edit","wrong route").unwrap(); route.topic=Some(99);
+        j.admit(&[(3,Some(foreign)),(4,Some(route))],1).unwrap();
+        assert_eq!(count(&j,"SELECT count(*) FROM requests"),1);
+        j.admit(&[(5,member(11,"edit","revised caption"))],1).unwrap();
+        assert_eq!(count(&j,"SELECT count(*) FROM audit_events WHERE request_id=1 AND kind='input_revision'"),1,"member 2 edit must reach its album");
+        assert_eq!(count(&j,"SELECT count(*) FROM requests WHERE text LIKE 'Change request%'"),1);
+        assert_eq!(j.documents(1).unwrap().len(),2,"original files survive revisions");
+        assert_eq!(count(&j,"SELECT count(*) FROM meta WHERE key='edited-request:1'"),1);
+        j.admit(&[(6,member(11,"edit","revised caption"))],2).unwrap();
+        assert_eq!(count(&j,"SELECT count(*) FROM requests"),2,"duplicate revision cannot repeat work");
+        let runs=j.claim_next(1,4).unwrap(); assert_eq!(runs.len(),1);
+        j.admit(&[(7,member(11,"edit","started revision"))],5).unwrap();
+        assert_eq!(count(&j,"SELECT count(*) FROM requests WHERE text LIKE 'Change request%'"),2);
+        j.admit(&[(8,input(7,None,Some(7),"Invented","text",Some("/new")))],6).unwrap();
+        let before=count(&j,"SELECT count(*) FROM requests");
+        j.admit(&[(9,member(11,"edit","old generation"))],7).unwrap();
+        assert_eq!(count(&j,"SELECT count(*) FROM requests"),before,"old album cannot enter a new generation");
+        j.revoke(7,7,&["chat".into()],8).unwrap();
+        j.admit(&[(10,member(11,"edit","revoked"))],8).unwrap();
+        assert_eq!(count(&j,"SELECT count(*) FROM requests"),before);
         drop(j); let _=std::fs::remove_dir_all(p);
     }
 
