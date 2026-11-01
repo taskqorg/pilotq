@@ -1311,8 +1311,8 @@ applying R4, R5, R8, R10, R13, R16 and R17. The contract changes precede impleme
 
 Local qualification uses `cargo test --locked --bin pilotq result_images_273` for
 project/API reference confinement, upload-ID requests, protected HTTP authentication,
-redirect/404/size refusal, ZIP traversal/symlink/corruption/inflation limits, retained
-photo bytes and receipts, route/project rebinding, revocation and exact option/actor
+redirect/404/size refusal, ZIP refusal before body transfer, latest-outcome isolation, retained
+photo bytes and source/download/delivery receipts, route/project rebinding, revocation and exact option/actor
 annotation. A multipart Bot API trace checks actual photo bytes, task/variant caption
 and original topic. Existing `u07_question_relay_and_bound_answers`,
 `u39_registered_boards_steer_requeue_and_stale_answer`, `u94_answer_elsewhere_closes_question`
@@ -1323,7 +1323,9 @@ PM after merged release, in the authorized PilotQ CSLP route:
 1. Confirm the installed release identity and the CSGO board-only registration. Keep
    private artifact references and credentials out of public evidence. No CSGO checkout,
    repository archive, asset sync or local CSGO worker is needed or permitted for this check.
-2. Request images for an existing accepted CSGO result (task 444 when suitable). Compare
+2. Request direct image uploads for an existing accepted CSGO result (task 444 when suitable).
+   If only a mixed bundle exists, record the image-only-source gap; use the PM-prepared
+   image-only test attachments for the disposable scenario, never download that bundle. Compare
    the inline sheets and variant labels with its existing accepted manifest. Retain the
    Telegram screenshots and each photo delivery receipt. Links/ZIPs alone fail this case.
 3. Use a disposable TaskQ visual question with two clearly labelled options. Confirm its

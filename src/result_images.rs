@@ -2,7 +2,7 @@
 use crate::{direct::Direct, journal::{Journal,Run}, taskq::Taskq};
 use rusqlite::{params,OptionalExtension};
 use serde_json::{Value,json};
-use std::{io::Read, sync::Mutex, time::Duration};
+use std::{sync::Mutex, time::Duration};
 const LIMIT:usize=20*1024*1024;
 const PHOTO:usize=10*1024*1024;
 const COUNT:usize=32;
@@ -67,27 +67,28 @@ fn fetch(d:&Direct,tq:&Taskq,j:&Mutex<Journal>,binding:&Binding,n:i64,key_name:O
             Ok(v)
         })?;
         let refs:Vec<_>=references(&issue).into_iter().filter(|(_,u)|u.contains("/uploads/")).collect();
-        if automatic && !refs.iter().any(|(_,u)|upload_url(&base,&board,u).is_ok()) {return Ok("No result image attachments".into());}
         let (key,secret)={let j=j.lock().unwrap();binding.active(&j)?;d.keys.take(key_name,"issue_read",binding.user,&j.route(binding.request)?,&binding.project,crate::now() as i64)?};
         let active=|| {
             let j=j.lock().unwrap();
             run.is_none_or(|r|!j.fenced(r).unwrap_or(true)) && binding.active(&j).is_ok() &&
                 d.keys.take(Some(&key),"issue_read",binding.user,&j.route(binding.request).unwrap_or_default(),&binding.project,crate::now() as i64).is_ok_and(|(_,s)|s==secret)
         };
-        let source_revision=snapshot["tasks"].as_array().and_then(|ts|ts.iter().find(|t|t["n"]==n)).and_then(|t|t["revision"].as_i64());
+        let source_revision=snapshot["tasks"].as_array().and_then(|ts|ts.iter().find(|t|t["n"]==n)).and_then(|t|t["revision"].as_i64()).ok_or("Current task revision unavailable; no images queued")?;
         let images=tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|_|"Image reader unavailable")?.block_on(async {
             tokio::time::timeout(Duration::from_secs(30),retrieve(&base,&board,&refs,&secret,&active)).await.map_err(|_|"Image retrieval timed out".to_string())?
         });
+        let current=bound.snapshot_for(&board)?;
+        if current["tasks"].as_array().and_then(|ts|ts.iter().find(|t|t["n"]==n)).and_then(|t|t["revision"].as_i64())!=Some(source_revision) {return Err("Task question changed during image retrieval; read its current card".into());}
         let j=j.lock().unwrap();
         if run.is_some_and(|r|j.fenced(r).unwrap_or(true)) {return Err("Image request stopped".into());}
         binding.active(&j)?;
-        if let Some(revision)=source_revision {
-            if j.task(&binding.project,n)?.is_some_and(|(_,r,_)|r!=revision) {return Err("Task question changed during image retrieval; read its current card".into());}
+        {
+            if j.task(&binding.project,n)?.is_some_and(|(_,r,_)|r!=source_revision) {return Err("Task question changed during image retrieval; read its current card".into());}
         }
         // One gap accompanies a partial batch, and also covers an empty/failed batch.
         let (images,gap)=match images {Ok(v)=>v,Err(e)=>(vec![],Some(e))};
-        let images:Vec<_>=images.into_iter().map(|(label,bytes)|(d.keys.scrub(&label),bytes)).collect();
-        queue(&j,&binding,n,&images,gap.as_deref())?;
+        let (images,sources):(Vec<_>,Vec<_>)=images.into_iter().map(|(label,bytes,source)|((d.keys.scrub(&label),bytes),source)).unzip();
+        queue(&j,&binding,n,&images,gap.as_deref(),&sources,Some(source_revision))?;
         j.direct_event(binding.request,&binding.project,&format!("task_result_images #{n}"),Some(&key),&format!("queued {} images; gap={}",images.len(),gap.is_some()),crate::now() as i64)?;
         Ok(format!("Queued {} inline task images in this route{}. Delivery is confirmed only by the outbox receipts; no new decision was inferred.",images.len(),if gap.is_some() {" with one explicit image gap"} else {""}))
 }
@@ -109,7 +110,7 @@ pub fn watch(tq:std::sync::Arc<Taskq>,j:crate::telegram::Shared,d:std::sync::Arc
             let j=j.lock().unwrap();
             // Retrieval errors remain explicit and bounded, rather than spinning or claiming delivery.
             if b.active(&j).is_ok() {
-                if let Err(error)=result {let _=queue(&j,&b,n,&[],Some(&d.keys.scrub(&error)));}
+                if let Err(error)=result {let _=queue(&j,&b,n,&[],Some(&d.keys.scrub(&error)),&[],Some(rev));}
                 let _=j.0.execute("INSERT OR IGNORE INTO meta(key,value) VALUES (?1,?2)",params![format!("result-image-observed:{}:{n}:{rev}",b.project),crate::now() as i64]);
                 wake.notify_one();
             }
@@ -140,7 +141,7 @@ fn references(issue:&Value)->Vec<(String,String)> {
                 }
             }
             // The latest outcome owns its artifacts; do not mix superseded variants.
-            if !refs.is_empty() {break;}
+            break;
         }
     }
     refs
@@ -161,6 +162,11 @@ fn upload_url(base:&url::Url,board:&str,reference:&str)->Result<url::Url,String>
     base.join(&format!("{prefix}{rest}")).map_err(|_|"Invalid board upload URL".into())
 }
 
+fn image_reference(u:&url::Url)->bool {
+    let name=u.path().rsplit('/').next().unwrap_or("").to_ascii_lowercase();
+    name.bytes().all(|b|b.is_ascii_digit()) || [".jpg",".jpeg",".png"].iter().any(|ext|name.ends_with(ext))
+}
+
 fn valid_upload_name(name:&str)->bool {
     let bytes=name.as_bytes();let mut i=0;
     while i<bytes.len() {
@@ -174,10 +180,23 @@ fn valid_upload_name(name:&str)->bool {
     true
 }
 
+fn check_image_headers(response:&reqwest::Response)->Result<(),String> {
+    if !response.status().is_success() {return Err(format!("Image attachment inaccessible (HTTP {})",response.status().as_u16()));}
+    if response.headers().get(reqwest::header::CONTENT_LENGTH).and_then(|v|v.to_str().ok()).and_then(|v|v.parse::<u64>().ok()).is_some_and(|n|n>PHOTO as u64) {return Err("Image exceeds Telegram's 10 MiB photo limit (20 MiB batch limit)".into());}
+    let mime=response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v|v.to_str().ok()).unwrap_or("").split(';').next().unwrap_or("").trim();
+    if !matches!(mime,"image/jpeg"|"image/png") {return Err("Image-only source unavailable; server did not identify a JPEG or PNG; no bundle body downloaded".into());}
+    Ok(())
+}
+
 async fn download(client:&reqwest::Client,u:url::Url,secret:&str,active:&impl Fn()->bool)->Result<Vec<u8>,String> {
     if !active() {return Err("Image access revoked".into());}
+    if !image_reference(&u) {return Err("Image-only source unavailable; ZIPs and non-image files are not downloaded".into());}
+    // HEAD checks metadata without transferring bundle bodies, including opaque upload IDs.
+    let metadata=client.head(u.clone()).bearer_auth(secret).send().await.map_err(|_|"Image metadata inaccessible")?;
+    check_image_headers(&metadata)?;
+    if !active() {return Err("Image access revoked".into());}
     let mut response=client.get(u).bearer_auth(secret).send().await.map_err(|_|"Image attachment inaccessible")?;
-    if !response.status().is_success() {return Err(format!("Image attachment inaccessible (HTTP {})",response.status().as_u16()));}
+    check_image_headers(&response)?;
     if response.content_length().is_some_and(|n|n>LIMIT as u64) {return Err("Image attachment exceeds 20 MiB".into());}
     let mut bytes=vec![];
     while let Some(chunk)=response.chunk().await.map_err(|_|"Image attachment interrupted")? {
@@ -188,20 +207,21 @@ async fn download(client:&reqwest::Client,u:url::Url,secret:&str,active:&impl Fn
     Ok(bytes)
 }
 
-async fn retrieve(base:&url::Url,board:&str,refs:&[(String,String)],secret:&str,active:&impl Fn()->bool)->Result<(Vec<(String,Vec<u8>)>,Option<String>),String> {
+async fn retrieve(base:&url::Url,board:&str,refs:&[(String,String)],secret:&str,active:&impl Fn()->bool)->Result<(Vec<(String,Vec<u8>,Value)>,Option<String>),String> {
     let client=reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(10)).build().map_err(|_|"Image reader unavailable")?;
     let mut images=vec![];let mut gap=None;let mut total=0;
     for (label,reference) in refs {
         let result=async {
             let u=upload_url(base,board,reference)?;
-            let bytes=download(&client,u,secret,active).await?;
-            unpack(label,&bytes)
+            let bytes=download(&client,u.clone(),secret,active).await?;
+            let receipt=json!({"source":u.as_str(),"label":label,"downloaded_at":crate::now(),"bytes":bytes.len(),"crc32":format!("{:08x}",crc32fast::hash(&bytes))});
+            Ok::<_,String>((unpack(label,&bytes)?,receipt))
         }.await;
         match result {
-            Ok(batch)=>for (name,bytes) in batch {
+            Ok((batch,receipt))=>for (name,bytes) in batch {
                 total+=bytes.len();
                 if total>LIMIT || images.len()>=COUNT {gap=Some("Result images exceed the 20 MiB / 32 image batch limit".into());break;}
-                images.push((name,bytes));
+                images.push((name,bytes,receipt.clone()));
             },
             Err(e)=>{gap.get_or_insert(e);},
         }
@@ -211,49 +231,16 @@ async fn retrieve(base:&url::Url,board:&str,refs:&[(String,String)],secret:&str,
 }
 
 fn image(bytes:&[u8])->bool {bytes.starts_with(b"\xff\xd8\xff") || bytes.starts_with(b"\x89PNG\r\n\x1a\n")}
-fn safe_name(name:&str)->bool {!name.is_empty() && name.len()<=240 && !name.contains(['\\',':']) && name.split('/').all(|s|!s.is_empty() && s!="." && s!="..") && !name.chars().any(char::is_control)}
 fn unpack(label:&str,bytes:&[u8])->Result<Vec<(String,Vec<u8>)>,String> {
-    if image(bytes) {
-        if bytes.len()>PHOTO {return Err("Image exceeds Telegram's 10 MiB photo limit".into());}
-        return Ok(vec![(label.to_string(),bytes.to_vec())]);
-    }
-    if !bytes.starts_with(b"PK\x03\x04") {return Err("Image attachment is unsupported; expected JPEG, PNG or an image ZIP".into());}
-    let bad=||"Image ZIP is damaged or unsupported".to_string();
-    let u16at=|i:usize|->Result<usize,String>{let b=bytes.get(i..i+2).ok_or_else(bad)?;Ok(u16::from_le_bytes([b[0],b[1]]) as usize)};
-    let u32at=|i:usize|->Result<usize,String>{let b=bytes.get(i..i+4).ok_or_else(bad)?;Ok(u32::from_le_bytes([b[0],b[1],b[2],b[3]]) as usize)};
-    let end=(0..=bytes.len().saturating_sub(22)).rev().take(65557).find(|&i|bytes[i..].starts_with(b"PK\x05\x06")).ok_or_else(bad)?;
-    let count=u16at(end+10)?;let mut at=u32at(end+16)?;let mut total=0;let mut out=vec![];
-    if count>256 || u16at(end+4)?!=0 || u16at(end+6)?!=0 {return Err(bad());}
-    for _ in 0..count {
-        if !bytes.get(at..).is_some_and(|b|b.starts_with(b"PK\x01\x02")) {return Err(bad());}
-        let (flags,method,crc,compressed,size,n,extra,comment,offset)=(u16at(at+8)?,u16at(at+10)?,u32at(at+16)?,u32at(at+20)?,u32at(at+24)?,u16at(at+28)?,u16at(at+30)?,u16at(at+32)?,u32at(at+42)?);
-        let mode=u32at(at+38)?>>16;
-        let name=std::str::from_utf8(bytes.get(at+46..at+46+n).ok_or_else(bad)?).map_err(|_|bad())?;
-        at+=46+n+extra+comment;
-        let lower=name.to_ascii_lowercase();
-        if ![".jpg",".jpeg",".png"].iter().any(|ext|lower.ends_with(ext)) {continue;}
-        if !safe_name(name) || flags&1!=0 || !matches!(mode&0o170000,0|0o100000) || !matches!(method,0|8) {return Err("Unsafe or unsupported image ZIP member".into());}
-        total+=size;
-        if size>PHOTO || total>LIMIT || out.len()>=COUNT {return Err("Image ZIP exceeds image size or count limits".into());}
-        if !bytes.get(offset..).is_some_and(|b|b.starts_with(b"PK\x03\x04")) {return Err(bad());}
-        let start=offset+30+u16at(offset+26)?+u16at(offset+28)?;
-        let data=bytes.get(start..start.checked_add(compressed).ok_or_else(bad)?).ok_or_else(bad)?;
-        let decoded=if method==0 {data.to_vec()} else {
-            let mut decoded=vec![];
-            flate2::read::DeflateDecoder::new(data).take((size+1) as u64).read_to_end(&mut decoded).map_err(|_|bad())?;
-            decoded
-        };
-        if decoded.len()!=size || crc32fast::hash(&decoded) as usize!=crc || !image(&decoded) {return Err("Image ZIP member is damaged or not an image".into());}
-        out.push((format!("{label} / {name}"),decoded));
-    }
-    if out.is_empty() {return Err("No JPEG or PNG review images in the result ZIP".into());}
-    Ok(out)
+    if !image(bytes) {return Err("Image-only source unavailable; expected a direct JPEG or PNG, never a ZIP or mixed bundle".into());}
+    if bytes.len()>PHOTO {return Err("Image exceeds Telegram's 10 MiB photo limit".into());}
+    Ok(vec![(label.to_string(),bytes.to_vec())])
 }
 
-fn queue(j:&Journal,b:&Binding,n:i64,images:&[(String,Vec<u8>)],gap:Option<&str>)->Result<(),String> {
+fn queue(j:&Journal,b:&Binding,n:i64,images:&[(String,Vec<u8>)],gap:Option<&str>,sources:&[Value],expected_revision:Option<i64>)->Result<(),String> {
     b.active(j)?;
     let tx=j.0.unchecked_transaction().map_err(|e|e.to_string())?;
-    let revision:i64=tx.query_row("SELECT coalesce((SELECT revision FROM tasks WHERE project=?1 AND number=?2),0)",params![b.project,n],|r|r.get(0)).map_err(|e|e.to_string())?;
+    let revision:i64=expected_revision.unwrap_or(tx.query_row("SELECT coalesce((SELECT revision FROM tasks WHERE project=?1 AND number=?2),0)",params![b.project,n],|r|r.get(0)).map_err(|e|e.to_string())?);
     let tag=format!("result-images:{}:{n}:{revision}",b.request);
     if tx.query_row("SELECT EXISTS(SELECT 1 FROM meta WHERE key=?1)",[&tag],|r|r.get::<_,bool>(0)).map_err(|e|e.to_string())? {return Ok(());}
     let at=crate::now() as i64;
@@ -261,6 +248,10 @@ fn queue(j:&Journal,b:&Binding,n:i64,images:&[(String,Vec<u8>)],gap:Option<&str>
         let text=format!("{} #{n} · revision {revision} · {} / {}\n{}",b.project,i+1,images.len(),label);
         tx.execute("INSERT INTO outbox(request_id,chat,topic,text,next_at,kind,project,task,revision) VALUES (?1,?2,?3,?4,?5,'result_image',?6,?7,?8)",params![b.request,b.chat,b.topic,text,at,b.project,n,revision]).map_err(|e|e.to_string())?;
         let id=tx.last_insert_rowid();
+        if let Some(source)=sources.get(i) {
+            let receipt=json!({"project":b.project,"board":b.board,"task":n,"revision":revision,"variant":label,"outbox":id,"download":source});
+            tx.execute("INSERT INTO meta(key,value) VALUES (?1,?2)",params![format!("result-image-source:{id}"),receipt.to_string()]).map_err(|e|e.to_string())?;
+        }
         tx.execute("INSERT INTO meta(key,value) VALUES (?1,?2)",params![format!("result-image:{id}"),bytes]).map_err(|e|e.to_string())?;
         tx.execute("INSERT INTO meta(key,value) VALUES (?1,?2)",params![format!("result-image-binding:{id}"),serde_json::to_string(b).map_err(|e|e.to_string())?]).map_err(|e|e.to_string())?;
     }
@@ -279,6 +270,10 @@ pub fn authorize(j:&Journal,id:i64)->Result<(),String> {
     let binding:String=j.0.query_row("SELECT value FROM meta WHERE key=?1",[format!("result-image-binding:{id}")],|r|r.get(0)).map_err(|_|"Image delivery binding unavailable")?;
     let binding:Binding=serde_json::from_str(&binding).map_err(|_|"Image delivery binding unreadable")?;
     binding.active(j)?;
+    let (project,n,revision):(String,i64,Option<i64>)=j.0.query_row("SELECT project,task,revision FROM outbox WHERE id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|e|e.to_string())?;
+    if let Some(revision)=revision {
+        if j.task(&project,n)?.is_some_and(|(_,current,_)|current!=revision) {return Err("Image task revision changed; delivery held".into());}
+    }
     Ok(())
 }
 
@@ -309,38 +304,23 @@ pub fn answer_actor(j:&Journal,project:&str,n:i64,revision:i64,sender:i64,argv:&
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn zip(name:&str,bytes:&[u8],mode:u32)->Vec<u8> {
-        use std::io::Write;
-        let mut deflate=flate2::write::DeflateEncoder::new(vec![],flate2::Compression::fast());deflate.write_all(bytes).unwrap();let data=deflate.finish().unwrap();
-        let mut local=vec![0u8;30];local[..4].copy_from_slice(b"PK\x03\x04");local[8..10].copy_from_slice(&8u16.to_le_bytes());local[26..28].copy_from_slice(&(name.len() as u16).to_le_bytes());
-        local.extend_from_slice(name.as_bytes());local.extend_from_slice(&data);let offset=local.len();
-        let mut central=vec![0u8;46];central[..4].copy_from_slice(b"PK\x01\x02");central[10..12].copy_from_slice(&8u16.to_le_bytes());central[16..20].copy_from_slice(&crc32fast::hash(bytes).to_le_bytes());central[20..24].copy_from_slice(&(data.len() as u32).to_le_bytes());central[24..28].copy_from_slice(&(bytes.len() as u32).to_le_bytes());central[28..30].copy_from_slice(&(name.len() as u16).to_le_bytes());central[38..42].copy_from_slice(&(mode<<16).to_le_bytes());central.extend_from_slice(name.as_bytes());
-        let size=central.len();local.extend(central);let mut end=vec![0u8;22];end[..4].copy_from_slice(b"PK\x05\x06");end[8..10].copy_from_slice(&1u16.to_le_bytes());end[10..12].copy_from_slice(&1u16.to_le_bytes());end[12..16].copy_from_slice(&(size as u32).to_le_bytes());end[16..20].copy_from_slice(&(offset as u32).to_le_bytes());local.extend(end);local
-    }
-
-    // #273 A3/A6/A7: trusted project-bound attachments only; safe, bounded image
-    // inflation must not execute ZIP scripts or disclose unrelated filesystem files.
+    // A3/A7: reject mixed bundles rather than transferring code bytes; a newer
+    // attachment-free outcome must never inherit superseded review variants.
     #[test]
     fn result_images_273_retrieval_boundaries() {
         let base=board_base("gitlab.example.test","invented/csgo").unwrap();
-        for reference in ["/api/v4/projects/invented%2Fcsgo/uploads/42","/api/v4/projects/123/uploads/42","/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/review.jpg","/-/project/123/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/review.zip"] {
-            let u=upload_url(&base,"invented/csgo",reference).unwrap();
-            assert!(u.as_str().starts_with("https://gitlab.example.test/api/v4/projects/invented%2Fcsgo/uploads/"),"{u}");
+        for reference in ["/api/v4/projects/invented%2Fcsgo/uploads/42","/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/review.jpg"] {
+            assert!(upload_url(&base,"invented/csgo",reference).is_ok());
         }
-        for reference in ["https://evil.invalid/uploads/42","/api/v4/projects/other%2Fproject/uploads/42","/invented/other/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/x.jpg","file:///tmp/private.jpg","/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/%2e%2e","//evil.invalid/uploads/42"] {assert!(upload_url(&base,"invented/csgo",reference).is_err(),"{reference}");}
-        for host in ["gitlab.example.test@evil.invalid","gitlab.example.test/private","127.0.0.1:80"] {assert!(board_base(host,"invented/csgo").is_err());}
-        let issue=json!({"comments":[{"trusted":true,"body":"taskq: result\n![old](/uploads/old)"},{"trusted":false,"body":"taskq: result\n![fake](https://evil.invalid)"},{"trusted":true,"body":"taskq: ask\n![Variant B](/uploads/current)"}]});
-        assert_eq!(references(&issue),vec![("Variant B".into(),"/uploads/current".into())]);
-        let jpeg=b"\xff\xd8\xffinvented-review-fixture";
-        assert_eq!(unpack("Variant B",&zip("review/B.jpg",jpeg,0o100600)).unwrap(),vec![("Variant B / review/B.jpg".into(),jpeg.to_vec())]);
-        for name in ["../private.jpg","/private.jpg","review/../../private.jpg","C:/private.jpg","review\\private.jpg"] {assert!(unpack("B",&zip(name,jpeg,0o100600)).is_err(),"{name}");}
-        assert!(unpack("B",&zip("link.jpg",jpeg,0o120777)).is_err());
-        assert!(unpack("B",&zip("replay.sh",b"do not execute",0o100700)).is_err());
-        assert!(unpack("B",&zip("fake.jpg",b"not an image",0)).is_err());
-        assert!(unpack("B",&zip("huge.jpg",&vec![0;PHOTO+1],0)).is_err());
-        assert!(unpack("B",b"unsupported").is_err());
-        let mut corrupt=zip("B.jpg",jpeg,0);let pos=corrupt.windows(4).position(|b|b==b"PK\x01\x02").unwrap();corrupt[pos+16]^=1;
-        assert!(unpack("B",&corrupt).is_err());
+        for reference in ["https://evil.invalid/uploads/42","/api/v4/projects/other%2Fproject/uploads/42","file:///tmp/private.jpg","/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/%2e%2e"] {
+            assert!(upload_url(&base,"invented/csgo",reference).is_err());
+        }
+        let issue=json!({"comments":[{"trusted":true,"body":"taskq: result\n![old](/uploads/old)"},{"trusted":true,"body":"taskq: ask\nChoose without attachments"}]});
+        assert!(references(&issue).is_empty(),"a new outcome cannot reuse old variants");
+        assert!(unpack("bundle",b"PK\x03\x04mixed bundle").is_err(),"ZIP bytes are unsupported");
+        assert!(image_reference(&base.join("/uploads/42").unwrap()));
+        assert!(!image_reference(&base.join("/uploads/secret/review.zip").unwrap()),"ZIP must be refused before network dispatch");
+        assert_eq!(unpack("B",b"\xff\xd8\xffinvented").unwrap()[0].0,"B");
     }
 
     // #273 A3/A7: real HTTP dispatch injects auth only at the bound API, refuses
@@ -351,9 +331,9 @@ mod tests {
         let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base=url::Url::parse(&format!("http://{}/",listener.local_addr().unwrap())).unwrap();
         let worker=std::thread::spawn(move || {
-            for response in ["HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nDATA","HTTP/1.1 302 Found\r\nLocation: https://evil.invalid/secret\r\nContent-Length: 0\r\nConnection: close\r\n\r\n","HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n","HTTP/1.1 200 OK\r\nContent-Length: 20971521\r\nConnection: close\r\n\r\n"] {
+            for (method,response) in [("HEAD","HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: 4\r\nConnection: close\r\n\r\n"),("GET","HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: 4\r\nConnection: close\r\n\r\nDATA"),("HEAD","HTTP/1.1 302 Found\r\nLocation: https://evil.invalid/secret\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),("HEAD","HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),("HEAD","HTTP/1.1 200 OK\r\nContent-Length: 20971521\r\nConnection: close\r\n\r\n"),("HEAD","HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Length: 4\r\nConnection: close\r\n\r\n")] {
                 let (mut stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();let mut buf=[0;4096];let n=stream.read(&mut buf).unwrap();let request=String::from_utf8_lossy(&buf[..n]);
-                assert!(request.starts_with("GET /api/v4/projects/invented%2Fcsgo/uploads/42 "),"{request}");
+                assert!(request.starts_with(&format!("{method} /api/v4/projects/invented%2Fcsgo/uploads/42 ")),"{request}");
                 assert!(request.to_ascii_lowercase().contains("authorization: bearer invented-test-key"));
                 stream.write_all(response.as_bytes()).unwrap();
             }
@@ -362,7 +342,9 @@ mod tests {
         rt.block_on(async {
             let client=reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();let u=upload_url(&base,"invented/csgo","/api/v4/projects/123/uploads/42").unwrap();
             assert_eq!(download(&client,u.clone(),"invented-test-key",&||true).await.unwrap(),b"DATA");
-            for expected in ["302","404","20 MiB"] {let e=download(&client,u.clone(),"invented-test-key",&||true).await.unwrap_err();assert!(e.contains(expected) && !e.contains("http") && !e.contains("invented-test-key"),"{e}");}
+            for expected in ["302","404","20 MiB","Image-only"] {let e=download(&client,u.clone(),"invented-test-key",&||true).await.unwrap_err();assert!(e.contains(expected) && !e.contains("http") && !e.contains("invented-test-key"),"{e}");}
+            let zip=base.join("/api/v4/projects/invented%2Fcsgo/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/review.zip").unwrap();
+            assert!(download(&client,zip,"invented-test-key",&||true).await.unwrap_err().starts_with("Image-only"));
             assert!(download(&client,u,"invented-test-key",&||false).await.unwrap_err().contains("revoked"));
         });worker.join().unwrap();
     }
@@ -380,16 +362,21 @@ mod tests {
         j.0.execute("INSERT INTO tasks(number,request_id,chat,topic,state,revision,observed,project,board,root) VALUES (444,?1,-100,5,'doing',1,0,'csgo','invented/csgo','/invented/board-only')",[r.request]).unwrap();
         let q=json!({"parsed":true,"choices":[{"id":1,"label":"Variant A"},{"id":2,"label":"Variant B"}]});
         j.observe("csgo",444,"ask",2,Some(&q.to_string()),"status",Some("Choose a variant"),2).unwrap();
-        let images=vec![("Variant B".into(),b"\xff\xd8\xffinvented".to_vec())];queue(&j,&b,444,&images,None).unwrap();queue(&j,&b,444,&images,None).unwrap();
+        let images=vec![("Variant B".into(),b"\xff\xd8\xffinvented".to_vec())];queue(&j,&b,444,&images,None,&[json!({"source":"invented-source","bytes":images[0].1.len()})],None).unwrap();queue(&j,&b,444,&images,None,&[json!({"source":"invented-source","bytes":images[0].1.len()})],None).unwrap();
         let id:i64=j.0.query_row("SELECT id FROM outbox WHERE kind='result_image'",[],|r|r.get(0)).unwrap();
         assert_eq!(j.0.query_row("SELECT count(*) FROM outbox WHERE kind='result_image'",[],|r|r.get::<_,i64>(0)).unwrap(),1);
         assert_eq!(payload(&j,id).unwrap(),images[0].1);
         let mut argv=vec!["answer".into(),"444.2".into(),"--revision".into(),"2".into()];answer_actor(&j,"csgo",444,2,7,&mut argv).unwrap();assert_eq!(argv.last().unwrap(),"2. Variant B\nTelegram user 7");
         let mut stale=vec!["answer".into(),"444.3".into()];assert!(answer_actor(&j,"csgo",444,2,7,&mut stale).is_err());
+        j.0.execute("UPDATE tasks SET revision=3 WHERE number=444",[]).unwrap();assert!(payload(&j,id).is_err());
+        j.0.execute("UPDATE tasks SET revision=2 WHERE number=444",[]).unwrap();
         j.0.execute("UPDATE projects SET root='/invented/rebound' WHERE name='csgo'",[]).unwrap();assert!(payload(&j,id).is_err());j.0.execute("UPDATE projects SET root='/invented/board-only' WHERE name='csgo'",[]).unwrap();
         j.0.execute("UPDATE requests SET topic=6 WHERE id=?1",[r.request]).unwrap();assert!(payload(&j,id).is_err());j.0.execute("UPDATE requests SET topic=5 WHERE id=?1",[r.request]).unwrap();
         drop(j);let mut j=Journal::open(&path).unwrap();assert_eq!(payload(&j,id).unwrap(),images[0].1);
         j.record(id,&crate::journal::Sent::Ok(1234),3).unwrap();
+        let source:String=j.0.query_row("SELECT value FROM meta WHERE key=?1",[format!("result-image-source:{id}")],|r|r.get(0)).unwrap();
+        let receipt:Value=serde_json::from_str(&source).unwrap();
+        assert_eq!(receipt["download"]["source"],"invented-source");assert_eq!(receipt["task"],444);assert_eq!(receipt["variant"],"Variant B");assert_eq!(receipt["revision"],2);
         assert_eq!(j.0.query_row("SELECT state FROM outbox WHERE id=?1",[id],|r|r.get::<_,String>(0)).unwrap(),"delivered");
         j.revoke(7,7,&["admin".into(),"projects".into()],4).unwrap();assert!(payload(&j,id).is_err());
         prune(&j,7*86400+4).unwrap();assert!(j.0.query_row("SELECT value FROM meta WHERE key=?1",[format!("result-image:{id}")],|r|r.get::<_,Vec<u8>>(0)).optional().unwrap().is_none());
@@ -409,7 +396,7 @@ mod transport_tests {
         let mut journal=Journal::open(&dir.join("journal.sqlite")).unwrap();journal.bootstrap(7,0).unwrap();journal.add_project(7,"csgo","invented/csgo","/invented/board-only",0).unwrap();let r=journal.ask(7,"csgo 444",1).unwrap();
         journal.0.execute("UPDATE requests SET front='telegram',chat=-100,topic=5 WHERE id=?1",[r.request]).unwrap();
         let b=Binding{request:r.request,user:7,project:"csgo".into(),board:"invented/csgo".into(),root:"/invented/board-only".into(),chat:-100,topic:Some(5)};
-        queue(&journal,&b,444,&[("Variant B".into(),b"\xff\xd8\xffinvented-photo-bytes".to_vec())],None).unwrap();
+        queue(&journal,&b,444,&[("Variant B".into(),b"\xff\xd8\xffinvented-photo-bytes".to_vec())],None,&[],None).unwrap();
         let id=journal.0.query_row("SELECT id FROM outbox WHERE kind='result_image'",[],|r|r.get(0)).unwrap();
         let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
         let server=std::thread::spawn(move || {

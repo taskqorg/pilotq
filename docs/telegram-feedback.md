@@ -74,15 +74,17 @@ are translated to the registered board's API, including upload IDs and Markdown
 `full_path` references; HTTP redirects are refused. The existing `issue_read` key's
 person, route and project scopes gate protected credential injection.
 
-JPEG and PNG files may be direct uploads or image members of a ZIP. Downloads and
-inflated batches are bounded to 20 MiB, individual Telegram photos to 10 MiB, and batches
-to 32 images. ZIP reading examines at most 256 entries, rejects unsafe image names,
-symlinks, encryption, unsupported compression and corrupt members, and never writes
-archive entries to disk or executes them. Source labels and member names identify the
+Only direct JPEG and PNG uploads are transferred. Named non-image files are refused
+before network dispatch; opaque upload IDs require image metadata from HEAD before GET.
+Missing or unsupported metadata yields a gap, never a bundle-download fallback. ZIPs,
+including image-only archives, are not fetched or unpacked. Individual photos are bounded
+to 10 MiB, batches to 20 MiB and 32 images. Only the latest trusted outcome selects
+artifacts, including an outcome with no attachments. Source variant labels identify
 variants; sequential photo numbers are delivery order, never invented choice IDs.
 
 Each photo has an immutable outbox destination, current access checks and an individual
-Telegram receipt. Retained photo bytes live privately in the journal, without model-visible
+Telegram receipt joined by outbox ID to private source, task, revision, variant, download
+time, byte count and checksum evidence. Retained photo bytes live privately in the journal, without model-visible
 paths or credentials. Terminal photo bytes expire after seven days; unresolved delivery
 retains its bytes. A partial or unavailable batch has one explicit gap. Queued media is
 not delivered media, and a result image never establishes a pending decision.
