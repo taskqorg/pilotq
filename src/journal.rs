@@ -150,6 +150,9 @@ fn brief(language: Option<&str>, reason: &str) -> &'static str {
         ("ru", "limit") => "Лимит запроса исчерпан; попросите продолжить с сохранённого результата.",
         ("ru", "uncertain") => "Результат действия неизвестен; автоматического повтора не будет.",
         ("ru", _) => "Не удалось завершить запрос; попробуйте ещё раз или проверьте /status.",
+        ("he", "file_limit") => "הקובץ גדול מ־20 MiB; דחסו אותו או שלחו אותו בחלקים.",
+        ("he", "voice_limit") => "ההקלטה גדולה מדי; שלחו הקלטה באורך של עד 5 דקות ובגודל של עד 20 MiB.",
+        ("he", "voice_failed") => "לא ניתן היה לתמלל את ההקלטה; שלחו אותה שוב או כתבו את הדברים.",
         (_, "busy") => "PilotQ is busy; send it again later.",
         (_, "unsupported") => "Send text, an image, a file, a video or a voice message; this format is not supported yet.",
         (_, "image_limit") => "The image is too large; send a file up to 20 MiB.",
@@ -166,6 +169,9 @@ fn brief(language: Option<&str>, reason: &str) -> &'static str {
 
 /// §1 / #234: use retained attachment identity at admission and after a late download/decoder refusal.
 fn media_brief(language: Option<&str>, reason: &str, files: &[Value]) -> String {
+    if language.unwrap_or("en").split('-').next() == Some("he") && reason == "file_limit" {
+        return brief(language, reason).into();
+    }
     let ru=language.unwrap_or("en").starts_with("ru");
     let file=files.first();
     let media=file.and_then(|f|f["media"].as_str()).unwrap_or("");
@@ -889,7 +895,7 @@ fn claim(tx: &Connection, request: i64, at: i64) -> Result<Option<Run>, String> 
 }
 
 /// Marks recognized speech in the request text the model and history see (#104).
-pub const VOICE: &str = "[Voice message, automatic Russian speech recognition; may contain recognition errors]";
+pub const VOICE: &str = "[Voice message, automatic Russian, English or Hebrew speech recognition; may contain recognition errors]";
 
 /// Proposed audit retention, told to each person at their first admitted request (§ 7, § 8; an open decision in § 11).
 const RETENTION: &str = "metadata 365 days, message text 90 days";
@@ -5227,6 +5233,12 @@ mod tests {
     // #234 / §1: admission and late download failures preserve media kind and the chat language.
     #[test]
     fn media_refusals_234() {
+        // #344 / §1: both admission and late recognition use these same localized outcomes.
+        for reason in ["voice_limit", "voice_failed", "file_limit"] {
+            let line = super::media_brief(Some("he-IL"), reason, &[json!({"media":"audio","name":"speech.opus"})]);
+            assert!(line.chars().any(|c| ('\u{590}'..='\u{5ff}').contains(&c)), "{line}");
+            assert_eq!(line, super::brief(Some("he"), reason));
+        }
         use crate::manager::Outcome;
         for (name, media, kind, ru, noun) in [
             ("err.rar", "", "file_limit", true, "архив"),

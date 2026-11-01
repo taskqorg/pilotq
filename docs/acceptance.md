@@ -776,6 +776,19 @@ The same binaries with the exact production arguments confirmed: a garbage file 
 
 Retained risk: FLEURS is read speech; spontaneous, noisy Telegram voice notes from real users were not measured. The non-Russian reply depends on the model following the §12 instruction; it is not a language detector.
 
+### Multilingual speech, task #344
+
+Sections 1 and 3 replace the Russian-only speech decision with local Russian, English and Hebrew recognition. [The qualification report](research/344.md) retains the original failure, rejected Sherpa alternatives, verified assets, resource measurements, known spelling/technical-word errors and PM checklist. Historical #104 measurements above describe the old Russian-only engine.
+
+| Case | Boundary and evidence |
+|---|---|
+| Speech344-01 | `multilingual_344 --ignored` passes distinct human ru/en/he Ogg/Opus fixtures through the production decoder and recognizer; Hebrew remains readable through its final phrase. Source/model assets must be provisioned explicitly. |
+| Speech344-02 | `multilingual_containers_344 --ignored` passes the real bounded silence/model probe, corruption refusal, MP3 speech and MP4 frames/speech. The original silence probe timed out before the bounded silence-context correction. |
+| Speech344-03 | `telegram_voice_becomes_sender_text` includes a true Ogg/Opus document alongside the original voice/audio/document paths; caption, journal, audit, short localized failure, no token/audio exposure and cleanup guards remain. Fakes prove wiring, not language quality. |
+| Speech344-04 | `recognizer_output_344`, `long_audio_259`, `media_refusals_234` and `doctor_voice_readiness` retain malformed-output, silence, long-recording chunk, localized failure and bounded readiness protection. Hebrew audio errors use the configured chat language. |
+
+These local checks do not qualify spontaneous/noisy speech, live Telegram rendering, PM management or installed-host aggregate capacity. PM final-source A40/cleanup, merge-result CI, release/install and real Chrome ru/en/he acceptance remain required under §9 and R19; workers do not install or restart.
+
 ### U108: saved answers and semantic addressing
 
 Owner decision: §5, task #108 option 2. A person may answer without a Telegram reply. The manager identifies a subscribed question by meaning, clarifies an ambiguous destination or answer, and forwards the person's own text through `task_answer` at a freshly read revision. It does not choose for the person. A source input from another person, route or reset generation cannot authorize the answer. `discussion_answer` saves a free-text discussion answer locally; #93's superseded-card and separate-launch rules still apply.

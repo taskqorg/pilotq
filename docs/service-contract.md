@@ -66,7 +66,7 @@ matching its configured board. It never polls updates, starts a model turn or ch
 Missing configuration, failed checks and unavailable dependencies return nonzero; diagnostics expose
 only check names and outcomes, never dependency output or credentials. This checks setup, not the
 full task flow or subscription entitlement (§11). Also check local voice readiness. Missing voice
-configuration, unavailable ffmpeg or recognizer, missing GigaAM model files, or a failed one-second
+configuration, unavailable ffmpeg or recognizer, missing Whisper small Q5_1 model file, or a failed one-second
 silent WAV decode/recognition probe makes doctor fail with a short reason. An empty transcript is
 expected for silence; the recognizer must still return valid result JSON. The probe uses protected
 temporary files, a ten-second total deadline and no Telegram input or model turn. This is setup
@@ -100,7 +100,7 @@ command. Offline selftest remains independent of host setup.
 | TaskQ CLI | 4.6.46 | Task #145 file handoff, operation receipts and task #151 `taskq issue`; update the CLI to 4.6.46 or newer; doctor reads `taskq --version` |
 | TaskQ service | 4.6.40 | Board commands; doctor checks the service version from `service status --json` |
 | ffmpeg | 6.1.0 | Audio decode; install ffmpeg 6.1 or newer and set `voice.ffmpeg` |
-| sherpa-onnx-offline | 2.0.1 | GigaAM recognition; install the static no-TTS 2.0.1 release or newer and set `voice.recognizer` |
+| whisper-cli (whisper.cpp) | 1.8.2 | Multilingual Whisper small Q5_1; provision a compatible CPU binary, verified version receipt and `voice.recognizer` |
 | curl | 7.68.0 | CoreQ release download; install curl 7.68 or newer on service PATH |
 | systemctl (systemd) | 245 | CoreQ Linux user service; provision systemd 245 or newer with a working user service manager |
 | kill (procps-ng) | 3.3.17 | Process-group cleanup on PATH and `/bin/kill`; install procps-ng 3.3.17 or newer on service PATH |
@@ -110,15 +110,15 @@ command. Offline selftest remains independent of host setup.
 TaskQ CLI 4.6.46 or newer reports its binary version through `taskq --version`, without board or
 network access. Doctor uses that command for `taskq.bin` and `--version` for approved command
 executables; TaskQ needs no receipt. Receipts remain only for tools without a version command:
-sherpa-onnx-offline 2.0.1 has no CLI version command. Its installed executable has an
+whisper-cli from whisper.cpp 1.8.2 has no CLI version command. Its installed executable has an
 owner-provisioned `<binary>.pilotq-version.json` receipt containing the verified release `version`
 and executable `sha256`; doctor verifies the bytes before trusting that version. The tester guide
 gives the provisioning step. A missing or mismatched receipt fails with an unavailable version. A
 later recognizer with a valid version command can report its version directly.
 
 There are no separately installed PilotQ shared libraries: SQLite, Rust TLS and CoreQ 0.18.0 are
-linked into the artifact through Cargo.lock. The static recognizer is required; ffmpeg and system
-tools retain their distribution-managed libraries. Doctor's existing silent decode/recognition probe
+linked into the artifact through Cargo.lock. The CPU recognizer, ffmpeg and system
+tools retain their operator-provisioned or distribution-managed libraries. Doctor's existing silent decode/recognition probe
 checks the voice runtime and model files in addition to versions. Developer/release-only tools
 (`cargo`, the Rust compiler, `sha256sum`, and shell utilities in download instructions) are not
 service runtime dependencies. Optional unsupported platforms are not qualified by the Linux

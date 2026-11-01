@@ -1,5 +1,5 @@
-//! Voice and audio input (pilotq.md § 12, #104): ffmpeg decodes to 16 kHz mono WAV, then `sherpa-onnx-offline` with GigaAM v3
-//! RNNT-punct int8 recognizes Russian speech on the local CPU. Both run as subprocesses, so the static build needs no onnxruntime.
+//! Voice and audio input (pilotq.md § 12, #104): ffmpeg decodes to 16 kHz mono WAV, then CPU-only `whisper-cli` with multilingual Whisper small Q5_1
+//! recognizes Russian, English and Hebrew speech on the local CPU. Both run as subprocesses, so the static build needs no onnxruntime.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 /// Longest accepted recording (§ 12).
 pub const SECONDS: u32 = 300;
 
-/// Installation config `voice`: the recognizer binary, the GigaAM model directory and the ffmpeg binary.
+/// Installation config `voice`: the recognizer binary, the multilingual Whisper small Q5_1 model directory and the ffmpeg binary.
 pub struct Voice {
     pub ffmpeg: String,
     pub recognizer: String,
@@ -90,7 +90,7 @@ pub fn transcribe(v: &Voice, audio: &[u8], budget: Duration) -> Result<String, S
     let samples=data.map(|(header,end)|(end-header-8) as u64 / 2)
         .unwrap_or(decoded.len().saturating_sub(44) as u64 / 2);
     if samples > SECONDS as u64 * 16000 { return Err(fail("is longer than 5 minutes")); }
-    // GigaAM's attention tensors must stay bounded; the recording cap is not a model segment cap.
+    // The recognizer's attention tensors must stay bounded; the recording cap is not a model segment cap.
     // Keep the original deadline across every segment and join transcripts only after all succeeded.
     let mut segments = vec![];
     if samples > 25 * 16000 {
@@ -102,20 +102,34 @@ pub fn transcribe(v: &Voice, audio: &[u8], budget: Duration) -> Result<String, S
             part.extend_from_slice(pcm);
             let path=dir.0.join(format!("segment-{n}.wav"));
             std::fs::write(&path,part).map_err(|_| fail("storage unavailable"))?;
-            segments.push(path);
+            segments.push((path, pcm.iter().all(|b| *b == 0)));
         }
-    } else { segments.push(wav); }
-    let files = [("tokens", "tokens.txt"), ("encoder", "encoder.int8.onnx"), ("decoder", "decoder.onnx"), ("joiner", "joiner.onnx")];
-    let mut transcripts=vec![];
-    for segment in segments {
-        run(Command::new(&v.recognizer).args(files.map(|(k, f)| format!("--{k}={}", v.model.join(f).display())))
-            .args(["--model-type=nemo_transducer", &format!("--num-threads={}", v.threads)]).arg(&segment), &out, until)
+    } else { segments.push((wav, data.is_some_and(|(header, end)| decoded[header+8..end].iter().all(|b| *b == 0)))); }
+    let mut transcripts = vec![];
+    for (n, (segment, silent)) in segments.into_iter().enumerate() {
+        // Each invocation gets a fresh output name: success without a new JSON file cannot
+        // accidentally reuse the preceding segment. No translation, GPU or remote fallback.
+        let result = dir.0.join(format!("result-{n}"));
+        let mut recognizer = Command::new(&v.recognizer);
+        recognizer.arg("--model").arg(v.model.join("ggml-small-q5_1.bin"))
+            .args(["--language", "auto", "--threads", &v.threads.to_string(), "--no-gpu", "--no-prints",
+                "--beam-size", "1", "--best-of", "1", "--no-fallback", "--output-json", "--output-file"])
+            .arg(&result).arg("--file").arg(&segment);
+        // Digital silence has no words to lose. A one-second encoder context keeps the
+        // doctor’s actual model/JSON probe inside its existing ten-second budget.
+        if silent { recognizer.args(["--audio-ctx", "50", "--language", "en"]); }
+        run(&mut recognizer, &out, until)
             .map_err(|e| fail(if e == "failed" { "recognizer failed" } else { e }))?;
-        let printed = std::fs::read_to_string(&out).map_err(|_| fail("recognizer failed"))?;
-        let text = printed.lines().rev().find_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()?["text"].as_str().map(str::to_string))
-            .ok_or_else(|| { crate::host::log(&v.recognizer,"recognition returned no valid result JSON"); fail("recognizer failed") })?;
-        if !text.trim().is_empty() { transcripts.push(text.trim().to_string()); }
+        let printed = std::fs::read(result.with_extension("json")).map_err(|_| fail("recognizer failed"))?;
+        let json: serde_json::Value = serde_json::from_slice(&printed).map_err(|_| fail("recognizer failed"))?;
+        let parts = json["transcription"].as_array().ok_or_else(|| fail("recognizer failed"))?;
+        for part in parts {
+            let text = part["text"].as_str().ok_or_else(|| fail("recognizer failed"))?;
+            if text.contains('\u{fffd}') { return Err(fail("recognizer returned invalid transcript text")); }
+            if !silent && !text.trim().is_empty() { transcripts.push(text.trim().to_string()); }
+        }
     }
+    // Discard digital-silence hallucinations per segment, including pauses after real speech.
     if transcripts.is_empty() { Err(fail("had no recognized speech")) } else { Ok(transcripts.join(" ")) }
 
 }
@@ -134,7 +148,7 @@ pub fn readiness(v: Option<&Voice>) -> Result<(), String> {
     };
     if !executable(&v.ffmpeg) { return Err("voice ffmpeg unavailable".into()); }
     if !executable(&v.recognizer) { return Err("voice recognizer unavailable".into()); }
-    for f in ["tokens.txt", "encoder.int8.onnx", "decoder.onnx", "joiner.onnx"] {
+    for f in ["ggml-small-q5_1.bin"] {
         if !std::fs::metadata(v.model.join(f)).is_ok_and(|m| m.is_file() && m.len() > 0) {
             return Err("voice model unavailable".into());
         }
@@ -156,6 +170,100 @@ pub fn readiness(v: Option<&Voice>) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+    // #344 / §§1,3,12: real human speech must survive the shared decoder in its original
+    // language. Fakes cannot detect a Russian-only model or Hebrew transliterated into guesses.
+    // Run explicitly with verified assets; ordinary offline tests need no model download.
+    #[test]
+    #[ignore = "requires verified whisper.cpp 1.8.2 and multilingual small Q5_1 assets"]
+    fn multilingual_344() {
+        let v = super::Voice {
+            ffmpeg: "ffmpeg".into(),
+            recognizer: std::env::var("PILOTQ_TEST_RECOGNIZER").expect("verified recognizer path"),
+            model: std::env::var("PILOTQ_TEST_VOICE_MODEL").expect("verified model directory").into(),
+            threads: 4,
+        };
+        for (lang, bytes, words) in [
+            ("ru", include_bytes!("../tests/fixtures/speech/ru.ogg").as_slice(), &["Основной", "Молдавии", "христианство"][..]),
+            ("en", include_bytes!("../tests/fixtures/speech/en.ogg").as_slice(), &["beer", "pleasant", "refreshing"][..]),
+            ("he", include_bytes!("../tests/fixtures/speech/he.ogg").as_slice(), &["טכנולוגי", "מתקדם", "מותנות חברתית"][..]),
+        ] {
+            let started = std::time::Instant::now();
+            let text = super::transcribe(&v, bytes, std::time::Duration::from_secs(120)).unwrap();
+            eprintln!("{lang}: {:?}: {text}", started.elapsed());
+            for word in words { assert!(text.to_lowercase().contains(&word.to_lowercase()), "{lang}: missing {word}: {text}"); }
+        }
+    }
+
+    // #344 / §§1,9,12: the real decoder accepts MP3 and video speech through the same
+    // recognizer as Ogg/Opus documents; silence/readiness and corruption remain honest.
+    #[test]
+    #[ignore = "requires the same verified local assets as multilingual_344"]
+    fn multilingual_containers_344() {
+        let v = super::Voice {
+            ffmpeg: "ffmpeg".into(),
+            recognizer: std::env::var("PILOTQ_TEST_RECOGNIZER").expect("verified recognizer path"),
+            model: std::env::var("PILOTQ_TEST_VOICE_MODEL").expect("verified model directory").into(),
+            threads: 4,
+        };
+        assert_eq!(super::readiness(Some(&v)), Ok(()));
+        assert!(super::transcribe(&v, b"corrupt audio", Duration::from_secs(10)).unwrap_err().contains("could not be decoded"));
+        for (video, bytes, expected) in [
+            (false, include_bytes!("../tests/fixtures/speech/ru.ogg").as_slice(), "христианство"),
+            (true, include_bytes!("../tests/fixtures/speech/he.ogg").as_slice(), "מותנות חברתית"),
+        ] {
+            let (dir, input) = super::workdir(bytes).unwrap();
+            let output = dir.0.join(if video { "clip.mp4" } else { "clip.mp3" });
+            let mut c = std::process::Command::new(&v.ffmpeg);
+            c.args(["-nostdin", "-loglevel", "error"]);
+            if video { c.args(["-f", "lavfi", "-i", "color=c=black:s=16x16:r=1"]); }
+            c.arg("-i").arg(input);
+            if video { c.args(["-shortest", "-c:v", "mpeg4", "-c:a", "aac"]); }
+            c.arg(&output);
+            super::run(&mut c, &dir.0.join("stdout"), std::time::Instant::now() + Duration::from_secs(30)).unwrap();
+            let bytes = std::fs::read(output).unwrap();
+            if video { assert!(!super::frames(&v, &bytes, Duration::from_secs(10)).unwrap().is_empty()); }
+            let text = super::transcribe(&v, &bytes, Duration::from_secs(120)).unwrap();
+            eprintln!("{}: {text}", if video { "mp4" } else { "mp3" });
+            assert!(text.contains(expected), "{text}");
+        }
+    }
+
+    // #344 / §12: readable Hebrew JSON must reach the transcript unchanged; invalid text and
+    // digital-silence hallucinations must never become the sender's words.
+    #[test]
+    #[cfg(unix)]
+    fn recognizer_output_344() {
+        use std::{fs, os::unix::fs::PermissionsExt, time::Duration};
+        let dir = super::workdir(b"fixture").unwrap().0;
+        let ffmpeg = dir.0.join("ffmpeg");
+        let recognizer = dir.0.join("recognizer");
+        let source = dir.0.join("fixture.wav");
+        let mut wav = b"RIFF".to_vec();
+        wav.extend_from_slice(&38u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt "); wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&[1,0,1,0]); wav.extend_from_slice(&16000u32.to_le_bytes());
+        wav.extend_from_slice(&32000u32.to_le_bytes()); wav.extend_from_slice(&[2,0,16,0]);
+        wav.extend_from_slice(b"data"); wav.extend_from_slice(&2u32.to_le_bytes());
+        wav.extend_from_slice(&[1,0]); fs::write(&source, &wav).unwrap();
+        fs::write(&ffmpeg, format!("#!/bin/sh\nfor last; do :; done\ncp '{}' \"$last\"\n", source.display())).unwrap();
+        fs::set_permissions(&ffmpeg, fs::Permissions::from_mode(0o700)).unwrap();
+        let v = super::Voice { ffmpeg: ffmpeg.display().to_string(), recognizer: recognizer.display().to_string(), model: dir.0.clone(), threads: 1 };
+        for (output, expected) in [
+            (b"{\"transcription\":[{\"text\":\"\xd7\xa9\xd7\x9c\xd7\x95\xd7\x9d\"}]}".as_slice(), Ok("שלום")),
+            (b"{\"transcription\":[{\"text\":\"\xd7\"}]}", Err("voice recognizer failed")),
+            (b"not JSON", Err("voice recognizer failed")),
+        ] {
+            fs::write(dir.0.join("result"), output).unwrap();
+            fs::write(&recognizer, format!("#!/bin/sh\nwhile [ \"$1\" != --output-file ]; do shift; done\ncp '{}' \"$2.json\"\n", dir.0.join("result").display())).unwrap();
+            fs::set_permissions(&recognizer, fs::Permissions::from_mode(0o700)).unwrap();
+            assert_eq!(super::transcribe(&v, b"fixture", Duration::from_secs(5)).as_deref().map_err(String::as_str), expected);
+        }
+        let n = wav.len(); wav[n-2] = 0; fs::write(source, wav).unwrap();
+        fs::write(dir.0.join("result"), b"{\"transcription\":[{\"text\":\"invented hallucination\"}]}").unwrap();
+        assert_eq!(super::transcribe(&v, b"fixture", Duration::from_secs(5)).unwrap_err(), "voice had no recognized speech");
+    }
+
     // #259 A3 / §1: a 4:02 track never sends an oversized tensor to the recognizer.
     #[test]
     #[cfg(unix)]
@@ -163,7 +271,7 @@ mod tests {
         use std::{fs,os::unix::fs::PermissionsExt,time::Duration};
         let dir=std::env::temp_dir().join(format!("pilotq-long-audio-test-{}",std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        let pcm=vec![0u8;242*32000];
+        let pcm=vec![1u8;242*32000];
         let mut wav=b"RIFF".to_vec(); wav.extend_from_slice(&((pcm.len()+36) as u32).to_le_bytes());
         wav.extend_from_slice(b"WAVEfmt "); wav.extend_from_slice(&16u32.to_le_bytes());
         wav.extend_from_slice(&[1,0,1,0]); wav.extend_from_slice(&16000u32.to_le_bytes());
@@ -172,7 +280,7 @@ mod tests {
         fs::write(dir.join("fixture.wav"),wav).unwrap();
         let ffmpeg=dir.join("ffmpeg"); let recognizer=dir.join("recognizer");
         fs::write(&ffmpeg,format!("#!/bin/sh\nfor last; do :; done\ncp '{}' \"$last\"\n",dir.join("fixture.wav").display())).unwrap();
-        fs::write(&recognizer,"#!/bin/sh\nfor last; do :; done\n[ $(wc -c < \"$last\") -le 1000000 ] || exit 1\necho '{\"text\":\"segment\"}'\n").unwrap();
+        fs::write(&recognizer,"#!/bin/sh\nfor last; do :; done\n[ $(wc -c < \"$last\") -le 1000000 ] || exit 1\nwhile [ \"$1\" != --output-file ]; do shift; done\necho '{\"transcription\":[{\"text\":\"segment\"}]}' > \"$2.json\"\n").unwrap();
         for path in [&ffmpeg,&recognizer] {fs::set_permissions(path,fs::Permissions::from_mode(0o700)).unwrap();}
         let v=super::Voice{ffmpeg:ffmpeg.display().to_string(),recognizer:recognizer.display().to_string(),model:dir.clone(),threads:1};
         let result=super::transcribe(&v,b"invented recording",Duration::from_secs(10));

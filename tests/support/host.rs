@@ -15,7 +15,7 @@ pub fn provision(d:&Path,config:&Path) {
         let p=d.join(name);
         if p.exists() { wrap(&p,"--version",reply); } else { script(&p,&format!("echo '{reply}'")); }
     }
-    for (key,name,reply) in [("codex","codex","codex-cli 0.162.0"),("recognizer","recognizer","2.0.1"),("ffmpeg","ffmpeg","ffmpeg version 6.1.0")] {
+    for (key,name,reply) in [("codex","codex","codex-cli 0.162.0"),("recognizer","recognizer","1.8.2"),("ffmpeg","ffmpeg","ffmpeg version 6.1.0")] {
         let current=if key=="codex" { c[key].as_str() } else { c["voice"][key].as_str() };
         let p=current.map(std::path::PathBuf::from).unwrap_or(d.join(name));
         if p.exists() { wrap(&p,if key=="ffmpeg" {"-version"} else {"--version"},reply); }

@@ -15,7 +15,7 @@ PilotQ is one small Rust service in the TaskQ tool family.
 | Manager runtime | AgentQ runtime: Codex over its app-server compatibility path or Claude Code CLI turns, each under its subscription login ([manager runtimes](#manager-runtimes)) | R9; [core options](core-options.md) |
 | Journal | SQLite (section 7 settings) | One local file, supported snapshot backup |
 | Work execution | Existing TaskQ CLI | Section 5 |
-| Voice recognition | ffmpeg and `sherpa-onnx-offline` with GigaAM v3 RNNT-punct int8, local CPU subprocesses | Best Russian accuracy per CPU in the #89 benchmark; keeps the static PilotQ build free of onnxruntime |
+| Voice recognition | ffmpeg and CPU-only `whisper-cli` (whisper.cpp) with multilingual Whisper small Q5_1, local CPU subprocesses | Automatic ru/en/he recognition in the original language; keeps speech inference outside the static PilotQ binary |
 
 Grammy, Pi and a new runtime framework are out of scope. Earlier source findings remain in
 [research](research.md).
