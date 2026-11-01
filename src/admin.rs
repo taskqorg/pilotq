@@ -417,7 +417,10 @@ mod tests {
     use crate::journal::Input;
     use std::{io::{Read,Write},net::TcpListener,path::PathBuf};
     fn setup() -> (Journal,PathBuf,Direct) {
-        let dir=std::env::temp_dir().join(format!("pilotq-admin-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        // macOS clocks tick in microseconds; a counter keeps parallel tests out of one journal.
+        static NEXT:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);
+        let dir=std::env::temp_dir().join(format!("pilotq-admin-{}-{}",std::process::id(),NEXT.fetch_add(1,std::sync::atomic::Ordering::Relaxed)));
+        let _=std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut j=Journal::open(&dir.join("journal.sqlite")).unwrap(); j.bootstrap(7,0).unwrap();
         let d=Direct{keys:crate::keys::Keys(dir.join("keys.json"))}; (j,dir,d)
