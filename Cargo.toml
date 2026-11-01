@@ -6,7 +6,7 @@ publish = false
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-coreq = { git = "https://github.com/taskqorg/coreq", tag = "v0.14.6" }
+coreq = { git = "https://github.com/taskqorg/coreq", tag = "v0.18.0" }
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 teloxide = { version = "0.17.0", default-features = false, features = ["rustls"] }

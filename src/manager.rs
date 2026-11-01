@@ -1,21 +1,22 @@
-//! Codex app-server manager runtime (pilotq.md § 3, § 4 Runs, § 12 Runtime). One adapter, one process per turn: the process is the
-//! fault boundary, so stop and deadlines end it, and its thread ID carries the conversation to the next turn.
+//! Manager runtimes through CoreQ `agent` (pilotq.md § 3, § 4 Runs, § 12 Runtime): Codex over CoreQ's app-server compatibility
+//! transport, Claude Code through CoreQ CLI turns (`claude.rs`). One process per turn: the process is the fault boundary, so stop
+//! and deadlines end it, and its native session ID carries the conversation to the next turn.
 
 use crate::journal::{Journal, Run};
+use coreq::agent::{AppServer, AppSession, Client, Spec};
 use serde_json::{Value, json};
-use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::Command;
 use std::sync::Mutex;
-use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::{Duration, Instant};
 
 /// Cancellation grace before the process group is killed (§ 7).
-const GRACE: Duration = Duration::from_secs(5);
+pub(crate) const GRACE: Duration = Duration::from_secs(5);
 /// Item types that act outside the model; once one starts, a missing terminal outcome is uncertain, never a clean failure.
 const TOOLS: [&str; 5] = ["commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch"];
 
 /// Section 7 inactivity watches and the separate bounded media-preparation budget.
+#[derive(Clone)]
 pub struct Limits {
     pub first_event: Duration,
     pub silent: Duration,
@@ -23,6 +24,7 @@ pub struct Limits {
     pub deadline: Duration,
 }
 
+#[derive(Clone)]
 pub struct Codex {
     pub bin: String,
     /// Neutral workspace; no project directory becomes the runtime's current directory (§ 3).
@@ -30,6 +32,24 @@ pub struct Codex {
     /// PilotQ's own Codex home: its subscription login and an empty config, so no personal MCP server or plugin loads.
     pub home: PathBuf,
     pub limits: Limits,
+}
+
+/// #265: the installation runtime (default Codex), per-route overrides and optional TaskQ host slots (§ 3, § 7).
+#[derive(Clone)]
+pub struct Runtime {
+    pub codex: Codex,
+    pub claude: crate::claude::Claude,
+    pub default: Client,
+    /// Route (`cli`, `CHAT` or `CHAT:TOPIC`) to runtime.
+    pub routes: std::collections::BTreeMap<String, Client>,
+    pub slots: Option<crate::slots::Slots>,
+}
+
+impl Runtime {
+    pub fn client(&self, route: &str) -> Client { self.routes.get(route).copied().unwrap_or(self.default) }
+    pub fn models(&self, route: &str) -> Result<Vec<String>, String> {
+        match self.client(route) { Client::Codex => self.codex.models(), Client::Claude => Ok(self.claude.models.clone()) }
+    }
 }
 
 /// What one turn established. Only `Answered` is success.
@@ -43,13 +63,10 @@ pub enum Outcome {
     Fenced,
 }
 
+/// CoreQ's shared app-server transport plus PilotQ's process-group ownership: dropping it ends the whole group.
 struct Proc {
-    child: Child,
-    stdin: ChildStdin,
-    rx: Receiver<Value>,
-    /// Codex's last stderr line, the only reason it gives when it exits early. Operator log only: it can name paths or account
-    /// details, so it never reaches a reply, the journal or telemetry.
-    last_err: std::sync::Arc<Mutex<Option<String>>>,
+    server: AppServer,
+    session: AppSession,
 }
 
 /// Held from spawn until Codex answers `initialize`. Found in the A8 run: app-servers started together on a fresh Codex home race
@@ -58,23 +75,18 @@ struct Proc {
 static START: Mutex<()> = Mutex::new(());
 
 impl Proc {
-    fn send(&mut self, v: Value) {
-        // a closed pipe surfaces as EOF on the reader, which ends the turn
-        let _ = writeln!(self.stdin, "{v}").and_then(|_| self.stdin.flush());
+    fn send(&mut self, v: &Value) {
+        // a failed or unknown write surfaces as a missing reply, which the inactivity watch ends
+        if let Err(e) = self.server.send(v, Instant::now() + Duration::from_secs(5)) { eprintln!("codex: {e}"); }
     }
 
-    /// Interrupts the turn, waits up to GRACE for it to end, then kills the process group.
-    fn stop(&mut self, thread: &Option<String>, turn: &Option<String>) {
-        if let (Some(t), Some(u)) = (thread, turn) {
-            self.send(json!({"id": 9, "method": "turn/interrupt", "params": {"threadId": t, "turnId": u}}));
-            let end = Instant::now() + GRACE;
-            while let Some(left) = end.checked_duration_since(Instant::now()) {
-                match self.rx.recv_timeout(left) {
-                    Ok(m) if m["method"] == "turn/completed" => break,
-                    Ok(_) => {}
-                    Err(_) => break,
-                }
-            }
+    /// Interrupts the turn, waits up to GRACE for it to end; Drop then kills the process group.
+    fn stop(&mut self) {
+        let Ok(req) = self.session.interrupt() else { return };
+        self.send(&req);
+        let end = Instant::now() + GRACE;
+        while let Ok(Some(m)) = self.server.receive(end) {
+            if self.session.observe(&m).is_err() || m["method"] == "turn/completed" { break; }
         }
     }
 }
@@ -89,9 +101,8 @@ impl Drop for Proc {
     fn drop(&mut self) {
         // ponytail: `kill` on the process group; a pidfd/cgroup supervisor if children escape the group
         #[cfg(unix)]
-        let _ = crate::host::kill_group(self.child.id());
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = crate::host::kill_group(self.server.id());
+        let _ = self.server.kill();
     }
 }
 
@@ -100,90 +111,77 @@ fn native_access(j:&Journal,user:i64)->Result<bool,String> {
     Ok(j.owner()?==Some(user) || j.has(user,"shell")?)
 }
 
+/// Only what a runtime needs: found in the A7 run, Codex wrote its environment into shell snapshots under its home, and the
+/// host's GitHub token was there. No host credential or API key reaches the model's side, so no paid API fallback exists (R9, § 8).
+pub(crate) fn base(bin: &str) -> Command {
+    let mut c = Command::new(bin);
+    c.env_clear();
+    for k in ["PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR", "SSL_CERT_FILE"] {
+        if let Some(v) = std::env::var_os(k) { c.env(k, v); }
+    }
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut c, 0);
+    c
+}
+
 impl Codex {
-    fn spawn(&self, native: bool) -> Result<Proc, String> {
+    fn spawn(&self, native: bool, thread: Option<&str>) -> Result<Proc, String> {
         std::fs::create_dir_all(&self.workspace).map_err(|e| format!("workspace: {e}"))?;
         std::fs::create_dir_all(&self.home).map_err(|e| format!("codex home: {e}"))?;
-        let mut c = Command::new(&self.bin);
         // subscription login only, no API-key fallback (R9); native shell and web are enabled by the owner decision (#190)
-        c.args(["app-server", if native {"--enable"} else {"--disable"}, "shell_tool"]);
+        let mut args: Vec<std::ffi::OsString> = vec![if native {"--enable"} else {"--disable"}.into(), "shell_tool".into()];
         for f in ["apps", "plugins", "browser_use", "computer_use", "multi_agent", "image_generation"] {
-            c.args(["--disable", f]);
+            args.extend(["--disable".into(), f.into()]);
         }
-        // Found in the A7 run: Codex writes its environment into shell snapshots under its home, and the host's GitHub token was
-        // there. It gets only what it needs, so no host credential or API key reaches the model's side (R9, § 8).
-        c.env_clear();
-        for k in ["PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR", "SSL_CERT_FILE"] {
-            if let Some(v) = std::env::var_os(k) {
-                c.env(k, v);
-            }
-        }
-        c.args(["-c", "forced_login_method=\"chatgpt\"", "-c", if native {"web_search=\"live\""} else {"web_search=\"disabled\""}])
-            .env("CODEX_HOME", &self.home)
-            .current_dir(&self.workspace)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        #[cfg(unix)]
-        std::os::unix::process::CommandExt::process_group(&mut c, 0);
-        let mut child = c.spawn().map_err(|e| { crate::host::log("codex app-server",&e.to_string()); format!("codex app-server did not start: {e}") })?;
-        let (stdin, stdout, stderr) = (child.stdin.take().unwrap(), child.stdout.take().unwrap(), child.stderr.take().unwrap());
-        let last_err = std::sync::Arc::new(Mutex::new(None));
-        let keep = last_err.clone();
-        std::thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok).filter(|l| !l.trim().is_empty()) {
-                crate::host::log("codex app-server stderr",&line);
-                *keep.lock().unwrap() = Some(line.chars().take(200).collect());
-            }
-        });
-        let (tx, rx) = channel();
-        std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                // ponytail: a non-JSON line is diagnostic output, never a control event
-                if let Ok(v) = serde_json::from_str::<Value>(&line)
-                    && tx.send(v).is_err()
-                {
-                    break;
-                }
-            }
-        });
-        Ok(Proc { child, stdin, rx, last_err })
+        args.extend(["-c".into(), "forced_login_method=\"chatgpt\"".into(), "-c".into(), if native {"web_search=\"live\""} else {"web_search=\"disabled\""}.into()]);
+        let spec = Spec { client: Client::Codex, root: self.workspace.clone(), session: thread.unwrap_or("-").into(), resume: thread.is_some(),
+            args, home: Some(self.home.clone()), env: vec![] };
+        // Codex diagnostics can name paths or account details: operator log only, never a reply, the journal or telemetry.
+        let server = AppServer::start(base(&self.bin), &spec, &self.home.join("app-server.log"))
+            .map_err(|e| { crate::host::log("codex app-server",&e); format!("codex app-server did not start: {e}") })?;
+        let session = AppSession::new(&spec)?;
+        Ok(Proc { server, session })
     }
 
     /// #106: catalogue read only; it never creates a thread or starts inference (R9).
     pub fn models(&self) -> Result<Vec<String>, String> {
-        let mut p=self.spawn(false).map_err(|_|"Codex catalogue unavailable")?;
+        let mut p=self.spawn(false,None).map_err(|_|"Codex catalogue unavailable")?;
         let end=Instant::now()+Duration::from_secs(10);
-        p.send(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"pilotq","version":env!("CARGO_PKG_VERSION")}}}));
+        let init=p.session.initialize(json!({"clientInfo":{"name":"pilotq","version":env!("CARGO_PKG_VERSION")}}))?;
+        p.send(&init);
         let mut models=vec![];
-        let mut page=2;
+        let mut pages=0;
+        let mut pending=init["id"].clone();
         loop {
-            let left=end.checked_duration_since(Instant::now()).ok_or("Codex catalogue timed out")?;
-            let m=p.rx.recv_timeout(left).map_err(|_|"Codex catalogue unavailable")?;
+            let m=p.server.receive(end).map_err(|_|"Codex catalogue unavailable")?.ok_or("Codex catalogue timed out")?;
+            p.session.observe(&m).map_err(|_|"Codex catalogue refused")?;
+            if m["id"]!=pending || m.get("method").is_some() { continue; }
             if m["error"].is_object() { return Err("Codex catalogue refused".into()); }
-            if m["id"]==1 {
-                p.send(json!({"method":"initialized"}));
-                p.send(json!({"id":page,"method":"model/list","params":{"limit":100,"includeHidden":false}}));
-            } else if m["id"]==page {
+            let cursor=if pages==0 { None } else {
                 let data=m["result"]["data"].as_array().ok_or("Invalid Codex catalogue")?;
                 for item in data {
                     if item["hidden"]==true { continue; }
                     let name=item["model"].as_str().filter(|s|!s.is_empty() && s.len()<=128 && s.bytes().all(|b|b.is_ascii_alphanumeric() || b"._:-".contains(&b))).ok_or("Invalid Codex model")?;
                     if !models.iter().any(|s|s==name) { models.push(name.to_string()); }
                 }
-                if let Some(cursor)=m["result"]["nextCursor"].as_str() {
-                    if page>=5 { return Err("Codex catalogue exceeds limit".into()); }
-                    page+=1;
-                    p.send(json!({"id":page,"method":"model/list","params":{"limit":100,"includeHidden":false,"cursor":cursor}}));
-                } else { break; }
-            }
+                match m["result"]["nextCursor"].as_str() { Some(c) => Some(c.to_string()), None => break }
+            };
+            if pages==0 { let done=p.session.initialized()?; p.send(&done); }
+            if pages>=5 { return Err("Codex catalogue exceeds limit".into()); }
+            pages+=1;
+            let mut params=json!({"limit":100,"includeHidden":false});
+            if let Some(c)=cursor { params["cursor"]=json!(c); }
+            let req=p.session.request("model/list",params)?;
+            pending=req["id"].clone();
+            p.send(&req);
         }
         if models.is_empty() { Err("Codex catalogue is empty".into()) } else { Ok(models) }
     }
 
     /// Runs one turn on `thread` (a new thread when None). `alive` reports whether the journal still holds this run's fence;
     /// `tool` persists a tool item's type, ID and, once completed, its status. `dynamic` offers PilotQ's own tools on a new thread
-    /// (their specs and instructions); `call` answers one complete call of them. Returns the thread ID and model Codex used and the outcome.
+    /// (their specs and instructions); `call` answers one complete call of them. `record` appends the turn's CoreQ usage
+    /// observation. Returns the thread ID and model Codex used and the outcome.
     #[allow(clippy::too_many_arguments)]
     pub fn turn(
         &self,
@@ -198,53 +196,87 @@ impl Codex {
         mut rebuild: impl FnMut() -> Result<Value, String>,
         mut preview: impl FnMut(&str),
         mut observation: impl FnMut(&str, &Value),
+        mut record: impl FnMut(&dyn Fn(&coreq::telemetry::Store) -> Result<(), String>),
+        route: &str,
     ) -> (Option<String>, Option<String>, Outcome) {
+        let mut input = input.clone();
+        let mut thread = thread.map(str::to_string);
+        // A resume that finds no native thread is rebuilt once from the journal on a new thread, never silently replaced.
+        loop {
+            let rebuilt = thread.is_none();
+            match self.attempt(native, thread.as_deref(), selected_model, &input, dynamic, &mut alive, &mut tool, &mut call, &mut preview, &mut observation, &mut record, route) {
+                Err(()) if !rebuilt => {
+                    let history = match rebuild() {
+                        Ok(v) => v,
+                        Err(_) => return (thread, None, Outcome::Failed("Conversation recovery could not be prepared; no work was repeated.".into())),
+                    };
+                    input.as_array_mut().unwrap().insert(0, json!({"type": "text", "text": history.to_string()}));
+                    thread = None;
+                }
+                Err(()) => return (None, None, Outcome::Failed("Codex could not open the conversation; no work was repeated.".into())),
+                Ok(done) => return done,
+            }
+        }
+    }
+
+    /// One app-server process for one turn. Err(()) means the resumed thread does not exist and nothing ran.
+    #[allow(clippy::too_many_arguments)]
+    fn attempt(
+        &self,
+        native: bool,
+        resume: Option<&str>,
+        selected_model: Option<&str>,
+        input: &Value,
+        dynamic: Option<(&Value, &str)>,
+        alive: &mut impl FnMut() -> bool,
+        tool: &mut impl FnMut(&str, &str, Option<&str>),
+        call: &mut impl FnMut(&str, &Value, &str) -> (bool, String),
+        preview: &mut impl FnMut(&str),
+        observation: &mut impl FnMut(&str, &Value),
+        record: &mut impl FnMut(&dyn Fn(&coreq::telemetry::Store) -> Result<(), String>),
+        route: &str,
+    ) -> Result<(Option<String>, Option<String>, Outcome), ()> {
         // the first-event watch starts once this turn may spawn, before Codex runs (§ 12)
         let mut starting = Some(START.lock().unwrap_or_else(|e| e.into_inner()));
         let start = Instant::now();
-        let mut p = match self.spawn(native) {
+        let mut p = match self.spawn(native, resume) {
             Ok(p) => p,
-            Err(e) => return (None, None, Outcome::Failed(e)),
+            Err(e) => return Ok((None, None, Outcome::Failed(e))),
         };
-        let (mut thread, mut turn, mut answer, mut tooled, mut model) = (thread.map(str::to_string), None::<String>, String::new(), false, None::<String>);
+        observation("spawned", &json!(p.server.id()));
+        let (mut thread, mut answer, mut tooled, mut model) = (resume.map(str::to_string), String::new(), false, None::<String>);
         let (mut first, mut last, mut error) = (false, start, None::<String>);
-        let mut input = input.clone();
-        let mut resuming = thread.is_some();
         let (mut draft_item, mut draft) = (String::new(), String::new());
         let lim = &self.limits;
         let mut version = String::from("unknown");
         let mut quota_updated = false;
+        let (mut quota_read, mut opened, mut started) = (Value::Null, Value::Null, false);
         // dynamic tools are an experimental app-server field, negotiated only when PilotQ offers some
         let caps = dynamic.map(|_| json!({"experimentalApi": true}));
-        p.send(json!({"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "pilotq", "title": "PilotQ", "version": env!("CARGO_PKG_VERSION")}, "capabilities": caps}}));
         let fail = |tooled: bool, why: String| if tooled { Outcome::Uncertain(why) } else { Outcome::Failed(why) };
+        let init = match p.session.initialize(json!({"clientInfo": {"name": "pilotq", "title": "PilotQ", "version": env!("CARGO_PKG_VERSION")}, "capabilities": caps})) {
+            Ok(v) => v, Err(e) => return Ok((None, None, Outcome::Failed(e))),
+        };
+        p.send(&init);
         loop {
             if !alive() {
-                p.stop(&thread, &turn);
-                return (thread, model, Outcome::Fenced);
+                p.stop();
+                return Ok((thread, model, Outcome::Fenced));
             }
             let (limit, why) = if first { (last + lim.silent, "Codex sent no event for") } else { (start + lim.first_event, "Codex sent no first event within") };
             let secs = if first { lim.silent } else { lim.first_event };
-            let wait = limit.saturating_duration_since(Instant::now()).min(Duration::from_secs(1));
-            let m = match p.rx.recv_timeout(wait) {
-                Ok(m) => m,
-                Err(RecvTimeoutError::Timeout) if Instant::now() >= limit => {
-                    if !alive() {
-                        p.stop(&thread,&turn);
-                        return (thread,model,Outcome::Fenced);
-                    }
-                    p.stop(&thread, &turn);
-                    return (thread, model, fail(tooled, format!("{why} {} s", secs.as_secs())));
+            let wait = limit.min(Instant::now() + Duration::from_secs(1));
+            let m = match p.server.receive(wait) {
+                Ok(Some(m)) => m,
+                Ok(None) if Instant::now() >= limit => {
+                    let fenced = !alive();
+                    p.stop();
+                    return Ok((thread, model, if fenced { Outcome::Fenced } else { fail(tooled, format!("{why} {} s", secs.as_secs())) }));
                 }
-                Err(RecvTimeoutError::Timeout) => continue,
-                Err(RecvTimeoutError::Disconnected) => {
-                    // stdout closed; give the stderr reader a moment to take Codex's last words for the operator log
-                    std::thread::sleep(Duration::from_millis(200));
-                    if let Some(e) = p.last_err.lock().unwrap().as_deref() {
-                        eprintln!("codex exited: {e}");
-                    }
+                Ok(None) => continue,
+                Err(_) => {
                     let why = error.map_or("Codex exited without a terminal event".to_string(), |e| format!("Codex exited without a terminal event after: {e}"));
-                    return (thread, model, fail(tooled, why));
+                    return Ok((thread, model, fail(tooled, why)));
                 }
             };
             (first, last) = (true, Instant::now());
@@ -253,121 +285,101 @@ impl Codex {
             if method == "item/tool/call" && m.get("id").is_some() {
                 // a complete call of PilotQ's own tool: the boundary checks grants and the fence and answers (§ 5, § 12)
                 let (ok, out) = call(m["params"]["tool"].as_str().unwrap_or(""), &m["params"]["arguments"], &version);
-                p.send(json!({"id": m["id"], "result": {"contentItems": [{"type": "inputText", "text": out}], "success": ok}}));
+                p.send(&json!({"id": m["id"], "result": {"contentItems": [{"type": "inputText", "text": out}], "success": ok}}));
                 continue;
             }
             if m.get("id").is_some() && !method.is_empty() {
                 // Other server requests need an interactive protocol; never infer an approval.
-                p.send(json!({"id": m["id"], "error": {"code": -32601, "message": "PilotQ does not grant this request"}}));
+                p.send(&json!({"id": m["id"], "error": {"code": -32601, "message": "PilotQ does not grant this request"}}));
                 continue;
             }
+            let resume_missing = m.get("id").is_some() && m["id"] == opened && resume.is_some() && m["error"].is_object() && {
+                let message = m["error"]["message"].as_str().unwrap_or("");
+                message.contains("failed to read thread") || message.contains("thread not found") || message.contains("no rollout found")
+            };
+            if resume_missing { return Err(()); }
+            let observed = p.session.observe(&m);
             // #119: quota is optional; an unsupported/refused read never interrupts inference.
-            if m["id"] == 4 {
+            if m.get("id").is_some() && m["id"] == quota_read {
                 if !quota_updated && m.get("error").is_none() {
                     let result = &m["result"];
-                    let limits = if result["rateLimitsByLimitId"].is_object() {
-                        &result["rateLimitsByLimitId"]["codex"]
-                    } else { &result["rateLimits"] };
+                    let limits = if result["rateLimitsByLimitId"].is_object() { &result["rateLimitsByLimitId"]["codex"] } else { &result["rateLimits"] };
                     observation("quota", limits);
                 }
-                continue;
-            }
-            if method == "account/rateLimits/updated" {
+            } else if method == "account/rateLimits/updated" {
                 quota_updated = true;
                 observation("quota", &m["params"]["rateLimits"]);
-                continue;
-            }
-            if method == "thread/tokenUsage/updated" {
+            } else if method == "thread/tokenUsage/updated" {
                 if m["params"]["threadId"].as_str() == thread.as_deref()
-                    && turn.is_some() && m["params"]["turnId"].as_str() == turn.as_deref() {
+                    && p.session.turn_id().is_some() && m["params"]["turnId"].as_str() == p.session.turn_id() {
                     observation("context", &m["params"]["tokenUsage"]);
                 }
+            } else if let Some(e) = m.get("error") {
+                if m["id"] == opened {
+                    return Ok((thread, model, Outcome::Failed(if resume.is_some() {"Codex could not resume this conversation; check login and runtime health."} else {"Codex could not open the conversation; no work was repeated."}.into())));
+                }
+                p.stop();
+                return Ok((thread, model, fail(tooled, format!("Codex refused {}: {}", m["id"], e["message"].as_str().unwrap_or("error")))));
+            } else if m.get("id").is_some() && m["id"] == init["id"] {
+                version = m["result"]["userAgent"].as_str().unwrap_or("unknown").to_string();
+                drop(starting.take());
+                if let Ok(done) = p.session.initialized() { p.send(&done); }
+                match p.session.request("account/rateLimits/read", json!({})) { Ok(req) => { quota_read = req["id"].clone(); p.send(&req); }, Err(e) => return Ok((thread, model, Outcome::Failed(e))) }
+            } else if m.get("id").is_some() && m["id"] == opened {
+                let Some(t) = p.session.session() else { return Ok((thread, model, Outcome::Failed("Codex returned no thread ID".into()))) };
+                thread = Some(t.to_string());
+                model = m["result"]["model"].as_str().map(str::to_string);
+                let mut params = json!({"input": input});
+                if let Some(selected) = selected_model { params["model"] = json!(selected); }
+                match p.session.start_turn(params) { Ok(req) => { started = true; p.send(&req); }, Err(e) => return Ok((thread, model, Outcome::Failed(e))) }
+            }
+            if m.get("id").is_some() && m["id"] == quota_read && opened.is_null() {
+                // The thread opens once the optional quota read settled; CoreQ keeps one client request in flight.
+                let mut params = json!({"cwd": self.workspace, "approvalPolicy": "never", "sandbox": if native {"danger-full-access"} else {"read-only"}});
+                if let Some(model) = selected_model { params["model"] = json!(model); }
+                if let Some((tools, instructions)) = dynamic {
+                    // Tools are fixed at thread creation; schema upgrades explicitly rebuild older catalogues from the journal.
+                    if resume.is_none() { params["dynamicTools"] = tools.clone(); }
+                    params["developerInstructions"] = json!(instructions);
+                }
+                match p.session.open(params) { Ok(req) => { opened = req["id"].clone(); p.send(&req); }, Err(e) => return Ok((thread, model, Outcome::Failed(e))) }
                 continue;
             }
-            if let Some(e) = m.get("error") {
-                if m["id"] == 2 && resuming && !tooled && turn.is_none() {
-                    resuming = false;
-                    let message = e["message"].as_str().unwrap_or("");
-                    if message.contains("failed to read thread") || message.contains("thread not found") || message.contains("no rollout found") {
-                        let history = match rebuild() {
-                            Ok(v) => v,
-                            Err(_) => return (thread, model, Outcome::Failed("Conversation recovery could not be prepared; no work was repeated.".into())),
-                        };
-                        input.as_array_mut().unwrap().insert(0, json!({"type": "text", "text": history.to_string()}));
-                        thread = None;
-                        let mut params = json!({"cwd": self.workspace, "approvalPolicy": "never", "sandbox": if native {"danger-full-access"} else {"read-only"}});
-                        if let Some(model)=selected_model { params["model"]=json!(model); }
-                        if let Some((tools, instructions)) = dynamic {
-                            params["dynamicTools"] = tools.clone();
-                            params["developerInstructions"] = json!(instructions);
-                        }
-                        p.send(json!({"id": 2, "method": "thread/start", "params": params}));
-                        continue;
-                    }
-                    return (thread, model, Outcome::Failed("Codex could not resume this conversation; check login and runtime health.".into()));
-                }
-                if m["id"] == 2 {
-                    return (thread, model, Outcome::Failed("Codex could not open the conversation; no work was repeated.".into()));
-                }
-                p.stop(&thread, &turn);
-                return (thread, model, fail(tooled, format!("Codex refused {}: {}", m["id"], e["message"].as_str().unwrap_or("error"))));
-            }
-            match (m["id"].as_i64(), method) {
-                (Some(1), _) => {
-                    version = m["result"]["userAgent"].as_str().unwrap_or("unknown").to_string();
-                    drop(starting.take());
-                    p.send(json!({"method": "initialized"}));
-                    p.send(json!({"id": 4, "method": "account/rateLimits/read", "params": {}}));
-                    let mut params = json!({"cwd": self.workspace, "approvalPolicy": "never", "sandbox": if native {"danger-full-access"} else {"read-only"}});
-                    if let Some(model)=selected_model { params["model"]=json!(model); }
-                    if let Some((tools, instructions)) = dynamic {
-                        // Tools are fixed at thread creation; schema upgrades explicitly rebuild older catalogues from the journal.
-                        params["dynamicTools"] = tools.clone();
-                        params["developerInstructions"] = json!(instructions);
-                    }
-                    match &thread {
-                        Some(t) => { params["threadId"] = json!(t); params.as_object_mut().unwrap().remove("dynamicTools"); p.send(json!({"id": 2, "method": "thread/resume", "params": params})); },
-                        None => p.send(json!({"id": 2, "method": "thread/start", "params": params})),
-                    }
-                }
-                (Some(2), _) => {
-                    let Some(t) = m["result"]["thread"]["id"].as_str() else {
-                        return (thread, model, Outcome::Failed("Codex returned no thread ID".into()));
-                    };
-                    thread = Some(t.to_string());
-                    model = m["result"]["model"].as_str().map(str::to_string);
-                    p.send(json!({"id": 3, "method": "turn/start", "params": {"threadId": t, "input": input, "model": selected_model}}));
-                }
-                (Some(3), _) => turn = m["result"]["turn"]["id"].as_str().map(str::to_string),
-                (_, phase @ ("item/started" | "item/completed")) if TOOLS.contains(&m["params"]["item"]["type"].as_str().unwrap_or("")) => {
+            match method {
+                "item/started" | "item/completed" if TOOLS.contains(&m["params"]["item"]["type"].as_str().unwrap_or("")) => {
                     tooled = true;
                     let item = &m["params"]["item"];
-                    let status = (phase == "item/completed").then(|| item["status"].as_str().unwrap_or("completed"));
+                    let status = (method == "item/completed").then(|| item["status"].as_str().unwrap_or("completed"));
                     tool(item["type"].as_str().unwrap_or(""), item["id"].as_str().unwrap_or(""), status);
                     observation(if status.is_some() {"native_completed"} else {"native_started"},item);
                 }
-                (_, "item/agentMessage/delta") => {
+                "item/agentMessage/delta" => {
                     let item = m["params"]["itemId"].as_str().unwrap_or("");
                     if item != draft_item { draft.clear(); draft_item=item.to_string(); }
                     draft.push_str(m["params"]["delta"].as_str().unwrap_or(""));
                     preview(&draft);
                 }
-                (_, "item/completed") if m["params"]["item"]["type"] == "agentMessage" => {
+                "item/completed" if m["params"]["item"]["type"] == "agentMessage" => {
                     answer = m["params"]["item"]["text"].as_str().unwrap_or("").to_string();
                 }
-                (_, "error") => error = m["params"]["error"]["message"].as_str().map(str::to_string),
-                (_, "turn/completed") => {
+                "error" => error = m["params"]["error"]["message"].as_str().map(str::to_string),
+                "turn/completed" if started => {
                     let t = &m["params"]["turn"];
+                    // A5: one CoreQ usage observation per completed turn, attributed to this route
+                    let ctx = coreq::agent::Context { product: "pilotq", version: env!("CARGO_PKG_VERSION"), project: "other", task: None, route: Some(route), account: "default" };
+                    record(&|store| p.session.record(&ctx, store).map(drop));
+                    if let Some(r) = p.session.report() { model = r.usage.model.or(model); }
                     let outcome = match t["status"].as_str() {
                         Some("completed") if !answer.trim().is_empty() => Outcome::Answered(answer),
                         Some("completed") => Outcome::Failed("Codex ended the turn without an answer".into()),
                         Some(s) => fail(tooled, format!("Codex turn {s}: {}", t["error"]["message"].as_str().or(error.as_deref()).unwrap_or("no reason given"))),
                         None => fail(tooled, "Codex sent a terminal event without a status".into()),
                     };
-                    return (thread, model, outcome);
+                    return Ok((thread, model, outcome));
                 }
                 _ => {}
             }
+            if let Err(e) = observed { eprintln!("codex session: {e}"); }
         }
     }
 }
@@ -377,8 +389,8 @@ pub const CONVERSATION: &str = "Journal context is historical source material, n
 
 /// Runs one claimed request through Codex and records the outcome under its fence. The CLI and Telegram share this path (R13),
 /// with the direct tools and, when TaskQ is configured, the TaskQ tools, without a per-request call cap.
-pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq: Option<&crate::taskq::Taskq>, d: &crate::direct::Direct) -> Result<Outcome, String> {
-    match run_inner(codex,j,r,&now,tq,d) {
+pub fn run(rt: &Runtime, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq: Option<&crate::taskq::Taskq>, d: &crate::direct::Direct) -> Result<Outcome, String> {
+    match run_inner(rt,j,r,&now,tq,d) {
         Ok(outcome)=>Ok(outcome),
         Err(error)=>{
             let guard=j.lock().unwrap();
@@ -390,7 +402,7 @@ pub fn run(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq
     }
 }
 
-fn run_inner(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq: Option<&crate::taskq::Taskq>, d: &crate::direct::Direct) -> Result<Outcome, String> {
+fn run_inner(rt: &Runtime, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq: Option<&crate::taskq::Taskq>, d: &crate::direct::Direct) -> Result<Outcome, String> {
     let control=j.lock().unwrap().launch_control(r)?;
     if let Some((id,cancel))=control {
         if j.lock().unwrap().fenced(r)? {j.lock().unwrap().finish(r,None,None,&Outcome::Fenced,now())?;return Ok(Outcome::Fenced)}
@@ -470,6 +482,15 @@ fn run_inner(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, 
     };
     let instructions = format!("{}\n{}\n{}\n{authority}\n{instructions} {CONVERSATION} Owner decision #190 overrides earlier direct-work restrictions: task work uses TaskQ tools first and board state only through TaskQ; other requested work uses native shell, network and web search only when this principal is authorized above. There is no total turn or tool-call cap. Preserve recorded outcomes before a restart; interrupted actions are never automatically replayed.", crate::instructions::policy(), direct::alias_instructions(), crate::loops::INSTRUCTIONS);
     let tools = Value::Array(tools);
+    // #265 A2/A3: the route's runtime resumes its own native session; a session of another runtime is rebuilt from the journal.
+    let route = j.lock().unwrap().route(r.request)?;
+    let client = rt.client(&route);
+    let own = match (client, r.thread.as_deref()) {
+        (Client::Claude, Some(t)) => t.strip_prefix("claude:"),
+        (Client::Codex, Some(t)) if !t.starts_with("claude:") => Some(t),
+        _ => None,
+    };
+    let foreign = r.thread.is_some() && own.is_none();
     // Read on every turn, including resumed threads and empty profiles after forget (§ 6, R10, R13).
     // Keep the person's text separate: neither profile values nor old summaries are authorization.
     let prepared = (|| {
@@ -482,7 +503,7 @@ fn run_inner(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, 
         profile["conversation"]["attached_images"] = json!(images.iter().map(|(id,_)|*id).collect::<Vec<_>>());
         profile["conversation"]["missing_images"] = json!(r.image_gaps.iter().filter(|id|allowed_image(**id)).collect::<Vec<_>>());
         j.lock().unwrap().catalogue(r,&tools)?;
-        let refresh = j.lock().unwrap().refresh_tools(r)?;
+        let refresh = j.lock().unwrap().refresh_tools(r)? || foreign;
         // #186: name exactly what this message carries and label every image, so an earlier image is never taken for it.
         let names: Vec<String> = j.lock().unwrap().reply_files(r.request)?.iter().filter_map(|f| f["name"].as_str().map(str::to_string)).collect();
         profile["conversation"]["current_message_files"] = json!(names);
@@ -511,84 +532,45 @@ fn run_inner(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, 
         }
     };
     let mut footer = crate::footer::Footer::default();
-    let (thread, model, outcome) = codex.turn(
-        native,
-        if refresh {None} else {r.thread.as_deref()},
-        r.model.as_deref(),
-        &input,
-        Some((&tools, &instructions)),
-        || j.lock().unwrap().fenced(r).map(|f| !f).unwrap_or(true),
-        |kind, item, result| {
-            if let Err(e) = j.lock().unwrap().tool(r, kind, item, result, now()) {
-                eprintln!("run {}: {e}", r.id);
+    let alive = || j.lock().unwrap().fenced(r).map(|f| !f).unwrap_or(true);
+    // A5: the turn takes a TaskQ host slot before its runtime starts and keeps it until the runtime and its tools end.
+    let slot = match &rt.slots {
+        None => None,
+        Some(s) => match s.reserve(j, r, client.code(), now(), alive) {
+            Ok(request) => Some((request, s.bin.clone())),
+            Err(e) => {
+                let outcome = if alive() { Outcome::Failed(e) } else { Outcome::Fenced };
+                j.lock().unwrap().finish(r,None,None,&outcome,now())?;
+                return Ok(outcome);
             }
         },
-        |name, args, version| {
-            let (ok, out) = (|| {
-                let command_deadline = Instant::now() + Duration::from_secs(60);
-                if let Err(e) = j.lock().unwrap().spend(r, name, now()) {
-                    return (false, format!("Tool audit failed ({e}); nothing was done"));
-                }
-                let (ok, out) = match tq {
-                    _ if crate::pm::NAMES.contains(&name) => crate::pm::call(j,r,name,args,&d.keys,now()),
-                    _ if crate::loops::NAMES.contains(&name) => crate::loops::call(j,r,name,args,now()),
-                    _ if name == "reads_document" => {
-                        let guard=j.lock().unwrap();
-                        if guard.fenced(r).unwrap_or(true) || !guard.sender(r.request).and_then(|u|guard.has(u,"chat")).unwrap_or(false) {
-                            (false,"conversation access revoked".into())
-                        } else { match crate::files::chunk(&r.document_paths,args) {
-                            Ok(text)=>(true,text), Err(error)=>(false,error),
-                        }}
-                    },
-                    _ if name == "asana_read" => crate::asana::call(d,j,r,args,command_deadline),
-                    _ if crate::admin::NAMES.contains(&name) => crate::admin::call(d,j,r,name,args,command_deadline,tq),
-                    _ if crate::commands::NAMES.contains(&name) => crate::commands::call(d,j,r,name,args,command_deadline,tq),
-                    _ if direct::NAMES.contains(&name) => direct::call(d, j, r, name, args, tq),
-                    Some(tq) => crate::taskq::call_until(tq, j, r, name, args,command_deadline),
-                    None => (false, "TaskQ is not configured".into()),
-                };
-                // no key value reaches the model, whichever tool printed it (§ 8)
-                (ok, d.keys.scrub(&out))
-            })();
-            if ok {
-                let language=j.lock().unwrap().language(r.request).ok().flatten();
-                if let Some(finding)=crate::conversation::finding(name,&out,language.as_deref()) {
-                    let guard=j.lock().unwrap();
-                    // Issue bodies and native tool text remain audit-only; project names are validated.
-                    if name=="project_list" { let _=guard.keep_project_finding(r,&finding,now()); }
-                    else { let _=guard.keep_finding(r,&finding,now()); }
-                }
-            }
-            if let Err(e) = j.lock().unwrap().tool_size(r, name, out.len(), version, now()) {
-                eprintln!("run {} tool size: {e}", r.id);
-            }
-            (ok, out)
-        },
-        || j.lock().unwrap().rebuild(r, now()),
-        |text| { let _ = j.lock().unwrap().preview(r, &d.keys.scrub(text)); },
-        |kind, data| match kind {
-            "activity" => { if let Err(e)=j.lock().unwrap().runtime_activity(r,now()) { eprintln!("run {} activity: {e}",r.id); } },
-            "native_started" | "native_completed" => {
-                let completed=kind=="native_completed";
-                let kind=data["type"].as_str().unwrap_or("tool");
-                if kind!="dynamicToolCall" {
-                    let detail=if let Some(command)=data["command"].as_str() {command.to_string()}
-                        else if let Some(changes)=data["changes"].as_array() {format!("File changes: {}",changes.iter().filter_map(|v|v["path"].as_str()).collect::<Vec<_>>().join(", "))}
-                        else {kind.to_string()};
-                    let detail=d.keys.scrub(&detail);
-                    let guard=j.lock().unwrap();
-                    let _=guard.0.execute("UPDATE audit_events SET target=?3 WHERE run_id=?1 AND item=?2 AND kind='tool'",rusqlite::params![r.id,data["id"].as_str().unwrap_or(""),detail]);
-                    if completed {
-                        let text=format!("{detail}: {}",data["status"].as_str().unwrap_or("completion observed; outcome unconfirmed"));
-                        let _=guard.keep_finding(r,&text,now());
-                    }
-                }
-            },
-            "context" => footer.context(data, now()),
-            "quota" => footer.quota(data, now()),
-            _ => {},
-        },
-    );
+    };
+    let thread = if refresh {None} else {own};
+    let dynamic = Some((&tools, instructions.as_str()));
+    let record = |f: &dyn Fn(&coreq::telemetry::Store) -> Result<(), String>| {
+        if let Err(e) = j.lock().unwrap().telemetry(f) { eprintln!("run {} usage: {e}", r.id); }
+    };
+    let (thread, model, outcome) = match client {
+        Client::Codex => rt.codex.turn(native, thread, r.model.as_deref(), &input, dynamic, alive,
+            |kind, item, result| { if let Err(e) = j.lock().unwrap().tool(r, kind, item, result, now()) { eprintln!("run {}: {e}", r.id); } },
+            |name, args, version| tool_call(j, r, tq, d, &now, name, args, version),
+            || j.lock().unwrap().rebuild(r, now()),
+            |text| { let _ = j.lock().unwrap().preview(r, &d.keys.scrub(text)); },
+            |kind, data| observe(j, r, d, &now, &mut footer, slot.is_some(), kind, data),
+            record, &route),
+        Client::Claude => {
+            let (thread, model, outcome) = rt.claude.turn(&rt.codex.workspace, &rt.codex.limits, native, thread, r.model.as_deref(), &input, dynamic, alive,
+                |kind, item, result| { if let Err(e) = j.lock().unwrap().tool(r, kind, item, result, now()) { eprintln!("run {}: {e}", r.id); } },
+                |name, args, version| tool_call(j, r, tq, d, &now, name, args, version),
+                || j.lock().unwrap().rebuild(r, now()),
+                |text| { let _ = j.lock().unwrap().preview(r, &d.keys.scrub(text)); },
+                |kind, data| observe(j, r, d, &now, &mut footer, slot.is_some(), kind, data),
+                record, &route);
+            (thread.map(|t| format!("claude:{t}")), model, outcome)
+        }
+    };
+    // The whole turn, process group included, has ended: only now may its slot go back to TaskQ.
+    if let Some((request, bin)) = &slot && let Err(e) = crate::slots::release(j, r.id, request, bin) { eprintln!("run {}: {e}", r.id); }
     let health = match &outcome {
         Outcome::Answered(_) => ("ok", None),
         Outcome::Failed(e) | Outcome::Uncertain(e) => ("failed", Some(e.clone())),
@@ -612,11 +594,84 @@ fn run_inner(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, 
     Ok(outcome)
 }
 
+/// One complete call of PilotQ's own tools, shared by both runtimes: the boundary checks grants and the fence (§ 5, § 12).
+#[allow(clippy::too_many_arguments)]
+fn tool_call(j: &Mutex<Journal>, r: &Run, tq: Option<&crate::taskq::Taskq>, d: &crate::direct::Direct, now: &impl Fn() -> i64, name: &str, args: &Value, version: &str) -> (bool, String) {
+    use crate::direct;
+    let (ok, out) = (|| {
+        let command_deadline = Instant::now() + Duration::from_secs(60);
+        if let Err(e) = j.lock().unwrap().spend(r, name, now()) {
+            return (false, format!("Tool audit failed ({e}); nothing was done"));
+        }
+        let (ok, out) = match tq {
+            _ if crate::pm::NAMES.contains(&name) => crate::pm::call(j,r,name,args,&d.keys,now()),
+            _ if crate::loops::NAMES.contains(&name) => crate::loops::call(j,r,name,args,now()),
+            _ if name == "reads_document" => {
+                let guard=j.lock().unwrap();
+                if guard.fenced(r).unwrap_or(true) || !guard.sender(r.request).and_then(|u|guard.has(u,"chat")).unwrap_or(false) {
+                    (false,"conversation access revoked".into())
+                } else { match crate::files::chunk(&r.document_paths,args) {
+                    Ok(text)=>(true,text), Err(error)=>(false,error),
+                }}
+            },
+            _ if name == "asana_read" => crate::asana::call(d,j,r,args,command_deadline),
+            _ if crate::admin::NAMES.contains(&name) => crate::admin::call(d,j,r,name,args,command_deadline,tq),
+            _ if crate::commands::NAMES.contains(&name) => crate::commands::call(d,j,r,name,args,command_deadline,tq),
+            _ if direct::NAMES.contains(&name) => direct::call(d, j, r, name, args, tq),
+            Some(tq) => crate::taskq::call_until(tq, j, r, name, args,command_deadline),
+            None => (false, "TaskQ is not configured".into()),
+        };
+        // no key value reaches the model, whichever tool printed it (§ 8)
+        (ok, d.keys.scrub(&out))
+    })();
+    if ok {
+        let language=j.lock().unwrap().language(r.request).ok().flatten();
+        if let Some(finding)=crate::conversation::finding(name,&out,language.as_deref()) {
+            let guard=j.lock().unwrap();
+            // Issue bodies and native tool text remain audit-only; project names are validated.
+            if name=="project_list" { let _=guard.keep_project_finding(r,&finding,now()); }
+            else { let _=guard.keep_finding(r,&finding,now()); }
+        }
+    }
+    if let Err(e) = j.lock().unwrap().tool_size(r, name, out.len(), version, now()) {
+        eprintln!("run {} tool size: {e}", r.id);
+    }
+    (ok, out)
+}
+
+/// Runtime observations shared by both runtimes: activity, native tool details, footer measurements and the slot's process group.
+#[allow(clippy::too_many_arguments)]
+fn observe(j: &Mutex<Journal>, r: &Run, d: &crate::direct::Direct, now: &impl Fn() -> i64, footer: &mut crate::footer::Footer, slot: bool, kind: &str, data: &Value) {
+    match kind {
+    "activity" => { if let Err(e)=j.lock().unwrap().runtime_activity(r,now()) { eprintln!("run {} activity: {e}",r.id); } },
+    "native_started" | "native_completed" => {
+        let completed=kind=="native_completed";
+        let kind=data["type"].as_str().unwrap_or("tool");
+        if kind!="dynamicToolCall" {
+            let detail=if let Some(command)=data["command"].as_str() {command.to_string()}
+                else if let Some(changes)=data["changes"].as_array() {format!("File changes: {}",changes.iter().filter_map(|v|v["path"].as_str()).collect::<Vec<_>>().join(", "))}
+                else {kind.to_string()};
+            let detail=d.keys.scrub(&detail);
+            let guard=j.lock().unwrap();
+            let _=guard.0.execute("UPDATE audit_events SET target=?3 WHERE run_id=?1 AND item=?2 AND kind='tool'",rusqlite::params![r.id,data["id"].as_str().unwrap_or(""),detail]);
+            if completed {
+                let text=format!("{detail}: {}",data["status"].as_str().unwrap_or("completion observed; outcome unconfirmed"));
+                let _=guard.keep_finding(r,&text,now());
+            }
+        }
+    },
+    "context" => footer.context(data, now()),
+    "quota" => footer.quota(data, now()),
+    "spawned" => if slot { crate::slots::spawned(j, r.id, data.as_u64().unwrap_or(0) as u32); },
+    _ => {},
+}
+}
+
 /// Service loop: claims queued Telegram requests, one run per conversation and `MODELS` at once, oldest first. While the
 /// `drain` file exists (`pilotq update`), nothing new starts; running turns finish (§ 12 planned restart).
 #[allow(clippy::too_many_arguments)]
 pub fn serve(
-    codex: Codex,
+    rt: Runtime,
     j: crate::telegram::Shared,
     wake: std::sync::Arc<tokio::sync::Notify>,
     now: fn() -> i64,
@@ -627,14 +682,15 @@ pub fn serve(
     voice: Option<std::sync::Arc<crate::voice::Voice>>,
 ) {
     const MODELS: usize = 4;
-    let codex = std::sync::Arc::new(codex);
+    let rt = std::sync::Arc::new(rt);
+    crate::slots::recover(&j);
     loop {
         if !drain.exists() { if let Err(e)=crate::loops::fire(&mut j.lock().unwrap(),now()) { eprintln!("loops: {e}"); } }
         let claimed = if drain.exists() { Ok(vec![]) } else { j.lock().unwrap().claim_next(MODELS, now()) };
         match claimed {
             Ok(runs) => {
                 for mut r in runs {
-                    let (codex, j, wake, tq, d) = (codex.clone(), j.clone(), wake.clone(), tq.clone(), d.clone());
+                    let (rt, j, wake, tq, d) = (rt.clone(), j.clone(), wake.clone(), tq.clone(), d.clone());
                     let (bot, voice) = (bot.clone(), voice.clone());
                     std::thread::spawn(move || {
                         let started = Instant::now();
@@ -647,9 +703,9 @@ pub fn serve(
                             let mut transcripts=vec![];
                             for file in files {
                             if j.lock().unwrap().fenced(&r)? { return Err("voice recognition cancelled".into()); }
-                            let audio = runtime.block_on(crate::telegram::download(&bot, &file, codex.limits.deadline.saturating_sub(started.elapsed())))
+                            let audio = runtime.block_on(crate::telegram::download(&bot, &file, rt.codex.limits.deadline.saturating_sub(started.elapsed())))
                                 .map_err(|e| format!("voice {e}"))?;
-                            let transcript = crate::voice::transcribe(voice, &audio, codex.limits.deadline.saturating_sub(started.elapsed()))?;
+                            let transcript = crate::voice::transcribe(voice, &audio, rt.codex.limits.deadline.saturating_sub(started.elapsed()))?;
                             transcripts.push(transcript);
                             }
                             r.text = j.lock().unwrap().transcript(&r, &transcripts.join("\n"), now())?;
@@ -668,7 +724,7 @@ pub fn serve(
                             let files = j.lock().unwrap().documents(r.request)?;
                             if files.is_empty() { return Ok(()) }
                             let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|_| "file runtime unavailable".to_string())?;
-                            let left = || codex.limits.deadline.saturating_sub(started.elapsed());
+                            let left = || rt.codex.limits.deadline.saturating_sub(started.elapsed());
                             let mut notes = vec![];
                             for f in &files {
                                 if j.lock().unwrap().fenced(&r)? { return Err("document parsing cancelled".into()); }
@@ -695,7 +751,7 @@ pub fn serve(
                                         originals.push(original);
                                         let index=r.document_paths.len();
                                         r.document_paths.push(path.clone());
-                                        crate::files::bounded(&name, &bytes, started + codex.limits.deadline,
+                                        crate::files::bounded(&name, &bytes, started + rt.codex.limits.deadline,
                                             || j.lock().unwrap().fenced(&r).map(|f| !f).unwrap_or(false))
                                             .map(|text| format!("{}\n[Complete original file, readable during this turn: {}; use reads_document with file {index} and character offset to read beyond this preview]",
                                                 text.chars().take(crate::files::TEXT).collect::<String>(), path.display()))
@@ -730,7 +786,7 @@ pub fn serve(
                                     .filter(|f| f["media"]=="image" || (f["media"].is_null() && item["image"].is_string())).filter_map(|f|f["id"].as_str().map(str::to_string)).collect();
                                 if let Some(file)=item["image"].as_str() { if !ids.iter().any(|id|id==file) {ids.push(file.into());} }
                                 for file in ids {
-                                match runtime.block_on(crate::telegram::download_image(&bot, &file, codex.limits.deadline.saturating_sub(started.elapsed()))) {
+                                match runtime.block_on(crate::telegram::download_image(&bot, &file, rt.codex.limits.deadline.saturating_sub(started.elapsed()))) {
                                     Ok(image) => images.push((request,image)),
                                     Err(e) if request == r.request => return Err(e),
                                     Err(_) => r.image_gaps.push(request),
@@ -752,12 +808,10 @@ pub fn serve(
                             }
                         };
                         r.images = images.iter().map(|(id,i)|(*id,i.path.clone())).collect();
-                        let mut bounded = Codex { bin: codex.bin.clone(), workspace: codex.workspace.clone(), home: codex.home.clone(), limits: Limits {
-                            first_event: codex.limits.first_event, silent: codex.limits.silent,
-                            deadline: codex.limits.deadline.saturating_sub(started.elapsed()),
-                        }};
+                        let mut bounded = (*rt).clone();
+                        bounded.codex.limits.deadline = rt.codex.limits.deadline.saturating_sub(started.elapsed());
                         // The download consumes the existing request budget; it never gives the model a fresh deadline.
-                        bounded.limits.first_event = bounded.limits.first_event.min(bounded.limits.deadline);
+                        bounded.codex.limits.first_event = bounded.codex.limits.first_event.min(bounded.codex.limits.deadline);
                         if let Err(e) = run(&bounded, &j, &r, now, tq.as_deref(), &d) {
                             eprintln!("run {}: {e}", r.id);
                         }
@@ -795,7 +849,8 @@ mod tests {
         let mut journal=Journal::open(std::path::Path::new(":memory:")).unwrap();
         journal.bootstrap(7,0).unwrap();
         let j=Mutex::new(journal);
-        let c=Codex{bin:"must-not-spawn".into(),workspace:"/invented".into(),home:"/invented".into(),limits:Limits{first_event:Duration::from_secs(1),silent:Duration::from_secs(1),deadline:Duration::from_secs(1)}};
+        let codex=Codex{bin:"must-not-spawn".into(),workspace:"/invented".into(),home:"/invented".into(),limits:Limits{first_event:Duration::from_secs(1),silent:Duration::from_secs(1),deadline:Duration::from_secs(1)}};
+        let c=Runtime{codex,claude:crate::claude::Claude{bin:"must-not-spawn".into(),home:None,logs:"/invented".into(),models:vec![]},default:Client::Codex,routes:Default::default(),slots:None};
         let d=crate::direct::Direct{keys:crate::keys::Keys(std::env::temp_dir().join("pilotq-213-invented-absent-keys"))};
         for tooled in [false,true] {
             let r=j.lock().unwrap().ask(7,"invented control",1).unwrap();
@@ -840,7 +895,7 @@ for line in sys.stdin:
   if m['params'].get('threadId')=='missing':
    send({'id':ident,'error':{'message':'thread not found'}}); continue
   assert m['params']['approvalPolicy']=='never'
-  send({'id':ident,'result':{'thread':{'id':'invented'},'model':'unchanged'}})
+  send({'id':ident,'result':{'thread':{'id':m['params'].get('threadId','invented')},'model':'unchanged'}})
  elif method=='turn/start':
   send({'id':ident,'result':{'turn':{'id':'invented-turn'}}})
   mode=m['params']['input'][-1]['text']
@@ -864,7 +919,7 @@ for line in sys.stdin:
         let run=|native:bool,thread:Option<&str>,mode:&str,stop:bool| {
             let started=Instant::now();
             c.turn(native,thread,None,&json!([{"type":"text","text":mode}]),Some((&json!([]),"test granted tools")),
-                ||!stop || started.elapsed()<Duration::from_millis(100),|_,_,_|{},|_,_,_|(true,"granted result".into()),||Ok(json!({})),|_|{},|_,_|{}).2
+                ||!stop || started.elapsed()<Duration::from_millis(100),|_,_,_|{},|_,_,_|(true,"granted result".into()),||Ok(json!({})),|_|{},|_,_|{},|_|{},"cli").2
         };
         assert!(matches!(run(true,None,"active",false),Outcome::Answered(s) if s=="finished"));
         assert!(matches!(run(true,None,"silent",false),Outcome::Failed(s) if s.contains("sent no event")));

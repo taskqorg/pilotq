@@ -13,6 +13,8 @@ mod files;
 mod instructions;
 mod keys;
 mod manager;
+mod claude;
+mod slots;
 mod loops;
 mod pm;
 mod footer;
@@ -178,7 +180,7 @@ struct Config {
     token: String,
     owner: i64,
     api_url: Option<url::Url>,
-    codex: manager::Codex,
+    runtime: manager::Runtime,
     taskq: Option<taskq::Taskq>,
     direct: direct::Direct,
     voice: Option<voice::Voice>,
@@ -223,7 +225,26 @@ fn config(t: &Tool) -> Result<Option<Config>, String> {
         (None, None) if vc.is_null() => None,
         _ => return Err("config.json: voice needs recognizer and model".into()),
     };
-    Ok(Some(Config { token, owner, api_url, codex, taskq, direct: direct(t), voice }))
+    // #265 A2: installation runtime (default Codex), per-route overrides and optional TaskQ host slots
+    let client = |v: &Value, k: &str| v.as_str().map_or(Ok(coreq::agent::Client::Codex), |s| coreq::agent::Client::parse(s).ok_or(format!("config.json: {k} must be codex or claude")));
+    let default = client(&v["runtime"], "runtime")?;
+    let mut routes = std::collections::BTreeMap::new();
+    for (route, value) in v["runtime_routes"].as_object().into_iter().flatten() { routes.insert(route.clone(), client(value, "runtime_routes")?); }
+    let claude = claude::Claude { bin: v["claude"].as_str().unwrap_or("claude").into(),
+        // "default" keeps the service user's own Claude login; otherwise PilotQ's isolated home, like Codex
+        home: match v["claude_home"].as_str() { Some("default") => None, Some(p) => Some(p.into()), None => Some(t.install.join("claude")) },
+        logs: t.install.join("claude-sessions"),
+        models: match v["claude_models"].as_array() {
+            Some(a) => a.iter().map(|m| m.as_str().filter(|s| !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b))).map(str::to_string).ok_or("config.json: claude_models are model codes")).collect::<Result<_, _>>()?,
+            None => ["opus", "sonnet", "haiku"].map(String::from).to_vec(),
+        } };
+    let slots = match (v["slot_root"].as_str(), &taskq) {
+        (Some(root), Some(tq)) => Some(slots::Slots { bin: tq.bin.clone(), root: root.into() }),
+        (Some(_), None) => return Err("config.json: slot_root needs taskq".into()),
+        (None, _) => None,
+    };
+    let runtime = manager::Runtime { codex, claude, default, routes, slots };
+    Ok(Some(Config { token, owner, api_url, runtime, taskq, direct: direct(t), voice }))
 }
 
 fn initial_project(j: &journal::Journal, c: &Config) -> Result<(), String> {
@@ -294,12 +315,13 @@ fn doctor(t: &Tool) -> Value {
         matches!(tokio::time::timeout(Duration::from_secs(20), bot.get_me().send()).await, Ok(Ok(me)) if me.is_bot)
     }));
     checks["telegram"] = json!(if telegram { "ok" } else { "failed" });
-    let mut cmd = Command::new(&c.codex.bin);
+    let codex = &c.runtime.codex;
+    let mut cmd = Command::new(&codex.bin);
     cmd.env_clear();
     for k in ["PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR", "SSL_CERT_FILE"] {
         if let Some(v) = std::env::var_os(k) { cmd.env(k, v); }
     }
-    cmd.env("CODEX_HOME", &c.codex.home)
+    cmd.env("CODEX_HOME", &codex.home)
         .args(["-c", "forced_login_method=\"chatgpt\"", "login", "status"])
         .stdin(Stdio::null());
     let login = host::output(&mut cmd).ok().is_some_and(|o| {
@@ -307,6 +329,17 @@ fn doctor(t: &Tool) -> Value {
                 || String::from_utf8_lossy(&o.stderr).contains("Logged in using ChatGPT"))
         });
     checks["codex"] = json!(if login { "ok" } else { "failed" });
+    // #265: a Claude route needs a Claude subscription login in PilotQ's own Claude home; API-key login does not qualify (R9)
+    let uses_claude = c.runtime.default == coreq::agent::Client::Claude || c.runtime.routes.values().any(|r| *r == coreq::agent::Client::Claude);
+    let claude = !uses_claude || {
+        let mut cmd = manager::base(&c.runtime.claude.bin);
+        if let Some(home) = &c.runtime.claude.home { cmd.env("CLAUDE_CONFIG_DIR", home); }
+        cmd.args(["auth", "status", "--json"]);
+        host::output_with_budget(&mut cmd, Duration::from_secs(10)).ok().and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())
+            .is_some_and(|v| v["loggedIn"] == true && v["authMethod"] == "claude.ai" && v["apiProvider"] == "firstParty")
+    };
+    if uses_claude { checks["claude"] = json!(if claude { "ok" } else { "failed" }); }
+    let login = login && claude;
     let board = c.taskq.as_ref().and_then(|tq| tq.board().ok());
     checks["taskq"] = json!(if board.is_some() { "ok" } else { "failed" });
     let voice = voice::readiness(c.voice.as_ref());
@@ -364,11 +397,11 @@ fn service_run(t: &Tool) -> ! {
             bot = bot.set_api_url(u);
         }
         let (j, wake) = (j.clone(), Arc::new(tokio::sync::Notify::new()));
-        let deadline = c.codex.limits.deadline;
+        let deadline = c.runtime.codex.limits.deadline;
         let tq = c.taskq.map(Arc::new);
-        let (mj, mwake, codex, drain, mtq, d) = (j.clone(), wake.clone(), c.codex, t.install.join(DRAIN), tq.clone(), Arc::new(c.direct));
+        let (mj, mwake, rt, drain, mtq, d) = (j.clone(), wake.clone(), c.runtime, t.install.join(DRAIN), tq.clone(), Arc::new(c.direct));
         let (manager_bot, voice) = (bot.clone(), c.voice.map(Arc::new));
-        std::thread::spawn(move || manager::serve(codex, mj, mwake, || now() as i64, drain, mtq, d, manager_bot, voice));
+        std::thread::spawn(move || manager::serve(rt, mj, mwake, || now() as i64, drain, mtq, d, manager_bot, voice));
         if let Some(tq) = tq {
             let (wj, wwake) = (j.clone(), wake.clone());
             let ltq=tq.clone();let lj=wj.clone();
@@ -436,7 +469,7 @@ fn ask(t: &Tool, text: &str) -> Result<Value, (Value, String)> {
     }
     let r = j.ask(cfg.owner, text, now() as i64).map_err(plain)?;
     let j = Mutex::new(j);
-    manager::run(&cfg.codex, &j, &r, || now() as i64, cfg.taskq.as_ref(), &cfg.direct).map_err(plain)?;
+    manager::run(&cfg.runtime, &j, &r, || now() as i64, cfg.taskq.as_ref(), &cfg.direct).map_err(plain)?;
     let (state, reply, error) = j.lock().unwrap().request(r.request).map_err(plain)?;
     let v = json!({"request": r.request, "state": state, "reply": reply, "error": error});
     if state == "answered" { Ok(v) } else { Err((v, format!("request #{} {state}: {}", r.request, error.unwrap_or_default()))) }
@@ -669,6 +702,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let [mode, name] = args.as_slice() {
         if mode == "--document-parser" { files::worker(name); return; }
+        if mode == "--mcp-bridge" { claude::bridge(name); return; }
     }
     let t = tool();
     // the installed launcher runs the current release (coreq launcher)

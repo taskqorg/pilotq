@@ -1278,3 +1278,23 @@ R10 and §2 require silent stranger ingress; §5 also requires startup onboardin
 The local regression command `cargo test --locked --test telegram automatic::a40_admission_startup_onboarding -- --exact --nocapture` reproduced the original assertion after real service startup with fake dependencies: `left: 1`, `right: 0` (exit 101). After the fixture repair, the same command passed (1 test). A40 and the regression now share checks for ignored update identity, no sender-9 request, only owner service onboarding records/deliveries, no reactions or typing, and no model run, plan or ticket. The regression additionally checks the fake model protocol and TaskQ log for absence of a turn or task creation. Production admission and policy are unchanged.
 
 This is component evidence, not the §9 release qualification. Task #281 must run all fourteen A40 cases, including cleanup, on the exact accepted merge containing this repair. Its reserved host, fixture-only TaskQ controls, original admission restoration and copied-login/board-credential cleanup remain required. No live controls, installation or release is authorized by this check.
+
+## Manager runtimes through CoreQ agent (#265)
+
+[Manager runtimes](runtime-contract.md#manager-runtimes) bind R9 and §§3, 6, 7 and 9. Local evidence:
+
+- A3/A6 Codex: `native_and_long_turn_190` drives a fake app-server through CoreQ `AppServer`/`AppSession`: dynamic
+  tools, drafts, inactivity, stop, same-thread resume and a missing-thread rebuild.
+- A2/A3 Claude: `claude_turn_and_tool_relay_265` drives a fake Claude CLI through CoreQ `Turn`: one stream-json
+  message, a PilotQ tool listed and called over the per-turn relay, a draft, one usage observation, resume of the same
+  session ID, a missing-session rebuild and removed relay files. Restricted principals get `--tools ""`.
+  `mcp_bridge_relays_265` checks the stdio MCP relay.
+- A5 slots: `slot_lifecycle_265` checks the identity read, one reserve, start only on `reserved`, durable binding until
+  the `released` readback, and release of a slot left by a crashed process whose runtime is gone.
+- A4 Claude on the Mac: a worker CLI check on Claude Code 2.1.308 with the service user's own login ran two
+  `pilotq ask` processes in one temporary installation. The first called `project_list` over the relay; the second
+  resumed the same `claude:` session and recalled the first request. Two `agent.turn` observations were recorded.
+
+Open for the PM under §9 after the ordinary release: A4 Codex on pds18 through the installed service (Telegram turn,
+`/model`, drafts, restart and update with the same thread ID), and A5 with `slot_root` once the installed TaskQ
+advertises `slots_protocol: 1`. No Claude runs on pds18.

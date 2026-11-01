@@ -2241,6 +2241,32 @@ impl Journal {
         Ok((blockers,retired))
     }
 
+    /// #265: a run's TaskQ slot binding and release key, kept until TaskQ reads back the release (§ 7). Owner-only journal,
+    /// never audit or telemetry: the key is release authority.
+    pub fn set_slot(&self, run: i64, v: Option<&Value>) -> Result<(), String> {
+        let key = format!("slot:{run}");
+        match v {
+            Some(v) => self.0.execute("INSERT INTO meta(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![key, v.to_string()]),
+            None => self.0.execute("DELETE FROM meta WHERE key=?1", [key]),
+        }.map(drop).map_err(|e| e.to_string())
+    }
+
+    pub fn slot(&self, run: i64) -> Result<Option<Value>, String> {
+        let text: Option<String> = self.0.query_row("SELECT CAST(value AS TEXT) FROM meta WHERE key=?1", [format!("slot:{run}")], |r| r.get(0)).optional().map_err(|e| e.to_string())?;
+        text.map(|t| serde_json::from_str(&t).map_err(|_| "slot binding unreadable".to_string())).transpose()
+    }
+
+    pub fn slots(&self) -> Result<Vec<(i64, Value)>, String> {
+        let mut q = self.0.prepare("SELECT substr(key,6), CAST(value AS TEXT) FROM meta WHERE key LIKE 'slot:%'").map_err(|e| e.to_string())?;
+        let rows = q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(|e| e.to_string())?;
+        rows.map(|r| { let (run, v) = r.map_err(|e| e.to_string())?; Ok((run.parse().map_err(|_| "slot run unreadable")?, serde_json::from_str(&v).map_err(|_| "slot binding unreadable")?)) }).collect()
+    }
+
+    /// #265 A5: the turn's CoreQ usage observation goes to the same telemetry store as request events.
+    pub fn telemetry(&self, f: &dyn Fn(&Store) -> Result<(), String>) -> Result<(), String> {
+        f(self.2.get_or_init(|| Store::open(&self.1)).as_ref().map_err(String::clone)?)
+    }
+
     /// True when a stop or a later claim has retired this run's fence.
     pub fn fenced(&self, r: &Run) -> Result<bool, String> {
         self.0.query_row("SELECT fence<>?2 OR (generation<>?4 AND EXISTS(SELECT 1 FROM audit_events WHERE request_id=?3 AND kind='loop_tick')) OR NOT EXISTS(SELECT 1 FROM requests q JOIN grants g ON g.user=q.sender AND g.name='chat' WHERE q.id=?3 AND q.state='running')
@@ -3513,13 +3539,17 @@ impl Journal {
     /// can reach telemetry (§ 8). A telemetry failure is reported and never blocks the request.
     pub(crate) fn trace(&self, request: i64, at: i64) {
         let event = || -> Result<Option<Event>, String> {
-            let (front, state, received, runs, model): (String, String, i64, i64, Option<String>) = self
+            // ponytail: the runtime is read from the conversation's native session (`claude:` prefix, #265); a per-run column if
+            // a route ever needs its runtime history
+            let (front, state, received, runs, model, runtime): (String, String, i64, i64, Option<String>, String) = self
                 .0
                 .query_row(
                     "SELECT front, state, received_at, (SELECT count(*) FROM runs WHERE request_id=?1),
-                        (SELECT model FROM runs WHERE request_id=?1 AND model IS NOT NULL ORDER BY id DESC LIMIT 1) FROM requests WHERE id=?1",
+                        (SELECT model FROM runs WHERE request_id=?1 AND model IS NOT NULL ORDER BY id DESC LIMIT 1),
+                        coalesce((SELECT CASE WHEN thread LIKE 'claude:%' THEN 'claude' END FROM conversations WHERE session=requests.session), 'codex')
+                        FROM requests WHERE id=?1",
                     [request],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
                 )
                 .map_err(|e| e.to_string())?;
             // #257: the event ID is immutable; a queued built-in traced now would conflict with its final outcome.
@@ -3538,7 +3568,7 @@ impl Journal {
                 json!({"product": "pilotq", "version": env!("CARGO_PKG_VERSION"), "operation": "request", "kind": "pilotq.request",
                     "trace": trace_id(request), "span": "request", "started_ms": received.max(0) * 1000, "duration_us": (at - received).max(0) * 1_000_000,
                     "outcome": outcome, "error": if outcome == "ok" { "none" } else { state.as_str() }, "source": front, "attempt": runs,
-                    "runtime": (runs > 0).then_some("codex"), "model": model}),
+                    "runtime": (runs > 0).then_some(runtime), "model": model}),
             ).map(Some)
         };
         let r = event().and_then(|ev| match ev {

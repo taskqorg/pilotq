@@ -13,10 +13,11 @@ They use the same admission and audit boundary as other requests (R10, R13, R17)
 - `/help` lists available controls; `/version` reports this binary's version; `/doctor` runs
   bounded, read-only setup checks and returns check names and outcomes only. Unknown commands
   receive a usage error, not a model turn. Commands accept Telegram's `@bot` suffix.
-- `/model` reads the configured Codex app-server's model catalogue and displays selection buttons;
+- `/model` reads the route runtime's model catalogue (Codex app-server `model/list`, or the
+  configured `claude_models` aliases) and displays selection buttons;
   `/model MODEL` selects an exact catalogue name, and `/model default` removes the override. The
   catalogue is not proof of subscription entitlement. Record the requested model separately from the
-  last model reported by Codex. An unavailable catalogue refuses selection without changing the
+  last model reported by the runtime. An unavailable catalogue refuses selection without changing the
   saved choice.
 - A model choice belongs to the existing isolated or shared conversation, requires current `chat`
   admission, survives restart and `/new`, and applies only to runs claimed after the change. Buttons
@@ -59,7 +60,8 @@ Every command that writes prints the readback, supports `--json` and returns a n
 failure.
 
 `pilotq doctor [--json]` performs read-only setup checks: Telegram `getMe` returns a bot identity,
-the configured isolated Codex home reports a ChatGPT login, and TaskQ returns a complete snapshot
+the configured isolated Codex home reports a ChatGPT login, a configured Claude route's home
+reports a `claude.ai` first-party login (`claude auth status`), and TaskQ returns a complete snapshot
 matching its configured board. It never polls updates, starts a model turn or changes grants.
 Missing configuration, failed checks and unavailable dependencies return nonzero; diagnostics expose
 only check names and outcomes, never dependency output or credentials. This checks setup, not the
@@ -94,6 +96,7 @@ command. Offline selftest remains independent of host setup.
 | Host tool | Minimum | Required by / remediation |
 |---|---|---|
 | Codex CLI | 0.162.0 | Subscription app-server and catalogue; install `@openai/codex@0.162.0` or newer and set the absolute `codex` path; retain the isolated ChatGPT login |
+| Claude Code | 2.1.0 | Only when `runtime` or a `runtime_routes` entry is `claude`; set the absolute `claude` path and keep its subscription login |
 | TaskQ CLI | 4.6.46 | Task #145 file handoff, operation receipts and task #151 `taskq issue`; update the CLI to 4.6.46 or newer; doctor reads `taskq --version` |
 | TaskQ service | 4.6.40 | Board commands; doctor checks the service version from `service status --json` |
 | ffmpeg | 6.1.0 | Audio decode; install ffmpeg 6.1 or newer and set `voice.ffmpeg` |
@@ -113,7 +116,7 @@ and executable `sha256`; doctor verifies the bytes before trusting that version.
 gives the provisioning step. A missing or mismatched receipt fails with an unavailable version. A
 later recognizer with a valid version command can report its version directly.
 
-There are no separately installed PilotQ shared libraries: SQLite, Rust TLS and CoreQ 0.14.6 are
+There are no separately installed PilotQ shared libraries: SQLite, Rust TLS and CoreQ 0.18.0 are
 linked into the artifact through Cargo.lock. The static recognizer is required; ffmpeg and system
 tools retain their distribution-managed libraries. Doctor's existing silent decode/recognition probe
 checks the voice runtime and model files in addition to versions. Developer/release-only tools
@@ -187,7 +190,7 @@ activation exits the service with code 75; the coreq Linux unit restarts it thro
 `pilotq update --pause` and `--resume` persist and read back automatic-update admission; pausing
 does not stop health or conversations. Manual updates remain available.
 
-This release retains coreq `v0.14.6` (locked in `Cargo.lock`) and journal schema 12. It opens
+This release retains coreq `v0.18.0` (locked in `Cargo.lock`) and journal schema 12. It opens
 existing schemas 0–12 through the current migrations and refuses newer schemas; rollback to a binary
 that cannot read the resulting schema is unsafe. The installation owner runs the user service and
 owns its protected configuration. See the [tester guide](tester-guide.md) for installation,

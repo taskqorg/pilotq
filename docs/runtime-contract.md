@@ -12,13 +12,42 @@ PilotQ is one small Rust service in the TaskQ tool family.
 | Language and packaging | Rust single binary on [coreq](https://github.com/taskqorg/coreq) | Same release, update, service, status, selftest and incident path as taskq, agentq and dashq (R14) |
 | Telegram | [teloxide](https://github.com/teloxide/teloxide) for the Bot API only | Maintained Rust library; PilotQ keeps its own durable ingress and outbox (section 4) |
 | Telegram behavior | Patterns adapted from the Hermes gateway: update intake, delivery retry, stall watch, topic routing | Already exercised on our server (R12); read as reference, no change to Hermes |
-| Manager runtime | Codex `app-server` under the subscription login, one adapter | R9; [core options](core-options.md) |
+| Manager runtime | CoreQ `agent`: Codex over its app-server compatibility path or Claude Code CLI turns, each under its subscription login ([manager runtimes](#manager-runtimes)) | R9; [core options](core-options.md) |
 | Journal | SQLite (section 7 settings) | One local file, supported snapshot backup |
 | Work execution | Existing TaskQ CLI | Section 5 |
 | Voice recognition | ffmpeg and `sherpa-onnx-offline` with GigaAM v3 RNNT-punct int8, local CPU subprocesses | Best Russian accuracy per CPU in the #89 benchmark; keeps the static PilotQ build free of onnxruntime |
 
 Grammy, Pi and a new runtime framework are out of scope. Earlier source findings remain in
 [research](research.md).
+
+### Manager runtimes
+
+`config.json` `runtime` selects `codex` (default) or `claude` for the installation;
+`runtime_routes` maps a route (`cli`, `CHAT` or `CHAT:TOPIC`) to an override. Both runtimes run
+through CoreQ `agent` (v0.18.0), one process per turn, and keep the existing grants, native-shell
+authority, private answer drafts, model choice, inactivity watches and recovery rules.
+
+- Codex uses CoreQ `AppServer` and `AppSession` with PilotQ's isolated `CODEX_HOME`, the forced
+  ChatGPT login and its dynamic tools. The separate PilotQ app-server adapter is removed.
+- Claude uses CoreQ `Turn` (`claude -p`, stream-json input and output, partial messages for drafts)
+  with `claude_home` (default `<install>/claude`; `default` keeps the service user's own login).
+  The child environment carries no API key, so no paid API fallback exists (R9). Restricted
+  principals get no built-in tools (`--tools ""`); the owner and shell grantees run with
+  `bypassPermissions`. `/model` offers `claude_models` (default `opus`, `sonnet`, `haiku`).
+- Claude reaches PilotQ's own tools through a per-turn stdio MCP relay, `pilotq --mcp-bridge
+  SOCKET`. The relay forwards each list or call over an owner-only Unix socket with a per-turn token
+  to the same tool boundary Codex dynamic tools use. It holds no grant, state or decision.
+- The journal stores a Claude session as `claude:<id>`. A turn resumes its runtime's session by ID;
+  a session of the other runtime, or a missing native session, is rebuilt once from the journal on a
+  new session without repeating work.
+- With `slot_root` (a registered TaskQ root) set, each turn reserves one TaskQ host slot through
+  `taskq service slots` (`taskq.slots/1`) before its runtime starts. The binding and release key are
+  persisted first; only a fresh `reserved` receipt starts the runtime. Release follows the end of
+  the runtime process group and its tools, and waits for TaskQ's `released` readback. A start after a
+  crash releases a left slot only when the recorded runtime group is gone; unknown liveness keeps
+  the slot.
+- Each completed turn appends one CoreQ usage observation (`agent.app` for Codex, `agent.turn` for
+  Claude) with the route code; request telemetry names the runtime of the conversation's session.
 
 ```mermaid
 flowchart LR
