@@ -1311,7 +1311,8 @@ applying R4, R5, R8, R10, R13, R16 and R17. The contract changes precede impleme
 
 Local qualification uses `cargo test --locked --bin pilotq result_images_273` for
 project/API reference confinement, upload-ID requests, protected HTTP authentication,
-redirect/404/size refusal, ZIP refusal before body transfer, latest-outcome isolation,
+redirect/404/size refusal, exact-ID image filename metadata for octet-stream, rejection
+of non-image bodies and ZIP metadata before artifact transfer, latest-outcome isolation,
 closed-result retrieval without an open task and rejection of mid-fetch reopening, retained
 photo bytes and source/download/delivery receipts, route/project rebinding, revocation and exact option/actor
 annotation. A multipart Bot API trace checks actual photo bytes, task/variant caption

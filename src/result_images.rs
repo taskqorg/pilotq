@@ -186,14 +186,42 @@ fn check_image_headers(response:&reqwest::Response)->Result<(),String> {
     if !response.status().is_success() {return Err(format!("Image attachment inaccessible (HTTP {})",response.status().as_u16()));}
     if response.headers().get(reqwest::header::CONTENT_LENGTH).and_then(|v|v.to_str().ok()).and_then(|v|v.parse::<u64>().ok()).is_some_and(|n|n>PHOTO as u64) {return Err("Image exceeds Telegram's 10 MiB photo limit (20 MiB batch limit)".into());}
     let mime=response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v|v.to_str().ok()).unwrap_or("").split(';').next().unwrap_or("").trim();
-    if !matches!(mime,"image/jpeg"|"image/png") {return Err("Image-only source unavailable; server did not identify a JPEG or PNG; no bundle body downloaded".into());}
+    if !matches!(mime,"image/jpeg"|"image/png"|"application/octet-stream") {return Err("Image-only source unavailable; server did not identify a JPEG or PNG; no bundle body downloaded".into());}
     Ok(())
+}
+
+// Resolve opaque IDs using metadata only, never by probing an unknown artifact body.
+async fn image_filename(client:&reqwest::Client,u:&url::Url,secret:&str,active:&impl Fn()->bool)->Result<(),String> {
+    let id=u.path().rsplit('/').next().unwrap_or("");
+    if !id.bytes().all(|b|b.is_ascii_digit()) {return Ok(());}
+    let prefix=u.as_str().rsplit_once('/').ok_or("Image metadata unavailable")?.0;
+    for page in 1..=3 {
+        if !active() {return Err("Image access revoked".into());}
+        let mut response=client.get(format!("{prefix}?per_page=100&page={page}")).bearer_auth(secret).send().await.map_err(|_|"Image metadata inaccessible")?;
+        if !response.status().is_success() {return Err("Image-only source unavailable; board upload metadata inaccessible".into());}
+        let mut bytes=vec![];
+        while let Some(chunk)=response.chunk().await.map_err(|_|"Image metadata interrupted")? {
+            if !active() {return Err("Image access revoked".into());}
+            if bytes.len()+chunk.len()>256*1024 {return Err("Image metadata exceeds limit".into());}
+            bytes.extend_from_slice(&chunk);
+        }
+        let entries:Vec<Value>=serde_json::from_slice(&bytes).map_err(|_|"Image metadata unreadable")?;
+        if let Some(entry)=entries.iter().find(|e|e["id"].as_u64().is_some_and(|n|n.to_string()==id)) {
+            let name=entry["filename"].as_str().unwrap_or("").to_ascii_lowercase();
+            if ![".jpg",".jpeg",".png"].iter().any(|ext|name.ends_with(ext)) {return Err("Image-only source unavailable; upload is not a JPEG or PNG".into());}
+            if entry["size"].as_u64().is_none_or(|n|n>PHOTO as u64) {return Err("Image exceeds Telegram's 10 MiB photo limit (20 MiB batch limit)".into());}
+            return Ok(());
+        }
+        if entries.len()<100 {break;}
+    }
+    Err("Image-only source unavailable; exact upload ID absent from bounded board metadata".into())
 }
 
 async fn download(client:&reqwest::Client,u:url::Url,secret:&str,active:&impl Fn()->bool)->Result<Vec<u8>,String> {
     if !active() {return Err("Image access revoked".into());}
     if !image_reference(&u) {return Err("Image-only source unavailable; ZIPs and non-image files are not downloaded".into());}
-    // HEAD checks metadata without transferring bundle bodies, including opaque upload IDs.
+    image_filename(client,&u,secret,active).await?;
+    // HEAD checks size/type without transferring bundle bodies.
     let metadata=client.head(u.clone()).bearer_auth(secret).send().await.map_err(|_|"Image metadata inaccessible")?;
     check_image_headers(&metadata)?;
     if !active() {return Err("Image access revoked".into());}
@@ -203,9 +231,11 @@ async fn download(client:&reqwest::Client,u:url::Url,secret:&str,active:&impl Fn
     let mut bytes=vec![];
     while let Some(chunk)=response.chunk().await.map_err(|_|"Image attachment interrupted")? {
         if !active() {return Err("Image access revoked".into());}
-        if bytes.len()+chunk.len()>LIMIT {return Err("Image attachment exceeds 20 MiB".into());}
+        if bytes.len()+chunk.len()>PHOTO {return Err("Image attachment exceeds 10 MiB (20 MiB batch limit)".into());}
         bytes.extend_from_slice(&chunk);
+        if bytes.len()>=8 && !image(&bytes) {return Err("Image-only source unavailable; body is not a JPEG or PNG".into());}
     }
+    if !image(&bytes) {return Err("Image-only source unavailable; body is not a JPEG or PNG".into());}
     Ok(bytes)
 }
 
@@ -373,19 +403,58 @@ mod tests {
         let worker=std::thread::spawn(move || {
             for (method,response) in [("HEAD","HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: 4\r\nConnection: close\r\n\r\n"),("GET","HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: 4\r\nConnection: close\r\n\r\nDATA"),("HEAD","HTTP/1.1 302 Found\r\nLocation: https://evil.invalid/secret\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),("HEAD","HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),("HEAD","HTTP/1.1 200 OK\r\nContent-Length: 20971521\r\nConnection: close\r\n\r\n"),("HEAD","HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Length: 4\r\nConnection: close\r\n\r\n")] {
                 let (mut stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();let mut buf=[0;4096];let n=stream.read(&mut buf).unwrap();let request=String::from_utf8_lossy(&buf[..n]);
-                assert!(request.starts_with(&format!("{method} /api/v4/projects/invented%2Fcsgo/uploads/42 ")),"{request}");
+                assert!(request.starts_with(&format!("{method} /api/v4/projects/invented%2Fcsgo/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/review.jpg ")),"{request}");
                 assert!(request.to_ascii_lowercase().contains("authorization: bearer invented-test-key"));
-                stream.write_all(response.as_bytes()).unwrap();
+                let response=response.replace("DATA", "PLACEHOLDER");
+                let bytes=response.as_bytes();
+                if let Some(pos)=response.find("PLACEHOLDER") {stream.write_all(&bytes[..pos]).unwrap();stream.write_all(b"\xff\xd8\xffX").unwrap();} else {stream.write_all(bytes).unwrap();}
             }
         });
         let rt=tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
-            let client=reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();let u=upload_url(&base,"invented/csgo","/api/v4/projects/123/uploads/42").unwrap();
-            assert_eq!(download(&client,u.clone(),"invented-test-key",&||true).await.unwrap(),b"DATA");
+            let client=reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();let u=upload_url(&base,"invented/csgo","/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/review.jpg").unwrap();
+            assert_eq!(download(&client,u.clone(),"invented-test-key",&||true).await.unwrap(),b"\xff\xd8\xffX");
             for expected in ["302","404","20 MiB","Image-only"] {let e=download(&client,u.clone(),"invented-test-key",&||true).await.unwrap_err();assert!(e.contains(expected) && !e.contains("http") && !e.contains("invented-test-key"),"{e}");}
             let zip=base.join("/api/v4/projects/invented%2Fcsgo/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/review.zip").unwrap();
             assert!(download(&client,zip,"invented-test-key",&||true).await.unwrap_err().starts_with("Image-only"));
             assert!(download(&client,u,"invented-test-key",&||false).await.unwrap_err().contains("revoked"));
+        });worker.join().unwrap();
+    }
+
+    // A3/A7: observed GitLab octet-stream needs exact-ID image metadata;
+    // ZIP metadata never permits a body request and non-image bodies never queue.
+    #[test]
+    fn result_images_273_octet_stream() {
+        use std::io::{Read,Write};
+        let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base=url::Url::parse(&format!("http://{}/",listener.local_addr().unwrap())).unwrap();
+        let worker=std::thread::spawn(move || {
+            let listing=r#"[{"id":42,"filename":"review.jpg","size":12},{"id":43,"filename":"mixed.zip","size":12}]"#;
+            for (path,body,head) in [
+                ("uploads?per_page=100&page=1",listing,false),
+                ("uploads/42","",true),
+                ("uploads/42","\u{00ff}",false),
+                ("uploads?per_page=100&page=1",listing,false),
+                ("uploads?per_page=100&page=1",listing,false),
+                ("uploads/42","",true),
+                ("uploads/42","PK-not-image",false),
+            ] {
+                let (mut stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                let mut buf=[0;4096];let n=stream.read(&mut buf).unwrap();let request=String::from_utf8_lossy(&buf[..n]);
+                assert!(request.starts_with(&format!("{} /api/v4/projects/invented%2Fcsgo/{path} ",if head {"HEAD"} else {"GET"})),"{request}");
+                assert!(request.to_ascii_lowercase().contains("authorization: bearer invented-test-key"));
+                let bytes=if body=="\u{00ff}" {b"\xff\xd8\xffinvented".as_slice()} else {body.as_bytes()};
+                write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",if head {11} else {bytes.len()}).unwrap();
+                if !head {stream.write_all(bytes).unwrap();}
+            }
+        });
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            let client=reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+            let u=upload_url(&base,"invented/csgo","/api/v4/projects/123/uploads/42").unwrap();
+            assert!(download(&client,u.clone(),"invented-test-key",&||true).await.is_ok());
+            let zip=upload_url(&base,"invented/csgo","/api/v4/projects/123/uploads/43").unwrap();
+            assert!(download(&client,zip,"invented-test-key",&||true).await.unwrap_err().starts_with("Image-only"));
+            assert!(download(&client,u,"invented-test-key",&||true).await.unwrap_err().starts_with("Image-only"));
         });worker.join().unwrap();
     }
 
