@@ -2,7 +2,7 @@
   "upstream": "https://github.com/ggml-org/whisper.cpp",
   "commit": "4979e04f5dcaccb36057e059bbaed8a2f5288315",
   "license": "MIT",
-  "status": "PM reports all small-model boundary cases passed; turbo paired performance not run",
+  "status": "STOPPED: PM reports one actual turbo pair failed shared600s; only readiness/private count completed; no retry or production acceptance",
   "source_sha256": {
     "src/whisper.cpp": "02566a39137a14e0798ec0d88e78bd626f21e7549bc27d1cb5e4a30b101a0f7e",
     "include/whisper.h": "0525b758571ab71c00ddd8ea2845f74af7c62dfa5100c5586655f75bdc5ef4be",

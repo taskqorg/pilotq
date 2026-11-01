@@ -1,5 +1,7 @@
 # First-window reuse experiment
 
+**Stopped after the one authorized paired test.** PM note 6563635934 reports shared600s timeout, no OOM: readiness 4.514/4.376s, private Hebrew count identical/correct at 308.814/154.722s, original stress timed out in the remaining127.537s and patched stress never ran. Recipes below are retained evidence, not permission to rerun or start another corpus/model. No installed changes or ASR acceptance; owner quality/latency decision is pending. See [terminal result and options](../../docs/research/344.md#terminal-paired-result-and-owner-decision).
+
 This is an experimental patch for whisper.cpp 1.8.2, not a PilotQ engine selection. It addresses duplicate encoding after automatic language detection. It does not repair small's known Hebrew count error. No savings or correctness result is claimed.
 
 ## Identity and build
