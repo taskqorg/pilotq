@@ -3252,7 +3252,7 @@ impl Journal {
             // §2/§4: retirement is presentation, never an accepted-answer receipt.
             // Queue it before the replacement so route ordering also covers unsent questions.
             let ru: bool = tx.query_row("SELECT coalesce(language,'en') LIKE 'ru%' FROM requests WHERE id=?1", [request], |r| r.get(0)).map_err(e)?;
-            let text = if ru { "Вопрос заменён новым. Ответ не сохранён; используйте текущий вопрос." } else { "Superseded by a newer question. No answer was saved; use the current question." };
+            let text = if ru { "Вопрос заменён новым; используйте текущий вопрос." } else { "Superseded by a newer question; use the current question." };
             tx.execute("INSERT INTO outbox(request_id,chat,topic,text,html,next_at,kind,project,task,revision)
                 SELECT request_id,chat,topic,text || char(10) || char(10) || ?7,NULL,?8,'question_superseded',project,task,revision FROM outbox o
                 WHERE request_id=?1 AND project=?2 AND task=?3 AND chat=?4 AND topic IS ?5 AND kind='question' AND revision<?6
