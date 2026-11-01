@@ -345,8 +345,15 @@ pub(crate) fn outbox(tx: &Connection, request: i64, chat: i64, topic: Option<i64
     let html=if let Some(text)=&decorated {crate::telegram::html(text)} else {html.map(str::to_string).unwrap_or_else(|| crate::telegram::html(text))};
     let text=decorated.as_deref().unwrap_or(text);
     tx.execute("INSERT INTO outbox(request_id, chat, topic, reply_to, html, text, next_at) VALUES (?1,?2,?3,?4,?5,?6,?7)", params![request,chat,topic,reply_to,html,text,at]).map_err(|e|e.to_string())?;
-    Ok(())
+    tx.execute(STAMP_PROJECT,[tx.last_insert_rowid()]).map(drop).map_err(|e|e.to_string())
 }
+
+/// #257: a row without its own task project takes its request's plan, request or conversation project; the column
+/// otherwise keeps its legacy 'pilotq' default.
+const STAMP_PROJECT: &str = "UPDATE outbox SET project=coalesce(
+    (SELECT p.project FROM plans p WHERE p.request_id=outbox.request_id OR p.id IN (SELECT plan_id FROM plan_runs WHERE request_id=outbox.request_id) ORDER BY p.id DESC LIMIT 1),
+    (SELECT project FROM requests WHERE id=outbox.request_id),
+    (SELECT c.project FROM conversations c JOIN requests q ON q.session=c.session WHERE q.id=outbox.request_id),project) WHERE id=?1";
 
 /// #165: a launch/cancel outcome replaces its plan display, with a durable edit obligation.
 fn plan_receipt(tx: &Connection, request: i64, receipt: &str, at: i64) -> Result<bool,String> {
@@ -396,15 +403,16 @@ fn notice(tx: &Connection, request: i64, chat: i64, topic: Option<i64>, kind: &s
         "INSERT INTO outbox(request_id, chat, topic, text, next_at, kind, task, revision, project, html) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
         params![request, chat, topic, text, at, kind, task, revision, project, crate::telegram::html(text)],
     )
-    .map(drop)
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    if project.is_empty() { tx.execute(STAMP_PROJECT,[tx.last_insert_rowid()]).map_err(|e|e.to_string())?; }
+    Ok(())
 }
 
 /// #110: an earlier draft display, or one whose draft was launched or cancelled, loses its buttons; only the current one stays
 /// actionable. The edit target resolves at delivery, after the display itself was sent.
 fn close_drafts(tx: &Connection, session: &str, request: i64, at: i64) -> Result<(), String> {
-    tx.execute("INSERT INTO outbox(request_id,chat,topic,text,next_at,kind,revision)
-        SELECT ?2,q.chat,q.topic,'',?3,'draft_closed',c.id FROM cards c JOIN requests q ON q.id=c.request_id JOIN plans p ON p.id=c.plan_id
+    tx.execute("INSERT INTO outbox(request_id,chat,topic,text,next_at,kind,revision,project)
+        SELECT ?2,q.chat,q.topic,'',?3,'draft_closed',c.id,p.project FROM cards c JOIN requests q ON q.id=c.request_id JOIN plans p ON p.id=c.plan_id
         WHERE q.session=?1 AND q.front='telegram' AND (p.revision<(SELECT max(revision) FROM plans WHERE session=?1) OR EXISTS(SELECT 1 FROM plan_runs x JOIN plans y ON y.id=x.plan_id WHERE y.draft=p.draft))
         AND NOT EXISTS(SELECT 1 FROM outbox o WHERE o.kind='draft_closed' AND o.revision=c.id)", params![session, request, at]).map(drop).map_err(|e| e.to_string())
 }
@@ -1624,6 +1632,10 @@ impl Journal {
 
     /// Removes the named grants, or every grant when `names` is empty. Ignored from then on unless `chat` remains.
     pub fn revoke(&mut self, actor: i64, target: i64, names: &[String], at: i64) -> Result<Vec<String>, String> {
+        // #257 / §3: bootstrap restores the owner's shell on every start, so a revoke would report a change that does not hold.
+        if self.owner()? == Some(target) && (names.is_empty() || names.iter().any(|g| g == "shell")) {
+            return Err("The protected owner keeps shell implicitly; it cannot be revoked.".into());
+        }
         self.change(Some(actor), target, at, |g| if names.is_empty() { g.clear() } else { g.retain(|x| !names.contains(x)) })
     }
 
@@ -2465,6 +2477,8 @@ impl Journal {
             "INSERT INTO plans(session,revision,request_id,tickets,project,board,root,at,draft) SELECT ?1,coalesce(max(revision),0)+1,?2,?3,?4,?5,?6,?7,?8 FROM plans WHERE session=?1 RETURNING revision",
             params![r.session,r.request,tickets.to_string(),project,board,root,at,draft], |x|x.get::<_,i64>(0)).map_err(|e|e.to_string())?;
         tx.execute("UPDATE plans SET draft=id WHERE draft IS NULL",[]).map_err(|e|e.to_string())?;
+        // #257: admission rows (reaction, retention notice) predate the plan; they belong to its project too.
+        tx.execute("UPDATE outbox SET project=?2 WHERE request_id=?1 AND task IS NULL",params![r.request,project]).map_err(|e|e.to_string())?;
         tx.commit().map_err(|e|e.to_string())?;
         Ok(revision)
     }
@@ -2793,6 +2807,7 @@ impl Journal {
             return Err("the source input was edited; review and save a new plan revision before launching".into());
         }
         tx.execute("INSERT INTO plan_runs(plan_id, request_id, actor, state, next_at, at) VALUES (?1,?2,?3,'creating',?4,?5)", params![plan, r.request, actor, at + lease, at]).map_err(e)?;
+        tx.execute("UPDATE outbox SET project=(SELECT project FROM plans WHERE id=?2) WHERE request_id=?1 AND task IS NULL", params![r.request, plan]).map_err(e)?;
         let run = tx.last_insert_rowid();
         let n = serde_json::from_str::<Value>(&tickets).map_err(|x| x.to_string())?.as_array().map_or(0, Vec::len);
         for idx in 1..=n as i64 {
@@ -3329,7 +3344,7 @@ impl Journal {
     /// Appends the ended request's CoreQ event, keyed by request ID. Metadata only: no request or reply text, so no key value
     /// can reach telemetry (§ 8). A telemetry failure is reported and never blocks the request.
     pub(crate) fn trace(&self, request: i64, at: i64) {
-        let event = || -> Result<Event, String> {
+        let event = || -> Result<Option<Event>, String> {
             let (front, state, received, runs, model): (String, String, i64, i64, Option<String>) = self
                 .0
                 .query_row(
@@ -3339,6 +3354,8 @@ impl Journal {
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
                 )
                 .map_err(|e| e.to_string())?;
+            // #257: the event ID is immutable; a queued built-in traced now would conflict with its final outcome.
+            if matches!(state.as_str(), "queued" | "running" | "waiting") { return Ok(None); }
             let outcome = match state.as_str() {
                 "answered" => "ok",
                 "failed" => "failed",
@@ -3354,9 +3371,12 @@ impl Journal {
                     "trace": trace_id(request), "span": "request", "started_ms": received.max(0) * 1000, "duration_us": (at - received).max(0) * 1_000_000,
                     "outcome": outcome, "error": if outcome == "ok" { "none" } else { state.as_str() }, "source": front, "attempt": runs,
                     "runtime": (runs > 0).then_some("codex"), "model": model}),
-            )
+            ).map(Some)
         };
-        let r = event().and_then(|ev| self.2.get_or_init(|| Store::open(&self.1)).as_ref().map_err(String::clone)?.append(&[ev]).map(drop));
+        let r = event().and_then(|ev| match ev {
+            Some(ev) => self.2.get_or_init(|| Store::open(&self.1)).as_ref().map_err(String::clone)?.append(&[ev]).map(drop),
+            None => Ok(()),
+        });
         if let Err(e) = r {
             eprintln!("telemetry request #{request}: {e}");
         }
@@ -4109,6 +4129,28 @@ mod tests {
         drop(j);std::fs::remove_dir_all(p).unwrap();
     }
 
+    // #257 A2: every outbox row of a cyprusbz plan (admission, card, progress, status) carries cyprusbz, not the legacy default.
+    #[test]
+    fn plan_outbox_rows_carry_plan_project() {
+        use crate::manager::Outcome;
+        let (mut j,p)=journal("257-plan-project");
+        j.admit(&[(1,msg(7,7,1))],0).unwrap();let r=j.claim_next(4,0).unwrap().remove(0);
+        j.save_plan(&r,&json!([{"title":"First"}]),"cyprusbz","invented/cyprusbz","",1).unwrap();
+        j.finish(&r,None,None,&Outcome::Answered("plan".into()),1).unwrap();
+        j.admit(&[(2,msg(7,7,2))],2).unwrap();let r=j.claim_next(4,2).unwrap().remove(0);
+        let id=j.authorize(&r,1,7,120,2).unwrap();let run=j.plan_run(id).unwrap();
+        j.launch_phase(id,"creating",2).unwrap();
+        while let Some(d)=j.due(5).unwrap().0 {j.record(d.id,&Sent::Ok(d.edit.unwrap_or(100+d.id)),5).unwrap();}
+        j.filed(&run,1,19,10,6).unwrap();j.started(&run,1,19,"ready",6).unwrap();
+        j.run_outcome(&run,"started",None,None,0,6).unwrap();
+        j.finish(&r,None,None,&Outcome::Answered(j.launch_reply(&r).unwrap().unwrap()),6).unwrap();
+        assert!(count(&j,"SELECT count(*) FROM outbox WHERE kind IN ('rich','plan_progress','status')")>=3);
+        let wrong:Vec<String>={let mut q=j.0.prepare("SELECT kind || ':' || project || ':' || request_id || ':' || text FROM outbox WHERE project<>'cyprusbz'").unwrap();
+            q.query_map([],|r|r.get(0)).unwrap().map(Result::unwrap).collect()};
+        assert!(wrong.is_empty(),"{wrong:?}");
+        drop(j);std::fs::remove_dir_all(p).unwrap();
+    }
+
     // #165 liveness continuation: elapsed-time edits and problem controls survive
     // restart, keep the original operation IDs and cannot replay a stale control.
     #[test]
@@ -4340,6 +4382,11 @@ mod tests {
         assert_eq!(j.grant(7, 9, &["project:pilotq".into()], 3).unwrap(), ["chat", "project:pilotq"]);
         assert_eq!(j.revoke(7, 9, &["project:pilotq".into()], 4).unwrap(), ["chat"]);
         assert_eq!(j.revoke(7, 9, &[], 5).unwrap(), Vec::<String>::new());
+        // #257 A6: the owner's shell returns at every bootstrap, so its revoke is refused rather than reported done.
+        for names in [vec!["shell".to_string()], vec![]] {
+            assert!(j.revoke(7, 7, &names, 5).unwrap_err().contains("keeps shell implicitly"));
+        }
+        assert!(has(&j.0, 7, "shell").unwrap());
         assert_eq!(j.admit(&[(3, msg(9, 9, 3))], 6).unwrap(), 0, "revoked input is ignored");
         let log = j.grant_log(9).unwrap();
         assert_eq!(log.len(), 4);
@@ -5194,6 +5241,20 @@ mod tests {
         assert_eq!(j.current_project(&r.session).unwrap().as_deref(), Some("other"));
         assert_eq!(count(&j, "SELECT count(*) FROM plan_runs"), 1);
         drop(j);
+        let _ = std::fs::remove_dir_all(p);
+    }
+
+    // #257 A3: a deferred CLI built-in (`pilotq --help`) is traced once with its final outcome, as a CLI request.
+    #[test]
+    fn deferred_cli_builtin_traces_final_outcome() {
+        let (mut j, p) = journal("builtin-trace");
+        let id = j.builtin_cli(7, "/help", 1).unwrap().unwrap();
+        j.builtin_take(id).unwrap().unwrap();
+        j.builtin_finish(id, "help", true, 2).unwrap();
+        assert_eq!(j.0.query_row("SELECT front FROM requests WHERE id=?1", [id], |r| r.get::<_, String>(0)).unwrap(), "cli");
+        drop(j);
+        let t = coreq::telemetry::Reader::open(&p.join("telemetry.sqlite")).unwrap().export(0, 0, 100).unwrap().to_string();
+        assert!(t.contains(&format!("\"pilotq.request.{id}\"")) && t.contains(r#""outcome":"ok""#) && t.contains(r#""source":"cli""#), "{t}");
         let _ = std::fs::remove_dir_all(p);
     }
 

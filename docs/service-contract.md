@@ -46,7 +46,7 @@ identity from protected configuration.
 |---|---|
 | `pilotq ask TEXT [--project P]` | One request through the normal manager path; prints the reply or task link |
 | `pilotq status [--json]` | Health ages (section 7), pending requests, undelivered outcomes, uncertain effects |
-| `pilotq users list\|show\|grant\|revoke\|remember\|forget` | People, profiles and grants (R10, R15); `remember`/`forget` correct one profile fact |
+| `pilotq users list\|show\|grant\|revoke\|remember\|forget` | People, profiles and grants (R10, R15); `remember`/`forget` correct one profile fact; revoking the protected owner's implicit shell is refused (§3) |
 | `pilotq routes list\|set` | Chats, topics and their session and reply policy |
 | `pilotq projects list\|add` | Registered projects and the section 5 registration path |
 | `pilotq keys list\|add\|grant\|revoke` | Key store; `add` reads the value from stdin |

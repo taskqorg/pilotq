@@ -90,6 +90,19 @@ fn selftest_and_status_report_unknown_health() {
     fs::remove_dir_all(d).unwrap();
 }
 
+// #257 A1: selftest started from a directory the service user cannot search (sudo from /root) still passes.
+#[test]
+fn selftest_passes_from_an_unsearchable_cwd() {
+    let d = scratch("selftest-cwd");
+    let cwd = d.join("locked");
+    fs::create_dir(&cwd).unwrap();
+    let out = Command::new("/bin/sh").arg("-c").arg("cd \"$1\" && chmod 000 . && exec \"$2\" selftest").arg("sh").arg(&cwd)
+        .arg(env!("CARGO_BIN_EXE_pilotq")).env("PILOTQ_INSTALL", d.join("install")).output().unwrap();
+    fs::set_permissions(&cwd, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    fs::remove_dir_all(d).unwrap();
+}
+
 // U22 drain and the step 2 "update during a turn": `pilotq update` stops new turns and waits for the running request to end
 // before it switches, then clears the drain marker. A fake Codex answers after 3 s; a CLI request is the running turn.
 #[test]

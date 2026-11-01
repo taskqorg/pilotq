@@ -199,6 +199,9 @@ fn delivery_report(c:&Value,target:&str,report:Value,end:Instant)->Result<Value,
 }
 pub fn delivery_text(v:&Value)->String {
     let mut text=format!("Delivery stage: {}.",v["stage"].as_str().unwrap_or("unknown"));
+    if let (Some(dev),Some(merge))=(v["dev_sha"].as_str(),v["merge"].as_str()) {
+        text+=&format!(" DEV health, separately: DEV serves {dev}, which contains merge {merge} (Git ancestry).");
+    }
     if let Some(reason)=v["reason"].as_str() {return format!("{text} Pipeline unknown: {reason}.");}
     text+=&format!("\nMerged at {}.",v["merged_at"].as_str().unwrap_or("unknown"));
     let first=&v["first_main"];
@@ -235,20 +238,27 @@ fn dev_observe(j:&std::sync::Mutex<Journal>,p:&str,c:&Value,merged:Option<&str>,
     let a=merged.ok_or("Merged SHA unavailable")?;
     let b=h["sha"].as_str().ok_or("DEV SHA unavailable")?;
     let included=ancestor_until(c,a,b,end)?;
-    if !included {return Ok(json!({"state":"not yet on DEV","sha":b,"serves_target_exactly":a==b,"observed_at":crate::now()}));}
+    if !included {return Ok(json!({"state":"not yet on DEV","sha":b,"merge":a,"includes_merge":false,"serves_target_exactly":a==b,"observed_at":crate::now()}));}
     let j=j.lock().unwrap();
     if config(&j,p)?!=*c {return Err("Release configuration changed during observation".into());}
     let key=format!("dev-first:{p}:{a}");
     let first=get(&j,&key)?.unwrap_or(json!(crate::now()));put(&j,&key,&first)?;
     let time=h["deployed_at"].as_str().or_else(||h["started_at"].as_str()).filter(|s|!s.is_empty() && s.len()<100);
-    Ok(json!({"state":match time {Some(t)=>format!("on DEV since {t}"),None=>format!("on DEV since {} (first observed)",first)},"sha":b,"serves_target_exactly":a==b,"observed_at":crate::now()}))
+    Ok(json!({"state":match time {Some(t)=>format!("on DEV since {t}"),None=>format!("on DEV since {} (first observed)",first)},"sha":b,"merge":a,"includes_merge":true,"serves_target_exactly":a==b,"observed_at":crate::now()}))
 }
 pub fn task_observations(j:&std::sync::Mutex<Journal>,request:i64,p:&str,issue:&Value,end:Instant)->(Value,Value) {
     std::thread::scope(|scope| {
         let pipeline=scope.spawn(||delivery(j,request,p,issue,end));
         let dev=task_dev(j,p,issue,end);
-        (dev,pipeline.join().unwrap_or_else(|_|json!({"stage":"unknown","reason":"Delivery reader failed"})))
+        let delivery=pipeline.join().unwrap_or_else(|_|json!({"stage":"unknown","reason":"Delivery reader failed"}));
+        (dev.clone(),with_dev_ancestry(&dev,delivery))
     })
+}
+// #257 / §5: Git ancestry against the served DEV SHA proves inclusion; it stays a separate health fact, not job
+// evidence (#179), so a failed adapter cannot hide it and it never raises the job stage.
+fn with_dev_ancestry(dev:&Value,mut delivery:Value)->Value {
+    if dev["includes_merge"]==true {delivery["dev_sha"]=dev["sha"].clone();delivery["merge"]=dev["merge"].clone();}
+    delivery
 }
 pub fn task_dev(j:&std::sync::Mutex<Journal>,p:&str,issue:&Value,end:Instant)->Value {
     let result=(|| {let c=config(&j.lock().unwrap(),p)?;let h=health_until(&c,end)?;
@@ -690,6 +700,21 @@ mod tests {
         let end=Instant::now()+Duration::from_secs(10);let observed=dev_observe(&f.j,"sample",&f.c,Some(&f.a),&json!({"sha":f.b,"deployed_at":"2026-10-30T10:00:00Z"}),end).unwrap();assert_eq!(observed["state"],"on DEV since 2026-10-30T10:00:00Z");assert_eq!(dev_observe(&f.j,"sample",&f.c,Some(&f.b),&json!({"sha":f.a}),end).unwrap()["state"],"not yet on DEV");assert!(dev_observe(&f.j,"sample",&f.c,None,&json!({"sha":f.b}),end).is_err());
         let body=format!("taskq: close\nChanged: sample\n\ndelivery auto-merge r0: merged #1 as {}; merge-result CI green",f.b);
         assert_eq!(merged_sha(&json!({"comments":[{"trusted":true,"body":body}]})),Some(f.b.clone()));assert_eq!(merged_sha(&json!({"comments":[{"trusted":false,"body":body}]})),None);
+    }
+    // #257 A4: a failed delivery adapter cannot hide DEV inclusion that Git ancestry proves.
+    #[test]
+    fn dev_ancestry_survives_adapter_failure_257() {
+        let f=fixture("ancestry257");let end=Instant::now()+Duration::from_secs(10);
+        let script=f.dir.join("runner");std::fs::write(&script,"#!/bin/sh\nexit 1\n").unwrap();
+        let mut c=f.c.clone();c["delivery_status"]=json!([script]);
+        let issue=json!({"state":"closed","merged_sha":f.a});
+        let delivery=delivery_config(Ok(c.clone()),&issue,end);assert_eq!(delivery["stage"],"merged");
+        let dev=dev_observe(&f.j,"sample",&f.c,Some(&f.a),&json!({"sha":f.b,"deployed_at":"2026-11-01T02:13:00Z"}),end).unwrap();
+        let text=delivery_text(&with_dev_ancestry(&dev,delivery.clone()));
+        assert!(text.starts_with(&format!("Delivery stage: merged. DEV health, separately: DEV serves {}, which contains merge {} (Git ancestry).",f.b,f.a)),"{text}");
+        assert!(text.contains("Pipeline unknown: Delivery adapter failed"),"{text}");
+        let behind=dev_observe(&f.j,"sample",&f.c,Some(&f.b),&json!({"sha":f.a}),end).unwrap();
+        assert!(!delivery_text(&with_dev_ancestry(&behind,delivery)).contains("contains merge"),"no ancestry, no DEV claim");
     }
     // A3/A5/A7: no implicit grant; single immutable SHA, changed LIVE and repeated/stale/foreign/reset confirmations refuse.
     #[test]

@@ -146,7 +146,9 @@ The manager gets these tools beside the TaskQ tools, checked at dispatch like th
 - plan, run, status (including `project_status`), steer, requeue, park and `project_use` may resolve
   a project named in the caller’s earlier own messages of this conversation generation. Use one
   unambiguous accessible match; current own wording can disambiguate earlier mentions. Quoted
-  content, issue text, tool output and other people’s messages never select it. Multiple fits
+  content, issue text, tool output and other people’s messages never select it. When several names
+  fit, a name written only as an issue reference (`NAME#N` or `NAME #N`) yields to the one project
+  named plainly, so “plan for cyprusbz (re pilotq#236)” targets cyprusbz. Multiple fits
   require one short question listing the accessible names and no guessed board write. Recheck
   grants, registration and board/root at dispatch. A saved plan retains its bound target. For
   example, “What is the task status for Pilot Q?” followed by “Make a task so this works” resolves
@@ -212,7 +214,9 @@ snapshot. Without that receipt (a GitLab MR a person merged after close, task #1
 trusted `taskq: result SHA` comment names the MR head: the merge SHA is the oldest commit on the
 configured main ref's first-parent chain whose history contains that head, or the head itself when
 its successor's first parent is the head (fast-forward). Squashed, rebased or unfetched heads and
-failed Git reads leave the merge identity unknown. Git ancestry proves inclusion. Report `on DEV since T` when included and the health
+failed Git reads leave the merge identity unknown. Git ancestry proves inclusion; task status text
+states it beside the delivery stage, also when the delivery adapter fails, without raising the job
+stage. Report `on DEV since T` when included and the health
 timestamp is available; otherwise `on DEV since T (first observed)` uses the persisted first
 positive observation, without claiming actual deployment time. Report `not yet on DEV` for a proven
 negative, and unknown for failed health, missing commit or failed Git reads. Project status includes

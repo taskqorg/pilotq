@@ -7,7 +7,16 @@ pub fn log(command: &str, error: &str) {
     for name in ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "OPENAI_API_KEY"] {
         if let Ok(secret) = std::env::var(name) { if !secret.is_empty() { safe = safe.replace(&secret, "[credential]"); } }
     }
-    eprintln!("host tool: {safe}");
+    eprintln!("host tool: {}", one_line(&safe));
+}
+
+/// #257: a multi-line child stderr (such as a Python traceback) becomes one journal line: its first line and its final
+/// summary, capped. Full scrubbed diagnostics stay in the request audit where a caller records them.
+fn one_line(text: &str) -> String {
+    let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
+    let first = lines.next().unwrap_or("");
+    let line = match lines.last() { Some(last) => format!("{first} … {last}"), None => first.to_string() };
+    if line.chars().count() <= 500 { line } else { line.chars().take(499).chain(['…']).collect() }
 }
 
 pub fn output(c: &mut Command) -> Result<std::process::Output, String> {
@@ -128,6 +137,15 @@ pub fn gate(t: &coreq::Tool) -> Result<(),String> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    // #257 A5: an adapter's HTTPS handshake timeout traceback is logged as one short line ending in its summary.
+    #[test]
+    fn traceback_logs_one_line() {
+        let trace = "\"/opt/adapter\" [\"541\"]: exit_nonzero: Traceback (most recent call last):\n  File \"/opt/adapter\", line 9, in <module>\n    with urllib.request.urlopen(req, timeout=4) as r:\n         ~~~~^^^^\nTimeoutError: _ssl.c:1011: The handshake operation timed out\n";
+        let line = one_line(trace);
+        assert_eq!(line, "\"/opt/adapter\" [\"541\"]: exit_nonzero: Traceback (most recent call last): … TimeoutError: _ssl.c:1011: The handshake operation timed out");
+        assert_eq!(one_line(&"x".repeat(900)).chars().count(), 500);
+    }
+
     // #205 A2 / R5: ESRCH during cleanup must succeed without host-error logging.
     #[test]
     fn live_gaps_205_missing_group() {
