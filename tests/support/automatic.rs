@@ -60,6 +60,7 @@ struct Run {
     data: Value,
     svc: Option<Svc>,
     login: Option<Login>,
+    fixture_token: Option<Login>,
     update: i64,
     task: i64,
     run_request: i64,
@@ -223,6 +224,43 @@ impl Run {
         let out = child.wait_with_output().unwrap();
         assert!(out.status.success(), "scripted board event failed: {}", out.status);
         serde_json::from_slice(&out.stdout).unwrap()
+    }
+
+    fn host_body(&self) -> String {
+        format!("A40 explicitly synthetic unserved fixture: {}\nfocus off\nNo service, worker or reviewer exists. Never enroll this host.", self.data["isolated_host"].as_str().unwrap())
+    }
+
+    // Persist intent first; a lost POST response is found by exact title/body, never retried blindly.
+    fn fixture_hosts(&self) -> Vec<Value> {
+        let host = self.data["isolated_host"].as_str().unwrap();
+        assert!(host.starts_with("pilotq-e2e-"), "foreign host namespace");
+        let title = format!("taskq host {host}");
+        let mut found = vec![];
+        for page in 1.. {
+            let rows = gh_json(&format!("repos/taskqorg/pilotq/issues?state=all&labels=taskq-host&per_page=100&page={page}"));
+            let rows = rows.as_array().expect("complete host listing");
+            for row in rows.iter().filter(|r| r["title"] == title) {
+                assert_eq!(row["body"], self.host_body(), "foreign reserved host metadata");
+                found.push(row.clone());
+            }
+            if rows.len() < 100 { break; }
+        }
+        assert!(found.len() <= 1, "ambiguous reserved host metadata");
+        found
+    }
+
+    fn prepare_host(&mut self) {
+        self.data["host_metadata_intent"] = json!(true);
+        self.save();
+        let rows = self.fixture_hosts();
+        let row = rows.into_iter().next().unwrap_or_else(|| self.github("POST", "repos/taskqorg/pilotq/issues",
+            json!({"title":format!("taskq host {}",self.data["isolated_host"].as_str().unwrap()),
+                "body":self.host_body(),"labels":["taskq-host"]})));
+        self.data["host_metadata"] = row["number"].clone();
+        self.save();
+        let rows = self.fixture_hosts();
+        assert_eq!(rows.len(), 1, "missing fixture host readback");
+        assert_eq!(rows[0]["state"], "open", "retired host cannot be reused");
     }
 
     fn spawn_fixture(&mut self) -> i64 {
@@ -403,6 +441,15 @@ impl Run {
             }
         }
         self.data["cleanup_tasks"] = json!(outcomes);
+        // Keep host validation available until all interrupted adds and task parks are reconciled.
+        if errors.is_empty() && self.data["host_metadata_intent"] == true {
+            for row in self.fixture_hosts() {
+                let path = format!("repos/taskqorg/pilotq/issues/{}", row["number"]);
+                self.github("PATCH", &path, json!({"state":"closed","state_reason":"completed"}));
+                assert_eq!(gh_json(&path)["state"], "closed", "fixture host retirement readback");
+            }
+            self.data["host_metadata_retired"] = json!(true);
+        }
         if self.d.join("codex/auth.json").exists() { errors.push("copied login remains".into()); }
         if errors.is_empty() { Ok(json!({"tasks":outcomes,"copied_credentials_removed":true})) }
         else { Err(errors.join("; ")) }
@@ -428,6 +475,16 @@ impl Run {
         self.data["cases"]["cleanup"] = json!({"status":"running"});
         self.save();
         let cleanup = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.cleanup()));
+        // Run even if board reconciliation panics; remove only the validated disposable token copy.
+        let token_cleanup = self.data["fixture_install"].as_str().map(|install| {
+            let token = Path::new(install).join("token");
+            match fs::remove_file(&token) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(_) => Err("copied board credential remains".to_string()),
+            }
+        }).unwrap_or(Ok(()));
+        let cleanup = match token_cleanup { Ok(()) => cleanup, Err(e) => Ok(Err(e)) };
         self.data["cases"]["cleanup"] = match cleanup {
             Ok(Ok(evidence)) => json!({"status":"pass", "evidence":evidence}),
             Ok(Err(reason)) => json!({"status":"failed", "reason":reason}),
@@ -450,7 +507,7 @@ fn a40_live_management() {
     let mut h = Run {
         d, st, root: PathBuf::from(std::env::var("PILOTQ_A8_ROOT").expect("PILOTQ_A8_ROOT")), report,
         data: json!({"suite":"A40", "board":"taskqorg/pilotq", "pass":false, "cases":{}}),
-        svc:None, login:None, update:0, task:0, run_request:0, deadline:Instant::now() + Duration::from_secs(10800),
+        svc:None, login:None, fixture_token:None, update:0, task:0, run_request:0, deadline:Instant::now() + Duration::from_secs(10800),
     };
     for c in CASES { h.data["cases"][c] = json!({"status":"not_run"}); }
     h.data["install"] = json!(h.d);
@@ -485,6 +542,9 @@ fn a40_live_management() {
         assert_ne!(install, h.root);
         let projects = fs::read_to_string(install.join("projects")).expect("fixture project registry");
         assert_eq!(projects.trim(), h.root.to_str().unwrap(), "foreign fixture projects");
+        h.fixture_token = Some(Login(vec![install.join("token")]));
+        h.data["fixture_install"] = json!(install);
+        h.save();
         fs::write(h.d.join("taskq-scope.json"), json!({"install":install,"root":h.root}).to_string()).unwrap();
         std::os::unix::fs::symlink(h.d.join("record-taskq"), h.d.join("taskq")).unwrap();
         let home_bin = h.d.join("home/.local/share/taskq");
@@ -527,6 +587,7 @@ fn a40_live_management() {
         let snapshot: Value = serde_json::from_str(&h.taskq(&["status".into(), "--json".into()]).unwrap()).unwrap();
         assert_eq!(snapshot["board"]["repo"], "taskqorg/pilotq");
         assert_eq!(snapshot["complete"], true, "board snapshot incomplete");
+        h.prepare_host();
         h.save();
         h.start();
         h.case("admission", |h| {
@@ -760,7 +821,7 @@ else: sys.exit(1)
     script(&d,"record-taskq",""); fs::write(d.join("record-taskq"),fake).unwrap();
     let mut h = Run {
         report:d.join("report.json"),root,data:json!({"pass":false,"original_focus":"all\n","cases":{}}),
-        login:Some(Login(vec![d.join("codex/auth.json")])), d:d.clone(),st,svc:None,update:0,task:0,run_request:0,
+        login:Some(Login(vec![d.join("codex/auth.json")])), fixture_token:None, d:d.clone(),st,svc:None,update:0,task:0,run_request:0,
         deadline:Instant::now()+Duration::from_secs(10),
     };
     for c in CASES { h.data["cases"][c]=json!({"status":"not_run"}); }
@@ -791,4 +852,73 @@ else: sys.exit(1)
     assert_eq!(fs::read_to_string(h.root.join(".taskq/focus.paused")).unwrap(), "different-focus");
     assert_eq!(fs::read_to_string(h.root.join(".taskq/focus")).unwrap(), "off");
     fs::remove_dir_all(d).unwrap();
+}
+
+// §9/R5/R16: real harness host preparation/retirement against a fake forge, no board or login.
+#[test]
+fn a40_reserved_host_metadata() {
+    const CHILD: &str = "PILOTQ_A40_HOST_TEST";
+    if std::env::var_os(CHILD).is_none() {
+        let (d, _) = setup("a40-host-metadata", vec![]);
+        let bin = d.join("bin"); fs::create_dir_all(&bin).unwrap();
+        fs::write(bin.join("gh"), r#"#!/usr/bin/env python3
+import json, os, pathlib, sys
+p = pathlib.Path(os.environ['PILOTQ_A40_HOST_TEST'])
+a = sys.argv[1:]; path = next(x for x in a if x.startswith('repos/'))
+f = p/'hosts.json'; rows = json.loads(f.read_text()) if f.exists() else []
+if '--method' in a:
+    method = a[a.index('--method')+1]; v = json.load(sys.stdin)
+    if method == 'POST':
+        v.update(number=901, state='open'); rows.append(v)
+        f.write_text(json.dumps(rows))
+        if (p/'lose-response').exists(): sys.exit(1)
+    else:
+        v = rows[0]; v['state'] = 'closed'
+        f.write_text(json.dumps(rows))
+    print(json.dumps(v))
+elif '?' in path:
+    # Prove pagination: the matching issue is after one full unrelated page.
+    print(json.dumps([{'title':'ordinary host'}]*100 if path.endswith('&page=1') else rows))
+else: print(json.dumps(rows[0]))
+"#).unwrap();
+        fs::set_permissions(bin.join("gh"), fs::Permissions::from_mode(0o700)).unwrap();
+        let out = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "automatic::a40_reserved_host_metadata", "--nocapture"])
+            .env(CHILD, &d).env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()))
+            .output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+        fs::remove_dir_all(d).unwrap();
+        return;
+    }
+    let d = PathBuf::from(std::env::var_os(CHILD).unwrap());
+    let (_, st) = setup("a40-host-child", vec![]);
+    let mut h = Run { d:d.clone(), st, root:d.clone(), report:d.join("report.json"),
+        data:json!({"isolated_host":"pilotq-e2e-invented-fixture","cases":{}}),
+        svc:None, login:None, fixture_token:None, update:0, task:0, run_request:0, deadline:Instant::now()+Duration::from_secs(30) };
+    h.prepare_host(); h.prepare_host();
+    assert_eq!(h.fixture_hosts().len(), 1, "repeat preparation must not create another host");
+    let original = h.fixture_hosts();
+    fs::write(d.join("hosts.json"), serde_json::to_string(&vec![original[0].clone(), original[0].clone()]).unwrap()).unwrap();
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(||h.fixture_hosts())).is_err());
+    fs::write(d.join("hosts.json"), serde_json::to_string(&original).unwrap()).unwrap();
+    h.cleanup().unwrap();
+    assert_eq!(h.fixture_hosts()[0]["state"], "closed");
+    fs::remove_file(d.join("hosts.json")).unwrap();
+    fs::write(d.join("lose-response"), "").unwrap();
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(||h.prepare_host())).is_err());
+    assert_eq!(h.fixture_hosts().len(), 1, "lost response retains reconcilable intent");
+    // Even failed cleanup must remove the disposable credential and retain the failed case.
+    let install = d.join("install"); fs::create_dir_all(&install).unwrap();
+    fs::write(install.join("token"), "invented-copy").unwrap();
+    h.data["fixture_install"] = json!(install);
+    let mut rows = h.fixture_hosts(); rows[0]["body"] = json!("foreign ordinary service");
+    fs::write(d.join("hosts.json"), serde_json::to_string(&rows).unwrap()).unwrap();
+    h.finish(Err(Box::new("injected failure".to_string())));
+    assert_eq!(h.data["cases"]["cleanup"]["status"], "failed");
+    assert!(!install.join("token").exists());
+    assert_eq!(h.data["pass"], false);
+    fs::write(install.join("token"), "invented-copy").unwrap();
+    h.fixture_token = Some(Login(vec![install.join("token")]));
+    drop(h);
+    assert!(!install.join("token").exists(), "unwinding/report errors retain the token cleanup guard");
 }
