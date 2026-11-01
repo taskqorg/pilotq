@@ -115,10 +115,12 @@ fn update_waits_for_the_running_turn() {
         &codex,
         br#"#!/bin/sh
 while IFS= read -r l; do
+  id=$(printf '%s' "$l" | sed -n 's/^{"id":\([0-9]*\),.*/\1/p')
   case "$l" in
-  *'"method":"initialize"'*) echo '{"id":1,"result":{}}' ;;
-  *'"method":"thread/start"'*) echo '{"id":2,"result":{"thread":{"id":"t1"}}}' ;;
-  *'"method":"turn/start"'*) echo '{"id":3,"result":{"turn":{"id":"u1"}}}'; sleep 3
+  *'"method":"initialize"'*) echo '{"id":'$id',"result":{}}' ;;
+  *'"method":"account/rateLimits/read"'*) echo '{"id":'$id',"error":{"code":-32601,"message":"unsupported"}}' ;;
+  *'"method":"thread/start"'*) echo '{"id":'$id',"result":{"thread":{"id":"t1"}}}' ;;
+  *'"method":"turn/start"'*) echo '{"id":'$id',"result":{"turn":{"id":"u1"}}}'; sleep 3
     echo '{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"m1","text":"drained"}}}'
     echo '{"method":"turn/completed","params":{"turn":{"id":"u1","status":"completed"}}}' ;;
   esac

@@ -242,14 +242,16 @@ fn script(d: &Path, name: &str, body: &str) -> PathBuf {
 const FAKE: &str = r#"d=$(dirname "$0")
 while IFS= read -r l; do
   printf '%s\n' "$l" >> "$d/codex.log"
+  id=$(printf '%s' "$l" | sed -n 's/^{"id":\([0-9]*\),.*/\1/p')
   case "$l" in
-  *'"method":"initialize"'*) echo '{"id":1,"result":{}}' ;;
+  *'"method":"initialize"'*) echo '{"id":'$id',"result":{}}' ;;
+  *'"method":"account/rateLimits/read"'*) echo '{"id":'$id',"error":{"code":-32601,"message":"unsupported"}}' ;;
   *'"method":"thread/start"'*) n=$(($(cat "$d/threads" 2>/dev/null || echo 0) + 1)); echo $n > "$d/threads"; th=th-$n
-    echo '{"id":2,"result":{"thread":{"id":"'$th'"},"model":"gpt-test"}}' ;;
+    echo '{"id":'$id',"result":{"thread":{"id":"'$th'"},"model":"gpt-test"}}' ;;
   *'"method":"thread/resume"'*) th=$(printf '%s' "$l" | sed 's/.*"threadId":"\([^"]*\)".*/\1/')
-    echo '{"id":2,"result":{"thread":{"id":"'$th'"}}}' ;;
+    echo '{"id":'$id',"result":{"thread":{"id":"'$th'"}}}' ;;
   *'"method":"turn/start"'*) text=$(printf '%s' "$l" | sed 's/.*"text":"\([^"]*\)".*/\1/')
-    echo '{"id":3,"result":{"turn":{"id":"u1","status":"inProgress","items":[]}}}'
+    echo '{"id":'$id',"result":{"turn":{"id":"u1","status":"inProgress","items":[]}}}'
     done='{"method":"turn/completed","params":{"threadId":"'$th'","turn":{"id":"u1","status":"completed","items":[]}}}'
     case "$text" in
     stream*)
@@ -878,7 +880,7 @@ fn crash_during_turn_reports_interruption() {
 // Found in the A8 run: three conversations started Codex together on a fresh Codex home, and all but one app-server exited with
 // `failed to initialize sqlite state runtime`, read by PilotQ only as "Codex exited without a terminal event". Startup is now
 // serialized until `initialize` answers, so every request is answered; a Codex that exits early names its stderr reason in the
-// operator log only, never in the reply.
+// private codex/app-server.log only, never in the reply.
 #[test]
 fn concurrent_codex_starts_do_not_race() {
     let (d, st) = setup("race", vec![text(1, 11, None, OWNER, "a"), text(2, -100, Some(5), OWNER, "b"), text(3, -100, Some(6), OWNER, "c")]);
@@ -897,7 +899,7 @@ sleep 0.5; rmdir "$d/init.lock"; exec "$d/fake-codex""#);
     use_codex(&d, &script(&d, "dead-codex", "echo 'Error: boom' >&2; exit 1"));
     let o = cli(&d, &["ask", "--json", "hi"]);
     assert_eq!(serde_json::from_slice::<Value>(&o.stdout).unwrap()["error"], "Codex exited without a terminal event", "the reply carries no raw stderr");
-    assert!(String::from_utf8_lossy(&o.stderr).contains("codex exited: Error: boom"), "the operator log names the reason");
+    assert!(fs::read_to_string(d.join("codex/app-server.log")).unwrap().contains("Error: boom"), "the private operator log names the reason");
     cleanup(&d);
 }
 
@@ -1059,20 +1061,22 @@ for line in sys.stdin:
     log.write(line); log.flush()
     m = json.loads(line); meth = m.get("method")
     if meth == "initialize":
-        send({"id": 1, "result": {"userAgent": "codex/0.0.0-test"}})
+        send({"id": m["id"], "result": {"userAgent": "codex/0.0.0-test"}})
+    elif meth == "account/rateLimits/read":
+        send({"id": m["id"], "error": {"code": -32601, "message": "unsupported"}})
     elif meth == "thread/start":
         p = os.path.join(d, "threads"); n = int(open(p).read()) + 1 if os.path.exists(p) else 1
         open(p, "w").write(str(n)); th = "th-%d" % n
-        send({"id": 2, "result": {"thread": {"id": th}, "model": "gpt-test"}})
+        send({"id": m["id"], "result": {"thread": {"id": th}, "model": "gpt-test"}})
     elif meth == "thread/resume":
         if os.path.exists(os.path.join(d, "damaged")):
             os.unlink(os.path.join(d, "damaged"))
-            send({"id": 2, "error": {"message": "failed to read thread: /private/native/rollout.jsonl"}})
+            send({"id": m["id"], "error": {"message": "failed to read thread: /private/native/rollout.jsonl"}})
             continue
-        th = m["params"]["threadId"]; send({"id": 2, "result": {"thread": {"id": th}}})
+        th = m["params"]["threadId"]; send({"id": m["id"], "result": {"thread": {"id": th}}})
     elif meth == "turn/start":
         text = m["params"]["input"][-1]["text"]
-        send({"id": 3, "result": {"turn": {"id": "u1", "status": "inProgress", "items": []}}})
+        send({"id": m["id"], "result": {"turn": {"id": "u1", "status": "inProgress", "items": []}}})
         if text.startswith("slow "):
             time.sleep(float(text.split()[1]))
         # Explicit user prose selects the project; the following JSON only drives this fake.
@@ -2617,9 +2621,9 @@ mod automatic;
 #[test]
 fn telegram_images_reach_same_session() {
     let (d,st)=setup("images",vec![]);
-    let fake=FAKE.replace("    echo '{\"id\":3,", r#"    image=$(printf '%s' "$l" | sed -n 's/.*"type":"localImage","path":"\([^"]*\)".*/\1/p')
+    let fake=FAKE.replace("    echo '{\"id\":'$id',\"result\":{\"turn\"", r#"    image=$(printf '%s' "$l" | sed -n 's/.*"type":"localImage","path":"\([^"]*\)".*/\1/p')
     if [ -n "$image" ]; then test -s "$image" || exit 17; printf '%s\n' "$image" >> "$d/images.log"; fi
-    echo '{"id":3,"#);
+    echo '{"id":'$id',"result":{"turn""#);
     let fake=fake.replace("    case \"$text\" in", "    if [ \"$(wc -l < \"$d/images.log\")\" = 4 ]; then while [ ! -f \"$d/release-fourth\" ]; do sleep 0.05; done; fi\n    case \"$text\" in");
     use_codex(&d,&script(&d,"image-codex",&fake));
     let mut c=spawn(&d,None);
@@ -3544,9 +3548,8 @@ fn u165_status_observations_without_reply_footer() {
       # Keep the 3h ceiling away from its boundary during async delivery.
       reset=$(($(date +%s) + 9000))
       echo '{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"codex","planType":"invented-secret-plan","secondary":{"usedPercent":25,"windowDurationMins":10080,"resetsAt":'$reset'}}}}'
-      echo '{"id":4,"result":{"rateLimits":{"secondary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":'$reset'}}}}'
       echo '{"method":"thread/tokenUsage/updated","params":{"threadId":"other","turnId":"u1","tokenUsage":{"last":{"inputTokens":0},"modelContextWindow":1000}}}' ;;
-    missing*) echo '{"id":4,"error":{"code":-32601,"message":"invented missing quota source"}}' ;;
+    missing*) ;;
     esac
     case "$text" in"#);
         use_codex(&d,&script(&d,"footer-codex",&fake));
