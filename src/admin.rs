@@ -313,6 +313,7 @@ fn register(d: &Direct, j: &Mutex<Journal>, r: &Run, args: &Value, deadline: Ins
     let config:Value=serde_json::from_str(&std::fs::read_to_string(root.join("taskq.json")).map_err(|_|"Configuration readback failed")?).map_err(|_|"Configuration readback invalid")?;
     let claim_configured=config["create_claim_issue"].as_i64().is_some_and(|n|n>0);
     crate::onboarding::queue(&j,project)?;
+    if !root.join(".git").exists() {crate::onboarding::mark_board_only(&j,project)?;}
     let ready=false;
     let result=json!({"outcome":"accepted","project":saved.0,"repo":saved.1,"root":saved.2,"board":board,"host":host,"filing_ready":ready,
         "onboarding":"pending", "claim_configured":claim_configured,

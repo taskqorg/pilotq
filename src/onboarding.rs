@@ -79,8 +79,12 @@ pub(crate) fn setup_refusal(j:&Journal,request:i64,project:&str,language:Option<
         else {format!("Project {project} setup is not ready. Nothing started. {notice}")})
 }
 
-// #266 / §5: a root without a code checkout is a board connection; hosts whose service serves the board execute it.
-fn board_only(root:&str)->bool { !Path::new(root).join(".git").exists() }
+/// #266 / §5: registration records a root without a code checkout as a board connection; hosts whose service serves the board execute it.
+/// Called in the registration transaction after queue(); requeues keep the flag for the same binding.
+pub fn mark_board_only(j:&Journal,project:&str)->Result<(),String> {
+    let mut v=saved(j,project)?.ok_or("Onboarding not queued")?;
+    v["board_only"]=json!(true);save(j,project,&v)
+}
 
 /// A fresh board heartbeat, not a local service, proves some TaskQ host will take this board's tasks.
 fn host_gap(status:&Value,config:&Value)->Option<Value> {
@@ -115,7 +119,7 @@ fn refresh_service(tq:&Taskq,j:&std::sync::Mutex<Journal>,project:&str,end:Insta
     };
     if let Some(v)=refresh {
         let active=||{let j=j.lock().unwrap();saved(&j,project).ok().flatten().is_some_and(|now|now["epoch"]==v["epoch"] && now["root"]==v["root"] && now["board"]==v["board"])};
-        if board_only(&tq.root.to_string_lossy()) {
+        if v["board_only"]==true {
             let status=probe(&tq.bin,&tq.root.to_string_lossy(),&["status","--json"],end.min(Instant::now()+Duration::from_secs(10)),active);
             let config:Value=std::fs::read(tq.root.join("taskq.json")).ok().and_then(|s|serde_json::from_slice(&s).ok()).unwrap_or(Value::Null);
             let mut result=v["report"].clone();
@@ -210,7 +214,7 @@ fn report(tq:&Taskq,board:&str,doctor:&Value,status:&Value,service:&Value,at:i64
     }
     }
     let route=if config["board"]=="gitlab" {json!({"outcome":"skipped","reason":"TaskQ service status fallback has no qualified GitLab merge-request route probe; TaskQ retains execution checks"})} else {Value::Null};
-    json!({"setup_revision":3,"merge_request_route":route,"ready":gaps.is_empty(),"gaps":gaps,"checked_at":at,"source":"taskq service status --json (setup-check fallback)","service_identity":if service["schema"]=="taskq.service/1" {json!([service["service"]["instance"],service["service"]["started"],service["service"]["version"]])} else {Value::Null}})
+    json!({"setup_revision":2,"merge_request_route":route,"ready":gaps.is_empty(),"gaps":gaps,"checked_at":at,"source":"taskq service status --json (setup-check fallback)","service_identity":if service["schema"]=="taskq.service/1" {json!([service["service"]["instance"],service["service"]["started"],service["service"]["version"]])} else {Value::Null}})
 }
 
 /// Inspect grants through the metadata-only key API: no take(), credential injection or last-use write.
@@ -378,7 +382,7 @@ pub fn check_registered(d:&crate::direct::Direct,tq:&Taskq,j:&std::sync::Mutex<J
 // A5 uses the same registration/check/apply chain with invented executable and board boundaries.
 pub(crate) fn check_with(d:&crate::direct::Direct,tq:&Taskq,j:&std::sync::Mutex<Journal>,project:&str,end:Instant,exe:&Path)->Result<Value,String> {
     let owner=j.lock().unwrap().owner()?.ok_or("Owner unavailable")?;
-    let (board,root,epoch)={
+    let (board,root,epoch,board_only)={
         let j=j.lock().unwrap();
         if !j.has(owner,"chat")? || !j.has(owner,"projects")? {return Err("Owner access revoked".into());}
         let (board,root)=binding(&j,project)?;
@@ -393,7 +397,7 @@ pub(crate) fn check_with(d:&crate::direct::Direct,tq:&Taskq,j:&std::sync::Mutex<
         v["checking_until"]=json!(now+65);save(&j,project,&v)?;
         tx.commit().map_err(err)?;
         if created {j.trace(source,now);}
-        (board,root,v["epoch"].clone())
+        (board,root,v["epoch"].clone(),v["board_only"]==true)
     };
     let active=|| {let j=j.lock().unwrap(); j.has(owner,"chat").unwrap_or(false) && j.has(owner,"projects").unwrap_or(false) && binding(&j,project).is_ok_and(|b|b==(board.clone(),root.clone()))
         && saved(&j,project).ok().flatten().is_some_and(|v|v["epoch"]==epoch && v["root"]==root && v["board"]==board && attach_authorized(&j,&v,owner).unwrap_or(false))};
@@ -402,7 +406,6 @@ pub(crate) fn check_with(d:&crate::direct::Direct,tq:&Taskq,j:&std::sync::Mutex<
     let config:Value=std::fs::read(fallback.root.join("taskq.json")).ok().and_then(|s|serde_json::from_slice(&s).ok()).unwrap_or(Value::Null);
     let matched=status["complete"]==true && status["board"]["repo"]==board && config["repo"]==board
         && ["kind","host"].iter().all(|k|status["board"][k].is_null() || status["board"][k]==config[if *k=="kind" {"board"} else {"host"}]);
-    let board_only=board_only(&root);
     let attached=if !matched {Err("Owner: restore matching TaskQ configuration and board readback, then Recheck".into())}
         else if board_only {Ok(())}
         else {attach(&fallback,j,project,&epoch,end.min(Instant::now()+Duration::from_secs(10)),&active)};
@@ -565,9 +568,9 @@ pub fn control(t:&coreq::Tool,j:&Shared,r:&crate::builtins::Request)->Result<(),
     j.lock().unwrap().builtin_finish(r.id,&message,true,crate::now() as i64)
 }
 
-/// Startup queues old registrations before new manager claims; no root discovery. Revision 3 (#266) rechecks board-only roots.
+/// Startup queues old registrations before new manager claims; no root discovery.
 pub fn startup(j:&Journal)->Result<(),String> {
-    for (project,..) in j.projects()? { if saved(j,&project)?.is_none_or(|v|v["report"]["issue_read_key_checked"]!=true || v["report"]["setup_revision"]!=3) {queue(j,&project)?;} }
+    for (project,..) in j.projects()? { if saved(j,&project)?.is_none_or(|v|v["report"]["issue_read_key_checked"]!=true || v["report"]["setup_revision"]!=2) {queue(j,&project)?;} }
     Ok(())
 }
 
@@ -886,7 +889,6 @@ mod tests {
     fn onboarding_236_refresh_saved_service_gaps() {
         use std::os::unix::fs::PermissionsExt;
         let (j,dir,mut tq)=setup("236-refresh");queue(&j,"cyprusbz-board").unwrap();
-        std::fs::create_dir(dir.join(".git")).unwrap();
         let epoch=saved(&j,"cyprusbz-board").unwrap().unwrap()["epoch"].clone();
         tq.bin=dir.join("taskq-fixture");
         std::fs::write(&tq.bin,"#!/bin/sh\ncat \"$TASKQ_ROOT/service.json\"\n").unwrap();
