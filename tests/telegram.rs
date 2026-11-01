@@ -413,7 +413,7 @@ fn f01_crash_points_keep_each_input_once() {
     let mut c = c;
     c.kill().unwrap();
     c.wait().unwrap();
-    fs::remove_dir_all(d).unwrap();
+    cleanup(&d);
 }
 
 // F02: a duplicate update admits one request; a stranger is ignored silently; a second local process cannot poll;
@@ -440,7 +440,7 @@ fn f02_duplicate_lock_and_conflict() {
     assert!(st.lock().unwrap().sent.iter().all(|s| s["chat_id"] == 21), "nothing sent to the stranger");
     c.kill().unwrap();
     c.wait().unwrap();
-    fs::remove_dir_all(d).unwrap();
+    cleanup(&d);
 }
 
 // Live F02 run found every idle poll failing: Telegram holds an empty getUpdates for the whole timeout,
@@ -454,7 +454,7 @@ fn idle_long_poll_is_healthy() {
     c.kill().unwrap();
     c.wait().unwrap();
     assert_eq!(query(&d, "SELECT count(*) FROM health WHERE source='poll' AND state='ok'"), 1, "idle long poll reported as failed");
-    fs::remove_dir_all(d).unwrap();
+    cleanup(&d);
 }
 
 // F05: lost send response, formatting rejection, 429 and an outage. The result stays durable, delivery is bounded,
@@ -492,7 +492,7 @@ fn f05_delivery_faults_are_bounded() {
     assert_eq!(to31.len(), 2, "the lost response and the final plain send: {to31:?}");
     assert!(to31[0].get("parse_mode").is_some() && to31[1].get("parse_mode").is_none());
     drop(f);
-    fs::remove_dir_all(d).unwrap();
+    cleanup(&d);
 }
 
 fn cli(d: &Path, args: &[&str]) -> std::process::Output {
@@ -523,7 +523,7 @@ fn live_gaps_205_cli_store_lock() {
     assert_eq!(query(&d,"SELECT count(*) FROM requests WHERE front='cli' AND text='after restart' AND state='answered'"),1);
     let log=fs::read_to_string(d.join("codex.log")).unwrap();
     assert!(log.contains("cs = cyprusbz"),"manager must receive the code-owned alias table");
-    drop(writer);fs::remove_dir_all(d).unwrap();
+    drop(writer);cleanup(&d);
 }
 
 // U18 through the CLI and the running service: a stranger is ignored silently; `users grant` admits only new requests;
@@ -554,17 +554,28 @@ fn u18_cli_grant_admits_only_new_requests() {
     assert_eq!(st.lock().unwrap().sent.len(), 1, "no reply to revoked input");
     c.kill().unwrap();
     c.wait().unwrap();
-    fs::remove_dir_all(d).unwrap();
+    cleanup(&d);
 }
 
 fn sent_has(st: &State, needle: &str) -> bool {
     texts(st).iter().any(|t| t.contains(needle))
 }
 
+/// #264: the board observer's TaskQ reads run in their own process group, so they can outlive a killed service and
+/// write fixture files for up to their ten-second deadline (§5); removal retries until they exit.
+fn cleanup(d: &Path) {
+    let end = Instant::now() + Duration::from_secs(15);
+    while let Err(e) = fs::remove_dir_all(d) {
+        if e.kind() == std::io::ErrorKind::NotFound { return; }
+        assert!(Instant::now() < end, "fixture removal: {e}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 fn stop(mut c: Svc, d: PathBuf) {
     c.kill().unwrap();
     c.wait().unwrap();
-    fs::remove_dir_all(d).unwrap();
+    cleanup(&d);
 }
 
 // §9 candidate gate: stopping a fixture must also stop a CLI child before removing its install.
@@ -774,7 +785,7 @@ fn f03_provider_faults_are_bounded() {
     use_codex(&d, &d.join("mute"));
     let o = cli(&d, &["ask", "--json", "hello"]);
     assert_eq!(serde_json::from_slice::<Value>(&o.stdout).unwrap()["error"], "Codex sent no first event within 2 s");
-    fs::remove_dir_all(d).unwrap();
+    cleanup(&d);
 }
 
 // U23 through the service and the CLI: a person in a DM, another in a forum topic and the CLI owner each ask; one fails after a
@@ -825,7 +836,7 @@ fn u23_audit_through_service_and_cli() {
         assert!(tel.contains(&format!("\"{}\"", r["trace"].as_str().unwrap())), "request {} has no CoreQ trace", r["request"]);
     }
     assert!(!tel.contains("question"), "no message text in telemetry");
-    fs::remove_dir_all(d).unwrap();
+    cleanup(&d);
 }
 
 // F06, L18: polling fails with 401 while sending still works. Poll health turns failed with its reason, delivery health stays ok
@@ -887,7 +898,7 @@ sleep 0.5; rmdir "$d/init.lock"; exec "$d/fake-codex""#);
     let o = cli(&d, &["ask", "--json", "hi"]);
     assert_eq!(serde_json::from_slice::<Value>(&o.stdout).unwrap()["error"], "Codex exited without a terminal event", "the reply carries no raw stderr");
     assert!(String::from_utf8_lossy(&o.stderr).contains("codex exited: Error: boom"), "the operator log names the reason");
-    fs::remove_dir_all(d).unwrap();
+    cleanup(&d);
 }
 
 // Live test-bot run found Telegram service messages (forum topic created, group migrated, group created) answered as unsupported
@@ -1177,7 +1188,7 @@ fn plan_218_empty_turn_and_acknowledgement() {
             assert_eq!(query_text(&d, "SELECT error FROM requests ORDER BY id DESC LIMIT 1"), "Codex ended the turn without an answer");
             assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE kind='failed_draft'"), 1);
         }
-        fs::remove_dir_all(d).unwrap();
+        cleanup(&d);
     }
 }
 
@@ -1729,7 +1740,7 @@ fn u03_u21_key_backed_read_and_no_value_anywhere() {
     assert!(!fs::read_to_string(d.join("codex.log")).unwrap().contains(TOKEN));
     assert!(ok(cli(&d, &["keys", "revoke", "github", "--json"]))["removed"] == true);
     assert_eq!(ok(cli(&d, &["keys", "list", "--json"])), json!([]));
-    fs::remove_dir_all(d).unwrap();
+    cleanup(&d);
 }
 
 // U04, F04 (#151): the owner's comment and label run `taskq issue N --comment|--label --op-id ID --json` and settle from the
@@ -2014,7 +2025,7 @@ fn a8_live_board_run() {
     c.wait().unwrap();
     a8_after(&d, n);
     say(&format!("A8 passed: task #{n}"));
-    fs::remove_dir_all(d).unwrap();
+    cleanup(&d);
 }
 
 /// A8's checks on the stopped install: U23 audit record and CoreQ trace, and the board's closing state.
@@ -2132,7 +2143,7 @@ fn a7_live_direct_run() {
         eprintln!("a7 sent: {t}");
     }
     drop(_login);
-    fs::remove_dir_all(d).unwrap();
+    cleanup(&d);
 }
 
 // #31 A1–A3, R17: count complete calls once, including refusals, without copying result text into measurement records.
@@ -2163,7 +2174,7 @@ fn pilot_tool_sizes_metadata_and_window() {
     assert_eq!(gate["pilot_start"], start["pilot_start"]);
     assert_eq!(gate["since"], start["pilot_start"]);
     assert!(gate["tools"].is_array());
-    fs::remove_dir_all(d).unwrap();
+    cleanup(&d);
 }
 
 // § 6 / R10, R13: inspect actual turn input, not model prose. Protect correction/forget on resumed sessions and route privacy.
@@ -2386,7 +2397,7 @@ fn c_live_context_runs() {
         let log = stderr_of(svc);
         assert!(!log.contains(&token) && files_with(&d, &token, &["keys.json"]).is_empty(), "the key value leaked");
         drop(_login);
-        fs::remove_dir_all(&d).unwrap();
+        cleanup(&d);
     }
     assert!(failed.is_empty(), "failed: {failed:?}");
 }
@@ -2437,7 +2448,7 @@ fn c_live_context_runs_c07() {
         eprintln!("c-live {}", json!({"case": "C07", "rep": rep, "pass": true, "corrected_revision": 2, "corrected": corrected, "forgotten": forgotten, "usage": codex_usage(&d), "agentq": "off"}));
         let _ = stderr_of(svc);
         drop(_login);
-        fs::remove_dir_all(d).unwrap();
+        cleanup(&d);
     }
 }
 
@@ -2518,7 +2529,7 @@ fn c_live_context_runs_c06() {
         assert!(!log.contains(&token) && files_with(&d, &token, &["keys.json"]).is_empty());
         eprintln!("c-live {}", json!({"case":"C06", "rep":rep, "pass":true, "agentq":"off", "comments_added":1, "effects":1, "rebuilds":1, "notice":0, "reply":recovered, "usage":codex_usage(&d)}));
         drop(_login);
-        fs::remove_dir_all(d).unwrap();
+        cleanup(&d);
     }
 }
 
@@ -3451,7 +3462,7 @@ fn doctor_voice_readiness() {
         assert!(!String::from_utf8_lossy(&out.stdout).contains("private-dependency-output"));
     }
     assert_eq!(st.lock().unwrap().polls, 0, "doctor never polls Telegram updates");
-    fs::remove_dir_all(d).unwrap();
+    cleanup(&d);
 }
 
 // #106 / R10, R13, R17, §12: FRA 37–41 replay across Telegram intake, the real control worker and delivery.
