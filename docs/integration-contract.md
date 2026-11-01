@@ -460,6 +460,12 @@ Task status finishes its TaskQ board reads before starting a fresh ten-second DE
 Under [§5](../pilotq.md#5-taskq-tools-and-project-administration), octet-stream uploads
 require a JPEG/PNG filename in the named reference or exact-ID board upload metadata
 before body transfer, then image signature validation; unavailable metadata yields a gap.
+Numeric project references require authenticated project metadata matching both the ID
+and registered namespace before upload metadata or bytes are read (256 KiB cap).
+Producer-bound numeric upload URLs or `#upload=<id>` on a direct image reference select
+that exact ID; filename/size matching never discovers one. Secret/filename API reads
+require GitLab 17.4; older servers need a producer-verified ID in the current trusted
+outcome. A path-only HTTP 404 remains an explicit gap, without a web fallback.
 Metadata reads are project-bound, authenticated, redirect-free and bounded to three
 100-entry pages of at most 256 KiB each. They select only the exact trusted attachment
 ID, never discover unrelated images. ZIP or unsupported filename metadata refuses
