@@ -230,37 +230,64 @@ impl Run {
         format!("A40 explicitly synthetic unserved fixture: {}\nfocus off\nNo service, worker or reviewer exists. Never enroll this host.", self.data["isolated_host"].as_str().unwrap())
     }
 
-    // Persist intent first; a lost POST response is found by exact title/body, never retried blindly.
+    fn validate_host(&self, row: &Value) {
+        let host = self.data["isolated_host"].as_str().unwrap();
+        assert!(host.starts_with("pilotq-e2e-"), "foreign host namespace");
+        assert_eq!(row["repository_url"], "https://api.github.com/repos/taskqorg/pilotq", "foreign host project");
+        assert_eq!(row["title"], format!("taskq host {host}"), "foreign host title");
+        assert_eq!(row["body"], self.host_body(), "foreign reserved host metadata");
+        assert!(row["labels"].as_array().unwrap().iter().any(|v| v == "taskq-host" || v["name"] == "taskq-host"), "missing host label");
+        assert!(row["number"].as_u64().is_some_and(|n| n > 0));
+    }
+
+    // Listing is discovery only, including uncertain POST reconciliation. Never proves absence.
     fn fixture_hosts(&self) -> Vec<Value> {
         let host = self.data["isolated_host"].as_str().unwrap();
         assert!(host.starts_with("pilotq-e2e-"), "foreign host namespace");
         let title = format!("taskq host {host}");
         let mut found = vec![];
-        for page in 1.. {
+        for page in 1..=10 {
             let rows = gh_json(&format!("repos/taskqorg/pilotq/issues?state=all&labels=taskq-host&per_page=100&page={page}"));
             let rows = rows.as_array().expect("complete host listing");
             for row in rows.iter().filter(|r| r["title"] == title) {
-                assert_eq!(row["body"], self.host_body(), "foreign reserved host metadata");
+                self.validate_host(row);
                 found.push(row.clone());
             }
-            if rows.len() < 100 { break; }
+            if rows.len() < 100 {
+                assert!(found.len() <= 1, "ambiguous reserved host metadata");
+                return found;
+            }
         }
-        assert!(found.len() <= 1, "ambiguous reserved host metadata");
-        found
+        panic!("host reconciliation listing exceeded ten pages");
+    }
+
+    fn exact_host(&mut self) -> Value {
+        let id = self.data["host_metadata"].as_u64().filter(|n| *n > 0).expect("unresolved host identity");
+        let row = gh_json(&format!("repos/taskqorg/pilotq/issues/{id}"));
+        self.data["host_metadata_readback"] = row.clone();
+        self.save();
+        self.validate_host(&row);
+        assert_eq!(row["number"], id, "foreign host issue identity");
+        row
     }
 
     fn prepare_host(&mut self) {
-        self.data["host_metadata_intent"] = json!(true);
-        self.save();
-        let rows = self.fixture_hosts();
-        let row = rows.into_iter().next().unwrap_or_else(|| self.github("POST", "repos/taskqorg/pilotq/issues",
-            json!({"title":format!("taskq host {}",self.data["isolated_host"].as_str().unwrap()),
-                "body":self.host_body(),"labels":["taskq-host"]})));
-        self.data["host_metadata"] = row["number"].clone();
-        self.save();
-        let rows = self.fixture_hosts();
-        assert_eq!(rows.len(), 1, "missing fixture host readback");
-        assert_eq!(rows[0]["state"], "open", "retired host cannot be reused");
+        if self.data["host_metadata"].as_u64().is_none() {
+            let prior_intent = self.data["host_metadata_intent"] == true;
+            let rows = self.fixture_hosts();
+            self.data["host_metadata_intent"] = json!(true);
+            self.save();
+            let row = rows.into_iter().next().unwrap_or_else(|| {
+                assert!(!prior_intent, "unresolved host POST; do not retry");
+                self.github("POST", "repos/taskqorg/pilotq/issues",
+                    json!({"title":format!("taskq host {}",self.data["isolated_host"].as_str().unwrap()),
+                        "body":self.host_body(),"labels":["taskq-host"]}))
+            });
+            self.data["host_metadata"] = row["number"].clone();
+            self.data["host_metadata_create_receipt"] = row;
+            self.save();
+        }
+        assert_eq!(self.exact_host()["state"], "open", "retired host cannot be reused");
     }
 
     fn spawn_fixture(&mut self) -> i64 {
@@ -443,12 +470,32 @@ impl Run {
         self.data["cleanup_tasks"] = json!(outcomes);
         // Keep host validation available until all interrupted adds and task parks are reconciled.
         if errors.is_empty() && self.data["host_metadata_intent"] == true {
-            for row in self.fixture_hosts() {
-                let path = format!("repos/taskqorg/pilotq/issues/{}", row["number"]);
-                self.github("PATCH", &path, json!({"state":"closed","state_reason":"completed"}));
-                assert_eq!(gh_json(&path)["state"], "closed", "fixture host retirement readback");
+            self.data["host_metadata_retired"] = json!(false);
+            self.save();
+            if self.data["host_metadata"].as_u64().is_none() {
+                let rows = self.fixture_hosts();
+                if let Some(row) = rows.first() {
+                    self.data["host_metadata"] = row["number"].clone();
+                    self.save();
+                } else {
+                    errors.push("unresolved host POST; missing listing is not retirement".into());
+                }
             }
-            self.data["host_metadata_retired"] = json!(true);
+            if self.data["host_metadata"].as_u64().is_some() {
+                let row = self.exact_host();
+                let path = format!("repos/taskqorg/pilotq/issues/{}", row["number"]);
+                if row["state"] != "closed" {
+                    let receipt = self.github("PATCH", &path, json!({"state":"closed","state_reason":"completed"}));
+                    self.data["host_metadata_retirement_receipt"] = receipt;
+                    self.save();
+                }
+                if self.exact_host()["state"] == "closed" {
+                    self.data["host_metadata_retired"] = json!(true);
+                } else {
+                    errors.push("fixture host retirement exact readback is not closed".into());
+                }
+            }
+            self.save();
         }
         if self.d.join("codex/auth.json").exists() { errors.push("copied login remains".into()); }
         if errors.is_empty() { Ok(json!({"tasks":outcomes,"copied_credentials_removed":true})) }
@@ -869,16 +916,17 @@ f = p/'hosts.json'; rows = json.loads(f.read_text()) if f.exists() else []
 if '--method' in a:
     method = a[a.index('--method')+1]; v = json.load(sys.stdin)
     if method == 'POST':
-        v.update(number=901, state='open'); rows.append(v)
+        v.update(number=901, state='open', repository_url='https://api.github.com/repos/taskqorg/pilotq'); rows.append(v)
         f.write_text(json.dumps(rows))
         if (p/'lose-response').exists(): sys.exit(1)
     else:
-        v = rows[0]; v['state'] = 'closed'
+        v = rows[0]
+        if not (p/'refuse-close').exists(): v['state'] = 'closed'
         f.write_text(json.dumps(rows))
     print(json.dumps(v))
 elif '?' in path:
     # Prove pagination: the matching issue is after one full unrelated page.
-    print(json.dumps([{'title':'ordinary host'}]*100 if path.endswith('&page=1') else rows))
+    print(json.dumps([] if (p/'delayed-list').exists() else ([{'title':'ordinary host'}]*100 if path.endswith('&page=1') else rows)))
 else: print(json.dumps(rows[0]))
 "#).unwrap();
         fs::set_permissions(bin.join("gh"), fs::Permissions::from_mode(0o700)).unwrap();
@@ -895,7 +943,19 @@ else: print(json.dumps(rows[0]))
     let mut h = Run { d:d.clone(), st, root:d.clone(), report:d.join("report.json"),
         data:json!({"isolated_host":"pilotq-e2e-invented-fixture","cases":{}}),
         svc:None, login:None, fixture_token:None, update:0, task:0, run_request:0, deadline:Instant::now()+Duration::from_secs(30) };
+    fs::write(d.join("delayed-list"), "").unwrap();
     h.prepare_host(); h.prepare_host();
+    fs::write(d.join("refuse-close"), "").unwrap();
+    assert!(h.cleanup().is_err(), "open exact issue must fail retirement");
+    assert_ne!(h.data["host_metadata_retired"], true);
+    fs::remove_file(d.join("refuse-close")).unwrap();
+    h.cleanup().unwrap();
+    assert_eq!(h.data["host_metadata_retired"], true);
+    fs::remove_file(d.join("delayed-list")).unwrap();
+    // Continue existing ambiguity and credential-cleanup protections with an open fixture.
+    let mut rows: Value = serde_json::from_str(&fs::read_to_string(d.join("hosts.json")).unwrap()).unwrap();
+    rows[0]["state"] = json!("open");
+    fs::write(d.join("hosts.json"), rows.to_string()).unwrap();
     assert_eq!(h.fixture_hosts().len(), 1, "repeat preparation must not create another host");
     let original = h.fixture_hosts();
     fs::write(d.join("hosts.json"), serde_json::to_string(&vec![original[0].clone(), original[0].clone()]).unwrap()).unwrap();
@@ -904,9 +964,30 @@ else: print(json.dumps(rows[0]))
     h.cleanup().unwrap();
     assert_eq!(h.fixture_hosts()[0]["state"], "closed");
     fs::remove_file(d.join("hosts.json")).unwrap();
+    h.data.as_object_mut().unwrap().remove("host_metadata");
+    h.data.as_object_mut().unwrap().remove("host_metadata_intent");
     fs::write(d.join("lose-response"), "").unwrap();
     assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(||h.prepare_host())).is_err());
     assert_eq!(h.fixture_hosts().len(), 1, "lost response retains reconcilable intent");
+    fs::write(d.join("delayed-list"), "").unwrap();
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(||h.prepare_host())).is_err());
+    assert_eq!(serde_json::from_str::<Value>(&fs::read_to_string(d.join("hosts.json")).unwrap()).unwrap().as_array().unwrap().len(), 1, "uncertain POST must not duplicate creation");
+    assert!(h.cleanup().is_err(), "unknown issue and empty listing must remain unresolved");
+    assert_eq!(h.data["host_metadata_retired"], false);
+    let report: Value = serde_json::from_str(&fs::read_to_string(&h.report).unwrap()).unwrap();
+    assert_eq!(report["host_metadata_intent"], true);
+    assert_eq!(report["host_metadata_retired"], false);
+    fs::remove_file(d.join("delayed-list")).unwrap();
+    let original = h.fixture_hosts()[0].clone();
+    h.data["host_metadata"] = original["number"].clone();
+    for (key, value) in [("repository_url", json!("https://api.github.com/repos/invented/foreign")),
+        ("title", json!("taskq host ordinary")), ("body", json!("foreign service")),
+        ("labels", json!([])), ("number", json!(902))] {
+        let mut row = original.clone(); row[key] = value;
+        fs::write(d.join("hosts.json"), json!([row]).to_string()).unwrap();
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(||h.cleanup())).is_err(), "foreign {key} must prevent retirement");
+    }
+    fs::write(d.join("hosts.json"), json!([original]).to_string()).unwrap();
     // Even failed cleanup must remove the disposable credential and retain the failed case.
     let install = d.join("install"); fs::create_dir_all(&install).unwrap();
     fs::write(install.join("token"), "invented-copy").unwrap();
