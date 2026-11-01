@@ -550,7 +550,6 @@ fn a40_live_management() {
         let home_bin = h.d.join("home/.local/share/taskq");
         fs::create_dir_all(&home_bin).unwrap();
         std::os::unix::fs::symlink(h.d.join("record-taskq"), home_bin.join("taskq")).unwrap();
-        h.prepare_host();
         // Model children receive only manager.rs's production allowlist. Probe that boundary
         // without a model call, token access, board read or service mutation.
         let native = Command::new("/bin/sh").args(["-c", "taskq --a40-path-probe"])
@@ -588,6 +587,7 @@ fn a40_live_management() {
         let snapshot: Value = serde_json::from_str(&h.taskq(&["status".into(), "--json".into()]).unwrap()).unwrap();
         assert_eq!(snapshot["board"]["repo"], "taskqorg/pilotq");
         assert_eq!(snapshot["complete"], true, "board snapshot incomplete");
+        h.prepare_host();
         h.save();
         h.start();
         h.case("admission", |h| {
