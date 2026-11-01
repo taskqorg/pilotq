@@ -168,17 +168,42 @@ fn references(issue:&Value)->Vec<(String,String)> {
 
 // Accept only this project's API uploads, /uploads/secret/name and its exact web paths.
 fn upload_url(base:&url::Url,board:&str,reference:&str)->Result<url::Url,String> {
-    let u=base.join(reference).map_err(|_|"Invalid image attachment reference")?;
-    if u.origin()!=base.origin() || !u.username().is_empty() || u.password().is_some() || u.query().is_some() || u.fragment().is_some() {return Err("Image attachment is outside this board".into());}
+    let mut u=base.join(reference).map_err(|_|"Invalid image attachment reference")?;
+    if u.origin()!=base.origin() || !u.username().is_empty() || u.password().is_some() || u.query().is_some() {return Err("Image attachment is outside this board".into());}
+    let upload=u.fragment().map(|f|f.strip_prefix("upload=").filter(|id|positive_id(id)).map(str::to_owned).ok_or("Unsupported board upload binding")).transpose()?;
+    u.set_fragment(None);
     let encoded: String=url::form_urlencoded::byte_serialize(board.as_bytes()).collect();
     let prefix=format!("/api/v4/projects/{encoded}/uploads/");
     let web=format!("/{board}/uploads/");
-    let api_id=u.path().strip_prefix("/api/v4/projects/").and_then(|s|s.split_once("/uploads/")).filter(|(id,_)|!id.is_empty() && id.bytes().all(|b|b.is_ascii_digit())).map(|(_,s)|s);
-    let full_path=u.path().strip_prefix("/-/project/").and_then(|s|s.split_once("/uploads/")).filter(|(id,_)|!id.is_empty() && id.bytes().all(|b|b.is_ascii_digit())).map(|(_,s)|s);
-    let rest=if let Some(s)=u.path().strip_prefix(&prefix) {s} else if let Some(s)=u.path().strip_prefix(&web).or_else(||u.path().strip_prefix("/uploads/")).or(full_path).or(api_id) {s} else {return Err("Unsupported board image attachment reference".into());};
+    let api_id=u.path().strip_prefix("/api/v4/projects/").and_then(|s|s.split_once("/uploads/")).filter(|(id,_)|!id.is_empty() && id.bytes().all(|b|b.is_ascii_digit())).map(|(id,s)|(id,s));
+    let full_path=u.path().strip_prefix("/-/project/").and_then(|s|s.split_once("/uploads/")).filter(|(id,_)|!id.is_empty() && id.bytes().all(|b|b.is_ascii_digit())).map(|(id,s)|(id,s));
+    let rest=if let Some(s)=u.path().strip_prefix(&prefix) {s} else if let Some(s)=u.path().strip_prefix(&web).or_else(||u.path().strip_prefix("/uploads/")).or(full_path.map(|(_,s)|s)).or(api_id.map(|(_,s)|s)) {s} else {return Err("Unsupported board image attachment reference".into());};
     let parts:Vec<_>=rest.split('/').collect();
     if !(parts.len()==1 && !parts[0].is_empty() && parts[0].bytes().all(|b|b.is_ascii_digit()) || parts.len()==2 && parts[0].len()==32 && parts[0].bytes().all(|b|b.is_ascii_hexdigit()) && !parts[1].is_empty() && parts[1].bytes().all(|b|b.is_ascii_alphanumeric() || b"-_.%".contains(&b)) && valid_upload_name(parts[1])) {return Err("Unsupported board upload identity".into());}
-    base.join(&format!("{prefix}{rest}")).map_err(|_|"Invalid board upload URL".into())
+    if upload.is_some() && (parts.len()!=2 || !image_reference(&u)) {return Err("Unsupported board upload binding".into());}
+    let prefix=if let Some((id,_))=api_id.or(full_path) {format!("/api/v4/projects/{id}/uploads/")} else {prefix};
+    base.join(&format!("{prefix}{}",upload.as_deref().unwrap_or(rest))).map_err(|_|"Invalid board upload URL".into())
+}
+
+fn positive_id(id:&str)->bool {id.parse::<u64>().is_ok_and(|n|n>0) && id.bytes().all(|b|b.is_ascii_digit())}
+
+// Numeric project references must prove the registered namespace before any upload read.
+async fn verify_project(client:&reqwest::Client,u:&url::Url,board:&str,secret:&str,active:&impl Fn()->bool)->Result<(),String> {
+    let Some((id,_))=u.path().strip_prefix("/api/v4/projects/").and_then(|p|p.split_once("/uploads/")) else {return Err("Invalid board upload URL".into());};
+    if !id.bytes().all(|b|b.is_ascii_digit()) {return Ok(());}
+    if !positive_id(id) || !active() {return Err("Image access revoked or project invalid".into());}
+    let endpoint=u.join(&format!("/api/v4/projects/{id}")).map_err(|_|"Invalid board project")?;
+    let mut response=client.get(endpoint).bearer_auth(secret).send().await.map_err(|_|"Image project identity inaccessible")?;
+    if !response.status().is_success() {return Err(format!("Image project identity inaccessible (HTTP {})",response.status().as_u16()));}
+    let mut bytes=vec![];
+    while let Some(chunk)=response.chunk().await.map_err(|_|"Image project identity interrupted")? {
+        if !active() {return Err("Image access revoked".into());}
+        if bytes.len()+chunk.len()>256*1024 {return Err("Image project metadata exceeds limit".into());}
+        bytes.extend_from_slice(&chunk);
+    }
+    let project:Value=serde_json::from_slice(&bytes).map_err(|_|"Image project identity unreadable")?;
+    if project["id"].as_u64().map(|n|n.to_string()).as_deref()!=Some(id) || project["path_with_namespace"].as_str()!=Some(board) {return Err("Image attachment is outside this board".into());}
+    Ok(())
 }
 
 fn image_reference(u:&url::Url)->bool {
@@ -234,9 +259,10 @@ async fn image_filename(client:&reqwest::Client,u:&url::Url,secret:&str,active:&
     Err("Image-only source unavailable; exact upload ID absent from bounded board metadata".into())
 }
 
-async fn download(client:&reqwest::Client,u:url::Url,secret:&str,active:&impl Fn()->bool)->Result<Vec<u8>,String> {
+async fn download(client:&reqwest::Client,u:url::Url,board:&str,secret:&str,active:&impl Fn()->bool)->Result<Vec<u8>,String> {
     if !active() {return Err("Image access revoked".into());}
     if !image_reference(&u) {return Err("Image-only source unavailable; ZIPs and non-image files are not downloaded".into());}
+    verify_project(client,&u,board,secret,active).await?;
     image_filename(client,&u,secret,active).await?;
     // HEAD checks size/type without transferring bundle bodies.
     let metadata=client.head(u.clone()).bearer_auth(secret).send().await.map_err(|_|"Image metadata inaccessible")?;
@@ -262,7 +288,7 @@ async fn retrieve(base:&url::Url,board:&str,refs:&[(String,String)],secret:&str,
     for (label,reference) in refs {
         let result=async {
             let u=upload_url(base,board,reference)?;
-            let bytes=download(&client,u.clone(),secret,active).await?;
+            let bytes=download(&client,u.clone(),board,secret,active).await?;
             let receipt=json!({"source":u.as_str(),"label":label,"downloaded_at":crate::now(),"bytes":bytes.len(),"crc32":format!("{:08x}",crc32fast::hash(&bytes))});
             Ok::<_,String>((unpack(label,&bytes)?,receipt))
         }.await;
@@ -486,6 +512,65 @@ mod tests {
 
     // #273 A3/A7: real HTTP dispatch injects auth only at the bound API, refuses
     // redirects, observes access revocation and size/404 errors without leaking URLs.
+    // §5 / #322: GitLab 17.2 numeric downloads, exact-ID octet metadata and two variants.
+    // Identity/auth/redirect negatives must stop before an upload request.
+    #[test]
+    fn result_images_322_actual_protocol() {
+        use std::io::{Read,Write};
+        fn server(replies:Vec<(String,u16,String,Vec<u8>,bool)>)->(url::Url,std::thread::JoinHandle<()>) {
+            let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let base=url::Url::parse(&format!("http://{}/",listener.local_addr().unwrap())).unwrap();
+            let thread=std::thread::spawn(move || {
+                listener.set_nonblocking(true).unwrap();
+                for (path,status,mime,body,head) in replies {
+                    let deadline=std::time::Instant::now()+Duration::from_secs(5);
+                    let mut stream=loop {match listener.accept() {Ok((s,_))=>break s,Err(e) if e.kind()==std::io::ErrorKind::WouldBlock && std::time::Instant::now()<deadline=>std::thread::sleep(Duration::from_millis(5)),Err(e)=>panic!("missing request {path}: {e}")}};
+                    stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                    let mut buf=[0;4096];let n=stream.read(&mut buf).unwrap();let request=String::from_utf8_lossy(&buf[..n]);
+                    assert!(request.starts_with(&format!("{} {path} ",if head {"HEAD"} else {"GET"})),"{request}");
+                    assert!(request.to_ascii_lowercase().contains("authorization: bearer invented-test-key"));
+                    write!(stream,"HTTP/1.1 {status} Fixture\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nLocation: https://evil.invalid/\r\nConnection: close\r\n\r\n",body.len()).unwrap();
+                    if !head {stream.write_all(&body).unwrap();}
+                }
+            });(base,thread)
+        }
+        let rt=tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let project=br#"{"id":123,"path_with_namespace":"invented/csgo"}"#.to_vec();
+            let listing=br#"[{"id":42,"filename":"ct01-usp.jpg","size":4},{"id":43,"filename":"t02-akm.jpg","size":4}]"#.to_vec();
+            let mut replies=vec![];
+            for id in [42,43] {
+                replies.push(("/api/v4/projects/123".into(),200,"application/json".into(),project.clone(),false));
+                replies.push(("/api/v4/projects/123/uploads?per_page=100&page=1".into(),200,"application/json".into(),listing.clone(),false));
+                for head in [true,false] {replies.push((format!("/api/v4/projects/123/uploads/{id}"),200,"application/octet-stream".into(),b"\xff\xd8\xffX".to_vec(),head));}
+            }
+            let (base,worker)=server(replies);
+            let refs=vec![("ct01-usp/#444".into(),"/api/v4/projects/123/uploads/42".into()),("t02-akm/#444".into(),"/api/v4/projects/123/uploads/43".into())];
+            let (images,gap)=retrieve(&base,"invented/csgo",&refs,"invented-test-key",&||true).await.unwrap();
+            assert_eq!(images.len(),2,"{gap:?}");assert!(gap.is_none());
+            for (image,reference) in images.iter().zip(&refs) {assert_eq!(image.0,reference.0);assert_eq!(image.1,b"\xff\xd8\xffX");assert!(image.2["source"].as_str().unwrap().ends_with(&reference.1));}
+            worker.join().unwrap();
+            for (status,body) in [(200,br#"{"id":123,"path_with_namespace":"foreign/project"}"#.to_vec()),(200,br#"{"id":999,"path_with_namespace":"invented/csgo"}"#.to_vec()),(401,vec![]),(403,vec![]),(302,vec![])] {
+                let (base,worker)=server(vec![("/api/v4/projects/123".into(),status,"application/json".into(),body,false)]);
+                let (images,gap)=retrieve(&base,"invented/csgo",&refs[..1],"invented-test-key",&||true).await.unwrap();
+                assert!(images.is_empty());assert!(gap.is_some());worker.join().unwrap();
+            }
+        });
+    }
+
+    // §5 / #322: retain producer-bound numeric project identity and upload fragments.
+    #[test]
+    fn result_images_322_bound_reference() {
+        let base=board_base("gitlab.example.test","invented/csgo").unwrap();
+        let direct="/api/v4/projects/123/uploads/42";
+        assert_eq!(upload_url(&base,"invented/csgo",direct).unwrap().path(),direct);
+        let bound="/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/ct01-usp.jpg#upload=42";
+        assert_eq!(upload_url(&base,"invented/csgo",bound).unwrap().path(),"/api/v4/projects/invented%2Fcsgo/uploads/42");
+        for bad in ["0","-1","42&other=1","42#x",""] {
+            assert!(upload_url(&base,"invented/csgo",&format!("/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/a.jpg#upload={bad}")).is_err());
+        }
+    }
+
     #[test]
     fn result_images_273_http() {
         use std::io::{Read,Write};
@@ -504,11 +589,11 @@ mod tests {
         let rt=tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
             let client=reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();let u=upload_url(&base,"invented/csgo","/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/review.jpg").unwrap();
-            assert_eq!(download(&client,u.clone(),"invented-test-key",&||true).await.unwrap(),b"\xff\xd8\xffX");
-            for expected in ["302","404","20 MiB","Image-only"] {let e=download(&client,u.clone(),"invented-test-key",&||true).await.unwrap_err();assert!(e.contains(expected) && !e.contains("http") && !e.contains("invented-test-key"),"{e}");}
+            assert_eq!(download(&client,u.clone(),"invented/csgo","invented-test-key",&||true).await.unwrap(),b"\xff\xd8\xffX");
+            for expected in ["302","404","20 MiB","Image-only"] {let e=download(&client,u.clone(),"invented/csgo","invented-test-key",&||true).await.unwrap_err();assert!(e.contains(expected) && !e.contains("http") && !e.contains("invented-test-key"),"{e}");}
             let zip=base.join("/api/v4/projects/invented%2Fcsgo/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/review.zip").unwrap();
-            assert!(download(&client,zip,"invented-test-key",&||true).await.unwrap_err().starts_with("Image-only"));
-            assert!(download(&client,u,"invented-test-key",&||false).await.unwrap_err().contains("revoked"));
+            assert!(download(&client,zip,"invented/csgo","invented-test-key",&||true).await.unwrap_err().starts_with("Image-only"));
+            assert!(download(&client,u,"invented/csgo","invented-test-key",&||false).await.unwrap_err().contains("revoked"));
         });worker.join().unwrap();
     }
 
@@ -541,11 +626,11 @@ mod tests {
         });
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
             let client=reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
-            let u=upload_url(&base,"invented/csgo","/api/v4/projects/123/uploads/42").unwrap();
-            assert!(download(&client,u.clone(),"invented-test-key",&||true).await.is_ok());
-            let zip=upload_url(&base,"invented/csgo","/api/v4/projects/123/uploads/43").unwrap();
-            assert!(download(&client,zip,"invented-test-key",&||true).await.unwrap_err().starts_with("Image-only"));
-            assert!(download(&client,u,"invented-test-key",&||true).await.unwrap_err().starts_with("Image-only"));
+            let u=upload_url(&base,"invented/csgo","/api/v4/projects/invented%2Fcsgo/uploads/42").unwrap();
+            assert!(download(&client,u.clone(),"invented/csgo","invented-test-key",&||true).await.is_ok());
+            let zip=upload_url(&base,"invented/csgo","/api/v4/projects/invented%2Fcsgo/uploads/43").unwrap();
+            assert!(download(&client,zip,"invented/csgo","invented-test-key",&||true).await.unwrap_err().starts_with("Image-only"));
+            assert!(download(&client,u,"invented/csgo","invented-test-key",&||true).await.unwrap_err().starts_with("Image-only"));
         });worker.join().unwrap();
     }
 
