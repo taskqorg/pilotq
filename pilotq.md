@@ -30,7 +30,7 @@ Owner and explicit shell-grant routes may run authorized conversational loops un
 
 **Proposed scope:** one Linux host, one Telegram bot, one manager runtime, existing TaskQ boards and explicitly registered project roots. The input choices below are mandatory within that scope.
 
-Accept text, replies, task links, inline decisions, photos and image documents with captions retained. Recognize voice notes, audio files and audio documents locally in Russian; English only if the same model supports it. Hebrew is not required. Photos and arbitrary documents may be TaskQ reply attachments through answer, steer and owner requeue.
+Accept text, replies, task links, inline decisions, photos and image documents with captions retained. Recognize voice notes, audio files and audio documents locally in Russian with the existing model; assess English separately before selection. Hebrew is not required. Photos and arbitrary documents may be TaskQ reply attachments through answer, steer and owner requeue.
 
 Other documents up to 20 MiB reach the turn as readable original files with a PDF text, ZIP listing or plain-text preview, else the exact reason. The scoped `reads_document` tool pages current UTF-8 attachments beyond the preview without shell access; videos and video notes as frames plus recognized speech.
 An album is one durable request retaining every file and caption. Audio is recognized in bounded segments within the recording and turn limits. Larger files get one short file-limit line; other input one unsupported-input line, both in the chat's language.
