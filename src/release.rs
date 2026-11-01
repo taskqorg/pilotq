@@ -530,8 +530,8 @@ mod tests {
         std::fs::write(dir.join("a"),"a").unwrap();cmd(&["add","a"]);cmd(&["commit","-qm","initial"]);let a=cmd(&["rev-parse","HEAD"]);cmd(&["update-ref","refs/heads/live",&a]);
         std::fs::write(dir.join("a"),"b").unwrap();cmd(&["commit","-qam","next"]);let b=cmd(&["rev-parse","HEAD"]);cmd(&["update-ref","refs/heads/main",&b]);
         std::fs::write(dir.join("taskq.json"),r#"{"repo":"invented/project"}"#).unwrap();
-        let script=dir.join("runner");std::fs::write(&script,"#!/bin/sh\nprintf '%s\\n' \"$@\" >> calls\n").unwrap();std::fs::set_permissions(&script,std::fs::Permissions::from_mode(0o700)).unwrap();
-        let probe=dir.join("taskq");std::fs::write(&probe,"#!/bin/sh\ncat snapshot.json\n").unwrap();std::fs::set_permissions(&probe,std::fs::Permissions::from_mode(0o700)).unwrap();std::fs::write(dir.join("snapshot.json"),r#"{"complete":true,"board":{"repo":"invented/project"},"tasks":[]}"#).unwrap();
+        let script=dir.join("runner");crate::test_support::write_script(&script,"#!/bin/sh\nprintf '%s\\n' \"$@\" >> calls\n").unwrap();std::fs::set_permissions(&script,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let probe=dir.join("taskq");crate::test_support::write_script(&probe,"#!/bin/sh\ncat snapshot.json\n").unwrap();std::fs::set_permissions(&probe,std::fs::Permissions::from_mode(0o700)).unwrap();std::fs::write(dir.join("snapshot.json"),r#"{"complete":true,"board":{"repo":"invented/project"},"tasks":[]}"#).unwrap();
         let mut j=Journal::open(&dir.join("journal.sqlite")).unwrap();j.bootstrap(7,0).unwrap();j.add_project(7,"sample","invented/project",dir.to_str().unwrap(),0).unwrap();
         let r=j.ask(7,"release sample",crate::now() as i64).unwrap();
         let c=json!({"host":"invented-local","git":"/usr/bin/git","dev_health_url":"https://example.invalid/__health","main_ref":"refs/heads/main","live_ref":"refs/heads/live","migration_paths":["migrations/"],"dry_run":[script,"dry"],"release":[script,"release","{sha}"],"pipeline":[script,"pipeline","{sha}"],"preflight":[script,"preflight"],"backup":[script,"backup"]});
@@ -548,7 +548,7 @@ mod tests {
         let mut c=f.c.clone();c["dev_health_url"]=json!("invented://example.invalid/private?token=invented-secret");
         assert_eq!(health_until(&c,Instant::now()+Duration::from_secs(2)).unwrap_err(),"DEV health read failed");
         let script=f.dir.join("runner");
-        std::fs::write(&script,"#!/bin/sh\necho 'invented-secret https://example.invalid/private' >&2\nexit 1\n").unwrap();
+        crate::test_support::write_script(&script,"#!/bin/sh\necho 'invented-secret https://example.invalid/private' >&2\nexit 1\n").unwrap();
         c["delivery_status"]=json!([script]);
         let keys=crate::keys::Keys(f.dir.join("keys.json"));
         std::fs::write(&keys.0,r#"{"test":{"value":"invented-secret"}}"#).unwrap();
@@ -570,7 +570,7 @@ mod tests {
         let mut retry=job("failed","smoke2");retry["first_failing_check"]=json!("login returns 500");
         let report=json!({"sha":f.b,"merged_at":"2026-10-30T16:10:00Z","first_main":{"sha":f.b,"state":"failed","url":"https://example.invalid/pipelines/1","deploy":job("success","web_dev"),"smoke":[failed,retry]},"later_main":{"sha":f.b,"state":"success","url":"https://example.invalid/pipelines/2"}});
         let script=f.dir.join("runner");
-        std::fs::write(&script,format!("#!/bin/sh\ncat <<'JSON'\n{report}\nJSON\n")).unwrap();
+        crate::test_support::write_script(&script,format!("#!/bin/sh\ncat <<'JSON'\n{report}\nJSON\n")).unwrap();
         let mut c=f.c.clone();c["delivery_status"]=json!([script,"{sha}"]);
         let j=f.j.lock().unwrap();configure(&j,7,"sample",c).unwrap();
         let issue=json!({"state":"closed","merged_sha":f.b,"body":"deployed after-check unknown; CI passed"});
@@ -586,7 +586,7 @@ mod tests {
         assert!(reply.contains("Later containing main pipeline: success"));
         assert!(reply.contains("First containing main pipeline: failed"));
         let slow_git=f.dir.join("slow-git");
-        std::fs::write(&slow_git,"#!/bin/sh\nsleep 0.15\nexec /usr/bin/git \"$@\"\n").unwrap();
+        crate::test_support::write_script(&slow_git,"#!/bin/sh\nsleep 0.15\nexec /usr/bin/git \"$@\"\n").unwrap();
         std::fs::set_permissions(&slow_git,std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut slow=f.c.clone();slow["git"]=json!(slow_git);
         let start=Instant::now();
@@ -601,11 +601,11 @@ mod tests {
         assert_eq!(partial["first_main"],report["first_main"]);assert!(partial["live_includes"].is_null());
         assert!(partial["live_reason"].as_str().unwrap().contains("Git read failed"));
         let mut green=report.clone();green["first_main"]["smoke"][1]["state"]=json!("success");
-        std::fs::write(&script,format!("#!/bin/sh\ncat <<'JSON'\n{green}\nJSON\n")).unwrap();
+        crate::test_support::write_script(&script,format!("#!/bin/sh\ncat <<'JSON'\n{green}\nJSON\n")).unwrap();
         assert_eq!(delivery_config(config(&j,"sample"),&issue,Instant::now()+Duration::from_secs(10))["stage"],"DEV smoke");
         let status=std::process::Command::new("/usr/bin/git").current_dir(&f.dir).args(["update-ref","refs/heads/live",&f.b]).status().unwrap();assert!(status.success());
         assert_eq!(delivery_config(config(&j,"sample"),&issue,Instant::now()+Duration::from_secs(10))["stage"],"on LIVE");
-        std::fs::write(&script,"#!/bin/sh\nexit 1\n").unwrap();
+        crate::test_support::write_script(&script,"#!/bin/sh\nexit 1\n").unwrap();
         let got=delivery_config(config(&j,"sample"),&issue,Instant::now()+Duration::from_secs(10));assert_eq!(got["pipeline"],"unknown");assert_eq!(got["reason"],"Delivery adapter failed; pipeline state unknown");
     }
     // #183 A2 / §5: a task closed without the delivery line still reports pipeline facts for its hand-merged result.
@@ -628,7 +628,7 @@ mod tests {
         let mut smoke=job("failed","smoke1");smoke["first_failing_check"]=json!("homepage returns 503");
         let report=json!({"merged_at":"2026-10-30T16:10:00Z","first_main":{"sha":merge,"state":"failed","url":"https://example.invalid/pipelines/1","deploy":job("success","web_dev"),"smoke":[smoke]},"later_main":{"sha":later,"state":"success","url":"https://example.invalid/pipelines/2"}});
         let script=f.dir.join("runner");
-        std::fs::write(&script,format!("#!/bin/sh\nprintf '%s' '{}' | sed \"s/SHA/$1/\"\n",report.to_string().replacen('{',r#"{"sha":"SHA","#,1))).unwrap();
+        crate::test_support::write_script(&script,format!("#!/bin/sh\nprintf '%s' '{}' | sed \"s/SHA/$1/\"\n",report.to_string().replacen('{',r#"{"sha":"SHA","#,1))).unwrap();
         let mut c=f.c.clone();c["delivery_status"]=json!([script,"{sha}"]);
         let j=f.j.lock().unwrap();configure(&j,7,"sample",c).unwrap();
         let got=delivery_config(config(&j,"sample"),&issue(&result,true),end);
@@ -641,7 +641,7 @@ mod tests {
     fn delivery_slow_adapter_179() {
         let f=fixture("slow179");
         let script=f.dir.join("runner");
-        std::fs::write(&script,"#!/bin/sh\ntouch entered\nsleep 5\n").unwrap();
+        crate::test_support::write_script(&script,"#!/bin/sh\ntouch entered\nsleep 5\n").unwrap();
         let mut c=f.c.clone();c["delivery_status"]=json!([script,"{sha}"]);
         let c=configure(&f.j.lock().unwrap(),7,"sample",c).unwrap();
         let journal=f.j.clone();let issue=json!({"state":"closed","merged_sha":f.b});
@@ -667,10 +667,10 @@ mod tests {
         let f=fixture("slow190");
         let issue=json!({"number":42,"title":"Invented","url":"https://example.invalid/issues/42","state":"closed","merged_sha":f.b});
         std::fs::write(f.dir.join("issue.json"),issue.to_string()).unwrap();
-        std::fs::write(&f.tq.bin,"#!/bin/sh\ncase \"$1\" in\n status) sleep 9; cat snapshot.json ;;\n issue) cat issue.json ;;\n *) exit 99 ;;\nesac\n").unwrap();
+        crate::test_support::write_script(&f.tq.bin,"#!/bin/sh\ncase \"$1\" in\n status) sleep 9; cat snapshot.json ;;\n issue) cat issue.json ;;\n *) exit 99 ;;\nesac\n").unwrap();
         let script=f.dir.join("runner");
         let report=json!({"sha":f.b,"merged_at":"2026-10-31T00:00:00Z","first_main":{"sha":f.b,"state":"success","url":"https://example.invalid/pipelines/1","deploy":{"state":"success","url":"https://example.invalid/jobs/1"},"smoke":[{"state":"pending","url":"https://example.invalid/jobs/2"}]},"later_main":null});
-        std::fs::write(&script,format!("#!/bin/sh\nprintf '%s' '{}'\n",report)).unwrap();
+        crate::test_support::write_script(&script,format!("#!/bin/sh\nprintf '%s' '{}'\n",report)).unwrap();
         let mut c=f.c.clone();c["delivery_status"]=json!([script,"{sha}"]);
         configure(&f.j.lock().unwrap(),7,"sample",c).unwrap();
         let (ok,text)=crate::taskq::call(&f.tq,&f.j,&f.r,"task_status",&json!({"project":"sample","task":"42","include_release":true}));
@@ -705,7 +705,7 @@ mod tests {
     #[test]
     fn dev_ancestry_survives_adapter_failure_257() {
         let f=fixture("ancestry257");let end=Instant::now()+Duration::from_secs(10);
-        let script=f.dir.join("runner");std::fs::write(&script,"#!/bin/sh\nexit 1\n").unwrap();
+        let script=f.dir.join("runner");crate::test_support::write_script(&script,"#!/bin/sh\nexit 1\n").unwrap();
         let mut c=f.c.clone();c["delivery_status"]=json!([script]);
         let issue=json!({"state":"closed","merged_sha":f.a});
         let delivery=delivery_config(Ok(c.clone()),&issue,end);assert_eq!(delivery["stage"],"merged");
@@ -748,7 +748,7 @@ mod tests {
         let mut bad=f.c.clone();bad["preflight"]=json!(["/bin/false"]);bad["requirements"]["/bin/false"]=json!("1.0.0");f.c=configure(&f.j.lock().unwrap(),7,"sample",bad).unwrap();let id=save_preview(&f);
         assert!(confirm(&f.tq,&f.j,&request(&f,7),id).unwrap().contains("uncertain"));assert!(!f.dir.join("calls").exists());
         let script=f.dir.join("runner");let report=json!({"sha":f.b,"live_sha":f.b,"stages":{"release":{"state":"success","url":"https://example.invalid/release"},"smoke":{"state":"success","url":"https://example.invalid/smoke"},"backmerge":{"state":"success","url":"https://example.invalid/backmerge"}}});
-        std::fs::write(&script,format!("#!/bin/sh\nprintf '%s\\n' \"$@\" >> calls\nif [ \"$1\" = pipeline ]; then printf '%s' '{}'; fi\n",report)).unwrap();
+        crate::test_support::write_script(&script,format!("#!/bin/sh\nprintf '%s\\n' \"$@\" >> calls\nif [ \"$1\" = pipeline ]; then printf '%s' '{}'; fi\n",report)).unwrap();
         let mut good=f.c.clone();good["preflight"]=json!([script,"preflight"]);f.c=configure(&f.j.lock().unwrap(),7,"sample",good).unwrap();save_preview(&f);
         let result=confirm(&f.tq,&f.j,&request(&f,7),id).unwrap();assert!(result.contains("release verified") && result.contains(&format!("LIVE SHA: {}",f.b)),"{result}");
         assert!(result.contains("backmerge: success https://example.invalid/backmerge"));
@@ -758,7 +758,7 @@ mod tests {
     fn partial_pipeline_evidence_174() {
         let f=fixture("partial");f.j.lock().unwrap().grant(7,7,&["release:sample".into()],0).unwrap();
         let report=json!({"sha":f.b,"live_sha":f.b,"stages":{"release":{"state":"success","url":"https://example.invalid/release"},"smoke":{"state":"success","url":"https://example.invalid/smoke"},"backmerge":{"state":"failed","url":"https://example.invalid/backmerge"}}});
-        std::fs::write(f.dir.join("runner"),format!("#!/bin/sh\nif [ \"$1\" = pipeline ]; then printf '%s' '{}'; exit 1; fi\n",report)).unwrap();
+        crate::test_support::write_script(f.dir.join("runner"),format!("#!/bin/sh\nif [ \"$1\" = pipeline ]; then printf '%s' '{}'; exit 1; fi\n",report)).unwrap();
         let id=save_preview(&f);let result=confirm(&f.tq,&f.j,&request(&f,7),id).unwrap();
         assert!(result.contains("release: success https://example.invalid/release"),"{result}");
         assert!(result.contains("smoke: success https://example.invalid/smoke"),"{result}");

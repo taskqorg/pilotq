@@ -21,6 +21,8 @@ mod taskq;
 mod telegram;
 mod voice;
 mod host;
+#[cfg(all(test, unix))]
+mod test_support;
 
 use coreq::Tool;
 use serde_json::{Value, json};
