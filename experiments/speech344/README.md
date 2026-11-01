@@ -58,3 +58,28 @@ After each successful command, run the same guarded second command with the next
 The runner retains all stdout/stderr and build/fixture identities privately. Public corpus originals are decoded completely and must fit a single 25-second chunk; the harness refuses a larger fixture rather than truncating or padding speech. Silence is explicit three-second zero PCM between files. The reference corpus and private Hebrew count are untouched. Exact UTF-8 transcript bytes are decoded strictly; failed checks retain their evidence. Total suite wall time is not a five-minute recording-feasibility measurement.
 
 Worker checks: both patch applications and baseline/patched C++ syntax pass. The observer check rejects deliberately stale text, a wrong encoder count, a missing callback and a missing decoder reset, then accepts the intact observation and Hebrew UTF-8. These are checks of the harness, not of the ASR engine. The existing synthetic cgroup-guard regression also passes. Instrumented binaries, actual API behavior and all later acceptance remain unknown until PM execution (§9, R19).
+
+## One proposed turbo paired diagnostic
+
+PM note 6563430854 reports every small-model boundary case passed, including recovery and multifile/fresh-second equivalence, with original limits/four threads, no mismatch/OOM and independently verified unit/process/cgroup cleanup. Multi took 368.390 seconds. The worker reviewed that TaskQ report; raw host files are outside its permitted filesystem scope and were not independently opened. `paired-performance.py` requires all ten original observations, their pass status, effective caps and matching instrumented-engine identities before any model process. It records each proof hash. This does not independently attest the PM's cleanup or qualify turbo behavior.
+
+The one proposed candidate is the already verified multilingual **large-v3-turbo Q5_0**, SHA256 `394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2`, 574,041,195 bytes, MIT, from the retained ggerganov/whisper.cpp conversion of OpenAI's model. It previously got the private count right and had 8/30 human Hebrew word errors versus medium's 12/30; those remaining errors prevent acceptance. Its original long300 deadline failure remains. Choosing it for a diagnostic grants no product selection.
+
+Run the following **once**, through the existing PM host isolation runner at the unchanged real caps/four threads. Uppercase arguments are private-path placeholders mapped by the PM. Use the retained original CLI and PM's uninstrumented experimental CLI with their exact hashes; the newly instrumented API binaries are not CLI replacements.
+
+```sh
+python3 experiments/speech344/paired-performance.py \
+  --baseline VERIFIED_ORIGINAL_CLI --patched VERIFIED_EXPERIMENTAL_CLI \
+  --model VERIFIED_TURBO_Q5_0 --output NEW_PRIVATE_PAIRED_DIRECTORY \
+  --boundary-proof FAILDETECT_OBSERVATIONS --boundary-proof DEFAULT_OBSERVATIONS \
+  --boundary-proof OPTOUT_OBSERVATIONS --boundary-proof OFFSET_OBSERVATIONS \
+  --boundary-proof EXPLICIT_OBSERVATIONS --boundary-proof REFUSE_OBSERVATIONS \
+  --boundary-proof CANCEL_OBSERVATIONS --boundary-proof CONTEXT_OBSERVATIONS \
+  --boundary-proof RECOVERY_OBSERVATIONS --boundary-proof MULTI_OBSERVATIONS
+```
+
+One actual 600-second monotonic deadline covers decoding, both ten-second readiness calls, both unchanged private-Hebrew calls and both first-25-second stress calls. The source/canonical stress-segment/private-fixture hashes are pinned. The stress PCM is the exact original repeated human recording construction; it is budget data, not new quality evidence. Reference text never enters engine arguments. Readiness uses the earlier zero-PCM specialization (`--audio-ctx 50 --language en`); its hallucinated text is not a speech result. Normal inference remains automatic language detection. The full ru/en/he corpus, human Hebrew reference, five-minute cap and every previous failure remain unchanged.
+
+The runner checks the retained three-blue-books semantic guard before spending time on stress data, then requires identical original-language transcripts/language and native counters proving exactly one encoder pass removed. It records stage timings, wall times, cumulative child RSS, logs, hashes and ratios; PM retains actual cgroup/OOM accounting and independently checks cleanup. Any process failure, ten-second readiness/600-second deadline failure, semantic/text/language mismatch, missing counter/reuse marker or absent measured saving stops the experiment without retries or further inference. A nonzero exit retains the failure evidence.
+
+Even a successful diagnostic proves only these two paired inputs. One segment cannot prove twelve segments finish in 600 seconds, human all-language accuracy, installed readiness or live Telegram use. The necessary average for twelve chunks is under fifty seconds before overhead, but extrapolation is never a pass or a universal impossibility proof. If measured gain/quality is insufficient, stop this mechanism and report an explicit owner quality/latency tradeoff with the original limits and failures intact. Do not silently run a new model, full300, extra corpus or production activation. Any further qualification needs PM review of this terminal result (§9, R19).

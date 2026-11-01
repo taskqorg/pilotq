@@ -2,7 +2,7 @@
   "upstream": "https://github.com/ggml-org/whisper.cpp",
   "commit": "4979e04f5dcaccb36057e059bbaed8a2f5288315",
   "license": "MIT",
-  "status": "PM uninstrumented build passed; instrumented API boundary proof not run",
+  "status": "PM reports all small-model boundary cases passed; turbo paired performance not run",
   "source_sha256": {
     "src/whisper.cpp": "02566a39137a14e0798ec0d88e78bd626f21e7549bc27d1cb5e4a30b101a0f7e",
     "include/whisper.h": "0525b758571ab71c00ddd8ea2845f74af7c62dfa5100c5586655f75bdc5ef4be",
@@ -18,6 +18,7 @@
     "boundary.cpp": "1070cd69800d69a6f11eeeeb324b801e56f6c8d5476e791626520fb29d136ce3",
     "prepare-boundaries.py": "7c85b4be1e21bfa569bd2c3f9ffa9f45bb449622c6ee440149342ac5f395de84",
     "run-boundaries.py": "1de9256a1b0eaf55d051d68f143ff15e99a17a134c20476219d6dc22f3a7ad4b",
-    "check-observer.py": "e66e351765f6e7f093b750a5174ba603b002ec5a171b182dab07fff232439e41"
-  }
+    "check-observer.py": "8e3684fb1b451586061cf39f06151053831d620e3c8cace242e55361ff3495af"
+  },
+  "paired_performance_sha256": "f08b40d315268c97db6062c36ae14dc86809d16c7b5dd77021e43b63e16ee784"
 }
