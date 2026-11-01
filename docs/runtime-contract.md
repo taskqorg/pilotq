@@ -308,7 +308,7 @@ transport contact; it does not prove received inputs reached admission. A live p
 indicator proves neither useful progress nor task completion. Count accepted/dispatched inputs and
 pending age as well as successful polls. Unknown observation remains unknown.
 
-The runtime supervisor cancels after ten minutes without a Codex event, including before the first event. Runtime events renew this monotonic inactivity clock; typing, polling and progress timers do not. There is no fixed total turn duration or tool-call cap. `/stop` fences the run and terminates its process group. One durable topic progress message is updated at most every thirty seconds while running. A restart ends an interrupted turn without replay: deliver recorded completed findings and explicitly identify unfinished or unconfirmed work, including agent-caused restarts (R5, R11). Native shell effects without recorded completion remain unconfirmed.
+The runtime supervisor cancels after ten minutes without a Codex event, including before the first event. Runtime events renew this monotonic inactivity clock; typing, polling and progress timers do not. There is no fixed total turn duration or tool-call cap. `/stop` fences the run and terminates its process group. One durable topic progress message is updated at most every thirty seconds while running and is removed after the final reply. A restart ends an interrupted turn without replay: deliver recorded completed findings and explicitly identify unfinished or unconfirmed work, including agent-caused restarts (R5, R11). Native shell effects without recorded completion remain unconfirmed.
 
 ### Telegram feedback
 

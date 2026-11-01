@@ -579,6 +579,14 @@ async fn send(bot: &Bot, j: &Shared, d: &Delivery) -> Sent {
             _ => Sent::Ok(m),
         };
     }
+    // #256 A6: the elapsed-time line is removed after the final reply; an already missing message needs nothing.
+    if d.kind == "turn_progress_closed" {
+        let Some(m) = d.edit else { return Sent::Ok(0) };
+        return match raw(bot, j, "deleteMessage", json!({"chat_id":d.chat,"message_id":m})).await {
+            Err(e @ Sent::Retry { .. }) | Err(e @ Sent::Held(_)) => e,
+            _ => Sent::Ok(m),
+        };
+    }
     if d.kind == "reaction" {
         return match raw(bot, j, "setMessageReaction", json!({"chat_id":d.chat,"message_id":d.reply_to,"reaction":[{"type":"emoji","emoji":"👀"}]})).await {
             Ok(_) => Sent::Ok(d.reply_to.unwrap_or(0)),

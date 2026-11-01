@@ -1208,3 +1208,20 @@ current authority, fresh service evidence and metadata-only key inspection
 (R13, R16, R19). A5 requires the PM's post-release recheck in PilotQ TEST PAH and
 its audit ID. That live check is **not run**; no release or live readiness is
 claimed by the worker (§9).
+
+## Telegram reply defects from the live checks (#256)
+
+The 2026-11-01 PilotQ TEST checks on 0.2.35 found these reply defects. Each fix has a local check that failed before
+the fix and passes after it (R5, R11, R13). Live Telegram behavior still needs the PM's post-release check (§9).
+
+- Command language: `help_256_language_per_sender_not_topic` protects one language per sender across the topics of a
+  chat; another person's messages never decide it.
+- Typed onboarding recheck: `onboarding_256_typed_recheck_replies_at_route` protects a reply at the request's own route.
+  Outside the owner DM, the reply names the DM card that holds the Recheck button.
+- Long launch: `launch_256_progress_edits_rate_limited` protects one plan-card progress edit per thirty seconds
+  (§7). The live outbox held 16 progress edits for one plan, followed by a Telegram retry-after.
+- Run progress: `turn_progress_256_removed_after_final_reply` protects removal of the "Working · N s" message after
+  the final reply, never before it.
+- Restart reply: not reproduced. The live check read request 299 at 02:06:04 UTC, 35 seconds after the replacement
+  started at 02:05:29 UTC. The reply is sent only after the replacement's healthy start at 60 seconds (§9).
+  `u106_restart_receipt_requires_healthy_replacement` protects that timing and the no-replay rule.

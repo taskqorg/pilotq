@@ -28,6 +28,8 @@ const KEY_CAP: i64 = 6 * 3600;
 const DAY_CAP: i64 = 10;
 /// An undrained gap above this is reported as downtime, a shorter one as an unplanned restart.
 const DOWNTIME: i64 = 300;
+/// §7: one route progress message changes at most every thirty seconds.
+const PROGRESS_EDIT: i64 = 30;
 
 pub(crate) fn valid_grant(g: &str) -> bool {
     GRANTS.contains(&g) || g.strip_prefix("release:").is_some_and(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))) || g.strip_prefix("project:").is_some_and(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)))
@@ -57,11 +59,12 @@ fn control(text: Option<&str>) -> Option<&'static str> {
 }
 
 
-/// #186: replies follow the language the person writes in: this message's text, else the conversation's latest own text.
+/// #186: replies follow the language the person writes in: this message's text, else the sender's latest own text in this
+/// chat, so every topic of one chat answers a sender alike (#256). Other people's messages and other chats never decide it.
 /// Russian text means Russian; other text keeps Telegram's client label. A refusal for an uncaptioned file in a Russian chat
 /// is Russian whatever the client label says.
 // ponytail: Cyrillic is the only detected script; a language detector only if a third chat language appears.
-fn chat_language(tx: &Connection, session: &str, text: Option<&str>, label: Option<&str>) -> Result<Option<String>, String> {
+fn chat_language(tx: &Connection, chat: i64, sender: i64, text: Option<&str>, label: Option<&str>) -> Result<Option<String>, String> {
     // Some(true): Russian text; Some(false): other letters; None: no words to judge
     fn russian(t: &str) -> Option<bool> {
         if t.starts_with('/') { None }
@@ -70,8 +73,8 @@ fn chat_language(tx: &Connection, session: &str, text: Option<&str>, label: Opti
     }
     let mut seen = text.and_then(russian);
     if seen.is_none() {
-        let mut q = tx.prepare("SELECT text FROM requests WHERE session=?1 AND text IS NOT NULL AND kind IN ('text','image','document','voice','answer') ORDER BY id DESC LIMIT 12").map_err(|e| e.to_string())?;
-        let texts: Vec<String> = q.query_map([session], |r| r.get(0)).and_then(Iterator::collect).map_err(|e| e.to_string())?;
+        let mut q = tx.prepare("SELECT text FROM requests WHERE chat=?1 AND sender=?2 AND front='telegram' AND text IS NOT NULL AND kind IN ('text','image','document','voice','answer') ORDER BY id DESC LIMIT 12").map_err(|e| e.to_string())?;
+        let texts: Vec<String> = q.query_map(params![chat, sender], |r| r.get(0)).and_then(Iterator::collect).map_err(|e| e.to_string())?;
         seen = texts.iter().find_map(|t| russian(t));
     }
     Ok(if seen == Some(true) { Some("ru".into()) } else { label.map(str::to_string) })
@@ -508,7 +511,8 @@ fn finish_builtin(tx:&Connection,id:i64,text:&str,ok:bool,at:i64)->Result<(),Str
                 outbox(tx,id,chat,topic,None,None,toast,at)?;
                 tx.execute("UPDATE outbox SET kind=?2 WHERE id=?1",params![tx.last_insert_rowid(),format!("toast:{callback}")]).map_err(e)?;
             }
-        } else if !onboarding || !ok || input.ends_with(" override") {
+        } else if !onboarding || !ok || input.ends_with(" override") || input.split_whitespace().next().and_then(|c|c.split('@').next())==Some("/onboard") {
+            // #256: a typed /onboard always answers at its own route; the owner DM card is edited separately.
             outbox(tx,id,chat,topic,(chat!=sender).then_some(message),None,&reply,at)?;
         }
     }
@@ -870,7 +874,7 @@ pub struct Delivery {
 
 /// §4: content kinds share rich/HTML/plain delivery; native feedback has no message body.
 pub(crate) fn shared_message(kind:&str)->bool {
-    !matches!(kind,"reaction"|"draft_closed") && !kind.starts_with("toast:")
+    !matches!(kind,"reaction"|"draft_closed"|"turn_progress_closed") && !kind.starts_with("toast:")
 }
 
 /// What one send attempt established.
@@ -1258,7 +1262,7 @@ impl Journal {
                         } else {
                             let text=format!("Change request for earlier message {}. Do not replay completed work or treat this edit as launch/answer/control authorization. Clarify any changed task scope before acting. Revised input: {}",i.message,i.text.as_deref().unwrap_or("[media revision; see retained attachments]"));
                             let kind=if i.image.is_some() {"image"} else if i.voice.is_some() {"voice"} else if !i.files.is_empty() {"document"} else {"text"};
-                            let language=chat_language(&tx,&session,i.text.as_deref(),i.language.as_deref())?;
+                            let language=chat_language(&tx,i.chat,sender,i.text.as_deref(),i.language.as_deref())?;
                             let (route,total):(i64,i64)=tx.query_row("SELECT count(*) FILTER(WHERE chat=?1 AND topic IS ?2),count(*) FROM requests WHERE state='queued'",params![i.chat,i.topic],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|e.to_string())?;
                             let busy=route>=ROUTE_BACKLOG || total>=TOTAL_BACKLOG;
                             let changed=insert(&tx,*update,"telegram",i.chat,i.topic,sender,i.name.as_deref(),i.message,kind,Some(&text),if busy {"failed"} else {"queued"},at,&session,None)?;
@@ -1313,7 +1317,7 @@ impl Journal {
                                 continue;
                             }
                             // Late delivery must not change an already running request or silently discard a file.
-                            let language=chat_language(&tx,&s,i.text.as_deref(),i.language.as_deref())?;
+                            let language=chat_language(&tx,i.chat,sender,i.text.as_deref(),i.language.as_deref())?;
                             let text=if language.as_deref().unwrap_or("en").starts_with("ru") {"Часть альбома пришла после начала обработки; пришлите её отдельным сообщением."} else {"Part of the album arrived after processing started; send it again as a separate message."};
                             tx.execute("INSERT INTO audit_events(request_id,at,kind,item) VALUES (?1,?2,'late_album',?3)",params![id,at,json!({"message":i.message,"caption":i.text,"files":i.files}).to_string()]).map_err(|e|e.to_string())?;
                             outbox(&tx,id,i.chat,i.topic,Some(i.message),None,text,at)?;
@@ -1321,7 +1325,7 @@ impl Journal {
                             continue;
                         }
                     }
-                    let language = chat_language(&tx, &s, if i.kind=="action" {None} else {i.text.as_deref()}, i.language.as_deref())?;
+                    let language = chat_language(&tx, i.chat, sender, if i.kind=="action" {None} else {i.text.as_deref()}, i.language.as_deref())?;
                     let cmd = if i.kind == "text" { control(i.text.as_deref()) } else { None };
                     // controls bypass the backlog: they are answered here, never queued (§ 12)
                     let busy = cmd.is_none() && matches!(i.kind, "text" | "image" | "document" | "voice" | "action") && {
@@ -1478,6 +1482,11 @@ impl Journal {
     fn turn_progress(&self, at: i64) -> Result<(), String> {
         self.0.execute("UPDATE outbox SET state='superseded' WHERE kind='turn_progress' AND state='pending'
             AND request_id IN (SELECT id FROM requests WHERE state<>'running')",[]).map_err(|e|e.to_string())?;
+        // #256 A6: a delivered progress message is removed once the run ends, queued behind the final reply of its route.
+        self.0.execute("INSERT INTO outbox(request_id,chat,topic,text,next_at,kind)
+            SELECT DISTINCT o.request_id,o.chat,o.topic,'',?1,'turn_progress_closed' FROM outbox o JOIN requests q ON q.id=o.request_id
+            WHERE o.kind='turn_progress' AND o.state='delivered' AND q.state<>'running'
+            AND NOT EXISTS(SELECT 1 FROM outbox c WHERE c.request_id=o.request_id AND c.kind='turn_progress_closed')",[at]).map_err(|e|e.to_string())?;
         self.0.execute("INSERT INTO outbox(request_id,chat,topic,reply_to,text,next_at,kind)
             SELECT q.id,q.chat,q.topic,nullif(q.message,0),
                 CASE WHEN q.language='ru' THEN 'Работаю · ' ELSE 'Working · ' END || (?1-r.started_at) || ' s',?1,'turn_progress'
@@ -1512,7 +1521,7 @@ impl Journal {
                 &format!(
                     "SELECT id, chat, topic, reply_to, html, text, attempts, CASE WHEN kind='status' THEN (SELECT s.sent_message FROM outbox s WHERE s.request_id=o.request_id AND s.chat=o.chat AND s.topic IS o.topic
                         AND s.kind='status' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
-                        WHEN kind='turn_progress' THEN (SELECT s.sent_message FROM outbox s WHERE s.request_id=o.request_id AND s.kind='turn_progress' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
+                        WHEN kind IN ('turn_progress','turn_progress_closed') THEN (SELECT s.sent_message FROM outbox s WHERE s.request_id=o.request_id AND s.kind='turn_progress' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
                         WHEN kind='release_result' THEN (SELECT s.sent_message FROM outbox s WHERE s.request_id=o.revision AND s.kind='release_preview' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
                         WHEN kind='onboarding' THEN (SELECT s.sent_message FROM outbox s WHERE s.request_id=o.request_id AND s.kind='onboarding' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
                         WHEN kind='choice_answered' THEN o.reply_to
@@ -2692,7 +2701,8 @@ impl Journal {
             if at.saturating_sub(start)<2 {continue}
             if !self.has(actor,"chat")? || !(self.has(actor,"projects")? || self.has(actor,&format!("project:{project}"))?) {continue}
             let last:Option<i64>=self.0.query_row("SELECT max(next_at) FROM outbox WHERE request_id=?1 AND kind='plan_progress'",[request],|r|r.get(0)).map_err(e)?;
-            if last.is_some_and(|last|at.saturating_sub(last)<2) {continue}
+            // #256 A5 / §7: one coalesced elapsed-time edit per thirty seconds; a 2 s cadence hit Telegram retry-after.
+            if last.is_some_and(|last|at.saturating_sub(last)<PROGRESS_EDIT) {continue}
             let line=crate::conversation::progress(&phase,at.saturating_sub(start).max(0),language.as_deref());
             let tx=self.0.unchecked_transaction().map_err(e)?;
             if plan_receipt(&tx,request,&line,at)? {
@@ -2710,7 +2720,8 @@ impl Journal {
         for (request,chat,topic,project,actor) in rows {
             if !self.has(actor,"chat")? || !(self.has(actor,"projects")? || self.has(actor,&format!("project:{project}"))?) {continue}
             let last:Option<i64>=self.0.query_row("SELECT max(next_at) FROM outbox WHERE request_id=?1 AND kind='status'",[request],|r|r.get(0)).map_err(e)?;
-            if last.is_some_and(|last|at.saturating_sub(last)<2) {continue}
+            // #256 A5 / §7: one coalesced elapsed-time edit per thirty seconds; a 2 s cadence hit Telegram retry-after.
+            if last.is_some_and(|last|at.saturating_sub(last)<PROGRESS_EDIT) {continue}
             let text=self.launch_status(request,at)?;
             let tx=self.0.unchecked_transaction().map_err(e)?;
             tx.execute("UPDATE outbox SET state='superseded' WHERE request_id=?1 AND kind='status' AND state='pending'",[request]).map_err(e)?;
@@ -3507,6 +3518,31 @@ mod tests {
         drop(j);std::fs::remove_dir_all(p).unwrap();
     }
 
+    // #256 A6 / R11: the "Working · N s" message is removed after the final reply, once, and never before it.
+    #[test]
+    fn turn_progress_256_removed_after_final_reply() {
+        let (mut j,p)=journal("progress256");
+        j.admit(&[(1,msg(-5,7,1))],0).unwrap();
+        let run=j.claim_next(4,0).unwrap().remove(0);
+        while let Some(d)=j.due(30).unwrap().0 {
+            let sent=if d.kind=="turn_progress" {99} else {50+d.id};
+            j.record(d.id,&Sent::Ok(sent),30).unwrap();
+        }
+        assert_eq!(count(&j,"SELECT count(*) FROM outbox WHERE kind='turn_progress' AND sent_message=99"),1);
+        assert_eq!(count(&j,"SELECT count(*) FROM outbox WHERE kind='turn_progress_closed'"),0,"a running turn keeps its progress");
+        j.finish(&run,None,None,&crate::manager::Outcome::Answered("Done".into()),61).unwrap();
+        let mut kinds=vec![];
+        while let Some(d)=j.due(61).unwrap().0 {
+            if d.kind=="turn_progress_closed" {assert_eq!(d.edit,Some(99));assert!(!d.rich);}
+            kinds.push(d.kind.clone());j.record(d.id,&Sent::Ok(d.edit.unwrap_or(70+d.id)),61).unwrap();
+        }
+        let close=kinds.iter().position(|k|k=="turn_progress_closed").expect("progress message left after the final reply");
+        assert!(kinds[..close].iter().any(|k|k=="rich"),"progress removed before the final reply: {kinds:?}");
+        assert!(j.due(120).unwrap().0.is_none());
+        assert_eq!(count(&j,"SELECT count(*) FROM outbox WHERE kind='turn_progress_closed'"),1);
+        drop(j);std::fs::remove_dir_all(p).unwrap();
+    }
+
     // #190 A4/A5: no call cap, but revocation fences an active native-tool turn.
     #[test]
     fn unrestricted_calls_keep_admission_190() {
@@ -4196,6 +4232,28 @@ mod tests {
         drop(j);std::fs::remove_dir_all(p).unwrap();
     }
 
+    // #256 A5 / §7: a long launch edits its plan card at most once per thirty seconds, so one plan cannot
+    // queue an edit every scan and run into Telegram retry-after.
+    #[test]
+    fn launch_256_progress_edits_rate_limited() {
+        let fixture:Value=serde_json::from_str(include_str!("fixtures/conversation-165.json")).unwrap();
+        let (mut j,p)=journal("256-progress");
+        j.admit(&[(1,msg(7,7,1))],0).unwrap();let r=j.claim_next(4,0).unwrap().remove(0);
+        j.save_plan(&r,&fixture["plans"][0]["tickets"],"pilotq","taskqorg/pilotq","",1).unwrap();
+        j.finish(&r,None,None,&crate::manager::Outcome::Answered("ignored".into()),1).unwrap();
+        while let Some(d)=j.due(1).unwrap().0 {j.record(d.id,&Sent::Ok(100+d.id),1).unwrap();}
+        j.admit(&[(2,msg(7,7,2))],2).unwrap();let r=j.claim_next(4,2).unwrap().remove(0);
+        let id=j.authorize(&r,1,7,120,2).unwrap();
+        j.launch_phase(id,"creating",2).unwrap();
+        for at in 2..=66 {
+            if at%10==0 {j.launch_phase(id,"creating",at).unwrap();}
+            while let Some(d)=j.due(at).unwrap().0 {j.record(d.id,&Sent::Ok(d.edit.unwrap_or(100+d.id)),at).unwrap();}
+        }
+        let edits=count(&j,"SELECT count(*) FROM outbox WHERE kind='plan_progress' AND state='delivered'");
+        assert!((1..=3).contains(&edits),"{edits} plan_progress edits in 64 s");
+        drop(j);std::fs::remove_dir_all(p).unwrap();
+    }
+
     // #165 liveness continuation: elapsed-time edits and problem controls survive
     // restart, keep the original operation IDs and cannot replay a stale control.
     #[test]
@@ -4785,6 +4843,26 @@ mod tests {
 
     fn input(chat: i64, topic: Option<i64>, sender: Option<i64>, name: &str, kind: &'static str, text: Option<&str>) -> Option<Input> {
         Some(Input { files: vec![], callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat, topic, sender, name: Some(name.into()), message: 1, kind, text: text.map(str::to_string), reply_to: None })
+    }
+
+    // #256 A2 / #186: a command takes the sender's own language in this chat, so two topics agree; other people never decide it.
+    #[test]
+    fn help_256_language_per_sender_not_topic() {
+        let (mut j, p) = journal("help-256-language");
+        j.grant(7, 8, &["chat".into()], 0).unwrap();
+        let batch = [
+            (1, input(-100, Some(3), Some(7), "Owner", "text", Some("привет, как дела"))),
+            (2, input(-100, Some(385), Some(8), "Member", "text", Some("hello there"))),
+            (3, input(-100, Some(385), Some(7), "Owner", "text", Some("/help"))),
+            (4, input(-100, Some(3), Some(7), "Owner", "text", Some("/help"))),
+            (5, input(-100, Some(3), Some(8), "Member", "text", Some("/help"))),
+        ];
+        j.admit(&batch, 1).unwrap();
+        let language = |update: i64| -> Option<String> { j.0.query_row("SELECT language FROM requests WHERE update_id=?1", [update], |r| r.get(0)).unwrap() };
+        assert_eq!(language(3).as_deref(), Some("ru"), "the owner's other topic must answer in the owner's language");
+        assert_eq!(language(4).as_deref(), Some("ru"));
+        assert_eq!(language(5), None, "the owner's Russian must not decide the member's language");
+        drop(j); std::fs::remove_dir_all(p).unwrap();
     }
 
     // F09, F15, F16, L06, L14: strangers in a DM, a group and a topic, an anonymous sender, a stranger reusing the owner's display

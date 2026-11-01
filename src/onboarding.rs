@@ -433,6 +433,16 @@ fn text(project:&str,result:&Value,ru:bool)->String {
     lines.join("\n")
 }
 
+/// #256 A4: Recheck buttons bind to the owner's DM card (§5); a typed recheck elsewhere names that card and the command.
+fn typed_reply(project:&str,result:&Value,ru:bool,dm:bool)->String {
+    let mut message=text(project,result,ru);
+    if !dm && result["ready"]!=true {
+        message.push('\n');
+        message.push_str(&if ru {format!("Кнопка «Проверить снова» есть в карточке в личном чате с PilotQ; здесь напишите /onboard {project}.")} else {format!("The Recheck button is on the card in your PilotQ DM; here, write /onboard {project}.")});
+    }
+    message
+}
+
 fn apply(j:&Journal,project:&str,epoch:&Value,result:&Value)->Result<(),String> {
     let tx=j.0.unchecked_transaction().map_err(err)?;
     let mut v=saved(j,project)?.ok_or("Onboarding not queued")?;
@@ -515,7 +525,11 @@ pub fn control(t:&coreq::Tool,j:&Shared,r:&crate::builtins::Request)->Result<(),
         tx.commit().map_err(err)?;
     }
     let message=if action==Some("override") {format!("{project}: readiness override recorded; gaps remain. TaskQ admission and grants still apply.")}
-        else {let result=check(t,j,&project)?;text(&project,&result,false)};
+        else {
+            let result=check(t,j,&project)?;
+            let (ru,dm)={let j=j.lock().unwrap();(j.language(r.id)?.as_deref().unwrap_or("en").starts_with("ru"),j.owner()?.is_some_and(|o|r.session==format!("dm:{o}")))};
+            typed_reply(&project,&result,ru,dm)
+        };
     j.lock().unwrap().builtin_finish(r.id,&message,true,crate::now() as i64)
 }
 
@@ -689,6 +703,26 @@ mod tests {
         assert!(issue_key_step_for_board(&keys,"pah",7,&config).is_none());
         assert_eq!(before,keys.list().unwrap(),"readiness must not consume credentials or modify grants");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // #256 A3/A4 / R11, §5: a typed /onboard always gets a reply at its own route; outside the owner DM the reply
+    // names the DM card that holds the Recheck button. The DM card itself is still edited separately.
+    #[test]
+    fn onboarding_256_typed_recheck_replies_at_route() {
+        let (mut j,dir,_)=setup("typed-256");queue(&j,"cyprusbz-board").unwrap();
+        let typed=|chat:i64,topic:Option<i64>,message:i64|Input{files:vec![],callback:None,media_group:None,quote:None,image:None,voice:None,language:None,chat,topic,sender:Some(7),name:Some("Owner".into()),message,kind:"text",text:Some("/onboard cyprusbz-board".into()),reply_to:None};
+        j.admit(&[(1,Some(typed(-100,Some(385),41))),(2,Some(typed(7,None,42)))],2).unwrap();
+        let gaps=json!({"ready":false,"gaps":[{"check":"issue_read_key","fix":"Owner: grant the key"}]});
+        for (chat,topic,dm) in [(-100,Some(385),false),(7,None,true)] {
+            let r=j.builtin_next().unwrap().unwrap();
+            let message=typed_reply("cyprusbz-board",&gaps,false,dm);
+            assert_eq!(message.contains("Recheck button is on the card in your PilotQ DM"),!dm,"{message}");
+            j.builtin_finish(r.id,&message,true,3).unwrap();
+            let (to,at,text):(i64,Option<i64>,String)=j.0.query_row("SELECT chat,topic,text FROM outbox WHERE request_id=?1 AND text LIKE '%issue_read_key%'",[r.id],|x|Ok((x.get(0)?,x.get(1)?,x.get(2)?))).expect("typed /onboard queued no reply");
+            assert_eq!((to,at),(chat,topic));assert!(text.contains("issue_read_key"),"{text}");
+        }
+        assert!(!typed_reply("cyprusbz-board",&json!({"ready":true,"gaps":[]}),false,false).contains("Recheck button"));
+        drop(j);let _=std::fs::remove_dir_all(dir);
     }
 
     fn press(message:i64,sender:i64,source:i64,epoch:i64)->Input {

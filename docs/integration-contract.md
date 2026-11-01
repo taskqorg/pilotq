@@ -406,7 +406,9 @@ and returns nonzero when gaps remain, preserving the registered project. `/onboa
 through the bounded control path; the CLI equivalent is `pilotq ask '/onboard NAME'`. Controls share
 current admission, audit and persisted Telegram cooldowns (R10, R13, R17). Buttons bind to the
 owner, card, current registration and conversation generation; stale or foreign buttons receive only
-a toast.
+a toast. A typed `/onboard NAME` always replies at its own route as well as editing the DM card. Forum
+topics and groups get no Recheck button, because a button there could not bind to the owner's DM card;
+their reply names that card and `/onboard NAME` as the recheck in that route.
 
 Installation, capacity, credentials and subscription login remain owner-only steps. Missing
 `create_claim_issue` and project-scoped Codex grants are PM steps with existing-tool remedies, executable only
