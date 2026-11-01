@@ -563,15 +563,26 @@ fn sent_has(st: &State, needle: &str) -> bool {
     texts(st).iter().any(|t| t.contains(needle))
 }
 
-/// #264: the board observer's TaskQ reads run in their own process group, so they can outlive a killed service and
-/// write fixture files for up to their ten-second deadline (§5); removal retries until they exit.
+/// #264 / R5: detached observer reads can outlive the service. Wait for the exact
+/// fixture executable to exit before removing files; share the existing cleanup bound.
 fn cleanup(d: &Path) {
     let end = Instant::now() + Duration::from_secs(15);
+    let executable = d.join("fake-taskq");
+    loop {
+        let processes = Command::new("ps").args(["-axo", "args="]).output().unwrap();
+        assert!(processes.status.success(), "fixture writer inspection failed");
+        let active = String::from_utf8(processes.stdout).unwrap().lines()
+            .any(|line| line.split_whitespace().any(|arg| arg == executable.to_str().unwrap()));
+        if !active { break; }
+        assert!(Instant::now() < end, "fixture TaskQ writer did not exit");
+        std::thread::sleep(Duration::from_millis(100));
+    }
     while let Err(e) = fs::remove_dir_all(d) {
         if e.kind() == std::io::ErrorKind::NotFound { return; }
         assert!(Instant::now() < end, "fixture removal: {e}");
         std::thread::sleep(Duration::from_millis(100));
     }
+    assert!(!d.exists(), "fixture survived removal");
 }
 
 fn stop(mut c: Svc, d: PathBuf) {
@@ -600,6 +611,30 @@ fn fixture_stop_reaps_cli_writers() {
     child.kill().unwrap();
     child.wait().unwrap();
     assert!(rx.recv_timeout(Duration::from_secs(2)).is_ok(), "CLI child retained the fixture output after service stop");
+}
+
+// R5 / §9: cleanup must wait for an owned detached observer, even before its next write.
+#[test]
+fn fixture_cleanup_waits_for_detached_taskq() {
+    use std::os::unix::process::CommandExt;
+    let (d, _) = setup("detached-taskq-cleanup", vec![]);
+    let fake = script(&d, "fake-taskq", "#!/bin/sh\necho ready\nread release\nprintf done > \"$(dirname \"$0\")/last-write\"\n");
+    let mut child = Command::new(fake).process_group(0).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    let mut ready = String::new();
+    output.read_line(&mut ready).unwrap();
+    assert_eq!(ready, "ready\n");
+    let removed = d.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || { cleanup(&d); tx.send(()).unwrap(); });
+    let premature = rx.recv_timeout(Duration::from_millis(100)).is_ok();
+    use std::io::Write;
+    child.stdin.take().unwrap().write_all(b"release\n").unwrap();
+    let status = child.wait().unwrap();
+    worker.join().unwrap();
+    assert!(!premature, "cleanup returned while a detached writer was alive");
+    assert!(status.success(), "detached writer lost its fixture before exit");
+    assert!(!removed.exists(), "detached writer recreated the fixture");
 }
 
 // U01: a question and a follow-up in one DM. The follow-up resumes the same Codex thread; each request ends answered with a

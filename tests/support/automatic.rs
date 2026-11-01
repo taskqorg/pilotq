@@ -171,7 +171,7 @@ fn a40_admission_startup_onboarding() {
     let db = rusqlite::Connection::open(d.join("journal.sqlite")).unwrap();
     db.execute("DELETE FROM meta WHERE key='onboarding:pilotq'", []).unwrap();
     drop(db);
-    let svc = Svc(service(&d, None).spawn().unwrap());
+    let svc = spawn(&d, None);
     wait("startup onboarding", 15, || try_query(&d, "SELECT count(*) FROM requests WHERE kind='onboarding' AND state='answered'") == Some(1));
     push(&st, text(1, CHAT, TOPIC, 9, "Do not admit this synthetic stranger."));
     wait("ignored stranger", 15, || try_query(&d, "SELECT count(*) FROM updates WHERE update_id=1 AND disposition='ignored' AND request_id IS NULL") == Some(1));
@@ -181,8 +181,9 @@ fn a40_admission_startup_onboarding() {
         let call: Value = serde_json::from_str(line).unwrap();
         assert_ne!(call["args"][0], "add", "stranger must not call TaskQ add");
     }
-    drop(svc);
-    fs::remove_dir_all(d).unwrap();
+    let removed = d.clone();
+    stop(svc, d);
+    assert!(!removed.exists(), "A40 fixture survived teardown");
 }
 
 // §5: prepare only the synthetic install through the protected owner's supported control.
@@ -216,7 +217,7 @@ fn a40_readiness_create_start() {
     let db = rusqlite::Connection::open(d.join("journal.sqlite")).unwrap();
     db.execute("DELETE FROM meta WHERE key='onboarding:pilotq'", []).unwrap();
     drop(db);
-    let svc = Svc(service(&d, None).spawn().unwrap());
+    let svc = spawn(&d, None);
     wait("startup onboarding", 15, || try_query(&d, "SELECT count(*) FROM requests WHERE kind='onboarding' AND state='answered'") == Some(1));
     push(&st, text(1, CHAT, TOPIC, 9, "Do not admit this synthetic stranger."));
     wait("ignored stranger", 15, || try_query(&d, "SELECT count(*) FROM updates WHERE update_id=1 AND disposition='ignored'") == Some(1));
@@ -233,8 +234,9 @@ fn a40_readiness_create_start() {
     assert_eq!(query(&d, "SELECT count(*) FROM tickets WHERE started=1 AND task IS NOT NULL"), 1);
     assert!(tq_calls(&d).iter().any(|a| a[0] == "add"));
     assert!(tq_calls(&d).iter().any(|a| a[0] == "start"));
-    drop(svc);
-    fs::remove_dir_all(d).unwrap();
+    let removed = d.clone();
+    stop(svc, d);
+    assert!(!removed.exists(), "A40 fixture survived teardown");
 }
 
 impl Run {
