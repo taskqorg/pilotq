@@ -1776,6 +1776,15 @@ impl Journal {
         if self.owner()? == Some(target) && (names.is_empty() || names.iter().any(|g| g == "shell")) {
             return Err("The protected owner keeps shell implicitly; it cannot be revoked.".into());
         }
+        // #267: a role still implying the grant would make the revoke report a change that does not hold.
+        let held_now = grants_of(&self.0, target)?;
+        let kept = |r: &str| held_now.iter().any(|x| x == r) && !names.iter().any(|n| n == r);
+        if let Some(g) = names.iter().find(|g| {
+            g.strip_prefix("project:").is_some_and(|p| kept(&format!("owner:{p}")))
+                || !["chat", "admin"].contains(&g.as_str()) && !g.starts_with("release:") && !g.starts_with("owner:") && kept("admin")
+        }) {
+            return Err(format!("{g} comes from a role {target} holds; revoke the role (admin or owner:NAME) too."));
+        }
         self.change(Some(actor), target, at, |g| if names.is_empty() { g.clear() } else { g.retain(|x| !names.contains(x)) })
     }
 
@@ -5097,7 +5106,7 @@ mod tests {
         assert_eq!(j.own_project_inputs(&r).unwrap().len(),1,"#124 only earlier own topic message survives restart");
         j.revoke(7,8,&["chat".into()],9).unwrap();
         assert_eq!(j.conversation_context(&r).unwrap()["recent"].as_array().unwrap().len(),2);
-        j.revoke(7,7,&["projects".into()],9).unwrap();
+        j.revoke(7,7,&["projects".into(),"admin".into()],9).unwrap();
         let context=j.conversation_context(&r).unwrap();
         assert!(context["tasks"].as_array().unwrap().is_empty());
         assert!(context["plan"].is_null());
@@ -5150,6 +5159,8 @@ mod tests {
         assert!(j.grant(31, 23, &["owner:alpha".into()], 5).is_err(), "a project owner cannot appoint owners");
         j.grant(30, 31, &["shell".into()], 5).unwrap();
         assert!(j.has(31, "shell").unwrap());
+        assert!(j.revoke(7, 31, &["project:alpha".into()], 5).unwrap_err().contains("owner:NAME"), "an implied grant is not reported revoked");
+        assert!(j.revoke(7, 30, &["shell".into()], 5).is_err() && j.revoke(7, 30, &["users".into(), "admin".into()], 5).is_ok());
         // Member reads and proposes, never decides; the refusal names whom to ask.
         assert!(j.has(23, "project:alpha").unwrap() && !j.decides(23, "alpha").unwrap());
         assert!(decide_refusal("alpha").contains("admin or the owner of project alpha"));

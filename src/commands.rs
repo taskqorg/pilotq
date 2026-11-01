@@ -268,7 +268,7 @@ mod tests {
         assert_eq!(refusal,"command permission denied");
         assert!(!call("command_run",json!({"command":"pwd","args":[]}),deadline()).0);
         std::fs::write(&config,entries.to_string()).unwrap();
-        j.lock().unwrap().revoke(7,7,&["projects".into()],2).unwrap();
+        j.lock().unwrap().revoke(7,7,&["projects".into(),"admin".into()],2).unwrap();
         assert!(!call("command_run",json!({"command":"pwd","args":[]}),deadline()).0);
         std::fs::set_permissions(&config,std::fs::Permissions::from_mode(0o644)).unwrap();
         assert!(!call("command_list",json!({}),deadline()).0);
