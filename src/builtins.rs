@@ -174,7 +174,7 @@ mod tests {
     // #106 / R16, §7: a broken setup dependency must terminate, and arbitrary diagnostics never become replies.
     #[test]
     fn u106_doctor_deadline_and_redaction() {
-        let dir=std::env::temp_dir().join(format!("pilotq-command-doctor-{}",std::process::id()));
+        let dir=std::env::temp_dir().join(format!("pilotq-command-doctor-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir_all(&dir).unwrap();
         let script=dir.join("doctor");
         std::fs::write(&script,"#!/bin/sh\necho '{\"checks\":{\"configuration\":\"ok\",\"codex\":\"invented-secret\"},\"secret\":\"invented-secret\"}'\necho invented-secret >&2\n").unwrap();

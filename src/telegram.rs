@@ -100,14 +100,14 @@ fn input(kind: &UpdateKind) -> Option<Input> {
     });
     let voice = m.voice().map(|v| (&v.file, v.duration.seconds()))
         .or_else(|| m.audio().map(|a| (&a.file, a.duration.seconds())))
-        .or_else(|| audio_document.filter(|_|m.reply_to_message().is_none()).map(|d| (&d.file, 0)));
+        .or_else(|| audio_document.map(|d| (&d.file, 0)));
     // #186: a video, round video note or GIF animation is a document the turn reads as frames and speech.
     let video = m.video().map(|v| (&v.file, v.file_name.clone().unwrap_or_else(|| "video.mp4".into())))
         .or_else(|| m.video_note().map(|v| (&v.file, "video_note.mp4".into())))
         .or_else(|| m.animation().map(|a| (&a.file, a.file_name.clone().unwrap_or_else(|| "animation.mp4".into()))))
         .or_else(|| m.document().filter(|d| d.mime_type.as_ref().is_some_and(|m| m.type_() == "video")).map(|d| (&d.file, d.file_name.clone().unwrap_or_else(|| "video.mp4".into()))));
     let file = video.as_ref().map(|(f, _)| *f).or_else(|| m.document().map(|d| &d.file));
-    Some(Input { files: image.map(|f|json!({"id":f.id.0,"name":document.and_then(|d|d.file_name.clone()).unwrap_or_else(||"photo.jpg".into())}))
+    Some(Input { files: image.map(|f|json!({"id":f.id.0,"media":"image","name":document.and_then(|d|d.file_name.clone()).unwrap_or_else(||"photo.jpg".into())}))
         .or_else(||video.as_ref().map(|(f,name)|json!({"id":f.id.0,"name":name,"media":"video"})))
         .or_else(||m.audio().map(|a|json!({"id":a.file.id.0,"name":a.file_name.as_deref().unwrap_or("audio"),"media":"audio"})))
         .or_else(||m.document().map(|d|json!({"id":d.file.id.0,"name":d.file_name.as_deref().unwrap_or("document"),"media":if audio_document.is_some() {"audio"} else {"document"}}))).into_iter().collect(), callback: None,
@@ -124,6 +124,7 @@ fn input(kind: &UpdateKind) -> Option<Input> {
         name: m.from.as_ref().map(|u| u.full_name()),
         message: m.id.0 as i64,
         kind: if edited { "edit" } else if m.text().is_some() { "text" } else if let Some(f) = image { if f.size > IMAGE_LIMIT as u32 { "image_limit" } else { "image" } }
+            else if audio_document.is_some() && m.reply_to_message().is_some() { if file.is_some_and(|f|f.size > IMAGE_LIMIT as u32) { "file_limit" } else { "document" } }
             else if let Some((f, seconds)) = voice { if f.size > IMAGE_LIMIT as u32 || seconds > crate::voice::SECONDS { "voice_limit" } else { "voice" } }
             else if let Some(f)=file { if f.size > IMAGE_LIMIT as u32 { "file_limit" } else { "document" } } else { "other" },
         text: m.text().or_else(|| m.caption()).map(str::to_string),
@@ -202,9 +203,16 @@ pub(crate) fn document_name(name: &str) -> Result<(),String> {
 
 /// #145: arbitrary regular documents use the same bounded download boundary as images.
 pub async fn download_document(bot: &Bot, id: &str, name: &str, budget: Duration) -> Result<ImageFile,String> {
-    use std::io::Write;
     document_name(name)?;
     let bytes=download(bot,id,budget).await.map_err(str::to_string)?;
+    store_document(name, &bytes)
+}
+
+/// Private turn-local original; never use the sender's name as a path without validation.
+pub fn store_document(name: &str, bytes: &[u8]) -> Result<ImageFile,String> {
+    use std::io::Write;
+    document_name(name)?;
+    if bytes.len() > IMAGE_LIMIT { return Err("exceeds 20 MiB".into()); }
     let nonce=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|_|"attachment clock unavailable")?.as_nanos();
     let dir=std::env::temp_dir().join(format!("pilotq-reply-{}-{nonce}",std::process::id()));
     let mut builder=std::fs::DirBuilder::new();
@@ -783,6 +791,16 @@ mod tests {
                 assert_eq!(i.reply_to,Some(1));assert_eq!(i.text.as_deref(),caption);
             }
         }
+    }
+
+    // #259 A4 / §1: an audio document replying to ordinary conversation still reaches recognition.
+    #[test]
+    fn audio_document_reply_259() {
+        let m=json!({"message_id":2,"date":0,"chat":{"id":7,"type":"private","first_name":"A"},"from":{"id":7,"is_bot":false,"first_name":"A"},
+            "reply_to_message":{"message_id":1,"date":0,"chat":{"id":7,"type":"private","first_name":"A"}},
+            "document":{"file_id":"invented-audio","file_unique_id":"invented-id","file_size":8,"file_name":"sample.opus"}});
+        let i=super::input(&teloxide::types::UpdateKind::Message(serde_json::from_value(m).unwrap())).unwrap();
+        assert_eq!(i.voice.as_deref(),Some("invented-audio"));
     }
 
     // #186 A3: videos and video notes are documents read as video; any file over 20 MiB is refused as a file, not an image.

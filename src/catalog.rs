@@ -3,6 +3,7 @@ use crate::journal::Journal;
 use serde_json::Value;
 pub struct Capability { pub name: &'static str, pub area: &'static str, pub purpose: &'static str, pub example: &'static str, pub grant: &'static str, pub ru: &'static str }
 pub const CATALOG: &[Capability] = &[
+    Capability { name: "reads_document", area: "reads", purpose: "Read 50,000 characters of a current attachment at a character offset", example: "read the end of the attached document", grant: "chat", ru: "Прочитать часть текущего документа по смещению" },
     Capability { name: "project_file_read", area: "reads", purpose: "Read a capped UTF-8 file at the registered default-branch commit; remote freshness unknown.", example: "read docs/research/547.md in cs", grant: "project", ru: "Прочитать файл основной ветки проекта" },
     Capability { name: "member_blocker", area: "tasks", purpose: "Queue a project-scoped member blocker to the protected owner as PM fallback.", example: "raise the project setup blocker", grant: "project", ru: "Сообщить владельцу о препятствии" },
     Capability { name: "pm_note_read", area: "operations", purpose: "Read a note from this route's bound PM context", example: "read PM note release", grant: "native", ru: "Прочитать заметку PM этой темы" },
