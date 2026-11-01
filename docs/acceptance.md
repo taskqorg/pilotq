@@ -1353,3 +1353,7 @@ post-release evidence; production cutover remains unauthorized (R19, §9).
 ### A40 current-card observation (#299)
 
 [Focused evidence and card audit](research/299.md) records run7's obsolete question-prefix failure and the regression's failure before repair and pass afterward (R8, §5). The harness observes the exact current delivered question and retains foreign refusal, exact answer revision, stale/repeated no-write protection, review/close status identity, original route and cleanup. Run7 remains cancelled/incomplete; PM manual cleanup is separate from automatic acceptance. #281 owns a fresh bounded full14/cleanup run on the exact independently reviewed, green-merge-queue source (§9, R19); focused checks authorize no installation or release.
+
+### A40 valid question supersession (#311)
+
+[Failure and focused evidence](research/311.md) retains run8's ignored second ask: TaskQ revision `6557024543` did not advance to comment `6557027130`. Under §5 and TaskQ §2, the harness now uses owner requeue → new synthetic spawn → ask, checking exact state, attempt and revision before transport waits. It retains foreign/stale no-write, current answer actor/revision/receipt, repeated different-choice saved receipt, reviewer and cleanup checks, and requires the answer to resume the new synthetic attempt. Focused validator proof is separate from native lifecycle qualification; #281's PM must run one bounded full14 and independent cleanup on final accepted, independently reviewed source with green required CI before release (§9, R19).

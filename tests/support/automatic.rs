@@ -361,6 +361,53 @@ fn a40_readiness_create_start() {
     assert!(!removed.exists(), "A40 fixture survived teardown");
 }
 
+// TaskQ §2: state equality alone cannot prove an event was accepted.
+fn accepted_event(body: &str, id: i64, state: &str, inbox: &str) -> Value {
+    let folded: Value = serde_json::from_str(inbox.lines().find_map(|l| l.strip_prefix("Folded: ")).expect("folded event readback")).unwrap();
+    assert_eq!(folded["state"], state, "scripted event was not accepted");
+    if body.starts_with("taskq: spawn ") {
+        assert_eq!(folded["attempt"], id, "another attempt claimed the fixture");
+    }
+    let first = body.lines().next().unwrap();
+    if let Some(attempt) = first.strip_prefix("taskq: ask attempt ") {
+        assert_eq!(folded["attempt"], attempt.parse::<i64>().unwrap(), "ask belongs to another attempt");
+    }
+    if first.starts_with("taskq: spawn ") || first.starts_with("taskq: ask ") || first == "taskq: requeue" {
+        let revision = inbox.lines().find_map(|l| l.strip_prefix("Revision: "))
+            .expect("missing event revision").parse::<i64>().unwrap();
+        assert_eq!(revision, id, "scripted event was ignored; do not wait for transport");
+    }
+    if first == "taskq: requeue" {
+        assert!(folded["attempt"].is_null(), "owner requeue must clear the old attempt");
+    }
+    folded
+}
+
+// §5 / TaskQ §2: reject run8's ignored second ask before any transport wait.
+#[test]
+fn a40_question_transition_readback() {
+    let ask = "taskq: ask attempt 6557021395\nDone: Scripted wording revised.";
+    let ignored = "Folded: {\"state\":\"ask\",\"attempt\":6557021395}\nRevision: 6557024543\n";
+    assert!(std::panic::catch_unwind(|| accepted_event(ask, 6557027130, "ask", ignored)).is_err(),
+        "run8 ignored ask must fail immediately, not wait for transport");
+    // Readbacks for owner requeue -> fresh synthetic spawn -> ask (invented IDs).
+    for (body, id, state, folded, revision) in [
+        ("taskq: requeue\nReason: Supersede unanswered fixture question.", 50, "ready", json!({"state":"ready","attempt":null}), 50),
+        ("taskq: spawn worker codex:a40-scripted pilotq-e2e-invented", 51, "doing", json!({"state":"doing","attempt":51}), 51),
+        ("taskq: ask attempt 51", 52, "ask", json!({"state":"ask","attempt":51}), 52),
+    ] {
+        let inbox = format!("Folded: {folded}\nRevision: {revision}\n");
+        accepted_event(body, id, state, &inbox);
+    }
+    for inbox in [
+        "Folded: {\"state\":\"ask\",\"attempt\":50}\nRevision: 52\n",
+        "Folded: {\"state\":\"doing\",\"attempt\":51}\nRevision: 52\n",
+        "Folded: {\"state\":\"ask\",\"attempt\":51}\n",
+    ] {
+        assert!(std::panic::catch_unwind(|| accepted_event("taskq: ask attempt 51",52,"ask",inbox)).is_err());
+    }
+}
+
 impl Run {
     fn status_message(&self, message: &Value, label: &str) -> bool {
         let id=try_query(&self.d,&format!("SELECT sent_message FROM outbox WHERE request_id={} AND kind='status' AND state='delivered' ORDER BY id LIMIT 1",self.run_request));
@@ -374,13 +421,9 @@ impl Run {
         let rc = self.github("POST", &path, json!({"body":body}));
         let id = rc["id"].as_i64().unwrap();
         let inbox = self.taskq(&["inbox".into(), self.task.to_string()]).unwrap();
-        let folded: Value = serde_json::from_str(inbox.lines().find_map(|l| l.strip_prefix("Folded: ")).expect("folded event readback")).unwrap();
-        assert_eq!(folded["state"], state, "scripted event was not accepted");
-        if body.starts_with("taskq: spawn ") {
-            assert_eq!(folded["attempt"], id, "another attempt claimed the fixture");
-        }
+        let folded = accepted_event(body, id, state, &inbox);
         let events = self.data.as_object_mut().unwrap().entry("scripted_events").or_insert(json!([]));
-        events.as_array_mut().unwrap().push(json!({"comment":id,"body":body,"state":state}));
+        events.as_array_mut().unwrap().push(json!({"comment":id,"body":body,"state":state,"folded":folded}));
         self.save();
         id
     }
@@ -909,7 +952,12 @@ fn a40_live_management() {
             json!({"message":question,"revision":revision,"foreign_request":id,"refusal":reply})
         });
         h.case("answer_stale", |h| {
-            let attempt = h.data["fixture_attempt"].as_i64().unwrap();
+            // TaskQ §2 row 22 clears the unanswered card and attempt. A second ask
+            // while already ask is ignored; never invent a transition or extend the wait.
+            let previous_attempt = h.data["fixture_attempt"].as_i64().unwrap();
+            let requeue = h.event("taskq: requeue\nReason: Supersede the unanswered synthetic wording question.", "ready");
+            let attempt = h.spawn_fixture();
+            assert_ne!(attempt, previous_attempt);
             let revision = h.event(&format!("taskq: ask attempt {attempt}\nDone: Scripted wording revised.\nProblem: Choose current wording.\n1. Short link ★\n2. Descriptive link\nTo answer: `taskq answer {}.K`",h.task), "ask");
             h.wait("revised question",60,|| current_question(&h.d,&sent(&h.st),h.task).is_some_and(|(_,r)|r==revision));
             let current = current_question(&h.d,&sent(&h.st),h.task).unwrap().0;
@@ -921,6 +969,13 @@ fn a40_live_management() {
             assert_eq!(h.calls().iter().filter(|c|c["args"][0]=="answer").count(),before);
             let (id, answer) = h.request(OWNER,"1",Some(current));
             assert!(answer.starts_with("Answered by ") && answer.contains("Short link") && answer.contains("TaskQ:"),"{answer}");
+            let inbox = h.taskq(&["inbox".into(), h.task.to_string()]).unwrap();
+            let folded: Value = serde_json::from_str(inbox.lines().find_map(|l|l.strip_prefix("Folded: ")).unwrap()).unwrap();
+            assert_eq!(folded["state"], "doing", "answer must resume the current synthetic worker");
+            assert_eq!(folded["attempt"], attempt, "answer must not resume the superseded attempt");
+            assert_eq!(query(&h.d, &format!("SELECT sender FROM requests WHERE id={id}")), OWNER);
+            let actor = query_text(&h.d, &format!("SELECT coalesce(name,cast(sender AS TEXT)) FROM requests WHERE id={id}"));
+            assert!(answer.starts_with(&format!("Answered by {actor}: 1. Short link")), "{answer}");
             let calls = h.calls();
             let rc = calls.iter().find(|c| c["args"][0] == "answer" && c["receipt"]["outcome"] == "accepted").expect("accepted answer receipt");
             let args=rc["args"].as_array().unwrap();
@@ -934,7 +989,7 @@ fn a40_live_management() {
             assert!(receipt.starts_with("Answered by ") && receipt.contains("Short link"));
             assert_eq!(confirmed,receipt,"repeated reply returns the saved actor/choice, never a new decision");
             assert_eq!(h.calls().iter().filter(|c| c["args"][0] == "answer").count(),before);
-            json!({"request":id,"receipt":rc["receipt"],"stale_request":stale,"refusal":refusal,"repeat_request":repeat,"repeat_receipt":confirmed})
+            json!({"request":id,"requeue":requeue,"previous_attempt":previous_attempt,"attempt":attempt,"question_revision":revision,"answer_folded":folded,"actor":actor,"receipt":rc["receipt"],"stale_request":stale,"refusal":refusal,"repeat_request":repeat,"repeat_receipt":confirmed})
         });
         h.case("reviewer", |h| {
             // The accepted answer resumes the same synthetic attempt; no ordinary worker runs.
