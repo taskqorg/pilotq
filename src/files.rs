@@ -1,12 +1,28 @@
 //! #186: documents sent to the conversation become readable text for the model turn: PDF text, archive listing or plain
-//! text, else the exact reason they cannot be read. The content exists only in that turn's input, never in the journal.
+//! text, else the exact reason they cannot be read. Complete originals remain private and readable during the turn.
 
-/// Text handed to the model per file; the rest is cut with an explicit note.
-const TEXT: usize = 50_000;
+/// Preview budget; complete plain text remains available through the scoped document reader.
+pub const TEXT: usize = 50_000;
 
 fn cut(text: &str) -> String {
     if text.chars().count() <= TEXT { return text.to_string(); }
     format!("{}\n[cut: the first {TEXT} characters of a longer text]", text.chars().take(TEXT).collect::<String>())
+}
+
+/// Read only this run's retained originals; the caller cannot supply a filesystem path.
+pub fn tool() -> serde_json::Value {
+    serde_json::json!({"type":"function","name":"reads_document","description":crate::catalog::purpose("reads_document"),
+        "inputSchema":{"type":"object","properties":{"file":{"type":"integer","minimum":0},"offset":{"type":"integer","minimum":0}},"required":["file","offset"],"additionalProperties":false}})
+}
+
+pub fn chunk(paths: &[std::path::PathBuf], args: &serde_json::Value) -> Result<String,String> {
+    if args.as_object().is_none_or(|o|o.len()!=2 || !o.contains_key("file") || !o.contains_key("offset")) { return Err("expected only file and offset".into()); }
+    let index=args["file"].as_u64().and_then(|n|usize::try_from(n).ok()).ok_or("file index must be a nonnegative integer")?;
+    let offset=args["offset"].as_u64().and_then(|n|usize::try_from(n).ok()).ok_or("offset must be a nonnegative integer")?;
+    let path=paths.get(index).ok_or("file is not attached to this turn")?;
+    let text=std::fs::read_to_string(path).map_err(|_|"this original is not UTF-8 text; use its extracted preview")?;
+    let text:String=text.chars().skip(offset).take(TEXT).collect();
+    Ok(serde_json::json!({"text":text,"next_offset":offset.saturating_add(text.chars().count()),"eof":text.chars().count()<TEXT}).to_string())
 }
 
 /// Readable content of one document, or why it cannot be read. Bytes are untrusted; nothing here runs or writes them.
@@ -17,7 +33,7 @@ pub fn read(name: &str, bytes: &[u8]) -> Result<String, String> {
     if bytes.starts_with(b"7z\xbc\xaf\x27\x1c") { return Err("7z archives cannot be opened here; send it as ZIP".into()); }
     if bytes.starts_with(b"\x1f\x8b") { return Err("gzip/tar archives cannot be opened here; send it as ZIP".into()); }
     match std::str::from_utf8(bytes) {
-        Ok(text) if !text.contains('\0') => Ok(cut(text)),
+        Ok(text) if !text.contains('\0') => Ok(text.to_string()),
         _ => Err(format!("{name} is a binary file of an unsupported type; send PDF, ZIP or text")),
     }
 }
@@ -61,6 +77,20 @@ fn zip(bytes: &[u8]) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::read;
+
+    // #259 A1 / §1: plain text after the old 50,000-character preview must remain readable.
+    #[test]
+    fn large_document_259() {
+        let text=format!("{}END-OF-INVENTED-DOCUMENT", "x".repeat(9_600_000));
+        assert!(read("journal.txt",text.as_bytes()).unwrap() == text, "full document was truncated");
+        let file=crate::telegram::store_document("journal.txt",text.as_bytes()).unwrap();
+        let path=file.path.clone();
+        let tail=super::chunk(&[path.clone()],&serde_json::json!({"file":0,"offset":9_600_000})).unwrap();
+        assert!(tail.contains("END-OF-INVENTED-DOCUMENT"));
+        assert!(super::chunk(&[path.clone()],&serde_json::json!({"file":1,"offset":0})).is_err());
+        drop(file);
+        assert!(!path.exists());
+    }
 
     // #186 A2: a PDF, a ZIP and plain text reach the model as their content; RAR and binaries name the exact reason.
     #[test]
@@ -139,8 +169,8 @@ pub fn worker(name: &str) {
 
 /// Supervise an isolated parser with the original media deadline and live journal fence.
 fn supervised(command: Command, end: Instant, active: impl Fn() -> bool) -> Result<String, String> {
-    // JSON can escape each of 50,000 text characters to six bytes; leave room for metadata.
-    let output = crate::commands::execute_bounded(command, end, active, 1024 * 1024);
+    // A 20 MiB UTF-8 document can expand sixfold when serialized as JSON.
+    let output = crate::commands::execute_bounded(command, end, active, 128 * 1024 * 1024);
     match output["status"].as_str().unwrap_or("unknown") {
         "success" => serde_json::from_str::<Result<String, String>>(output["stdout"].as_str().unwrap_or(""))
             .map_err(|_| "document parser returned an invalid result".to_string())?,

@@ -77,18 +77,46 @@ pub fn transcribe(v: &Voice, audio: &[u8], budget: Duration) -> Result<String, S
     run(Command::new(&v.ffmpeg).args(["-nostdin", "-loglevel", "error", "-i"]).arg(&input)
         .args(["-t", &(SECONDS + 1).to_string(), "-ac", "1", "-ar", "16000", "-f", "wav"]).arg(&wav), &out, until)
         .map_err(|e| fail(if e == "failed" { "could not be decoded" } else { e }))?;
-    let samples = std::fs::metadata(&wav).map_err(|_| fail("could not be decoded"))?.len().saturating_sub(44) / 2;
+    let decoded = std::fs::read(&wav).map_err(|_| fail("could not be decoded"))?;
+    // ffmpeg may add LIST and other WAV chunks: count PCM, not a guessed 44-byte header.
+    let mut at = 12usize;
+    let mut data = None;
+    while at + 8 <= decoded.len() {
+        let len = u32::from_le_bytes(decoded[at+4..at+8].try_into().unwrap()) as usize;
+        if &decoded[at..at+4] == b"data" { data = Some((at, (at+8+len).min(decoded.len()))); break; }
+        at = at.checked_add(8 + len + len % 2).ok_or_else(|| fail("could not be decoded"))?;
+    }
+    let samples=data.map(|(header,end)|(end-header-8) as u64 / 2)
+        .unwrap_or(decoded.len().saturating_sub(44) as u64 / 2);
     if samples > SECONDS as u64 * 16000 { return Err(fail("is longer than 5 minutes")); }
+    // GigaAM's attention tensors must stay bounded; the recording cap is not a model segment cap.
+    // Keep the original deadline across every segment and join transcripts only after all succeeded.
+    let mut segments = vec![];
+    if samples > 25 * 16000 {
+        let (header, end) = data.ok_or_else(|| fail("could not be decoded"))?;
+        for (n, pcm) in decoded[header+8..end].chunks(25 * 32000).enumerate() {
+            let mut part = decoded[..header+8].to_vec();
+            part[4..8].copy_from_slice(&((header + pcm.len()) as u32).to_le_bytes());
+            part[header+4..header+8].copy_from_slice(&(pcm.len() as u32).to_le_bytes());
+            part.extend_from_slice(pcm);
+            let path=dir.0.join(format!("segment-{n}.wav"));
+            std::fs::write(&path,part).map_err(|_| fail("storage unavailable"))?;
+            segments.push(path);
+        }
+    } else { segments.push(wav); }
     let files = [("tokens", "tokens.txt"), ("encoder", "encoder.int8.onnx"), ("decoder", "decoder.onnx"), ("joiner", "joiner.onnx")];
-    run(Command::new(&v.recognizer).args(files.map(|(k, f)| format!("--{k}={}", v.model.join(f).display())))
-        .args(["--model-type=nemo_transducer", &format!("--num-threads={}", v.threads)]).arg(&wav), &out, until)
-        .map_err(|e| fail(if e == "failed" { "recognizer failed" } else { e }))?;
-    // The recognizer prints its result as one JSON line after its configuration dump.
-    let printed = std::fs::read_to_string(&out).map_err(|_| fail("recognizer failed"))?;
-    let text = printed.lines().rev().find_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()?["text"].as_str().map(str::to_string))
-        .ok_or_else(|| { crate::host::log(&v.recognizer,"recognition returned no valid result JSON"); fail("recognizer failed") })?;
-    let text = text.trim();
-    if text.is_empty() { Err(fail("had no recognized speech")) } else { Ok(text.to_string()) }
+    let mut transcripts=vec![];
+    for segment in segments {
+        run(Command::new(&v.recognizer).args(files.map(|(k, f)| format!("--{k}={}", v.model.join(f).display())))
+            .args(["--model-type=nemo_transducer", &format!("--num-threads={}", v.threads)]).arg(&segment), &out, until)
+            .map_err(|e| fail(if e == "failed" { "recognizer failed" } else { e }))?;
+        let printed = std::fs::read_to_string(&out).map_err(|_| fail("recognizer failed"))?;
+        let text = printed.lines().rev().find_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()?["text"].as_str().map(str::to_string))
+            .ok_or_else(|| { crate::host::log(&v.recognizer,"recognition returned no valid result JSON"); fail("recognizer failed") })?;
+        if !text.trim().is_empty() { transcripts.push(text.trim().to_string()); }
+    }
+    if transcripts.is_empty() { Err(fail("had no recognized speech")) } else { Ok(transcripts.join(" ")) }
+
 }
 
 /// §9 / #120: local setup probe; silence may return empty text but must decode and produce valid recognizer JSON.
@@ -127,6 +155,31 @@ pub fn readiness(v: Option<&Voice>) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    // #259 A3 / §1: a 4:02 track never sends an oversized tensor to the recognizer.
+    #[test]
+    #[cfg(unix)]
+    fn long_audio_259() {
+        use std::{fs,os::unix::fs::PermissionsExt,time::Duration};
+        let dir=std::env::temp_dir().join(format!("pilotq-long-audio-test-{}",std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let pcm=vec![0u8;242*32000];
+        let mut wav=b"RIFF".to_vec(); wav.extend_from_slice(&((pcm.len()+36) as u32).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt "); wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&[1,0,1,0]); wav.extend_from_slice(&16000u32.to_le_bytes());
+        wav.extend_from_slice(&32000u32.to_le_bytes()); wav.extend_from_slice(&[2,0,16,0]);
+        wav.extend_from_slice(b"data"); wav.extend_from_slice(&(pcm.len() as u32).to_le_bytes()); wav.extend_from_slice(&pcm);
+        fs::write(dir.join("fixture.wav"),wav).unwrap();
+        let ffmpeg=dir.join("ffmpeg"); let recognizer=dir.join("recognizer");
+        fs::write(&ffmpeg,format!("#!/bin/sh\nfor last; do :; done\ncp '{}' \"$last\"\n",dir.join("fixture.wav").display())).unwrap();
+        fs::write(&recognizer,"#!/bin/sh\nfor last; do :; done\n[ $(wc -c < \"$last\") -le 1000000 ] || exit 1\necho '{\"text\":\"segment\"}'\n").unwrap();
+        for path in [&ffmpeg,&recognizer] {fs::set_permissions(path,fs::Permissions::from_mode(0o700)).unwrap();}
+        let v=super::Voice{ffmpeg:ffmpeg.display().to_string(),recognizer:recognizer.display().to_string(),model:dir.clone(),threads:1};
+        let result=super::transcribe(&v,b"invented recording",Duration::from_secs(10));
+        fs::remove_dir_all(dir).unwrap();
+        let result=result.unwrap();
+        assert_eq!(result.split_whitespace().count(),10);
+    }
+
     // #186 A3: a 62 s video yields four JPEG frames, one every 15 s. Needs ffmpeg on PATH, which CI lacks:
     // `cargo test --bin pilotq -- --ignored video_frames`.
     #[test]

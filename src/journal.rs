@@ -695,6 +695,7 @@ pub struct Run {
     pub image_gaps: Vec<i64>,
     /// #186: readable notes of this message's files, a separate model input never checked as the person's own words.
     pub files: Vec<String>,
+    pub document_paths: Vec<std::path::PathBuf>,
 }
 
 /// Claims one queued request: the request turns running, the conversation's fence advances, and the run row records both.
@@ -713,7 +714,7 @@ fn claim(tx: &Connection, request: i64, at: i64) -> Result<Option<Run>, String> 
         .map_err(e)?;
     let model = tx.query_row("SELECT CAST(value AS TEXT) FROM meta WHERE key=?1",[format!("model:{session}")],|r|r.get(0)).optional().map_err(e)?;
     let model_epoch=meta(tx,&format!("model-epoch:{session}"))?.unwrap_or(0);
-    Ok(Some(Run { id: tx.last_insert_rowid(), request, session, generation, fence, thread, text, model, model_epoch, images: vec![], image_gaps: vec![], files: vec![] }))
+    Ok(Some(Run { id: tx.last_insert_rowid(), request, session, generation, fence, thread, text, model, model_epoch, images: vec![], image_gaps: vec![], files: vec![], document_paths: vec![] }))
 }
 
 /// Marks recognized speech in the request text the model and history see (#104).
@@ -1275,6 +1276,34 @@ impl Journal {
                         .map_err(|e| e.to_string())?
                         .unwrap_or(false);
                     let s = session(i.chat, i.topic, sender, shared);
+                    // §4 / #259: persist every member before cursor advance; never merge authors, routes or generations.
+                    if let Some(group)=i.media_group.as_ref().filter(|_| matches!(i.kind,"document"|"image"|"voice")) {
+                        let prior:Option<(i64,String)>=tx.query_row(
+                            "SELECT q.id,q.state FROM requests q JOIN audit_events a ON a.request_id=q.id AND a.kind='media_group' WHERE a.item=?1 AND q.session=?2 AND q.sender=?3 AND q.chat=?4 AND q.topic IS ?5 AND EXISTS(SELECT 1 FROM audit_events g WHERE g.request_id=q.id AND g.kind='album_generation' AND cast(g.item AS INTEGER)=coalesce((SELECT generation FROM conversations WHERE session=?2),0)) ORDER BY q.id DESC LIMIT 1",
+                            params![group,s,sender,i.chat,i.topic],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(|e|e.to_string())?;
+                        if let Some((id,state))=prior {
+                            if state=="queued" {
+                                let mut files:Vec<Value>=tx.query_row("SELECT item FROM audit_events WHERE request_id=?1 AND kind='reply_files' ORDER BY id DESC LIMIT 1",[id],|r|r.get::<_,String>(0)).optional().map_err(|e|e.to_string())?
+                                    .map(|s|serde_json::from_str(&s)).transpose().map_err(|e|e.to_string())?.unwrap_or_default();
+                                files.extend(i.files.clone());
+                                if let Some(file)=&i.voice {
+                                    tx.execute("INSERT INTO audit_events(request_id,at,kind,item) VALUES (?1,?2,'voice',?3)",params![id,at,file]).map_err(|e|e.to_string())?;
+                                }
+                                tx.execute("INSERT INTO audit_events(request_id,at,kind,item) VALUES (?1,?2,'reply_files',?3)",params![id,at,serde_json::to_string(&files).map_err(|e|e.to_string())?]).map_err(|e|e.to_string())?;
+                                tx.execute("UPDATE requests SET text=CASE WHEN ?2 IS NULL THEN text WHEN coalesce(text,'')='' THEN ?2 ELSE text||char(10)||?2 END WHERE id=?1",params![id,i.text]).map_err(|e|e.to_string())?;
+                                tx.execute("INSERT INTO audit_events(request_id,at,kind,item) VALUES (?1,?2,'album_member',?3)",params![id,at,json!({"message":i.message,"caption":i.text,"files":i.files}).to_string()]).map_err(|e|e.to_string())?;
+                                tx.execute("INSERT INTO updates(update_id,disposition,request_id,at) VALUES (?1,'admitted',?2,?3)",params![update,id,at]).map_err(|e|e.to_string())?;
+                                continue;
+                            }
+                            // Late delivery must not change an already running request or silently discard a file.
+                            let language=chat_language(&tx,&s,i.text.as_deref(),i.language.as_deref())?;
+                            let text=if language.as_deref().unwrap_or("en").starts_with("ru") {"Часть альбома пришла после начала обработки; пришлите её отдельным сообщением."} else {"Part of the album arrived after processing started; send it again as a separate message."};
+                            tx.execute("INSERT INTO audit_events(request_id,at,kind,item) VALUES (?1,?2,'late_album',?3)",params![id,at,json!({"message":i.message,"caption":i.text,"files":i.files}).to_string()]).map_err(|e|e.to_string())?;
+                            outbox(&tx,id,i.chat,i.topic,Some(i.message),None,text,at)?;
+                            tx.execute("INSERT INTO updates(update_id,disposition,request_id,at) VALUES (?1,'late_album',?2,?3)",params![update,id,at]).map_err(|e|e.to_string())?;
+                            continue;
+                        }
+                    }
                     let language = chat_language(&tx, &s, if i.kind=="action" {None} else {i.text.as_deref()}, i.language.as_deref())?;
                     let cmd = if i.kind == "text" { control(i.text.as_deref()) } else { None };
                     // controls bypass the backlog: they are answered here, never queued (§ 12)
@@ -1343,6 +1372,7 @@ impl Journal {
                             params![id,at,file]).map_err(|e|e.to_string())?;
                     }
                     if let Some(group) = &i.media_group {
+                        tx.execute("INSERT INTO audit_events(request_id,at,kind,item) VALUES (?1,?2,'album_generation',coalesce((SELECT generation FROM conversations WHERE session=?3),0))",params![id,at,s]).map_err(|e|e.to_string())?;
                         tx.execute("INSERT INTO audit_events(request_id,at,kind,item) VALUES (?1,?2,'media_group',?3)",
                             params![id,at,group]).map_err(|e|e.to_string())?;
                     }
@@ -1884,6 +1914,7 @@ impl Journal {
             let mut q = tx
                 .prepare(
                     "SELECT r.id FROM requests r WHERE state='queued' AND (front='telegram' OR id IN (SELECT request_id FROM audit_events WHERE kind='loop_tick')) AND kind IN ('text','image','document','voice','choice','launch','cancel','launch_control')
+                    AND NOT EXISTS (SELECT 1 FROM audit_events a WHERE a.request_id=r.id AND a.kind IN ('media_group','album_member') AND a.at>?3-2)
                     AND NOT EXISTS (SELECT 1 FROM requests p WHERE p.state='running' AND
                         (p.session=r.session OR (p.front=r.front AND p.chat=r.chat AND p.topic IS r.topic AND EXISTS(SELECT 1 FROM audit_events WHERE kind='loop_tick' AND request_id IN (r.id,p.id)))))
                     AND NOT EXISTS (SELECT 1 FROM requests p WHERE p.session=r.session AND p.state='queued' AND p.id<r.id AND p.kind<>'builtin')
@@ -1892,7 +1923,7 @@ impl Journal {
                     ORDER BY EXISTS(SELECT 1 FROM audit_events WHERE request_id=r.id AND kind='loop_tick'),r.id LIMIT ?1",
                 )
                 .map_err(|e| e.to_string())?;
-            q.query_map(params![free,limit.saturating_sub(1) as i64], |r| r.get(0)).and_then(Iterator::collect).map_err(|e| e.to_string())?
+            q.query_map(params![free,limit.saturating_sub(1) as i64,at], |r| r.get(0)).and_then(Iterator::collect).map_err(|e| e.to_string())?
         };
         let mut runs = vec![];
         for id in ids {
@@ -1911,10 +1942,15 @@ impl Journal {
     }
 
     /// #104: the Telegram file of a voice request that has no stored transcript yet; a recovered run never recognizes twice.
+    #[cfg(test)]
     pub fn pending_voice(&self, request: i64) -> Result<Option<String>, String> {
-        self.0.query_row("SELECT item FROM audit_events WHERE request_id=?1 AND kind='voice'
-            AND NOT EXISTS(SELECT 1 FROM audit_events WHERE request_id=?1 AND kind='transcript')", [request], |x| x.get(0))
-            .optional().map_err(|e| e.to_string())
+        Ok(self.pending_voices(request)?.into_iter().next())
+    }
+
+    pub fn pending_voices(&self, request: i64) -> Result<Vec<String>, String> {
+        let mut q=self.0.prepare("SELECT item FROM audit_events WHERE request_id=?1 AND kind='voice'
+            AND NOT EXISTS(SELECT 1 FROM audit_events WHERE request_id=?1 AND kind='transcript') ORDER BY id").map_err(|e|e.to_string())?;
+        q.query_map([request],|x|x.get(0)).and_then(Iterator::collect).map_err(|e|e.to_string())
     }
 
     /// #104: stores the transcript as the request's text after any caption, marked as automatic recognition, under the run's
@@ -2481,14 +2517,14 @@ impl Journal {
     }
 
     pub fn reply_files(&self, request: i64) -> Result<Vec<Value>,String> {
-        let raw:Option<String>=self.0.query_row("SELECT item FROM audit_events WHERE request_id=?1 AND kind='reply_files' ORDER BY id LIMIT 1",[request],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
+        let raw:Option<String>=self.0.query_row("SELECT item FROM audit_events WHERE request_id=?1 AND kind='reply_files' ORDER BY id DESC LIMIT 1",[request],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
         raw.map(|s|serde_json::from_str(&s).map_err(|e|e.to_string())).unwrap_or(Ok(vec![]))
     }
 
     /// #186: files a claimed document request carries for its model turn; an image request's file is read as an image.
     pub fn documents(&self, request: i64) -> Result<Vec<Value>,String> {
-        let document:bool=self.0.query_row("SELECT kind='document' FROM requests WHERE id=?1",[request],|r|r.get(0)).map_err(|e|e.to_string())?;
-        if document { self.reply_files(request) } else { Ok(vec![]) }
+        let eligible:bool=self.0.query_row("SELECT kind IN ('document','image') FROM requests WHERE id=?1",[request],|r|r.get(0)).map_err(|e|e.to_string())?;
+        if eligible { Ok(self.reply_files(request)?.into_iter().filter(|f| matches!(f["media"].as_str(),Some("document"|"video"))).collect()) } else { Ok(vec![]) }
     }
 
     /// #186: what reading one attached file gave the turn; the content itself is never retained.
@@ -3084,10 +3120,10 @@ impl Journal {
             .0
             .prepare(
                 "SELECT q.id, q.sender, coalesce(q.text, ''), o.task, o.revision, q.state='running', o.project FROM requests q JOIN outbox o ON o.kind='question' AND o.chat=q.chat
-                AND o.sent_message=q.reply_to AND o.topic IS q.topic WHERE q.kind='answer' AND q.state IN ('queued', 'running') ORDER BY q.id",
+                AND o.sent_message=q.reply_to AND o.topic IS q.topic WHERE q.kind='answer' AND q.state IN ('queued', 'running') AND NOT EXISTS(SELECT 1 FROM audit_events a WHERE a.request_id=q.id AND a.kind IN ('media_group','album_member') AND a.at>?1-2) ORDER BY q.id",
             )
             .map_err(|e| e.to_string())?;
-        q.query_map([], |r| Ok((Answer { request: r.get(0)?, sender: r.get(1)?, text: r.get(2)?, task: r.get(3)?, revision: r.get(4)?, project: r.get(6)? }, r.get(5)?)))
+        q.query_map([crate::now() as i64], |r| Ok((Answer { request: r.get(0)?, sender: r.get(1)?, text: r.get(2)?, task: r.get(3)?, revision: r.get(4)?, project: r.get(6)? }, r.get(5)?)))
             .and_then(Iterator::collect)
             .map_err(|e| e.to_string())
     }
@@ -4210,6 +4246,42 @@ mod tests {
         ]));
         drop(j);
         std::fs::remove_dir_all(p).unwrap();
+    }
+
+    // #259 A2 / §4: album updates across polls form one durable request and retain both files/caption.
+    #[test]
+    fn album_259() {
+        let (mut j,p)=journal("album-259");
+        let album=|message,caption:Option<&str>| {
+            let mut i=msg(7,7,message).unwrap();
+            i.kind="document"; i.text=caption.map(str::to_string);
+            i.media_group=Some("invented-album".into());
+            i.files=vec![json!({"id":format!("invented-{message}"),"name":"notes.txt","media":"document"})];
+            Some(i)
+        };
+        j.admit(&[(1,album(1,Some("Read both")))],0).unwrap();
+        assert!(j.claim_next(1,0).unwrap().is_empty());
+        j.admit(&[(2,album(2,None))],1).unwrap();
+        j.admit(&[(2,album(2,None))],1).unwrap();
+        drop(j); let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
+        assert!(j.claim_next(1,2).unwrap().is_empty());
+        let runs=j.claim_next(1,4).unwrap();
+        assert_eq!(runs.len(),1);
+        assert_eq!(runs[0].text,"Read both");
+        assert_eq!(j.documents(runs[0].request).unwrap().len(),2);
+        assert_eq!(count(&j,"SELECT count(*) FROM requests"),1);
+        assert_eq!(j.cursor().unwrap(),3);
+        j.admit(&[(3,album(3,None))],5).unwrap();
+        assert_eq!(count(&j,"SELECT count(*) FROM requests"),1,"late member cannot start another turn");
+        assert_eq!(count(&j,"SELECT count(*) FROM audit_events WHERE kind='late_album'"),1);
+        let mut stranger=album(4,None).unwrap(); stranger.sender=Some(8);
+        j.admit(&[(4,Some(stranger))],5).unwrap();
+        assert_eq!(count(&j,"SELECT count(*) FROM requests"),1);
+        j.grant(7,8,&["chat".into()],5).unwrap();
+        let mut other=album(5,None).unwrap(); other.sender=Some(8);
+        j.admit(&[(5,Some(other))],6).unwrap();
+        assert_eq!(count(&j,"SELECT count(*) FROM requests"),2,"different authors cannot merge");
+        drop(j); let _=std::fs::remove_dir_all(p);
     }
 
     // F02, F15: a repeated update ID admits nothing new; a stranger leaves only an ID-only disposition; the cursor follows the batch.

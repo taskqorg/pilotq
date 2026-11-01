@@ -89,6 +89,12 @@ fn handle(stream: std::net::TcpStream, st: &State) {
     }
     // #186: invented documents, by file ID
     if let Some(kind) = method.strip_prefix("invented-doc-") {
+        if kind=="long-259" {
+            let bytes=format!("{}END-OF-INVENTED-DOCUMENT", "x".repeat(9_600_000));
+            write!(out,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",bytes.len()).unwrap();
+            out.write_all(bytes.as_bytes()).unwrap();
+            return;
+        }
         let bytes: &[u8]=match kind { "rar" => b"Rar!\x1a\x07\x01\x00 invented", _ => "Invented invoice line, сумма 42".as_bytes() };
         write!(out,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",bytes.len()).unwrap();
         out.write_all(bytes).unwrap();
@@ -3155,6 +3161,44 @@ fn voice_update(id: i64, sender: i64, media: &str, file: Value) -> Value {
     u["message"]["from"]["language_code"] = json!("ru");
     u["message"][media] = file;
     u
+}
+
+// #259 / §§1,4: protect the connection from album ingress through original-file paging and ordinary audio replies.
+#[test]
+fn telegram_intake_259() {
+    let (d,st)=setup("intake-259",vec![]);
+    let reader=FAKE.replace("    case \"$text\" in",r#"    if printf '%s' "$l" | grep -q 'Complete original file'; then
+      echo '{"id":77,"method":"item/tool/call","params":{"tool":"reads_document","arguments":{"file":0,"offset":9600000}}}'
+    fi
+    case "$text" in"#);
+    use_codex(&d,&script(&d,"reader-codex",&reader));
+    use_voice(&d);
+    let c=spawn(&d,None);
+    let document=|id,file:&str,caption:Option<&str>| {
+        let mut u=voice_update(id,OWNER,"document",json!({"file_id":file,"file_unique_id":format!("invented-{id}"),"file_size":9_600_000,"file_name":format!("notes-{id}.txt")}));
+        u["message"]["media_group_id"]=json!("invented-album-259");
+        if let Some(caption)=caption {u["message"]["caption"]=json!(caption);}
+        u
+    };
+    push(&st,document(1,"invented-doc-long-259",Some("Read both files")));
+    push(&st,document(2,"invented-doc-text",None));
+    wait("album answered",25,||try_query(&d,"SELECT count(*) FROM requests WHERE state='answered'")==Some(1));
+    assert_eq!(query(&d,"SELECT count(*) FROM requests"),1);
+    assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='file_read'"),2);
+    wait("reader response logged",5,||fs::read_to_string(d.join("codex.log")).unwrap_or_default().contains("END-OF-INVENTED-DOCUMENT"));
+    let log=fs::read_to_string(d.join("codex.log")).unwrap();
+    assert!(log.contains("\"success\":true"));
+    let turns:Vec<Value>=log.lines().filter_map(|l|serde_json::from_str::<Value>(l).ok()).filter(|v|v["method"]=="turn/start").collect();
+    assert_eq!(turns.len(),1);
+    let input=turns[0]["params"]["input"].to_string();
+    assert!(input.contains("notes-1.txt") && input.contains("notes-2.txt") && input.contains("Read both files"));
+    assert!(input.len()<150_000,"the complete document must not flood model input");
+    let mut audio=voice_update(3,OWNER,"document",json!({"file_id":"invented-voice-reply","file_unique_id":"invented-opus","file_size":24,"file_name":"reply.opus"}));
+    audio["message"]["reply_to_message"]=json!({"message_id":101,"date":0,"chat":{"id":OWNER,"type":"private","first_name":"A"}});
+    push(&st,audio);
+    wait("audio reply answered",20,||try_query(&d,"SELECT count(*) FROM requests WHERE state='answered'")==Some(2));
+    assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='transcript' AND item='Проверь место на диске.'"),1);
+    stop(c,d);
 }
 
 // #104 A2/A3 / R13, R17: an OGG/Opus voice note, an audio file with a caption and an audio document reach the model as the

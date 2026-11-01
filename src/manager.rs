@@ -434,6 +434,7 @@ fn run_inner(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, 
     }
     use crate::direct;
     let mut tools = direct::tools();
+    tools.push(crate::files::tool());
     let instructions = match tq {
         Some(_) => {
             tools.extend(crate::taskq::tools().as_array().cloned().unwrap_or_default());
@@ -532,6 +533,14 @@ fn run_inner(codex: &Codex, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, 
                 let (ok, out) = match tq {
                     _ if crate::pm::NAMES.contains(&name) => crate::pm::call(j,r,name,args,&d.keys,now()),
                     _ if crate::loops::NAMES.contains(&name) => crate::loops::call(j,r,name,args,now()),
+                    _ if name == "reads_document" => {
+                        let guard=j.lock().unwrap();
+                        if guard.fenced(r).unwrap_or(true) || !guard.sender(r.request).and_then(|u|guard.has(u,"chat")).unwrap_or(false) {
+                            (false,"conversation access revoked".into())
+                        } else { match crate::files::chunk(&r.document_paths,args) {
+                            Ok(text)=>(true,text), Err(error)=>(false,error),
+                        }}
+                    },
                     _ if name == "asana_read" => crate::asana::call(d,j,r,args,command_deadline),
                     _ if crate::admin::NAMES.contains(&name) => crate::admin::call(d,j,r,name,args,command_deadline,tq),
                     _ if crate::commands::NAMES.contains(&name) => crate::commands::call(d,j,r,name,args,command_deadline,tq),
@@ -632,13 +641,19 @@ pub fn serve(
                         let started = Instant::now();
                         // § 12 / #104: recognize a voice request once, inside the same deadline, before the model turn.
                         let recognized = (|| {
-                            let Some(file) = j.lock().unwrap().pending_voice(r.request)? else { return Ok(()) };
+                            let files = j.lock().unwrap().pending_voices(r.request)?;
+                            if files.is_empty() { return Ok(()) }
                             let voice = voice.as_deref().ok_or("voice recognition is not configured")?;
                             let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|_| "voice runtime unavailable".to_string())?;
+                            let mut transcripts=vec![];
+                            for file in files {
+                            if j.lock().unwrap().fenced(&r)? { return Err("voice recognition cancelled".into()); }
                             let audio = runtime.block_on(crate::telegram::download(&bot, &file, codex.limits.deadline.saturating_sub(started.elapsed())))
                                 .map_err(|e| format!("voice {e}"))?;
                             let transcript = crate::voice::transcribe(voice, &audio, codex.limits.deadline.saturating_sub(started.elapsed()))?;
-                            r.text = j.lock().unwrap().transcript(&r, &transcript, now())?;
+                            transcripts.push(transcript);
+                            }
+                            r.text = j.lock().unwrap().transcript(&r, &transcripts.join("\n"), now())?;
                             Ok::<_, String>(())
                         })();
                         if let Err(e) = recognized {
@@ -649,6 +664,7 @@ pub fn serve(
                         // #186: a document or video is read once, inside the same deadline; its text, or the exact reason it
                         // cannot be read, joins only this turn's input. Video frames join the turn as this message's images.
                         let mut frames = vec![];
+                        let mut originals = vec![];
                         let read = (|| {
                             let files = j.lock().unwrap().documents(r.request)?;
                             if files.is_empty() { return Ok(()) }
@@ -674,8 +690,17 @@ pub fn serve(
                                             Ok(format!("Video: {} frame(s) attached below as images of this message, in time order, one every 15 seconds. {speech}", pictures.len()))
                                         }),
                                     },
-                                    Ok(bytes) => crate::files::bounded(&name, &bytes, started + codex.limits.deadline,
-                                        || j.lock().unwrap().fenced(&r).map(|f| !f).unwrap_or(false)),
+                                    Ok(bytes) => {
+                                        let original = crate::telegram::store_document(&name, &bytes)?;
+                                        let path = original.path.clone();
+                                        originals.push(original);
+                                        let index=r.document_paths.len();
+                                        r.document_paths.push(path.clone());
+                                        crate::files::bounded(&name, &bytes, started + codex.limits.deadline,
+                                            || j.lock().unwrap().fenced(&r).map(|f| !f).unwrap_or(false))
+                                            .map(|text| format!("{}\n[Complete original file, readable during this turn: {}; use reads_document with file {index} and character offset to read beyond this preview]",
+                                                text.chars().take(crate::files::TEXT).collect::<String>(), path.display()))
+                                    },
                                 };
                                 let result = note.as_ref().map(|t| format!("read {} characters", t.chars().count())).unwrap_or_else(|e| e.clone());
                                 j.lock().unwrap().file_read(&r, &name, &result, now())?;
@@ -701,12 +726,16 @@ pub fn serve(
                             let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|_| "image runtime unavailable".to_string())?;
                             let mut images = vec![];
                             for item in context["recent"].as_array().ok_or("invalid conversation context")? {
-                                let Some(file) = item["image"].as_str() else { continue };
                                 let request = item["request"].as_i64().ok_or("invalid image request")?;
-                                match runtime.block_on(crate::telegram::download_image(&bot, file, codex.limits.deadline.saturating_sub(started.elapsed()))) {
+                                let mut ids:Vec<String>=j.lock().unwrap().reply_files(request)?.iter()
+                                    .filter(|f| f["media"]=="image" || (f["media"].is_null() && item["image"].is_string())).filter_map(|f|f["id"].as_str().map(str::to_string)).collect();
+                                if let Some(file)=item["image"].as_str() { if !ids.iter().any(|id|id==file) {ids.push(file.into());} }
+                                for file in ids {
+                                match runtime.block_on(crate::telegram::download_image(&bot, &file, codex.limits.deadline.saturating_sub(started.elapsed()))) {
                                     Ok(image) => images.push((request,image)),
                                     Err(e) if request == r.request => return Err(e),
                                     Err(_) => r.image_gaps.push(request),
+                                }
                                 }
                             }
                             images.extend(frames.drain(..).map(|f| (r.request, f)));

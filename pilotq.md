@@ -32,8 +32,8 @@ Owner and explicit shell-grant routes may run authorized conversational loops un
 
 Accept text, replies, task links, inline decisions, photos and image documents with captions retained. Recognize voice notes, audio files and audio documents locally as Russian speech. Photos and arbitrary documents may be TaskQ reply attachments through answer, steer and owner requeue.
 
-Other documents up to 20 MiB reach the turn as PDF text, ZIP listing or plain text, else the exact reason; videos and video notes as frames plus recognized speech. Larger files get one short file-limit line; other input one unsupported-input line, both in the chat's language.
-
+Other documents up to 20 MiB reach the turn as readable original files with a PDF text, ZIP listing or plain-text preview, else the exact reason. The scoped `reads_document` tool pages current UTF-8 attachments beyond the preview without shell access; videos and video notes as frames plus recognized speech.
+An album is one durable request retaining every file and caption. Audio is recognized in bounded segments within the recording and turn limits. Larger files get one short file-limit line; other input one unsupported-input line, both in the chat's language.
 Recurring task execution stays with TaskQ or the existing scheduler. For the owner and explicit shell grantees, PilotQ also schedules route-local conversational loops and TaskQ board wakes under §2. Detailed media, retention and admission protections are in §§2, 5, 7 and 12.
 
 ## 2. Conversation, admission and authorization
