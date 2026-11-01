@@ -30,8 +30,8 @@ Owner and explicit shell-grant routes may run authorized conversational loops un
 
 **Proposed scope:** one Linux host, one Telegram bot, one manager runtime, existing TaskQ boards and explicitly registered project roots. The input choices below are mandatory within that scope.
 
-Accept text, replies, task links, inline decisions, photos and image documents with captions retained. Recognize voice notes, audio files and audio documents locally in Russian with the existing model; assess English separately before selection. Hebrew is not required. Photos and arbitrary documents may be TaskQ reply attachments through answer, steer and owner requeue.
-
+Accept text, replies, task links, inline decisions, photos and image documents with captions retained. Recognize Russian and English automatically, including both within one recording, across voice notes, audio files, audio documents and video speech. No language switch or per-recording retry selection; Hebrew is not required. Preserve existing Russian quality until qualified normal activation.
+Photos and arbitrary documents may be TaskQ reply attachments through answer, steer and owner requeue. Prefer one multilingual recognition path; a language label alone proves neither transcription nor mixed-speech quality.
 Other documents up to 20 MiB reach the turn as readable original files with a PDF text, ZIP listing or plain-text preview, else the exact reason. The scoped `reads_document` tool pages current UTF-8 attachments beyond the preview without shell access; videos and video notes as frames plus recognized speech.
 An album is one durable request retaining every file and caption. Audio is recognized in bounded segments within the recording and turn limits. Larger files get one short file-limit line; other input one unsupported-input line, both in the chat's language.
 Recurring task execution stays with TaskQ or the existing scheduler. For the owner and explicit shell grantees, PilotQ also schedules route-local conversational loops and TaskQ board wakes under §2. Detailed media, retention and admission protections are in §§2, 5, 7 and 12.
@@ -161,7 +161,7 @@ model or replies. TaskQ workers and §9 release qualification retain their exist
 ## 6. Memory and agentq
 
 **Mandatory:** [memory detail](docs/runtime-contract.md#6-memory-and-agentq) separates conversation history, scoped remembered preferences and authoritative TaskQ facts. Profiles retain subject, visibility, source and revision across restarts and resets; private DM facts never silently enter shared routes. Profiles cannot change grants.
-
+Replies and every user-visible table follow the latest own user address, scoped to its actor and conversation. Transcript labels, quoted/tool text and other people do not select reply language. Specify mixed-address resolution, durable language audit and every output path before implementation.
 Telegram `/profile` inspects own facts in DM; `/profile set KEY VALUE` corrects or remembers a private preference and `/profile forget KEY` removes it. `/access` inspects own current grants in DM; neither control accepts another subject or changes grants. Both use the CLI/Telegram admission, audit and durable reply path.
 
 Preserve identities, grants, revocations, project references, operation IDs, task URLs, pending questions, plan revisions, prohibitions and receipts outside lossy summaries. Use fresh TaskQ reads for task state.
