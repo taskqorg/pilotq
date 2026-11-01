@@ -1162,20 +1162,42 @@ route/DM isolation, credential refusal, restart, `/new`, CLI correction/forget a
 These are journal/process/adapter checks, not real model parity or live qualification (R13, R16, R19).
 
 The owner confirmed a staged handoff in task #221: worker implementation/checklist first, then the PM's one-hour
-findings-only shadow run. The PM must replace the pending cells below with sanitized same-hour evidence;
-no shadow run, Claude comparison, live installation or parity pass is claimed by the worker.
+findings-only shadow run. The PM run below follows [the PM checklist](pm-221-live.md).
 
-Window (UTC): **not run**. Released source/binary: **not recorded**. Shadow route/project: **not selected**.
+Window (UTC): **2026-11-01 02:11:14–03:06:14**, twelve shadow ticks every 5 minutes. Released source/binary:
+**0.2.35** (`c0e102a`) on the PDS host. Shadow route/project: PilotQ TEST, PilotQ topic, project `pilotq`.
+Claude PM evidence: the PM's own ticks at 02:06 and 02:37 UTC (telemetry plus `taskq status` on every board).
+The PM did not capture its own ticks after 02:37 UTC; that part of the hour is unknown on the Claude side.
 
 | Category | PilotQ shadow evidence | Claude PM evidence, same hour | Match / gap |
 |---|---|---|---|
-| Asks | Pending PM run | Pending capture | Unknown |
-| Stuck work | Pending PM run | Pending capture | Unknown |
-| Failed work | Pending PM run | Pending capture | Unknown |
-| Releases | Pending PM run | Pending capture | Unknown |
-| Telemetry alerts | Pending PM run | Pending capture | Unknown |
+| Asks | 0 in all 12 ticks | 0 on all boards at 02:06 and 02:37 | Match to 02:37; unknown after |
+| Stuck work | #198 and #221 (later stage) | #198 and #221 (later stage); other boards are outside the shadow's project | Match to 02:37; unknown after |
+| Failed work | None | None | Match to 02:37; unknown after |
+| Releases | None pending; none made | None pending | Match to 02:37; unknown after |
+| Telemetry alerts | PDS host: run returned-error 2, stop-unconfirmed 3; later board failures 2 to 3 and writes failed 2/165 | PDS host: run returned-error 2, stop-unconfirmed 3 at 02:37 | Match to 02:37; later growth unknown on the Claude side |
 
-A8 remains open. Record collection failures and tick offsets explicitly; absence of evidence is never a match.
+Mismatch outside the five categories: the shadow listed #245, #250 and #251 as undecided reports; the Claude PM's
+status on the Mac listed none. The PM first called this a shadow error and corrected it at 02:50 UTC: TaskQ 4.6.57
+on the PDS host projects these reports as undecided despite their report-accept receipts, while the Mac dev build
+does not. The shadow reported its own host's source correctly. The projection defect is a TaskQ follow-up.
+
+Other checklist evidence, from the PilotQ journal:
+
+- Findings only: the 12 ticks (requests 302–308, 312, 324, 325, 333, 335) used `pm_note_read` 23 times,
+  `pm_note_write` 13 times and read-only shell commands (`taskq` profile, watch, help, inbox, issue, status,
+  reports). No board write and no release. PASS.
+- Loop stop: `/loop stop` (request 336, 03:07:14) replied "Loop stopped."; no tick followed at 03:11:14. PASS.
+- Forget after restart: a test note forgotten before the 02:05:29 service restart is absent from the post-restart
+  list. PASS.
+- DM and other-route isolation: the unbound bot DM reports the pack as unbound; a second route bound to the same
+  project without notes reports the note as unavailable. The binding was removed afterwards. PASS.
+- Cleanup: `pm unbind` for the shadow route returned `unbound: true`; notes are preserved.
+- Non-shell refusal: unknown. The owner holds shell implicitly (§5), so revoking the owner's shell grant was
+  restored by the service four seconds later. A live check needs a non-owner test account.
+
+A8: the five categories match for the overlapping Claude ticks; the rest of the hour stays unknown on the Claude
+side. Absence of evidence is not counted as a match.
 
 ## GitLab onboarding (#251)
 
