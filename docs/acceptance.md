@@ -1279,6 +1279,10 @@ The local regression command `cargo test --locked --test telegram automatic::a40
 
 This is component evidence, not the §9 release qualification. Task #281 must run all fourteen A40 cases, including cleanup, on the exact accepted merge containing this repair. Its reserved host, fixture-only TaskQ controls, original admission restoration and copied-login/board-credential cleanup remain required. No live controls, installation or release is authorized by this check.
 
+### A40 readiness preparation (#288)
+
+[Readiness regression evidence](research/288.md) records #281 run3's zero-start readiness refusal, its local reproduction and focused pass after the private fixture's supported owner override (§5). Startup findings and R10 stranger assertions remain; the override never claims setup is ready. Full fourteen-case A40 and cleanup qualification remains with #281 on the exact accepted merge with green merge-result CI (§9, R19).
+
 ## Manager runtimes through CoreQ agent (#265)
 
 [Manager runtimes](runtime-contract.md#manager-runtimes) bind R9 and §§3, 6, 7 and 9. Local evidence:
