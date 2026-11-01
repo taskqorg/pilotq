@@ -3,20 +3,26 @@ use serde_json::{Value, json};
 use std::{process::{Command, Stdio}, time::Duration};
 
 pub fn log(command: &str, error: &str) {
-    let mut safe = crate::keys::Keys(crate::tool().install.join("keys.json")).scrub(&format!("{command}: {error}"));
-    for name in ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "OPENAI_API_KEY"] {
-        if let Ok(secret) = std::env::var(name) { if !secret.is_empty() { safe = safe.replace(&secret, "[credential]"); } }
-    }
-    eprintln!("host tool: {}", one_line(&safe));
+    let keys = crate::keys::Keys(crate::tool().install.join("keys.json"));
+    let scrub = |text: &str| {
+        let mut safe = keys.scrub(text);
+        for name in ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "OPENAI_API_KEY"] {
+            if let Ok(secret) = std::env::var(name) { if !secret.is_empty() { safe = safe.replace(&secret, "[credential]"); } }
+        }
+        safe
+    };
+    eprintln!("host tool: {}", one_line(&scrub(command), &scrub(error)));
 }
 
-/// #257: a multi-line child stderr (such as a Python traceback) becomes one journal line: its first line and its final
-/// summary, capped. Full scrubbed diagnostics stay in the request audit where a caller records them.
-fn one_line(text: &str) -> String {
-    let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
+/// #257: a multi-line child stderr (such as a Python traceback) becomes one journal line: the capped command, the
+/// error's first line and its final summary. The summary is never cut by a long command. Full scrubbed diagnostics
+/// stay in the request audit where a caller records them.
+fn one_line(command: &str, error: &str) -> String {
+    let cap = |text: &str, max: usize| if text.chars().count() <= max { text.to_string() } else { text.chars().take(max - 1).chain(['…']).collect() };
+    let mut lines = error.lines().map(str::trim).filter(|l| !l.is_empty());
     let first = lines.next().unwrap_or("");
-    let line = match lines.last() { Some(last) => format!("{first} … {last}"), None => first.to_string() };
-    if line.chars().count() <= 500 { line } else { line.chars().take(499).chain(['…']).collect() }
+    let error = match lines.last() { Some(last) => format!("{} … {}", cap(first, 200), cap(last, 500)), None => cap(first, 500) };
+    format!("{}: {error}", cap(command, 300))
 }
 
 pub fn output(c: &mut Command) -> Result<std::process::Output, String> {
@@ -140,10 +146,13 @@ mod tests {
     // #257 A5: an adapter's HTTPS handshake timeout traceback is logged as one short line ending in its summary.
     #[test]
     fn traceback_logs_one_line() {
-        let trace = "\"/opt/adapter\" [\"541\"]: exit_nonzero: Traceback (most recent call last):\n  File \"/opt/adapter\", line 9, in <module>\n    with urllib.request.urlopen(req, timeout=4) as r:\n         ~~~~^^^^\nTimeoutError: _ssl.c:1011: The handshake operation timed out\n";
-        let line = one_line(trace);
+        let trace = "exit_nonzero: Traceback (most recent call last):\n  File \"/opt/adapter\", line 9, in <module>\n    with urllib.request.urlopen(req, timeout=4) as r:\n         ~~~~^^^^\nTimeoutError: _ssl.c:1011: The handshake operation timed out\n";
+        let line = one_line("\"/opt/adapter\" [\"541\"]", trace);
         assert_eq!(line, "\"/opt/adapter\" [\"541\"]: exit_nonzero: Traceback (most recent call last): … TimeoutError: _ssl.c:1011: The handshake operation timed out");
-        assert_eq!(one_line(&"x".repeat(900)).chars().count(), 500);
+        // A >500-char command (long macOS temp paths) still ends in the error summary.
+        let long = one_line(&"x".repeat(900), trace);
+        assert!(long.chars().count() < 900 && long.ends_with("TimeoutError: _ssl.c:1011: The handshake operation timed out"), "{long}");
+        assert!(one_line(&"x".repeat(900), "exit status: 1: private-dependency-output").ends_with("private-dependency-output"));
     }
 
     // #205 A2 / R5: ESRCH during cleanup must succeed without host-error logging.
