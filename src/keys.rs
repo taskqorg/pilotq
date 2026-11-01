@@ -144,6 +144,7 @@ impl Keys {
             let name = match name {
                 Some(n) if usable.iter().any(|u| u == n) => n.to_string(),
                 None if usable.len() == 1 => usable[0].clone(),
+                None if usable.len() > 1 => return Err("Several authorized keys are available; specify which key to use".into()),
                 _ => {
                     let list = if usable.is_empty() { "none".to_string() } else { usable.join(", ") };
                     return Err(format!("no key {}granted to {user}, this route or project {project} for {tool}; keys you may use for it: {list}. Nothing was done", name.map_or(String::new(), |n| format!("{n} "))));
