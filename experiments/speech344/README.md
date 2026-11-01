@@ -85,3 +85,32 @@ One actual 600-second monotonic deadline covers decoding, both ten-second readin
 The runner checks the retained three-blue-books semantic guard before spending time on stress data, then requires identical original-language transcripts/language and native counters proving exactly one encoder pass removed. It records stage timings, wall times, cumulative child RSS, logs, hashes and ratios; PM retains actual cgroup/OOM accounting and independently checks cleanup. Any process failure, ten-second readiness/600-second deadline failure, semantic/text/language mismatch, missing counter/reuse marker or absent measured saving stops the experiment without retries or further inference. A nonzero exit retains the failure evidence.
 
 Even a successful diagnostic proves only these two paired inputs. One segment cannot prove twelve segments finish in 600 seconds, human all-language accuracy, installed readiness or live Telegram use. The necessary average for twelve chunks is under fifty seconds before overhead, but extrapolation is never a pass or a universal impossibility proof. If measured gain/quality is insufficient, stop this mechanism and report an explicit owner quality/latency tradeoff with the original limits and failures intact. Do not silently run a new model, full300, extra corpus or production activation. Any further qualification needs PM review of this terminal result (§9, R19).
+
+## Prepared Sherpa small-int8 English diagnostic
+
+Note6563991018 approves this separate candidate's asset/harness preparation only. The stopped first-window/Hebrew/CTC experiments above remain stopped. No ASR inference, product routing, English UI, production selection or installed change is authorized by this preparation.
+
+Verified candidate assets are private in `target/pm344-sherpa-small-en-assets` (directory0700, files0600). `manifest.json` contains pinned origins, exact sizes/hashes, token Git identity, notices, upstream metadata, engine/fixture/harness/helper identities and diagnostic settings. `SHA256SUMS` covers every handed-off file including the manifest. Manifest SHA256 is `3de52d0b7791abb36e144962fcf79d01c9e7056dce93ee1567f90e9a483a8468`; harness SHA256 is `e9ada7ab8bf31f77f4915f1a8c95ce07f829d96edc7c71903b39524875df4fcf`. PM must retain and independently verify these exact bytes before worktree cleanup; namespace visibility is not assumed. The original Russian executable/model/configuration remain unchanged.
+
+From this worktree, PM verifies the private handoff without running a model:
+
+```sh
+(cd target/pm344-sherpa-small-en-assets && sha256sum --check SHA256SUMS)
+```
+
+Only after reviewing the source, manifests and argv, PM can authorize **one** actual-host invocation through the existing isolated runner at MemoryMax1280M/High1024M/Swap256M/CPU150%/Tasks256. The worker cannot access that runner. The exact inner command, with `NEW_PRIVATE_OUTPUT_DIRECTORY` as a new private-path placeholder, is:
+
+```sh
+python3 experiments/speech344/probe-sherpa-english.py \
+  --engine target/pm344-assets/sherpa-onnx-offline \
+  --assets target/pm344-sherpa-small-en-assets \
+  --output NEW_PRIVATE_OUTPUT_DIRECTORY
+```
+
+Run from the worktree root. No download/build/dependency install occurs in the harness. It verifies all model/token/license/provenance, engine and original fixture hashes, then refuses missing/wrong effective cgroup limits. A real one-second-silence decode and English-mode recognition must complete first within ten seconds including readback. Readiness, both full fixture decodes, English recognition and readback share one monotonic600s deadline. The source input remains capped at300s and uses no added source padding. These two short fixtures fit one25s chunk; this harness does not qualify long recordings.
+
+Engine arguments explicitly select CPU, four threads, transcribe, `en` and300 engine tail frames. Fixed English is only the diagnostic mode, not language detection or approved routing. Reference text never enters engine argv. Silence text remains diagnostic evidence and is not delivered. Every model result must be fresh strict-UTF8 JSON with a text field. The human gate compares the **entire** original reference after case/punctuation normalization, including final Manta, and retains word-error counts plus complete reference/observed token sequences. Private output retains the entire reference/text/word-error evidence and requires the unaltered five-green-cups phrase with no contradictory number. No reference is changed to obtain a pass.
+
+Every child is launched in its own process group. Timeout, error, SIGINT/SIGTERM and normal early parent exit kill the group and reap the direct child; the PM still independently checks unit/cgroup/process cleanup, OOM accounting and ordinary-service continuity. Failures retain private stdout/stderr and `observations.json`; stop without retry, fallback, another model or larger budget. Passing these clips/readiness proves neither installed English nor five-minute throughput, shared-media/live acceptance or broad English accuracy (§9, R19).
+
+Local checks used **no ASR**: asset and token identities pass; the observer rejects truncated/final-phrase loss, foreign-script additions, wrong/contradictory numbers, wrong color and damaged text before accepting intact references. Tiny owned Python subprocesses prove timeout and descendant cleanup after normal parent exit. The existing synthetic cgroup-guard check passes. Actual readiness, English transcripts, resources and PM host cleanup remain unrun/unknown.
