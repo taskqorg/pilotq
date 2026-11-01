@@ -575,6 +575,8 @@ fn admin(t: &Tool, a: &[&str]) -> Result<Value, String> {
             let tx=j.0.unchecked_transaction().map_err(|e|e.to_string())?;
             j.add_project(me, name, repo, &root.to_string_lossy(), at)?;
             onboarding::queue(&j,name)?;
+            // #266 / §5: same rule as chat registration; a root without a checkout never attaches to the local service.
+            if !root.join(".git").exists() {onboarding::mark_board_only(&j,name)?;}
             tx.commit().map_err(|e|e.to_string())?;
             let p = j.projects()?.into_iter().find(|p| p.0 == *name).ok_or("registration did not read back")?;
             let shared=Arc::new(Mutex::new(j));

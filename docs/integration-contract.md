@@ -351,7 +351,7 @@ board, and records who registered it. Chat registration is board-only by default
 it to the local service. Only when the caller's own text asks to clone or check out an explicitly linked
 existing repository does PilotQ clone into the empty local root before writing TaskQ configuration; it
 then registers the board and runs onboarding before returning its findings. Registration records a root
-without `.git` as board-only; other registered roots are checkout projects. It preserves the URL transport (HTTPS or SSH), disables interactive Git prompts and bounds
+without `.git` as board-only, through the CLI and chat alike; other registered roots are checkout projects. It preserves the URL transport (HTTPS or SSH), disables interactive Git prompts and bounds
 execution by the request deadline and grants. A matching existing checkout is reused; a mismatched origin,
 symlink or nonempty root without a checkout is refused without overwriting files. Clone failures report their
 operation, process outcome and exit code; raw Git diagnostics stay out of replies because they can include
