@@ -473,3 +473,91 @@ actual KNF features or official Torch arrays: reference cross-checks must not
 be reported as engine parity. No new model/runtime/tools are needed for the
 proposed reference-only preparation; actual engine parity remains a separate
 reviewed boundary. Installed Russian assets/settings remain unchanged.
+
+### Prepared NumPy reference-only PM handoff
+
+Note6565322396 authorizes preparation; **do not execute numerics before PM
+review**. `reference-giga-frontend.py` SHA256 is
+`4949dd17b8508be45d214e6b836cfc0a626544e58c899b78c57fe109700e265c`.
+`frontend-reference-handoff.json` pins script/source-manifest/cap-helper hashes;
+`frontend-reference-sources.json` pins eight exact upstream source URLs, lengths
+and full hashes. These texts were retained privately under
+`target/pm344-frontend-reference-sources-v1`,0700 directory/0600 files. They
+are hash-checked data, never imported/executed. No weights/model file is opened.
+
+Before dispatch, PM verifies each handoff `files` entry with standard hashlib
+against the reviewed commit. The exact inner argv from the worktree root,
+inside the existing PM isolation runner with original effective caps and one
+**hard600s including identity preflight/import/computation/readback**, is:
+
+```sh
+target/pm344-giga-static-tools-v2/venv/bin/python -I \
+  experiments/speech344/reference-giga-frontend.py \
+  --sources target/pm344-frontend-reference-sources-v1 \
+  --output target/pm344-frontend-reference-v1
+```
+
+Output must not exist. The effective1280M/1024M/256M/CPU150%/Tasks256 guard and
+all source identities are checked before NumPy2.4.2 import. Only the existing
+private interpreter/NumPy are used; four process-local math threads, no PATH or
+global changes, no dependencies/setup/build/network/subprocess/ONNX import.
+An internal600s signal alarm complements the earlier outer deadline without
+extending it. No child process groups exist; PM independently confirms unit,
+wrapper/descendant/cgroup cleanup and unchanged ordinary services.
+
+The script generates deterministic PCM16 zero/first-middle-last impulses,
+bounded ramp and1kHz tone at sample counts0/319/320/321/479/480/481/640/1600,
+plus one400000-sample tone. It records exact source-sample construction/hash,
+complete snipped320/160 framing, periodic Hann, unnormalized rFFT power,
+161x64 HTK-Hz triangles and log clamp[1e-9,1e9]. Shorter-than-window inputs
+produce zero complete reference frames and never enter a model. A scalar
+math.fsum direct DFT and scalar triangle sum independently cross-check the
+first frame of tiny cases. Explicit float32-stage versus float64 observations
+are **not** emulation of Torch/KNF backend arithmetic. A source-derived default
+KNF mel-space weight matrix is retained to expose the different convention.
+
+Finite arrays, exact frame/shape identities and source guards fail closed.
+Every numeric max-absolute/relative difference and coordinate is recorded,
+without invented PASS epsilon. `.npy` arrays, SHA256s, `reference.json`, elapsed
+time and peak self RSS remain private. An empty comparison has zero absolute
+difference by definition; it is not healthy ASR evidence. Incomplete failures
+remain in JSON/raw runner logs. AST/help/source hashes pass; numerical paths,
+scalar DFT, runtime caps/time/RSS and cleanup remain **not run** in the worker.
+
+#### Smallest real feature-parity accessor proposal (not built)
+
+Use one disposable C++ program linked only to pinned KNFv1.22.4, with no Sherpa
+recognizer, ONNX runtime or model. Reuse PM's retained matching static library,
+headers and ordinary compiler if available. The worker found `/usr/bin/c++`,
+no cmake on PATH and no KNF tree in the checked project's target depth4; this
+is not evidence about PM's private retained build tree. No library/compiler
+receipt, exact link argv or ready accessor binary is claimed. If matching
+headers/library are absent, report that gap and obtain review of the pinned
+source/build dependency closure before any acquisition/build; do not assume
+Whisper build artifacts include KNF.
+
+The concrete feature-only interface needs no new framework:
+
+1. Read only the generated PCM16LE fixture and divide by32768 into float samples.
+   Construct `knf::FbankOptions` with16kHz, frame_length_ms20, frame_shift_ms10,
+   snip_edges=true, window_type="hann", dither0, remove_dc_offset=false,
+   preemph_coeff0, round_to_power_of_two=false;64bins, low0/high8000,
+   is_librosa=true, use_slaney_mel_scale=false, norm="", floor_to_int_bin=false;
+   use_energy=false, use_power=true, use_log_fbank=false.
+2. Use `knf::NumFrames(...,flush=true)`, `knf::FeatureWindowFunction`,
+   `knf::ExtractWindow` and `knf::FbankComputer::Compute` for each exact frame.
+   Dump raw64-bin mel energies, periodic window and mel matrix using the
+   existing `GetWindow`/`MelBanks::GetMatrix` APIs. Shape/count/finite validation
+   and explicit serialization are the whole accessor; no graph/audio decoder,
+   daemon, automatic routing, model fallback or native-agent changes.
+3. Compare actual dumped arrays with the SAME retained PCM/reference stage
+   arrays, then apply the specified clamp/log for both. This measures the real
+   KNF feature boundary; it still does not prove official Torch backend parity,
+   checkpoint equivalence or speech quality. Document precision/accumulation
+   order and actual differences before proposing an acceptance error bound.
+   No tolerance is selected merely to turn mismatches green.
+
+Any later build and paired feature run need their own reviewed source/link
+identities, license/dependency closure, original effective caps/shared600s,
+process-group cleanup and retained observations. This proposal authorizes
+neither a build nor a production frontend patch (§9/R19).

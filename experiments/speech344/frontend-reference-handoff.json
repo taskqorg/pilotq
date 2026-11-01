@@ -1,0 +1,8 @@
+{
+  "scope": "preparation only; PM review before numerical execution; no model access",
+  "files": {
+    "experiments/speech344/reference-giga-frontend.py": "4949dd17b8508be45d214e6b836cfc0a626544e58c899b78c57fe109700e265c",
+    "experiments/speech344/frontend-reference-sources.json": "23b3bc05342f199d3c4a680541fab6360cd958bfad1787daf4f7862e97f666fe",
+    "scripts/probe-speech-344.py": "dee1fcd1f3873b64971a62f9a71c939c900fc2359c3e8458a33b5f4c773fe88e"
+  }
+}

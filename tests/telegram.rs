@@ -1969,7 +1969,9 @@ fn u11_l05_unlimited_calls_and_inactivity_keep_evidence() {
     drop(c);
     limits(&d, &d.join("fake-codex"), json!({"first_event": 10, "silent": 2, "deadline": 4}));
     let c = spawn(&d, None);
-    let mut u = text(2, OWNER, None, OWNER, &format!("multi {}", json!({"calls": [["project_list", {}]], "sleep": 8})));
+    // #344: exercise Russian uncertainty through the person's explicit address,
+    // not a Russian client label overriding the preceding English conversation.
+    let mut u = text(2, OWNER, None, OWNER, &format!("Project: pilotq. Ответь по-русски.\nmulti {}", json!({"calls": [["project_list", {}]], "sleep": 8})));
     u["message"]["from"]["language_code"] = json!("ru");
     push(&st, u);
     // §4: the uncertain state commits with its outbox row; Telegram delivery follows asynchronously, so wait for the send itself.
@@ -2965,7 +2967,9 @@ fn u95_pinned_instructions_reach_codex() {
         "For yes/да after an either-or question",
         "name the other option in one line",
         "For an ambiguous voice transcript",
-        "Recognize Russian, English and Hebrew as supported speech",
+        "Preserve the actual transcript language",
+        "every table heading and descriptive cell",
+        "admitted actor/chat reply language is en",
         "note the reading taken",
         "Never infer mutation authority",
     ] {
