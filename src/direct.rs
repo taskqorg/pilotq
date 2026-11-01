@@ -64,6 +64,22 @@ fn named(text: &str, name: &str) -> bool {
     text.to_lowercase().split(|c: char| !(c.is_alphanumeric() || "-_.".contains(c))).any(|w| w == name.to_lowercase())
 }
 
+/// Drops each word written as an issue reference, `NAME#N` or `NAME #N`.
+fn without_issue_refs(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let word = |c: char| c.is_alphanumeric() || "-_.".contains(c);
+    let (mut out, mut i) = (String::new(), 0);
+    while i < chars.len() {
+        if !word(chars[i]) { out.push(chars[i]); i += 1; continue; }
+        let start = i;
+        while i < chars.len() && word(chars[i]) { i += 1; }
+        let hash = if chars.get(i) == Some(&' ') { i + 1 } else { i };
+        let cited = chars.get(hash) == Some(&'#') && chars.get(hash + 1).is_some_and(char::is_ascii_digit);
+        if cited { out.push(' '); } else { out.extend(&chars[start..i]); }
+    }
+    out
+}
+
 /// Only prose outside Markdown quotes, code and explicit quotation marks may select a project.
 pub(crate) fn own_text(text: &str) -> String {
     let mut own = String::new();
@@ -151,6 +167,9 @@ pub(crate) fn context_project(j: &Journal, r: &Run, user: i64) -> Result<Option<
         match matches.as_slice() {
             [] => Ok(None),
             [one] => Ok(Some(one.clone())),
+            // #257: a cited issue such as `pilotq#236` does not compete with a project the text names plainly.
+            // ponytail: the plain name wins even when the cited issue was the intended target; both cited stays a question.
+            many if let [one] = many.iter().filter(|p| texts.iter().any(|t| named_own(&without_issue_refs(t),p))).collect::<Vec<_>>().as_slice() => Ok(Some((*one).clone())),
             many => {
                 j.project_question(r,many)?;
                 Err(format!("Which project: {}? Nothing was done.", many.join(", ")))
@@ -419,6 +438,14 @@ mod context_tests {
         assert!(!named_own("> cs\n`cs`\n\"cs\"","cyprusbz"));
         assert!(!named_own("discs","cyprusbz"));
         assert!(alias_instructions().contains("cs = cyprusbz"));
+        // #257 A2: citing another project's issue does not make a plan for the named project ambiguous.
+        j.add_project(7,"pilotq","taskqorg/pilotq","/invented/pilotq",0).unwrap();
+        let r=j.ask(7,"PM check (pilotq#236 A4): plan one research task for cyprusbz",2).unwrap();
+        assert_eq!(context_project(&j,&r,7).unwrap().as_deref(),Some("cyprusbz"));
+        j.finish(&r,None,None,&crate::manager::Outcome::Answered("ok".into()),2).unwrap();
+        let r=j.ask(7,"compare pilotq#236 with cs #541",2).unwrap();
+        assert!(context_project(&j,&r,7).unwrap_err().contains("Which project"),"only cited issues stay ambiguous");
+        j.finish(&r,None,None,&crate::manager::Outcome::Answered("ok".into()),2).unwrap();
         j.revoke(7,7,&["projects".into()],3).unwrap();
         let r=j.ask(7,"is cs #541 on DEV?",4).unwrap();
         assert!(target_context(&j,&r,7,&json!({"issue":"541","project":"cyprusbz"})).is_err());

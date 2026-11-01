@@ -121,7 +121,8 @@ pub fn bounded(name: &str, bytes: &[u8], end: Instant, active: impl Fn() -> bool
     std::fs::remove_file(&path).map_err(|_| "document storage unavailable")?;
     input.write_all(bytes).and_then(|_| input.rewind()).map_err(|_| "document storage unavailable")?;
     let exe = std::env::current_exe().map_err(|_| "document parser unavailable")?;
-    let mut command = crate::commands::command(exe, ".", &["--document-parser", name]);
+    // #257: "/" is searchable from any service cwd, such as /root under sudo.
+    let mut command = crate::commands::command(exe, "/", &["--document-parser", name]);
     command.stdin(input);
     supervised(command, end, active)
 }
