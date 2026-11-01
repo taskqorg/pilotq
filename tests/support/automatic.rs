@@ -171,7 +171,7 @@ fn a40_admission_startup_onboarding() {
     let db = rusqlite::Connection::open(d.join("journal.sqlite")).unwrap();
     db.execute("DELETE FROM meta WHERE key='onboarding:pilotq'", []).unwrap();
     drop(db);
-    let svc = Svc(service(&d, None).spawn().unwrap());
+    let svc = spawn(&d, None);
     wait("startup onboarding", 15, || try_query(&d, "SELECT count(*) FROM requests WHERE kind='onboarding' AND state='answered'") == Some(1));
     push(&st, text(1, CHAT, TOPIC, 9, "Do not admit this synthetic stranger."));
     wait("ignored stranger", 15, || try_query(&d, "SELECT count(*) FROM updates WHERE update_id=1 AND disposition='ignored' AND request_id IS NULL") == Some(1));
@@ -181,8 +181,9 @@ fn a40_admission_startup_onboarding() {
         let call: Value = serde_json::from_str(line).unwrap();
         assert_ne!(call["args"][0], "add", "stranger must not call TaskQ add");
     }
-    drop(svc);
-    fs::remove_dir_all(d).unwrap();
+    let removed = d.clone();
+    stop(svc, d);
+    assert!(!removed.exists(), "A40 fixture survived teardown");
 }
 
 // §5: prepare only the synthetic install through the protected owner's supported control.
@@ -216,7 +217,7 @@ fn a40_readiness_create_start() {
     let db = rusqlite::Connection::open(d.join("journal.sqlite")).unwrap();
     db.execute("DELETE FROM meta WHERE key='onboarding:pilotq'", []).unwrap();
     drop(db);
-    let svc = Svc(service(&d, None).spawn().unwrap());
+    let svc = spawn(&d, None);
     wait("startup onboarding", 15, || try_query(&d, "SELECT count(*) FROM requests WHERE kind='onboarding' AND state='answered'") == Some(1));
     push(&st, text(1, CHAT, TOPIC, 9, "Do not admit this synthetic stranger."));
     wait("ignored stranger", 15, || try_query(&d, "SELECT count(*) FROM updates WHERE update_id=1 AND disposition='ignored'") == Some(1));
@@ -233,8 +234,9 @@ fn a40_readiness_create_start() {
     assert_eq!(query(&d, "SELECT count(*) FROM tickets WHERE started=1 AND task IS NOT NULL"), 1);
     assert!(tq_calls(&d).iter().any(|a| a[0] == "add"));
     assert!(tq_calls(&d).iter().any(|a| a[0] == "start"));
-    drop(svc);
-    fs::remove_dir_all(d).unwrap();
+    let removed = d.clone();
+    stop(svc, d);
+    assert!(!removed.exists(), "A40 fixture survived teardown");
 }
 
 impl Run {
@@ -881,15 +883,23 @@ fn a40_native_manager_scope() {
     fs::write(d.join("record-taskq"), RECORD_TASKQ).unwrap();
     fs::set_permissions(d.join("record-taskq"), fs::Permissions::from_mode(0o700)).unwrap();
     std::os::unix::fs::symlink(d.join("record-taskq"), d.join("taskq")).unwrap();
-    let fake = script(&d, "probe-codex", &FAKE.replace("d=$(dirname \"$0\")", "d=$(dirname \"$0\")\ntaskq --a40-path-probe > \"$d/native-scope.json\""));
+    let fake = script(&d, "probe-codex", &FAKE.replace("d=$(dirname \"$0\")", "d=$(dirname \"$0\")\necho $$ > \"$d/native-runtime.pid\"\ntaskq --a40-path-probe > \"$d/native-scope.json\""));
     use_codex(&d, &fake);
-    let c = Svc(service(&d, None).spawn().unwrap());
+    let end = Instant::now() + Duration::from_secs(10);
+    let c = spawn(&d, None);
     push(&st, text(1, OWNER, None, OWNER, "hello"));
     wait("native path probe", 10, || d.join("native-scope.json").exists() && fs::metadata(d.join("native-scope.json")).unwrap().len() > 0);
     let observed: Value = serde_json::from_slice(&fs::read(d.join("native-scope.json")).unwrap()).unwrap();
     assert_eq!(observed, scope);
-    drop(c);
-    fs::remove_dir_all(d).unwrap();
+    // The probe is an intermediate runtime write, not a completed turn. The manager
+    // has its own process group: killing only the service can leave it writing here.
+    wait("native probe request delivered", end.saturating_duration_since(Instant::now()).as_secs(), || request_delivered(&d, 1));
+    let pid = fs::read_to_string(d.join("native-runtime.pid")).unwrap();
+    wait("native runtime reaped", end.saturating_duration_since(Instant::now()).as_secs(), || !Command::new("kill")
+        .args(["-0", "--", pid.trim()]).stderr(Stdio::null()).status().unwrap().success());
+    let removed = d.clone();
+    stop(c, d);
+    assert!(!removed.exists(), "native fixture survived teardown");
 }
 
 #[test]
