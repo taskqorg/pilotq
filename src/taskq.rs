@@ -1042,6 +1042,14 @@ fn answer(tq: &Taskq, j: &Mutex<Journal>, a: &Answer, resumed: bool) {
             eprintln!("answer {}: {e}", a.request);
         }
     };
+    // #338: a queued duplicate may have been captured before the original write completed.
+    // Exact local provenance/current grants are checked without a board process or continuation.
+    let saved=j.lock().unwrap().saved_answer(a.request,at);
+    match saved {
+        Ok(true)=>return,
+        Ok(false)=>{},
+        Err(e)=>return end("failed",e,Some("saved receipt unavailable")),
+    }
     let n = a.task;
     let registered = tq.registered(&j.lock().unwrap(), &a.project);
     let (bound, board) = match registered {

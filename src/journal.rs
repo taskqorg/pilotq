@@ -560,6 +560,72 @@ pub struct PlanRun {
     pub tickets: Vec<Ticket>,
 }
 
+/// #338 / §§4,5: local saved receipts never dispatch TaskQ. Exact source and registration
+/// provenance plus the presser's current grants are required before bypassing the worker.
+fn saved_answers(c: &Connection, at: i64) -> Result<Vec<i64>,String> {
+    let e=|e:rusqlite::Error|e.to_string();
+    let mut q=c.prepare("SELECT r.id,r.sender,o.project,a.text,o.task,o.revision FROM requests r
+        JOIN outbox o ON o.kind='question' AND o.state='delivered' AND o.sent_message=r.reply_to AND o.chat=r.chat AND o.topic IS r.topic
+        JOIN requests source ON source.id=o.request_id AND source.chat=o.chat AND source.topic IS o.topic AND source.front='telegram'
+        JOIN outbox a ON a.kind='question_answered' AND a.request_id=o.request_id AND a.project=o.project AND a.task=o.task AND a.revision=o.revision AND a.chat=o.chat AND a.topic IS o.topic
+        JOIN tasks t ON t.project=o.project AND t.number=o.task AND t.request_id=o.request_id AND t.chat=o.chat AND t.topic IS o.topic
+        JOIN projects p ON p.name=t.project AND p.repo=t.board AND p.root=t.root
+        WHERE t.board<>'' AND t.root<>'' AND r.kind='answer' AND r.state='queued' AND r.front='telegram'
+        AND EXISTS(SELECT 1 FROM meta WHERE key='callback:' || r.id)
+        AND NOT EXISTS(SELECT 1 FROM task_effects WHERE request_id=r.id)
+        AND NOT EXISTS(SELECT 1 FROM outbox n WHERE n.kind='question' AND n.project=o.project AND n.task=o.task AND n.revision>o.revision)
+        ORDER BY r.id LIMIT 64").map_err(e)?;
+    let rows:Vec<(i64,i64,String,String,i64,i64)>=q.query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).and_then(Iterator::collect).map_err(e)?;
+    let mut completed=vec![];
+    for (id,sender,project,receipt,task,revision) in rows {
+        if !has(c,sender,"chat")? || !decides(c,sender,&project)? {continue;}
+        c.execute("UPDATE requests SET state='answered',reply=?2,project=?3 WHERE id=?1",params![id,receipt,project]).map_err(e)?;
+        c.execute("INSERT INTO audit_events(request_id,at,kind,target,result) VALUES (?1,?2,'answer_receipt',?3,?4)",params![id,at,format!("{project}#{task} revision {revision}"),receipt]).map_err(e)?;
+        let (chat,topic,callback):(i64,Option<i64>,String)=c.query_row("SELECT r.chat,r.topic,CAST(m.value AS TEXT) FROM requests r JOIN meta m ON m.key='callback:' || r.id WHERE r.id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(e)?;
+        outbox(c,id,chat,topic,None,None,&receipt,at)?;
+        c.execute("UPDATE outbox SET kind=?2,project=?3 WHERE id=?1",params![c.last_insert_rowid(),format!("toast:{callback}"),project]).map_err(e)?;
+        answer_confirmations(c,at,Some(id))?;
+        completed.push(id);
+    }
+    Ok(completed)
+}
+
+/// Terminal callback receipts survive popup expiry and restart. The queue message is edited,
+/// never left claiming pending work; an unsent notice is superseded by the normal due scan.
+fn answer_confirmations(c: &Connection, at: i64, request: Option<i64>) -> Result<(),String> {
+    let e=|e:rusqlite::Error|e.to_string();
+    // Revalidate delayed output, including registration changes and project-right revocation.
+    let mut q=c.prepare("SELECT a.id,r.sender,a.project,EXISTS(SELECT 1 FROM tasks t JOIN projects p
+        ON p.name=t.project AND p.repo=t.board AND p.root=t.root
+        JOIN outbox o ON o.request_id=t.request_id AND o.project=t.project AND o.task=t.number AND o.kind='question'
+        AND o.chat=t.chat AND o.topic IS t.topic
+        JOIN requests source ON source.id=o.request_id AND source.chat=o.chat AND source.topic IS o.topic AND source.front='telegram'
+        WHERE t.project=a.project AND o.chat=a.chat AND o.topic IS a.topic AND o.sent_message=r.reply_to)
+        FROM outbox a JOIN requests r ON r.id=a.request_id WHERE (a.kind='answer_confirmation' OR (a.kind LIKE 'toast:%' AND r.kind='answer' AND a.project IS NOT NULL)) AND a.state='pending'").map_err(e)?;
+    let rows:Vec<(i64,i64,String,bool)>=q.query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).and_then(Iterator::collect).map_err(e)?;
+    for (id,sender,project,provenance) in rows {
+        if !provenance || !has(c,sender,"chat")? || !decides(c,sender,&project)? {
+            c.execute("UPDATE outbox SET state='blocked',error='answer confirmation provenance or access unavailable' WHERE id=?1",[id]).map_err(e)?;
+        }
+    }
+    c.execute("INSERT INTO outbox(request_id,chat,topic,reply_to,text,next_at,kind,project)
+        SELECT r.id,r.chat,r.topic,CASE WHEN r.chat<>r.sender THEN r.message END,r.reply,?1,'answer_confirmation',o.project
+        FROM requests r JOIN outbox o ON o.kind='question' AND o.chat=r.chat AND o.topic IS r.topic AND o.sent_message=r.reply_to
+        JOIN requests source ON source.id=o.request_id AND source.chat=o.chat AND source.topic IS o.topic AND source.front='telegram'
+        JOIN tasks t ON t.request_id=o.request_id AND t.project=o.project AND t.number=o.task AND t.chat=o.chat AND t.topic IS o.topic
+        JOIN projects p ON p.name=t.project AND p.repo=t.board AND p.root=t.root
+        WHERE r.kind='answer' AND r.state IN ('answered','failed','uncertain') AND r.reply IS NOT NULL
+        AND EXISTS(SELECT 1 FROM meta WHERE key='callback:' || r.id)
+        AND (r.id=?2 OR EXISTS(SELECT 1 FROM outbox old WHERE old.request_id=r.id AND
+            ((old.kind='queued' AND old.state='delivered') OR (old.kind LIKE 'toast:%' AND old.state IN ('failed','exhausted')))))
+        AND EXISTS(SELECT 1 FROM grants g WHERE g.user=r.sender AND g.name='chat')
+        AND (EXISTS(SELECT 1 FROM grants g WHERE g.user=r.sender AND g.name IN ('admin','owner:' || o.project))
+            OR (EXISTS(SELECT 1 FROM grants g WHERE g.user=r.sender AND g.name='taskq')
+                AND EXISTS(SELECT 1 FROM grants g WHERE g.user=r.sender AND g.name IN ('projects','project:' || o.project))))
+        AND NOT EXISTS(SELECT 1 FROM outbox a WHERE a.request_id=r.id AND a.kind='answer_confirmation')
+        ORDER BY r.id LIMIT 64",params![at,request]).map(drop).map_err(e)
+}
+
 /// Revalidates `chat` at dispatch and before delivery (§ 8, F10, F17): queued Telegram work of a person who lost it is cancelled
 /// without a reply, and their pending deliveries are blocked. Completed records stay. Returns the cancelled requests.
 fn revalidate(c: &Connection) -> Result<Vec<i64>, String> {
@@ -1555,6 +1621,8 @@ impl Journal {
             let disposition = if request.is_some() { "admitted" } else if input.is_some() { "ignored" } else { "unsupported" };
             tx.execute("INSERT INTO updates(update_id, disposition, request_id, at) VALUES (?1,?2,?3,?4)", params![update, disposition, request, at]).map_err(|e| e.to_string())?;
         }
+        ended.extend(saved_answers(&tx,at)?);
+        answer_confirmations(&tx,at,None)?;
         if let Some(last) = batch.iter().map(|(u, _)| *u).max() {
             tx.execute("INSERT INTO meta(key, value) VALUES ('cursor', ?1) ON CONFLICT(key) DO UPDATE SET value=max(value, excluded.value)", [last + 1])
                 .map_err(|e| e.to_string())?;
@@ -1637,6 +1705,14 @@ impl Journal {
     /// The next delivery due at `now`, else the earliest time one becomes due. Only the oldest pending row of a route
     /// (chat and topic) is eligible, so a retrying head keeps later replies in that route behind it.
     pub fn due(&self, now: i64) -> Result<(Option<Delivery>, Option<i64>), String> {
+        let completed={
+            let tx=self.0.unchecked_transaction().map_err(|e|e.to_string())?;
+            let completed=saved_answers(&tx,now)?;
+            answer_confirmations(&tx,now,None)?;
+            tx.commit().map_err(|e|e.to_string())?;
+            completed
+        };
+        for id in completed {self.trace(id,now);}
         self.retire_question_controls(now)?;
         crate::result_images::prune(self,now)?;
         self.turn_progress(now)?;
@@ -1664,6 +1740,7 @@ impl Journal {
                         WHEN kind IN ('turn_progress','turn_progress_closed') THEN (SELECT s.sent_message FROM outbox s WHERE s.request_id=o.request_id AND s.kind='turn_progress' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
                         WHEN kind='release_result' THEN (SELECT s.sent_message FROM outbox s WHERE s.request_id=o.revision AND s.kind='release_preview' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
                         WHEN kind='onboarding' THEN (SELECT s.sent_message FROM outbox s WHERE s.request_id=o.request_id AND s.kind='onboarding' AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
+                        WHEN kind='answer_confirmation' THEN (SELECT s.sent_message FROM outbox s WHERE s.request_id=o.request_id AND s.kind='queued' AND s.state='delivered' AND s.chat=o.chat AND s.topic IS o.topic ORDER BY s.id DESC LIMIT 1)
                         WHEN kind='choice_answered' THEN o.reply_to
                         WHEN kind='question_superseded' AND o.reply_to IS NOT NULL THEN o.reply_to
                         WHEN kind IN ('question_answered','question_superseded') THEN (SELECT s.sent_message FROM outbox s WHERE s.request_id=o.request_id AND s.task=o.task AND s.project=o.project AND s.chat=o.chat AND s.topic IS o.topic
@@ -3362,6 +3439,17 @@ impl Journal {
         Ok(true)
     }
 
+    /// #338: called again by a worker holding an earlier answer-list snapshot.
+    pub fn saved_answer(&self, request: i64, at: i64) -> Result<bool,String> {
+        let tx=self.0.unchecked_transaction().map_err(|e|e.to_string())?;
+        let completed=saved_answers(&tx,at)?;
+        answer_confirmations(&tx,at,None)?;
+        let answered=tx.query_row("SELECT state='answered' FROM requests WHERE id=?1",[request],|r|r.get(0)).map_err(|e|e.to_string())?;
+        tx.commit().map_err(|e|e.to_string())?;
+        for id in completed {self.trace(id,at);}
+        Ok(answered)
+    }
+
     /// Answers waiting to be checked and written, oldest first; `in flight` ones were taken before a restart and resume their
     /// write with the same op ID.
     pub fn answers(&self) -> Result<Vec<(Answer, bool)>, String> {
@@ -3420,6 +3508,7 @@ impl Journal {
         } else {
             final_outbox(&tx, a.request, chat, topic, (chat != a.sender).then_some(message), reply, at)?;
         }
+        answer_confirmations(&tx,at,Some(a.request))?;
         tx.commit().map_err(e)?;
         self.trace(a.request, at);
         Ok(())
@@ -4413,6 +4502,78 @@ mod tests {
         assert_eq!(text,"Ответ не сохранён; проверьте актуальный вопрос и права.");
         assert!(j.0.query_row("SELECT result FROM audit_events WHERE kind='task'",[],|r|r.get::<_,String>(0)).unwrap().contains("invented CLI error"));
         drop(j);std::fs::remove_dir_all(p).unwrap();
+    }
+
+    // #338 / R5,R11, §§4,5: an expired toast must not strand a queued placeholder;
+    // saved receipts must preserve actor and exact route/provenance without another effect.
+    #[test]
+    fn saved_answer_338_repeat_delivery() {
+        for mode in ["completed","pending","recovery","error","foreign","revision","source","route","registration","revoked","delayed-revoked","delayed-registration","historical"] {
+            let (mut j,p)=journal(&format!("338-{mode}"));
+            j.admit(&[(1,msg(7,7,1))],0).unwrap();
+            j.0.execute_batch(include_str!("fixtures/question-334-schema13.sql")).unwrap();
+            // Invented current question; no real board, user, image or callback identifiers.
+            j.0.execute_batch("UPDATE tasks SET state='ask',revision=20,closed=0; DELETE FROM outbox WHERE kind='result_image'").unwrap();
+            if mode=="pending" {j.0.execute("DELETE FROM outbox WHERE kind='question_answered'",[]).unwrap();}
+            if mode=="foreign" {j.0.execute("UPDATE outbox SET topic=99 WHERE kind='question_answered'",[]).unwrap();}
+            if mode=="revision" {j.0.execute("UPDATE outbox SET revision=21 WHERE kind='question_answered'",[]).unwrap();}
+            if mode=="source" {j.admit(&[(9,msg(7,7,9))],1).unwrap();j.0.execute("UPDATE outbox SET request_id=(SELECT max(id) FROM requests) WHERE kind='question_answered'",[]).unwrap();}
+            if mode=="registration" {j.0.execute("UPDATE projects SET repo='invented/changed'",[]).unwrap();}
+            if mode=="revoked" {j.0.execute("DELETE FROM grants WHERE user=7 AND name<>'chat'",[]).unwrap();}
+            let mut i=msg(7,7,120).unwrap();i.kind="button";i.reply_to=Some(120);i.text=Some("1".into());i.callback=Some("invented-repeat".into());
+            if mode=="route" {i.topic=Some(88);}
+            j.admit(&[(2,Some(i))],10).unwrap();
+            let request:i64=j.0.query_row("SELECT max(id) FROM requests",[],|r|r.get(0)).unwrap();
+            if mode=="delayed-revoked" {j.0.execute("DELETE FROM grants WHERE user=7 AND name<>'chat'",[]).unwrap();}
+            if mode=="delayed-registration" {j.0.execute("UPDATE projects SET repo='invented/changed'",[]).unwrap();}
+            if mode=="historical" {
+                j.0.execute("DELETE FROM outbox WHERE request_id=?1",[request]).unwrap();
+                j.0.execute("INSERT INTO outbox(request_id,chat,text,state,next_at,kind) VALUES (?1,7,'saved','delivered',11,'toast:invented-delivered')",[request]).unwrap();
+            }
+            if matches!(mode,"delayed-revoked"|"delayed-registration"|"historical") {
+                while let Some(d)=j.due(43).unwrap().0 {
+                    assert_ne!(d.kind,"answer_confirmation");assert!(!d.kind.starts_with("toast:"),"revoked saved toast must not leak");
+                    j.record(d.id,&Sent::Ok(500+d.id),43).unwrap();
+                }
+            } else if matches!(mode,"foreign"|"revision"|"source"|"route"|"registration"|"revoked") {
+                assert_ne!(j.request(request).unwrap().0,"answered", "{mode} bypassed guards");
+            } else {
+                if mode=="pending" {
+                    assert_eq!(j.request(request).unwrap().0,"queued","no invented success during the write");
+                    // Timer posts the queue while the original write is still pending.
+                    while let Some(d)=j.due(41).unwrap().0 {j.record(d.id,&Sent::Ok(500+d.id),41).unwrap();}
+                    j.answer_question("pilotq",19,20,"Answered by Invented Actor: option 1",42).unwrap();
+                } else if matches!(mode,"recovery"|"error") {
+                    // Pre-upgrade terminal state with an expired toast and a visible queue notice.
+                    j.0.execute("DELETE FROM outbox WHERE request_id=?1",[request]).unwrap();
+                    j.0.execute("INSERT INTO outbox(request_id,chat,text,state,next_at,sent_message,kind) VALUES (?1,7,'Queued behind 0.','delivered',40,555,'queued')",[request]).unwrap();
+                    j.0.execute("INSERT INTO outbox(request_id,chat,text,state,next_at,kind) VALUES (?1,7,'saved','failed',40,'toast:invented-expired')",[request]).unwrap();
+                    if mode=="error" {j.0.execute("UPDATE requests SET state='failed',reply='Answer was not saved; check the current question and your access.' WHERE id=?1",[request]).unwrap();}
+                    drop(j);j=Journal::open(&p.join("journal.sqlite")).unwrap();j.reconcile(42).unwrap();
+                } else {
+                    assert_eq!(j.request(request).unwrap().0,"answered","saved receipt must bypass worker at admission");
+                }
+                let mut confirmation=false;
+                while let Some(d)=j.due(43).unwrap().0 {
+                    if d.kind=="answer_confirmation" {
+                        confirmation=true;
+                        assert_eq!((d.chat,d.topic),(7,None));assert!(d.buttons.is_empty());
+                        if mode=="error" {assert!(d.text.starts_with("Answer was not saved"));} else {assert_eq!(d.text,"Answered by Invented Actor: option 1");}
+                        if mode=="pending" {assert!(d.edit.is_some());}
+                        if matches!(mode,"recovery"|"error") {assert_eq!(d.edit,Some(555));}
+                        // Transient delivery failure survives restart without replaying any work.
+                        j.record(d.id,&Sent::Retry{after:1,ambiguous:false,error:"invented outage".into()},43).unwrap();
+                        drop(j);j=Journal::open(&p.join("journal.sqlite")).unwrap();
+                        let retry=j.due(45).unwrap().0.unwrap();assert_eq!(retry.id,d.id);assert_eq!(retry.edit,d.edit);
+                        j.record(retry.id,&Sent::Ok(retry.edit.unwrap_or(777)),45).unwrap();
+                    } else {j.record(d.id,&Sent::Ok(500+d.id),43).unwrap();}
+                }
+                assert!(confirmation,"{mode}: durable answer missing");
+                assert!(j.answers().unwrap().is_empty());
+            }
+            assert_eq!(count(&j,"SELECT count(*) FROM task_effects"),0,"no repeated dispatch");
+            drop(j);std::fs::remove_dir_all(p).unwrap();
+        }
     }
 
     // #334 / §§2,4,9: schema-13 receipts from before retirement existed must repair

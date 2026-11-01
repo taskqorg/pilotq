@@ -21,7 +21,8 @@ A failed request produces one plain localized failure line, with no commands, pa
 | Worker question | Complete TaskQ answer card, no footer | Number and label, recommendation star | Answer only current question under current grants | Edit question with accepted option/text and actor; remove buttons; status card says waiting for answer |
 | Done | One factual effect line followed by trusted TaskQ closing result and limitations; explicitly unconfirmed when unavailable | None | None | Edit status card; preserve unanswered question and terminal evidence |
 | Cancelled plan | Original summary plus “Plan cancelled.” | None | None | Same message, no new acknowledgement |
-| Stale/foreign/reset/repeated callback | Short popup toast | None | No effect | No chat message |
+| Repeated answered current-question callback | Exact saved answer; durable confirmation in the original route | None | No TaskQ write or continuation | Replace a delivered queue notice with the terminal answer; popup expiry does not lose confirmation |
+| Stale/foreign/reset/other repeated callback | Short popup toast | None | No effect | No chat message |
 | Long launch | Original plan plus one phase and elapsed-time line | None | None | Coalesced, rate-limited edit of that source message; completion replaces the line |
 | Give-up | Original plan plus one plain problem line | Retry, Cancel | Retry resumes the same authorized operations; Cancel stops only remaining submission | Same message; remove buttons; old controls get a toast |
 | Deadline | One plain limit line, readable completed read findings and an offer to plan the remainder | None | None | Preserve confirmed observations without asserting uncertain effects |

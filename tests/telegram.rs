@@ -42,6 +42,7 @@ struct Fake {
     api: Vec<(String, Value, Instant)>,
     reaction_fail: bool,
     draft_fail: bool,
+    callback_expired: bool,
     rich_reject: bool,
     image_bad: bool,
     image_large: bool,
@@ -160,6 +161,9 @@ fn handle(stream: std::net::TcpStream, st: &State) {
         if !exists { return respond(&mut out,400,r#"{"ok":false,"error_code":400,"description":"Bad Request: message to delete not found"}"#); }
         f.deleted.push(target);
         return respond(&mut out,200,r#"{"ok":true,"result":true}"#);
+    }
+    if method=="answercallbackquery" && f.callback_expired {
+        return respond(&mut out,400,r#"{"ok":false,"error_code":400,"description":"Bad Request: query is too old and response timeout expired or query ID is invalid"}"#);
     }
     if method == "answercallbackquery" || method == "editmessagereplymarkup" {
         return respond(&mut out,200,r#"{"ok":true,"result":true}"#);
@@ -1030,6 +1034,10 @@ with open(os.path.join(d, "taskq.log"), "a") as f:
     f.write(json.dumps({"args": a, "root": os.environ.get("TASKQ_ROOT"), "attempt": os.environ.get("TASKQ_ATTEMPT")}) + "\n")
 if a[0] in ("add", "start") and os.path.exists(os.path.join(d, "slow-writes")):
     time.sleep(float(open(os.path.join(d, "slow-writes")).read()))
+if a[0] == "answer":
+    deadline = time.monotonic() + 10
+    while os.path.exists(os.path.join(d, "hold-answer")) and time.monotonic() < deadline:
+        time.sleep(0.01)
 lock = open(os.path.join(d, "taskq.lock"), "w"); fcntl.flock(lock, fcntl.LOCK_EX)
 path = os.path.join(d, "taskq-state.json")
 st = json.load(open(path)) if os.path.exists(path) else {"tasks": {}, "ops": {}, "next": 19, "rev": 100, "creates": 0}
@@ -1585,14 +1593,24 @@ fn u82_ask_buttons_and_labeled_links() {
     let q = sent(&st).into_iter().find(|s| s["text"].as_str().unwrap().contains("\n⚑")).unwrap();
     assert_eq!(q["rich_message"]["markdown"].as_str().unwrap().replace("  \n", "\n"), format!("? [pilotq#19 — Docs]({issue})\n✓ drafted\n⚑ pick a wording, see [the spec](https://github.com/taskqorg/pilotq/blob/main/pilotq.md)\n1. short ★\n\\+ quick; - less detail\n2. long\n\\+ detail; - slower"));
     assert_eq!(q["reply_markup"]["inline_keyboard"], json!([[{"text": "1. short ★", "callback_data": "answer:1"}], [{"text": "2. long", "callback_data": "answer:2"}]]));
+    fs::write(d.join("hold-answer"),"").unwrap();
     push(&st, press(3, -100, topic, OWNER, q["id"].as_i64().unwrap(), "answer:2"));
+    wait("original answer in flight",10,||tq_calls(&d).iter().any(|a|a[0]=="answer"));
+    push(&st,press(4,-100,topic,OWNER,q["id"].as_i64().unwrap(),"answer:1"));
+    wait("rapid repeat queued",10,||query(&d,"SELECT count(*) FROM requests WHERE update_id=4 AND kind='answer' AND state='queued'")==1);
+    fs::remove_file(d.join("hold-answer")).unwrap();
     wait("press answers", 15, || sent_has(&st, "Answered by") && sent_has(&st, "2. long") && sent_has(&st,"Worker is working"));
     let answers: Vec<_> = tq_calls(&d).into_iter().filter(|c| c[0] == "answer").collect();
     assert_eq!((answers.len(), answers[0][1].as_str()), (1, "19.2"), "{answers:?}");
-    push(&st, press(4, -100, topic, OWNER, q["id"].as_i64().unwrap(), "answer:1"));
-    wait("stale press shows saved answer", 15, || st.lock().unwrap().api.iter().any(|(method,b,_)|method=="answercallbackquery" && b["text"].as_str().is_some_and(|s|s.contains("2. long"))));
+    st.lock().unwrap().callback_expired=true;
+    push(&st, press(5, -100, topic, OWNER, q["id"].as_i64().unwrap(), "answer:1"));
+    wait("stale press shows saved answer", 15, || st.lock().unwrap().api.iter().any(|(method,b,_)|method=="answercallbackquery" && b["callback_query_id"]=="4000000000000000005" && b["text"].as_str().is_some_and(|s|s.contains("2. long"))));
     assert_eq!(tq_calls(&d).into_iter().filter(|c| c[0] == "answer").count(), 1, "a stale press writes nothing");
-    wait("delivered", 15, || query(&d, "SELECT count(*) FROM outbox WHERE state NOT IN ('delivered','superseded')") == 0);
+    // #338 / §§4,5: expired callback still delivers the exact saved actor/option to its route,
+    // without a second TaskQ write. Failed popup is retained as evidence, not pending output.
+    wait("durable repeat confirmation",15,||query(&d,"SELECT count(*) FROM outbox WHERE request_id=(SELECT max(id) FROM requests) AND kind='answer_confirmation' AND state='delivered' AND chat=-100 AND topic=5 AND text LIKE '%2. long%'")==1);
+    wait("delivered", 15, || query(&d, "SELECT count(*) FROM outbox WHERE state NOT IN ('delivered','superseded','failed')") == 0);
+    assert_eq!(tq_calls(&d).into_iter().filter(|c|c[0]=="answer").count(),1);
     for m in sent(&st) {
         let t = m["text"].as_str().unwrap_or("");
         assert_eq!(m["link_preview_options"]["is_disabled"], true, "no link preview: {m}");
