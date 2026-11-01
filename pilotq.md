@@ -104,6 +104,7 @@ For the owner or an explicit shell grantee, native tools may perform requested w
 Member report access, full closing reports, open dependents and durable PM/owner blocker escalation follow the [member tools boundary](docs/taskq-tool-contract.md#member-reports-and-blockers); members never receive owner or PM work.
 Task status reports observed issue state, trusted closing verdict, report, proposed follow-ups and verified existing follow-ups; missing facts stay unavailable. Diagnose, research and investigate plans retain TaskQ `--type research`. Open-snapshot absence proves neither closure nor nonexistence.
 Board-event cards (§2) reuse task subscriptions: a button or reply answer writes through TaskQ without a model turn; Explain or a text reply to a status card starts one model turn in that route with the card as quoted context. Task-result images are retrieved only from trusted TaskQ question/result attachment references for one authorized registered board, including board-only roots.
+Closed results use explicit TaskQ issue/inbox readback, never open-snapshot absence; revalidate the result identity after retrieval.
 Artifact bytes may use that board’s authenticated HTTPS GitLab upload API (upload ID or secret/filename), with protected key injection, no redirects and image-only transfers (JPEG/PNG; never ZIPs or mixed bundles); this narrow exception to the no-forge-adapter rule never reads board state, repositories or asset trees. Send the actual images inline in the original authorized route with
 task identity and source variant labels; use only the latest trusted outcome, even when it has no attachments. Persist source/task/variant, download size/checksum and individual delivery outcomes and recheck route/project access before retrieval and sending. Missing, oversized, unsupported or inaccessible images produce one explicit gap, never an invented pending decision. Visual choices
 reuse the existing TaskQ question, revision, actor and answer receipt; verified readback finalizes its original card and stale/repeated taps cannot write again. PM qualification uses real result images and a disposable choice after release (§9), never a real artistic decision.
@@ -296,5 +297,4 @@ Use one bounded journal reconciler at startup and periodically. Keep external ca
 - [docs/core-options.md](docs/core-options.md): architecture alternatives and subscription-runtime findings.
 - [docs/bootstrap.md](docs/bootstrap.md): repository setup observations.
 - [docs/projects.md](docs/projects.md): project relationships without implicit registration or grants.
-
 <!-- contract-budget: bytes=61440 lines=300 -->

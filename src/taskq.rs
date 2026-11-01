@@ -231,7 +231,7 @@ impl Taskq {
         Ok(s)
     }
 
-    fn inbox(&self, task: i64) -> Result<Value, String> {
+    pub(crate) fn inbox(&self, task: i64) -> Result<Value, String> {
         self.cli_checked(&["inbox".into(), task.to_string(), "--json".into()], |out| {
             let v: Value = serde_json::from_str(out).map_err(|e|format!("taskq inbox invalid JSON: {e}"))?;
             if v["schema"] != 1 || v["task"] != task || !v["answers"].is_array() {

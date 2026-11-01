@@ -1311,7 +1311,8 @@ applying R4, R5, R8, R10, R13, R16 and R17. The contract changes precede impleme
 
 Local qualification uses `cargo test --locked --bin pilotq result_images_273` for
 project/API reference confinement, upload-ID requests, protected HTTP authentication,
-redirect/404/size refusal, ZIP refusal before body transfer, latest-outcome isolation, retained
+redirect/404/size refusal, ZIP refusal before body transfer, latest-outcome isolation,
+closed-result retrieval without an open task and rejection of mid-fetch reopening, retained
 photo bytes and source/download/delivery receipts, route/project rebinding, revocation and exact option/actor
 annotation. A multipart Bot API trace checks actual photo bytes, task/variant caption
 and original topic. Existing `u07_question_relay_and_bound_answers`,
@@ -1332,12 +1333,13 @@ PM after merged release, in the authorized PilotQ CSLP route:
    current task, question revision and route; choose an option as an authorized owner.
    Read back TaskQ's exact selection and Telegram actor, then capture the original card
    finalized with its buttons removed. Never answer a real artistic question for this test.
-4. Tap the old button again and attempt a stale revision and an unauthorized actor.
-   Read back that no additional board answer or task execution occurred. Revoke project
-   access before a queued send and confirm it remains held at its original destination.
+4. Tap the old button again and read back that no additional board answer or task
+   execution occurred. Stale-revision, unauthorized-actor and revoked-access negatives
+   use owned isolated fixtures only; do not change real CSGO/PilotQ grants, capacity,
+   models or services. Mark negatives not exercised live as unqualified.
 5. Exercise missing, unsupported, inaccessible and oversized attachments; each result
-   has one clear gap and no invented pending decision. Restore temporary test grants and
-   remove only the disposable test data through authorized TaskQ operations.
+   has one clear gap and no invented pending decision. Remove only disposable test data
+   through authorized TaskQ operations; this checklist grants no new actor or access authority.
 
 Status: local checks are implementation evidence only. Real image appearance, CSLP
 routing and the disposable choice round trip remain unqualified until the PM records

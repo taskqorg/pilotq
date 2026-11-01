@@ -59,13 +59,16 @@ fn fetch(d:&Direct,tq:&Taskq,j:&Mutex<Journal>,binding:&Binding,n:i64,key_name:O
         let host=snapshot["board"]["host"].as_str().ok_or("Board artifact host unavailable")?;
         if snapshot["board"]["kind"]!="gitlab" {return Err("Image retrieval is unavailable for this board provider".into());}
         let base=board_base(host,&board)?;
-        let issue=bound.cli_checked(&["issue".into(),n.to_string(),"--json".into()],|out| {
+        let read_issue=|| bound.cli_checked(&["issue".into(),n.to_string(),"--json".into()],|out| {
             let v:Value=serde_json::from_str(out).map_err(|_|"Task result unreadable")?;
             if v["number"]!=n || !v["comments"].is_array() {return Err("No matching task result".into());}
             let u=url::Url::parse(v["url"].as_str().unwrap_or("")).map_err(|_|"Task identity unavailable")?;
             if u.origin()!=base.origin() || u.path()!=format!("/{board}/-/issues/{n}") {return Err("Task result belongs to another board".into());}
             Ok(v)
-        })?;
+        });
+        let before=bound.inbox(n)?;
+        let source_revision=before["revision"].as_i64().filter(|n|*n>0).ok_or("Current task revision unavailable; no images queued")?;
+        let issue=read_issue()?;
         let refs:Vec<_>=references(&issue).into_iter().filter(|(_,u)|u.contains("/uploads/")).collect();
         let (key,secret)={let j=j.lock().unwrap();binding.active(&j)?;d.keys.take(key_name,"issue_read",binding.user,&j.route(binding.request)?,&binding.project,crate::now() as i64)?};
         let active=|| {
@@ -73,12 +76,13 @@ fn fetch(d:&Direct,tq:&Taskq,j:&Mutex<Journal>,binding:&Binding,n:i64,key_name:O
             run.is_none_or(|r|!j.fenced(r).unwrap_or(true)) && binding.active(&j).is_ok() &&
                 d.keys.take(Some(&key),"issue_read",binding.user,&j.route(binding.request).unwrap_or_default(),&binding.project,crate::now() as i64).is_ok_and(|(_,s)|s==secret)
         };
-        let source_revision=snapshot["tasks"].as_array().and_then(|ts|ts.iter().find(|t|t["n"]==n)).and_then(|t|t["revision"].as_i64()).ok_or("Current task revision unavailable; no images queued")?;
         let images=tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|_|"Image reader unavailable")?.block_on(async {
             tokio::time::timeout(Duration::from_secs(30),retrieve(&base,&board,&refs,&secret,&active)).await.map_err(|_|"Image retrieval timed out".to_string())?
         });
-        let current=bound.snapshot_for(&board)?;
-        if current["tasks"].as_array().and_then(|ts|ts.iter().find(|t|t["n"]==n)).and_then(|t|t["revision"].as_i64())!=Some(source_revision) {return Err("Task question changed during image retrieval; read its current card".into());}
+        bound.snapshot_for(&board)?;
+        let current_issue=read_issue()?;
+        let current=bound.inbox(n)?;
+        if current["revision"]!=before["revision"] || current["open"]!=before["open"] || current["state"]!=before["state"] || current_issue!=issue {return Err("Task question changed during image retrieval; read its current card".into());}
         let j=j.lock().unwrap();
         if run.is_some_and(|r|j.fenced(r).unwrap_or(true)) {return Err("Image request stopped".into());}
         binding.active(&j)?;
@@ -303,6 +307,43 @@ pub fn answer_actor(j:&Journal,project:&str,n:i64,revision:i64,sender:i64,argv:&
 #[cfg(test)]
 mod tests {
     use super::*;
+    // A2/A3: a closed result absent from open status still reaches artifact retrieval;
+    // issue/inbox readback, not absence, establishes its identity and revision.
+    #[cfg(unix)]
+    #[test]
+    fn result_images_273_closed_fetch() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir=std::env::temp_dir().join(format!("pilotq-closed-273-{}",std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("taskq.json"),json!({"repo":"invented/csgo"}).to_string()).unwrap();
+        std::fs::write(dir.join("status.json"),json!({"complete":true,"board":{"repo":"invented/csgo","kind":"gitlab","host":"gitlab.example.test"},"tasks":[]}).to_string()).unwrap();
+        std::fs::write(dir.join("issue.json"),json!({"number":444,"url":"https://gitlab.example.test/invented/csgo/-/issues/444","state":"closed","comments":[{"trusted":true,"id":42,"body":"taskq: result\n[bundle](/uploads/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/review.zip)"}]}).to_string()).unwrap();
+        std::fs::write(dir.join("inbox.json"),json!({"schema":1,"task":444,"open":false,"state":"closed","revision":43,"answers":[]}).to_string()).unwrap();
+        let bin=dir.join("taskq");
+        std::fs::write(&bin,"#!/bin/sh\ncase \"$1\" in\nstatus) cat status.json;;\nissue) cat issue.json;;\ninbox) if [ -f change-inbox ] && [ -f inbox-read ]; then cat changed.json; else touch inbox-read; cat inbox.json; fi;;\n*) exit 1;;\nesac\n").unwrap();
+        std::fs::set_permissions(&bin,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut journal=Journal::open(&dir.join("journal.sqlite")).unwrap();journal.bootstrap(7,0).unwrap();
+        journal.add_project(7,"csgo","invented/csgo",dir.to_str().unwrap(),0).unwrap();
+        let r=journal.ask(7,"show csgo 444",1).unwrap();
+        journal.0.execute("UPDATE requests SET front='telegram',chat=-100,topic=5 WHERE id=?1",[r.request]).unwrap();
+        let b=Binding{request:r.request,user:7,project:"csgo".into(),board:"invented/csgo".into(),root:dir.to_str().unwrap().into(),chat:-100,topic:Some(5)};
+        let keys=crate::keys::Keys(dir.join("keys.json"));keys.add("images","invented fixture",&["issue_read".into()],"invented-test-value").unwrap();keys.grant("images",&["7".into()]).unwrap();
+        let d=Direct{keys};let tq=Taskq{bot:None,bin,root:dir.clone(),poll:Duration::from_secs(1)};let j=Mutex::new(journal);
+        let result=fetch(&d,&tq,&j,&b,444,None,Some(&r),false);
+        assert!(result.is_ok(),"closed task must reach image retrieval: {result:?}");
+        let gap:String=j.lock().unwrap().0.query_row("SELECT text FROM outbox WHERE kind='result_image_gap'",[],|r|r.get(0)).unwrap();
+        assert!(gap.contains("Image-only"),"{gap}");
+        assert!(j.lock().unwrap().0.query_row("SELECT EXISTS(SELECT 1 FROM meta WHERE key=?1)",[format!("result-images:{}:444:43",r.request)],|r|r.get::<_,bool>(0)).unwrap());
+        // A5/A7: reopening or revising the task during download cannot queue stale media.
+        std::fs::remove_file(dir.join("inbox-read")).unwrap();
+        std::fs::write(dir.join("change-inbox"),"").unwrap();
+        std::fs::write(dir.join("changed.json"),json!({"schema":1,"task":444,"open":true,"state":"ask","revision":44,"answers":[]}).to_string()).unwrap();
+        let error=fetch(&d,&tq,&j,&b,444,None,Some(&r),false).unwrap_err();
+        assert!(error.starts_with("Task question changed during image retrieval"),"{error}");
+        assert_eq!(j.lock().unwrap().0.query_row("SELECT count(*) FROM outbox WHERE kind='result_image_gap'",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+        drop(j);std::fs::remove_dir_all(dir).unwrap();
+    }
+
     // A3/A7: reject mixed bundles rather than transferring code bytes; a newer
     // attachment-free outcome must never inherit superseded review variants.
     #[test]
