@@ -854,6 +854,7 @@ mod tests {
             let guard=j.lock().unwrap();
             assert_eq!(guard.running().unwrap(),0);
             assert_eq!(guard.request(r.request).unwrap().0,if tooled {"uncertain"} else {"failed"});
+            assert!(!std::path::Path::new("telemetry.sqlite").exists(),"in-memory test journal must not dirty the worktree");
         }
     }
 

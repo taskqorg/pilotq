@@ -1214,7 +1214,9 @@ impl Journal {
         let salt = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as i64) ^ ((std::process::id() as i64) << 40);
         c.execute("INSERT INTO meta(key, value) VALUES ('instance', ?1) ON CONFLICT(key) DO NOTHING", [salt & i64::MAX]).map_err(|e| e.to_string())?;
         up("CREATE TEMP TABLE previews(run INTEGER PRIMARY KEY, text TEXT NOT NULL);")?;
-        Ok(Journal(c, path.with_file_name("telemetry.sqlite"), std::sync::OnceLock::new(), std::collections::HashMap::new()))
+        // In-memory test journals have no parent directory; keep their telemetry store in temp_dir instead of the worktree root (#320)
+        let tel = if path == Path::new(":memory:") { std::env::temp_dir().join(format!("pilotq-mem-{}-telemetry.sqlite", std::process::id())) } else { path.with_file_name("telemetry.sqlite") };
+        Ok(Journal(c, tel, std::sync::OnceLock::new(), std::collections::HashMap::new()))
     }
 
     /// R17, § 6: metadata only, measured after scrubbing; no arguments or result content enter this record.
