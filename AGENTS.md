@@ -7,3 +7,5 @@ Read [pilotq.md](pilotq.md) before work. It owns project decisions and the spec 
 Current stage: implemented Rust test service; first release preparation. Follow the release timing in pilotq.md §9. Proposed thresholds and production cutover remain unqualified.
 
 Development: run the affected Cargo test filter. Candidate gate: `scripts/check-contract.sh`, `cargo test --locked` and `cargo run --locked -- selftest`; release artifacts also run `scripts/verify-release.sh DIST VERSION`.
+
+Windows portable runtime checks: `cargo test --locked --lib`. The Unix service/relay suite and selftest still require Linux CI; portable checks do not qualify a managed Windows host.

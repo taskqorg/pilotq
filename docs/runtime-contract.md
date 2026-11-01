@@ -12,7 +12,7 @@ PilotQ is one small Rust service in the TaskQ tool family.
 | Language and packaging | Rust single binary on [coreq](https://github.com/taskqorg/coreq) | Same release, update, service, status, selftest and incident path as taskq, agentq and dashq (R14) |
 | Telegram | [teloxide](https://github.com/teloxide/teloxide) for the Bot API only | Maintained Rust library; PilotQ keeps its own durable ingress and outbox (section 4) |
 | Telegram behavior | Patterns adapted from the Hermes gateway: update intake, delivery retry, stall watch, topic routing | Already exercised on our server (R12); read as reference, no change to Hermes |
-| Manager runtime | CoreQ `agent`: Codex over its app-server compatibility path or Claude Code CLI turns, each under its subscription login ([manager runtimes](#manager-runtimes)) | R9; [core options](core-options.md) |
+| Manager runtime | AgentQ runtime: Codex over its app-server compatibility path or Claude Code CLI turns, each under its subscription login ([manager runtimes](#manager-runtimes)) | R9; [core options](core-options.md) |
 | Journal | SQLite (section 7 settings) | One local file, supported snapshot backup |
 | Work execution | Existing TaskQ CLI | Section 5 |
 | Voice recognition | ffmpeg and `sherpa-onnx-offline` with GigaAM v3 RNNT-punct int8, local CPU subprocesses | Best Russian accuracy per CPU in the #89 benchmark; keeps the static PilotQ build free of onnxruntime |
@@ -24,12 +24,13 @@ Grammy, Pi and a new runtime framework are out of scope. Earlier source findings
 
 `config.json` `runtime` selects `codex` (default) or `claude` for the installation;
 `runtime_routes` maps a route (`cli`, `CHAT` or `CHAT:TOPIC`) to an override. Both runtimes run
-through CoreQ `agent` (v0.18.0), one process per turn, and keep the existing grants, native-shell
+through `agentq-runtime` 0.1.0 pinned to remote revision `513193c8a96f3de1c71a86291a679230817ce0b2`,
+one process per turn, and keep the existing grants, native-shell
 authority, private answer drafts, model choice, inactivity watches and recovery rules.
 
-- Codex uses CoreQ `AppServer` and `AppSession` with PilotQ's isolated `CODEX_HOME`, the forced
+- Codex uses AgentQ `AppServer` and `AppSession` with PilotQ's isolated `CODEX_HOME`, the forced
   ChatGPT login and its dynamic tools. The separate PilotQ app-server adapter is removed.
-- Claude uses CoreQ `Turn` (`claude -p`, stream-json input and output, partial messages for drafts)
+- Claude uses AgentQ `Turn` (`claude -p`, stream-json input and output, partial messages for drafts)
   with `claude_home` (default `<install>/claude`; `default` keeps the service user's own login).
   The child environment carries no API key, so no paid API fallback exists (R9). Restricted
   principals get no built-in tools (`--tools ""`); the owner and shell grantees run with
@@ -46,8 +47,21 @@ authority, private answer drafts, model choice, inactivity watches and recovery 
   the runtime process group and its tools, and waits for TaskQ's `released` readback. A start after a
   crash releases a left slot only when the recorded runtime group is gone; unknown liveness keeps
   the slot.
-- Each completed turn appends one CoreQ usage observation (`agent.app` for Codex, `agent.turn` for
-  Claude) with the route code; request telemetry names the runtime of the conversation's session.
+- Each completed turn appends one AgentQ runtime usage observation to CoreQ (`agent.app` for Codex,
+  `agent.turn` for Claude) with the route code. Every launch carries `AGENTQ_LAUNCHER=pilotq` so an
+  attached optimizer does not count the turn again. Account/quota reads and model catalogue calls
+  use the same AgentQ transport without generating inference or usage observations.
+- `config.json` `optimization` accepts `off` (default), `inherit` or `on`. AgentQ prepares only the
+  child launch and reports intent, effective state and reason to request audit. `on` observes an
+  existing approved attachment; it never enables or installs one. Host disable and inherited `off`
+  prevail. No client configuration or original replay bytes are edited; an optimizer is optional.
+  Claude excludes user settings, so its launch forces compression off and records `settings_excluded`
+  for `inherit`/`on` intent rather than claiming those excluded hooks are active.
+  Tool-result compression still needs section 11's dynamic-tool qualification, separate from runtime adoption.
+- CoreQ remains v0.18.0 for installation, process and telemetry primitives; PilotQ does not call
+  its frozen `agent` API. Journal schema 13, native Codex IDs and `claude:<id>` storage remain
+  compatible with the previous immutable build. Rollback uses that build and the same journal/session
+  homes after drain; never replay interrupted effects or erase pending delivery to downgrade.
 
 ```mermaid
 flowchart LR

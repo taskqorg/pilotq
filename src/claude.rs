@@ -1,8 +1,9 @@
-//! #265: Claude Code manager turns through CoreQ `agent::Turn` (`claude -p`, one process per turn, resumed by session ID).
+//! Claude Code manager turns through AgentQ `agent::Turn` (`claude -p`, one process per turn, resumed by session ID).
 //! PilotQ's own tools reach Claude through a per-turn stdio MCP relay (`pilotq --mcp-bridge SOCKET`) that forwards each call
 //! over a private Unix socket to the same tool boundary Codex uses; the relay holds no authority or state of its own.
 use crate::manager::{Limits, Outcome};
-use coreq::agent::{Client, Spec, Turn};
+use agentq_runtime::agent::{Client, Spec, Turn};
+use agentq_runtime::optimization::Intent;
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -19,6 +20,7 @@ pub struct Claude {
     pub logs: PathBuf,
     /// Claude has no catalogue call; `/model` offers these configured aliases.
     pub models: Vec<String>,
+    pub optimization: Intent,
 }
 
 const SERVER: &str = "pilotq";
@@ -129,9 +131,9 @@ impl Claude {
         route: &str,
     ) -> Result<(Option<String>, Option<String>, Outcome), ()> {
         let failed = |e: String| Ok((resume.map(str::to_string), None, Outcome::Failed(e)));
-        let session = resume.map(str::to_string).unwrap_or_else(|| coreq::agent::new_session(Client::Claude));
+        let session = resume.map(str::to_string).unwrap_or_else(|| agentq_runtime::agent::new_session(Client::Claude));
         // Private per-turn files: tool relay config, instructions and socket. The token proves a relay belongs to this turn.
-        let token = coreq::agent::new_session(Client::Claude);
+        let token = agentq_runtime::agent::new_session(Client::Claude);
         let dir = workspace.join(".pilotq-turns").join(&token[..8]);
         let prepared = (|| {
             if let Some(home) = &self.home { std::fs::create_dir_all(home).map_err(|e| format!("claude home: {e}"))?; }
@@ -158,16 +160,18 @@ impl Claude {
         // §3 / #190: native tools and live web only for the owner or a shell grantee; others keep PilotQ's granted tools only
         if native { args.extend(["--permission-mode".into(), "bypassPermissions".into()]); } else { args.extend(["--tools".into(), "".into()]); }
         if let Some(m) = selected_model { args.extend(["--model".into(), m.into()]); }
-        let spec = Spec { client: Client::Claude, root: workspace.into(), session: session.clone(), resume: resume.is_some(), args, home: self.home.clone(), env: vec![] };
+        let mut spec = Spec { client: Client::Claude, root: workspace.into(), session: session.clone(), resume: resume.is_some(), args, home: self.home.clone(), env: vec![] };
+        let optimization = pilotq::prepare(self.optimization, &mut spec);
         let text = match message(&input) { Ok(t) => t, Err(e) => return failed(e) };
         let log = self.logs.join(format!("{session}.jsonl"));
         let mut pos = std::fs::metadata(&log).map(|m| m.len()).unwrap_or(0);
         let started = Instant::now();
-        let mut turn = match Turn::start(crate::manager::base(&self.bin), &spec, &log, &text) {
+        let mut turn = match Turn::start(pilotq::base(&self.bin), &spec, &log, &text) {
             Ok(t) => t,
             Err(e) => { crate::host::log("claude", &e); return failed(format!("claude did not start: {e}")); }
         };
         observation("spawned", &json!(turn.id()));
+        observation("optimization", &optimization.json());
         let (mut first, mut last, mut tooled, mut answer) = (false, started, false, None::<String>);
         let (mut draft, mut window, mut used, mut missing) = (String::new(), None::<u64>, None::<u64>, false);
         let mut items = std::collections::HashMap::new();
@@ -252,7 +256,7 @@ impl Claude {
         let r = turn.report();
         if missing && resume.is_some() && r.outcome != "ok" && !tooled { return Err(()); }
         // A5: one CoreQ usage observation per turn, attributed to this route
-        let ctx = coreq::agent::Context { product: "pilotq", version: env!("CARGO_PKG_VERSION"), project: "other", task: None, route: Some(route), account: "default" };
+        let ctx = agentq_runtime::agent::Context { product: "pilotq", version: env!("CARGO_PKG_VERSION"), project: "other", task: None, route: Some(route), account: "default" };
         record(&|store| coreq::telemetry::Event::new(r.observation(Client::Claude, &ctx)).and_then(|e| store.append(&[e])).map(drop));
         if let (Some(used), Some(window)) = (used, window) {
             observation("context", &json!({"last": {"inputTokens": used}, "modelContextWindow": window}));
@@ -355,6 +359,7 @@ native='--permission-mode' in a
 assert native or val('--tools')==''
 assert '--strict-mcp-config' in a and val('--allowedTools')=='mcp__pilotq'
 assert 'ANTHROPIC_API_KEY' not in os.environ and os.environ['CLAUDE_CONFIG_DIR']
+assert os.environ['AGENTQ_LAUNCHER']=='pilotq' and os.environ['AGENTQ_OPTIMIZATION']=='off'
 if sid=='00000000-0000-4000-8000-000000000000':
   print('No conversation found with session ID: '+sid, file=sys.stderr); sys.exit(1)
 msg=json.loads(sys.stdin.readline())
@@ -374,7 +379,7 @@ print(json.dumps({'type':'stream_event','event':{'type':'content_block_delta','d
 print(json.dumps({'type':'result','subtype':'success','is_error':False,'result':'finished '+text,'session_id':sid,'modelUsage':{'claude-invented':{'contextWindow':100}}}),flush=True)
 "#).unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let c = Claude { bin: bin.to_str().unwrap().into(), home: Some(dir.join("home")), logs: dir.join("logs"), models: vec![] };
+        let c = Claude { bin: bin.to_str().unwrap().into(), home: Some(dir.join("home")), logs: dir.join("logs"), models: vec![], optimization: Intent::Off };
         let lim = Limits { first_event: Duration::from_secs(10), silent: Duration::from_secs(10), deadline: Duration::from_secs(1) };
         let tools = json!([{"type": "function", "name": "project_list", "description": "invented", "inputSchema": {"type": "object"}}]);
         let run = |native: bool, session: Option<&str>| {

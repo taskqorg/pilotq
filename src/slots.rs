@@ -39,7 +39,7 @@ impl Slots {
             if owner.is_none() { *owner = Some(self.exchange(&["service", "slots", "--identity", &std::process::id().to_string(), "--json"])?); }
             owner.clone().unwrap()
         };
-        let hex = || coreq::agent::new_session(coreq::agent::Client::Claude).replace('-', "");
+        let hex = || agentq_runtime::agent::new_session(agentq_runtime::agent::Client::Claude).replace('-', "");
         let request = json!({"binding": {"schema": "taskq.slots/1", "caller": "pilotq", "op_id": format!("pilotq-{}", hex()),
             "root": self.root, "runtime": runtime, "pid": owner["pid"], "started": owner["started"], "boot": owner["boot"],
             "expires_at": now + 300}, "key": format!("{}{}", hex(), hex())});

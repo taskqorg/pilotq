@@ -6,7 +6,7 @@ Owner and explicit shell-grant routes may run authorized conversational loops un
 
 ## Rules
 
-- **R9 Model access:** use the Codex or Claude Code CLI with its existing subscription login only. Separately billed model APIs are out of scope; never fall back automatically to paid API credentials.
+- **R9 Model access:** use AgentQ runtime with the Codex or Claude Code CLI and its existing subscription login only. Optimization is optional and grants no model, account or host authority. Separately billed model APIs are out of scope; never fall back automatically to paid API credentials.
 - **R10 People and admission:** ignore people without explicit administrator-granted access; group membership grants nothing. Roles admin, project owner and member (§2) replace per-project grant setup. Keep distinct, persistent, correctable profiles and support access inspection, change and revocation.
 - **R16 Keys:** tools may use credentials on an authorized person's behalf; the model never sees their values. Keys enter only through the protected CLI.
 - **R4 Flexible projects:** remember the usual project and allow switching; every external action resolves one concrete authorized target.
@@ -68,7 +68,7 @@ Plain-language controls are primary. `/status`, `/stop` and `/new` remain availa
 
 ## 3. Architecture and authority
 
-**Mandatory:** one Rust binary on CoreQ; teloxide only for the Bot API; manager turns via CoreQ `agent` on Codex (app-server path) or Claude Code, per the installation `runtime` (default Codex) or a route override; SQLite journal; installed TaskQ CLI for execution; ffmpeg and static `sherpa-onnx-offline` with GigaAM v3 RNNT-punct int8 for local CPU recognition.
+**Mandatory:** one Rust binary on CoreQ; teloxide only for the Bot API; manager turns via pinned `agentq-runtime` on Codex (app-server path) or Claude Code, per the installation `runtime` (default Codex) or a route override; SQLite journal; installed TaskQ CLI for execution; ffmpeg and static `sherpa-onnx-offline` with GigaAM v3 RNNT-punct int8 for local CPU recognition.
 
 [Architecture detail](docs/runtime-contract.md#3-architecture-and-ownership) assigns journal, runtime, proposal, TaskQ and agentq authority. PilotQ owns durable input and delivery; TaskQ owns admitted execution. Registered roots and host policy own capacity. Never discover roots or silently enroll projects.
 
@@ -160,15 +160,15 @@ model or replies. TaskQ workers and §9 release qualification retain their exist
 
 ## 6. Memory and agentq
 
-**Mandatory:** [memory detail](docs/runtime-contract.md#6-memory-and-agentq) separates conversation history, scoped remembered preferences and authoritative TaskQ facts. Profiles retain subject, visibility, source and revision across restarts and resets; private DM facts never silently enter shared routes.
+**Mandatory:** [memory detail](docs/runtime-contract.md#6-memory-and-agentq) separates conversation history, scoped remembered preferences and authoritative TaskQ facts. Profiles retain subject, visibility, source and revision across restarts and resets; private DM facts never silently enter shared routes. Profiles cannot change grants.
 
 Telegram `/profile` inspects own facts in DM; `/profile set KEY VALUE` corrects or remembers a private preference and `/profile forget KEY` removes it. `/access` inspects own current grants in DM; neither control accepts another subject or changes grants. Both use the CLI/Telegram admission, audit and durable reply path.
 
-Users inspect, correct and forget non-authoritative preferences; administrators act only within scope. Persist and show changes, suppress superseded facts after rebuild/compaction, and distinguish preference deletion from audit retention. Profiles cannot change grants.
+Preserve identities, grants, revocations, project references, operation IDs, task URLs, pending questions, plan revisions, prohibitions and receipts outside lossy summaries. Use fresh TaskQ reads for task state.
+AgentQ runtime preserves each conversation's native session ID across turns, restart and update, including rollback to the previous build. A changed route runtime rebuilds from the journal.
 
-Preserve identities, grants, revocations, project references, operation IDs, task URLs, pending questions, plan revisions, prohibitions and receipts outside lossy summaries. Use fresh TaskQ reads for task state. Each conversation keeps one native session of its runtime: each turn resumes it by ID and exits, across restart/update. A changed route runtime starts a session rebuilt from the journal.
-
-Native compaction is the functional baseline. Agentq tool compression and conversation summarization have separate owners; preserve call/result associations and scoped original recovery. Qualify identical scenarios off/on for completion, constraints, recovery, provider tokens where available, latency and interventions. Byte reduction alone proves no savings or long-conversation correctness.
+Native compaction is the functional baseline. Optional optimization intent is `off` by default, `inherit` or `on`; it never installs an optimizer or changes global client configuration. Record effective state and reason; host disable and privacy restrictions prevail. Runtime adoption does not qualify compression (§11).
+AgentQ tool compression and conversation summarization have separate owners; preserve call/result associations and scoped original recovery. Qualify identical scenarios off/on for completion, constraints, recovery, provider tokens where available, latency and interventions. Byte reduction alone proves no savings or long-conversation correctness.
 
 ## 7. Proposed operating budgets and storage
 
@@ -179,7 +179,7 @@ without a runtime event, with the exact reason; cancellation acknowledgement ≤
 grace; recovery within thirty seconds of readiness. Runtime events renew the inactivity clock; typing and progress
 timers do not. One topic progress message is updated no more often than every thirty seconds.
 
-With `slot_root` set, each manager turn holds one TaskQ host slot (`taskq service slots`) until its runtime and tools end. Each turn records one CoreQ usage observation with its route code.
+With `slot_root` set, each manager turn holds one TaskQ host slot (`taskq service slots`) until its runtime and tools end. AgentQ runtime supplies one usage observation per turn to CoreQ storage with its route code; the launcher marker suppresses duplicate optimizer observations.
 Start with four concurrent conversations, one run each, round-robin routes; pending caps are fifty per route and 1,000 total. Safe dependency attempts total at most three within the original deadline; delivery attempts at most five per episode across restarts. Task notifications follow a fresh observed transition within fifteen seconds when Telegram is reachable.
 
 SQLite uses WAL, `synchronous=FULL`, one writer, local disk and bounded transactions. Raw conversations/native inactive sessions retain thirty days; audit metadata 365 days and text ninety days; reconciled receipts ninety days; diagnostics seven days; temporary attachments seven days, 20 MiB each. Preserve active/unresolved work and replay-preventing tombstones.
