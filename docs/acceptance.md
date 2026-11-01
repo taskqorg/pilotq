@@ -1349,3 +1349,7 @@ PM after merged release, in the authorized PilotQ CSLP route:
 Status: local checks are implementation evidence only. Real image appearance, CSLP
 routing and the disposable choice round trip remain unqualified until the PM records
 post-release evidence; production cutover remains unauthorized (R19, §9).
+
+### A40 current-card observation (#299)
+
+[Focused evidence and card audit](research/299.md) records run7's obsolete question-prefix failure and the regression's failure before repair and pass afterward (R8, §5). The harness observes the exact current delivered question and retains foreign refusal, exact answer revision, stale/repeated no-write protection, review/close status identity, original route and cleanup. Run7 remains cancelled/incomplete; PM manual cleanup is separate from automatic acceptance. #281 owns a fresh bounded full14/cleanup run on the exact independently reviewed, green-merge-queue source (§9, R19); focused checks authorize no installation or release.
