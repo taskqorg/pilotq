@@ -165,9 +165,7 @@ Telegram `/profile` inspects own facts in DM; `/profile set KEY VALUE` corrects 
 
 Users inspect, correct and forget non-authoritative preferences; administrators act only within scope. Persist and show changes, suppress superseded facts after rebuild/compaction, and distinguish preference deletion from audit retention. Profiles cannot change grants.
 
-Preserve identities, grants, revocations, project references, operation IDs, task URLs, pending questions, plan revisions, prohibitions and receipts outside lossy summaries. Use fresh TaskQ reads for task state.
-
-Each conversation keeps one native session of its runtime: every turn resumes it by ID and exits, across restart and update. A changed route runtime starts a new session rebuilt from the journal.
+Preserve identities, grants, revocations, project references, operation IDs, task URLs, pending questions, plan revisions, prohibitions and receipts outside lossy summaries. Use fresh TaskQ reads for task state. Each conversation keeps one native session of its runtime: each turn resumes it by ID and exits, across restart/update. A changed route runtime starts a session rebuilt from the journal.
 
 Native compaction is the functional baseline. Agentq tool compression and conversation summarization have separate owners; preserve call/result associations and scoped original recovery. Qualify identical scenarios off/on for completion, constraints, recovery, provider tokens where available, latency and interventions. Byte reduction alone proves no savings or long-conversation correctness.
 
