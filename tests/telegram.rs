@@ -2584,6 +2584,8 @@ fn c06_resume_failure_rebuilds_without_replaying_effects() {
     assert_eq!(tq_calls(&d).len(), calls, "recovery never calls GitHub");
     assert_eq!(query(&d, "SELECT count(*) FROM task_effects"), 1);
     assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE kind='rebuild'"), 1);
+    assert_eq!(query_text(&d, "SELECT result FROM audit_events WHERE kind='rebuild'"),
+        "native session unavailable after failed resume; journal context prepared", "#339: real failed resume stays distinct from policy refresh");
     assert_eq!(texts(&st).iter().filter(|t| t.contains("Restoring the conversation")).count(), 0, "#179 A5: internal recovery progress stays in audit");
     assert!(!texts(&st).join(" ").contains("/private/native"));
     let log = fs::read_to_string(d.join("codex.log")).unwrap();
@@ -2593,6 +2595,41 @@ fn c06_resume_failure_rebuilds_without_replaying_effects() {
     assert!(recovered["receipts"].to_string().contains("steer"), "{recovered}");
     assert_eq!(query_text(&d, "SELECT thread FROM conversations WHERE session='dm:7'"), "th-2");
     stop(c, d);
+}
+
+// #339 / §§4,6 / R17: audit the actual shared manager trigger, retaining IDs and no-replay behavior.
+#[test]
+fn native_rebuild_339_reasons() {
+    let (d, _) = direct_setup("native-rebuild-339");
+    ok(cli(&d, &["ask", "first", "--json"]));
+    assert_eq!(query_text(&d, "SELECT thread FROM conversations WHERE thread IS NOT NULL"), "th-1");
+    ok(cli(&d, &["ask", "unchanged", "--json"]));
+    assert_eq!(query_text(&d, "SELECT thread FROM conversations WHERE thread IS NOT NULL"), "th-1");
+    assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE kind='rebuild'"), 0);
+    // Simulate the persisted old policy fingerprint, then reopen through the real CLI.
+    rusqlite::Connection::open(d.join("journal.sqlite")).unwrap()
+        .execute("UPDATE meta SET value=0 WHERE key='instructions'", []).unwrap();
+    ok(cli(&d, &["ask", "changed policy", "--json"]));
+    assert_eq!(query_text(&d, "SELECT thread FROM conversations WHERE thread IS NOT NULL"), "th-2");
+    assert_eq!(query_text(&d, "SELECT result FROM audit_events WHERE kind='rebuild'"),
+        "planned policy refresh; journal context prepared");
+    assert_eq!(query_text(&d, "SELECT target FROM audit_events WHERE kind='rebuild'"), "th-1");
+    fs::write(d.join("damaged"), "").unwrap();
+    ok(cli(&d, &["ask", "missing rollout", "--json"]));
+    assert_eq!(query_text(&d, "SELECT thread FROM conversations WHERE thread IS NOT NULL"), "th-3");
+    assert_eq!(query_text(&d, "SELECT result FROM audit_events WHERE kind='rebuild' ORDER BY id DESC LIMIT 1"),
+        "native session unavailable after failed resume; journal context prepared");
+    rusqlite::Connection::open(d.join("journal.sqlite")).unwrap()
+        .execute("UPDATE conversations SET thread='claude:foreign' WHERE thread IS NOT NULL", []).unwrap();
+    ok(cli(&d, &["ask", "foreign runtime", "--json"]));
+    assert_eq!(query_text(&d, "SELECT result FROM audit_events WHERE kind='rebuild' ORDER BY id DESC LIMIT 1"),
+        "foreign runtime; journal context prepared");
+    let log = fs::read_to_string(d.join("codex.log")).unwrap();
+    let messages: Vec<Value> = log.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    let resumes: Vec<_> = messages.iter().filter(|v| v["method"] == "thread/resume").map(|v| v["params"]["threadId"].clone()).collect();
+    assert_eq!(resumes, vec![json!("th-1"), json!("th-2")], "planned rebuilds never try a resume");
+    assert_eq!(messages.iter().filter(|v| v["method"] == "thread/start").count(), 4);
+    cleanup(&d);
 }
 
 // C06 slice of c_live_context_runs: real subscription Codex and exactly one real owner comment per repetition.

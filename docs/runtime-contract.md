@@ -41,6 +41,10 @@ authority, private answer drafts, model choice, inactivity watches and recovery 
 - The journal stores a Claude session as `claude:<id>`. A turn resumes its runtime's session by ID;
   a session of the other runtime, or a missing native session, is rebuilt once from the journal on a
   new session without repeating work.
+  The shared rebuild audit records the known cause: planned policy refresh, foreign runtime,
+  or native session unavailable after a failed resume. Planned refresh never claims a missing
+  rollout or resume failure. Keep the old ID as the audit target, retain context and receipts,
+  and leave historical triggers unknown when they were not recorded; never rewrite old audits.
 - With `slot_root` (a registered TaskQ root) set, each turn reserves one TaskQ host slot through
   `taskq service slots` (`taskq.slots/1`) before its runtime starts. The binding and release key are
   persisted first; only a fresh `reserved` receipt starts the runtime. Release follows the end of
