@@ -44,3 +44,80 @@ Copy the exact reviewed accessor into `$probe/accessor.cc`, then use the compile
 Use all55 retained reference cases, including zero-frame boundaries and400000samples. The source-reference harness currently retains arrays and PCM hashes, not PCM files: a guarded preparation must materialize the same deterministic int16 samples from its pinned construction and verify every existing PCM hash before float32 scaling; never rerun the completed reference episode. Compare exact frame counts and array dimensions first; stop on mismatch. Record per-stage maxabs/relative/coordinates and all raw arrays, without an invented PASS tolerance. Include the retained float32 rounding and scalar-DFT observations in analysis; neither is a Torchaudio/KNF comparison yet.
 
 One PM-owned original-caps/shared600s episode must include build/readback/numerical comparison, fail-closed process-group reaping and independent cleanup. No limit increase, retry, inference or source/installed selection follows automatically. Even matching frontend arrays leaves official-checkpoint/export equivalence, encoded-length integration and automatic RU/EN/code-switch/Russian quality/readiness/long/live gates open.
+
+## Combined guarded PM handoff (note6566515450)
+
+The review above now has a prepared combined script, `knf-frontend-episode.py`,
+SHA256 `50f76b4bf3de1212f75ae5c5a67354f937bfb8a171e19b2042f69c666d661a54`.
+`knf-frontend-handoff.json`, SHA256
+`ca1466a4625e4ff7f32020a250bf4e0c70dc1159bd8f3873c867ef98f08adde3`, pins
+both full archive hashes, Apache/BSD license chain, retained reference JSON,
+accessor, original reference source and reused cap/process-group helper identities.
+This supersedes only the earlier missing-wrapper status. No acquisition,
+compilation, feature execution or comparison has run; PM must review these exact
+files before dispatch.
+
+The exact **inner** argv, from the worktree root, is:
+
+```sh
+target/pm344-giga-static-tools-v2/venv/bin/python -I \
+  experiments/speech344/knf-frontend-episode.py \
+  --reference target/pm344-frontend-reference-v1 \
+  --output target/pm344-knf-frontend-v1
+```
+
+The output directory must not exist. Run it once through the existing PM-owned
+host isolation runner with actual MemoryMax1280M, MemoryHigh1024M,
+MemorySwapMax256M, CPU150%, Tasks256 and one outer600-second episode deadline.
+The script starts one internal600-second alarm/deadline before identity checks
+and never resets it. Outer startup/import time remains inside the PM deadline.
+PM's wrapper argv is owned by that existing runner; the worker has not inspected,
+copied or invented its flags. The inner argv above is exact; it is not an
+instruction to run it outside that runner.
+
+The script refuses wrong effective caps and retained NumPy version before
+acquisition. It invokes only the two pinned HTTPS downloads, once each, through
+owned groups with curl configuration disabled and no inherited credential
+environment. Both complete archive digests and the full expected license chain
+are checked **before extraction**. Paths, duplicate entries, links, special files,
+encryption and bounded compressed/member/expanded sizes are checked before
+writing extracted source. Sources are plain nonexecutable files; no archive
+script/interpreter/build configuration is executed. Compiler commands run from
+the new output root, not from downloaded source directories.
+
+Existing compiler executable/resolved-path/hash and actual `--version` output
+are recorded. The exact reviewed sequential direct build is retained; any missing
+dependency or failed command stops without fetching alternatives. The resulting
+accessor hash is recorded before its first invocation. Every child has its own
+process group; the existing `finish_group` helper kills descendants and waits on
+normal exit, timeout and exceptions. The wrapper also covers interruption between
+spawn and helper entry, records PID/PGID/reaping/group-existence readback and
+refuses a group still observed after cleanup. PM independently verifies the
+unit/MainPID/cgroup/wrapper/descendant cleanup and unchanged ordinary services;
+local guard checks cannot prove this host outcome.
+
+All55 ordered reference cases must match. Retained arrays are hash/shape/dtype/
+finite checked, and each reconstructed PCM16 byte hash is verified **before**
+float32 scaling. The completed NumPy reference script is hash-checked data and
+is never imported or rerun. Original PCM16 and scaled float32 files are retained.
+The accessor emits raw arrays; the wrapper requires exact frame/byte shapes and
+finite window/weights/energy, then records finite prescribed clamp/log arrays.
+It retains every raw output plus its size/hash and per-stage maxabs, relative
+error on nonzero reference and coordinates. There is **no numeric tolerance or
+PASS verdict**. Completion means observation collection only, not frontend
+compatibility, checkpoint equivalence, ASR quality or activation.
+
+One deadline covers all checks, both acquisitions, license validation/extraction,
+compiler observations, build, all55 calls and comparison/readback. Failure stops
+without retry/fallback; terminal metadata can still be written after cancellation,
+without dispatching further work. Partial archives/builds/arrays and previous
+attempts are not deleted. Output is private0700/0600; logs/commands contain only
+public dependency origins and project-local generated paths.
+
+Local preparation evidence: AST/help/manifest identity checks pass. The safe
+extraction check initially rejected a legitimate nested tar directory; after
+classifying regular directories separately from forbidden links/special files,
+the same six offline guard tests pass. They retain traversal/link/digest/license,
+original-deadline and pre-scaling PCM identity refusal. Synthetic fixtures use no
+model, archive acquisition, compiler, accessor or numerical episode. Actual host
+execution remains unrun pending PM review (§9/R19).

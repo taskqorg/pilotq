@@ -568,3 +568,8 @@ neither a build nor a production frontend patch (§9/R19).
 PM note6565687464 reports the exact reference-only run completed55cases in1.763s/exit0/noOOM/high0 under originalcaps; peakself83104KiB. Worker read the retained JSON/arrays, checked hashes/shapes/finite values, and did not rerun the reference. Numeric observations and limits are in [the report](../../docs/research/344.md#current-continuation-output-coverage-catalog-correction-and-actual-reference-readback). No numerical tolerance, KNF/Torchaudio parity or ASR qualification is claimed.
 
 PM note6565715149 requests [the pinned KNF feature-only accessor source/build-closure review](knf-accessor-plan.md). It contains source/hash, archive/dependency/license identities and exact proposed acquisition/compiler/per-case argv. No acquisition/build/run is authorized by this preparation. Same-PCM guarded orchestration and actual engine parity remain separate; no production change.
+
+
+## Combined KNF feature-only PM episode preparation
+
+Note6566515450 authorizes the [guarded combined handoff](knf-accessor-plan.md#combined-guarded-pm-handoff-note6566515450), not worker acquisition/build/execution. That section gives exact script/manifest hashes and inner PM argv, two full archive digests/license chain, original actual caps/shared600s, same55 PCM hashes, comparison/readback and process-group/independent cleanup boundaries. The new `knf-frontend-episode.py` is unexecuted; local synthetic guard/AST/help checks prove only preparation guards. No numerical tolerance or ASR/parity/activation claim.
