@@ -318,6 +318,32 @@ fn blockers(tq:&Taskq,j:&Journal,p:&str,c:&Value)->Result<(),String> {
     } Ok(())
 }
 fn audit(j:&Journal,id:i64,p:&str,stage:&str,v:&Value)->Result<(),String> {j.0.execute("INSERT INTO audit_events(request_id,at,kind,target,item,result) VALUES (?1,?2,'release',?3,?4,?5)",params![id,crate::now() as i64,p,stage,v.to_string()]).map(drop).map_err(err)}
+// Localize owned release labels only; identifiers, URLs, authors and source diagnostics stay literal.
+fn release_text(text:&str,ru:bool)->String {
+    if !ru {return text.into();}
+    text.lines().map(|line| {
+        for (en,ru) in [
+            ("Release ","Выпуск "),("Target SHA: ","Целевой SHA: "),
+            ("Commits since LIVE: ","Коммитов после LIVE: "),("Authors:","Авторы:"),
+            ("Tasks: ","Задачи: "),("Migrations: ","Миграции: "),
+            ("preflight: ","Предварительная проверка: "),("backup: ","Резервная копия: "),
+            ("release: ","Выпуск: "),("pipeline: ","Конвейер: "),
+            ("smoke: ","Проверка работоспособности: "),("backmerge: ","Обратное слияние: "),
+        ] {
+            if let Some(value)=line.strip_prefix(en) {
+                if value=="not run" {return format!("{ru}не выполнялся");}
+                let (state,tail)=value.split_once(' ').map(|(a,b)|(a,format!(" {b}"))).unwrap_or((value,String::new()));
+                if matches!(en,"preflight: "|"backup: "|"release: "|"pipeline: "|"smoke: "|"backmerge: ") {
+                    let state=match state {"success"=>"успешно","failed"=>"ошибка","pending"=>"ожидается","running"=>"выполняется","cancelled"=>"отменено","skipped"=>"пропущено","unknown"=>"нет данных","unconfirmed"=>"не подтверждено",other=>other};
+                    return format!("{ru}{state}{}",if tail==" (link unavailable)" {" (ссылка недоступна)"}else{&tail});
+                }
+                let value=match value {"yes"=>"да","no"=>"нет","none reported by TaskQ"=>"TaskQ не сообщил", "success"=>"успешно","failed"=>"ошибка","unknown"=>"нет данных","not run"=>"не выполнялся","unconfirmed"=>"не подтверждено",other=>other};
+                return format!("{ru}{value}");
+            }
+        }
+        line.into()
+    }).collect::<Vec<_>>().join("\n")
+}
 fn result_card(j:&Journal,request:i64,preview:i64,text:&str)->Result<(),String> {
     let (front,chat,topic):(String,i64,Option<i64>)=j.0.query_row("SELECT front,chat,topic FROM requests WHERE id=?1",[request],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(err)?;
     if front=="telegram" {
@@ -388,6 +414,8 @@ fn preview_for(tq:&Taskq,j:&std::sync::Mutex<Journal>,id:i64,session:&str,genera
     let observed=task_dev(j,p,&json!({"merged_sha":target}),end);
     if observed["state"]=="unknown" {return Err("DEV state unknown; preview refused".into());}
     let text=format!("Release {p}\nTarget SHA: {target}\nCommits since LIVE: {count}\nAuthors:\n{authors}\nTasks: {}\nMigrations: {}\nDEV: {} (serves target exactly: {})",if links.is_empty(){"none reported by TaskQ".into()}else{links.join("\n")},if migrations {"yes"}else{"no"},observed["state"].as_str().unwrap_or("unknown"),observed["serves_target_exactly"]);
+    let ru=j.lock().unwrap().language(id)?.as_deref()==Some("ru");
+    let text=if ru {format!("Выпуск {p}\nЦелевой SHA: {target}\nКоммитов после LIVE: {count}\nАвторы:\n{authors}\nЗадачи: {}\nМиграции: {}\nDEV: {} (обслуживает точно целевой SHA: {})",if links.is_empty(){"TaskQ не сообщил".into()}else{links.join("\n")},if migrations {"да"}else{"нет"},match observed["state"].as_str().unwrap_or("unknown") {"healthy"=>"исправен","unhealthy"=>"неисправен","unknown"=>"нет данных",other=>other},match observed["serves_target_exactly"].as_bool(){Some(true)=>"да",Some(false)=>"нет",None=>"нет данных"})}else{text};
     if text.len()>3500 {return Err("Release preview too large; narrow the candidate".into());}
     if !active() || Instant::now()>=end {return Err("Preview cancelled or deadline reached".into());}
     let j=j.lock().unwrap();let tx=j.0.unchecked_transaction().map_err(err)?;
@@ -398,14 +426,14 @@ fn preview_for(tq:&Taskq,j:&std::sync::Mutex<Journal>,id:i64,session:&str,genera
     put(&j,&format!("release-latest:{session}"),&json!(id))?;
     audit(&j,id,p,"preview",&json!({"sha":target,"dry_run":"success"}))?;card(&j,id,p,&text)?;
     tx.commit().map_err(err)?;
-    Ok(format!("{text}\nPress Release to authorize this SHA. The Release button is delivered to the owner conversation."))
+    Ok(if ru {format!("{text}\nНажмите «Выпустить», чтобы разрешить этот SHA. Кнопка отправляется в беседу владельца.")}else{format!("{text}\nPress Release to authorize this SHA. The Release button is delivered to the owner conversation.")})
 }
 pub fn buttons(j:&Journal,delivery:i64)->Result<Vec<(String,String)>,String> {
     let id:Option<i64>=j.0.query_row("SELECT request_id FROM outbox WHERE id=?1 AND kind='release_preview'",[delivery],|r|r.get(0)).optional().map_err(err)?;
     let Some(id)=id else {return Ok(vec![])};
     let Some(v)=get(j,&format!("release-preview:{id}"))? else {return Ok(vec![])};
     if v["state"]!="preview" || crate::now().saturating_sub(v["created"].as_u64().unwrap_or(0))>900 || get(j,&format!("release-latest:{}",v["session"].as_str().unwrap_or("")))?!=Some(json!(id)) {return Ok(vec![]);}
-    Ok(vec![(format!("release:{id}"),"Release".into())])
+    Ok(vec![(format!("release:{id}"),if j.language(id)?.as_deref()==Some("ru") {"Выпустить"}else{"Release"}.into())])
 }
 fn validate(j:&Journal,r:&crate::builtins::Request,id:i64)->Result<Value,String> {
     let v=get(j,&format!("release-preview:{id}"))?.ok_or("Release button is stale")?;
@@ -486,7 +514,9 @@ fn confirm(tq:&Taskq,j:&Shared,r:&crate::builtins::Request,id:i64)->Result<Strin
         if !stages.iter().any(|s|s.starts_with("release:")) {stages.push("release: not run".into());}
         stages.extend(["smoke: unconfirmed".into(),"backmerge: unconfirmed".into(),"LIVE SHA: unknown".into()]);
     }
+    let ru=j.lock().unwrap().language(r.id)?.as_deref()==Some("ru");
     let message=format!("{p}: {}\n{}",if uncertain {"release outcome uncertain; no automatic retry"}else{"release verified"},stages.join("\n"));
+    let message=if ru {format!("{p}: {}\n{}",if uncertain {"исход выпуска неясен; автоматического повтора не будет"}else{"выпуск подтверждён"},release_text(&stages.join("\n"),true))}else{message};
     let j=j.lock().unwrap();let tx=j.0.unchecked_transaction().map_err(err)?;
     let mut saved=get(&j,&format!("release-preview:{id}"))?.ok_or("Release intent unavailable")?;saved["state"]=json!(if uncertain {"uncertain"}else{"done"});saved["result"]=json!(message);
     put(&j,&format!("release-preview:{id}"),&saved)?;result_card(&j,r.id,id,&message)?;
@@ -509,7 +539,7 @@ pub fn recover(j:&Journal)->Result<(),String> {
             if let Some(id)=v["confirmation"].as_i64() {let (chat,topic):(i64,Option<i64>)=j.0.query_row("SELECT chat,topic FROM requests WHERE id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(err)?;
                 let _=(chat,topic);
                 let preview=key.strip_prefix("release-preview:").and_then(|s|s.parse().ok()).ok_or("Invalid preview identity")?;
-                let message="Release interrupted; outcome uncertain. It will not be repeated automatically.";
+                let message=if j.language(id)?.as_deref()==Some("ru") {"Выпуск прерван; исход неясен. Автоматического повтора не будет."}else{"Release interrupted; outcome uncertain. It will not be repeated automatically."};
                 result_card(j,id,preview,message)?;
                 j.0.execute("UPDATE requests SET state='uncertain',reply=?2,error=?2 WHERE id=?1 AND state IN ('queued','waiting','failed')",params![id,message]).map_err(err)?;}
             tx.commit().map_err(err)?;}
@@ -523,6 +553,15 @@ mod tests {
     use std::{sync::{Arc,Mutex},os::unix::fs::PermissionsExt};
     struct Fixture { dir:std::path::PathBuf,j:Shared,tq:Taskq,c:Value,a:String,b:String,r:Run }
     impl Drop for Fixture {fn drop(&mut self){let _=std::fs::remove_dir_all(&self.dir);}}
+    #[test]
+    fn language_344_release_labels_preserve_source_identifiers() {
+        let source="Release sample\nTarget SHA: abc123\nAuthors:\nMigrations: yes\nsmoke: failed https://example.invalid/jobs/1";
+        assert_eq!(release_text(source,false),source);
+        let ru=release_text(source,true);
+        assert!(ru.contains("Выпуск sample") && ru.contains("Целевой SHA: abc123") && ru.contains("Миграции: да"));
+        assert!(ru.contains("Проверка работоспособности: ошибка https://example.invalid/jobs/1"));
+        assert_eq!(release_text("Автор Release sample",true),"Автор Release sample");
+    }
     fn fixture(tag:&str)->Fixture {
         let dir=std::env::temp_dir().join(format!("pilotq-release-{tag}-{}",std::process::id()));let _=std::fs::remove_dir_all(&dir);std::fs::create_dir_all(&dir).unwrap();
         let cmd=|args:&[&str]| {let o=std::process::Command::new("/usr/bin/git").current_dir(&dir).args(args).output().unwrap();assert!(o.status.success(),"{:?}: {}",args,String::from_utf8_lossy(&o.stderr));String::from_utf8_lossy(&o.stdout).trim().to_string()};

@@ -31,10 +31,10 @@ pub const GRANTS: [&str; 8] = ["chat", "users", "projects", "taskq", "audit", "q
 /// Section 7 health sources, each reported separately.
 pub const SOURCES: [&str; 5] = ["poll", "storage", "model", "taskq", "delivery"];
 /// §9 / #81 owner incidents: source, opening and recovery text. Plain lines, no internal IDs or raw errors (§4).
-const INCIDENTS: [(&str, &str, &str); 3] = [
-    ("model", "⚠️ PilotQ: Codex runs are failing · new requests may fail · run pilotq doctor on the host", "✅ PilotQ: Codex answers again · waiting requests resume"),
-    ("taskq", "⚠️ PilotQ: TaskQ board unavailable · plans stay unsent · retrying", "✅ PilotQ: TaskQ board reachable again · held plans resume"),
-    ("poll", "⚠️ PilotQ: Telegram polling is failing · new messages wait", "✅ PilotQ: Telegram polling works again"),
+const INCIDENTS: [(&str, &str, &str, &str, &str); 3] = [
+    ("model", "⚠️ PilotQ: Codex runs are failing · new requests may fail · run pilotq doctor on the host", "✅ PilotQ: Codex answers again · waiting requests resume", "⚠️ PilotQ: запросы к Codex завершаются с ошибкой · новые запросы могут не пройти · выполните pilotq doctor на сервере", "✅ PilotQ: Codex снова отвечает · ожидающие запросы продолжаются"),
+    ("taskq", "⚠️ PilotQ: TaskQ board unavailable · plans stay unsent · retrying", "✅ PilotQ: TaskQ board reachable again · held plans resume", "⚠️ PilotQ: доска TaskQ недоступна · планы не отправляются · проверка повторяется", "✅ PilotQ: доска TaskQ снова доступна · отложенные планы продолжаются"),
+    ("poll", "⚠️ PilotQ: Telegram polling is failing · new messages wait", "✅ PilotQ: Telegram polling works again", "⚠️ PilotQ: приём сообщений Telegram не работает · новые сообщения ожидают", "✅ PilotQ: приём сообщений Telegram восстановлен"),
 ];
 /// Hold-down before an incident opens; `model` instead needs two consecutive failed runs.
 const HOLD: i64 = 120;
@@ -123,6 +123,25 @@ fn chat_language(tx: &Connection, chat:i64, sender:i64, text:Option<&str>, label
     // Upgrade fallback: reuse the last durable own resolution, never another actor/chat.
     let prior:Option<Option<String>>=tx.query_row("SELECT language FROM requests WHERE front='telegram' AND chat=?1 AND sender=?2 AND kind IN ('text','image','document','voice','answer','control','builtin','choice') AND language IN ('ru','en') ORDER BY id DESC LIMIT 1",params![chat,sender],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
     Ok(prior.flatten().or_else(||label.filter(|x|x.starts_with("ru") || x.starts_with("en")).map(|x|if x.starts_with("ru"){"ru".into()}else{"en".into()})))
+}
+
+/// Language for a newly generated delayed output, scoped to its actor and destination.
+/// Existing outbox payloads remain immutable across retries.
+pub(crate) fn current_reply_language(c:&Connection,front:&str,chat:i64,sender:i64)->Result<Option<String>,String> {
+    if front=="telegram" {return chat_language(c,chat,sender,None,None);}
+    let raw:Option<String>=c.query_row("SELECT value FROM meta WHERE key=?1",[format!("reply-language:{front}:{chat}:{sender}")],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
+    raw.map(|s|serde_json::from_str::<Value>(&s).map(|v|v["language"].as_str().map(str::to_string)).map_err(|e|e.to_string())).transpose().map(Option::flatten)
+}
+
+pub(crate) fn inherit_reply_language(c:&Connection,id:i64,at:i64)->Result<(),String> {
+    let (front,chat,sender):(String,i64,i64)=c.query_row("SELECT front,chat,sender FROM requests WHERE id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|e|e.to_string())?;
+    let route=if front=="service" {"telegram"}else{&front};
+    let lang=current_reply_language(c,route,chat,sender)?.unwrap_or_else(||"en".into());
+    let key=format!("reply-language:{route}:{chat}:{sender}");
+    let basis:Option<String>=c.query_row("SELECT value FROM meta WHERE key=?1",[key],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
+    c.execute("UPDATE requests SET language=?2 WHERE id=?1",params![id,lang]).map_err(|e|e.to_string())?;
+    c.execute("INSERT INTO audit_events(request_id,at,kind,result) VALUES (?1,?2,'reply_language_inherited',?3)",params![id,at,json!({"language":lang,"reason":"scoped_delayed_output","basis":basis.map(|s|serde_json::from_str::<Value>(&s)).transpose().map_err(|e|e.to_string())?,"actor":sender,"chat":chat,"front":route}).to_string()]).map_err(|e|e.to_string())?;
+    Ok(())
 }
 
 /// Freeze one admitted revision's language and reason atomically with its input.
@@ -244,7 +263,7 @@ pub(crate) fn board_card(tx: &Connection, project: &str, board: &str, root: &str
     let shared: bool = tx.query_row("SELECT coalesce((SELECT shared FROM routes WHERE chat=?1 AND topic=?2),0)", params![chat, topic.unwrap_or(0)], |r| r.get(0)).map_err(e)?;
     let update: i64 = tx.query_row("SELECT min(coalesce(min(update_id),0),0)-1 FROM requests", [], |r| r.get(0)).map_err(e)?;
     let id = insert(tx, update, "telegram", chat, topic, owner, None, 0, "board_event", Some(&format!("{project}#{task}")), "answered", at, &session(chat, topic, owner, shared), None)?;
-    tx.execute("UPDATE requests SET language=(SELECT language FROM requests WHERE sender=?2 AND language IS NOT NULL AND id<>?1 ORDER BY id DESC LIMIT 1) WHERE id=?1", params![id, owner]).map_err(e)?;
+    inherit_reply_language(tx,id,at)?;
     tx.execute("INSERT INTO tasks(number,request_id,chat,topic,state,revision,observed,project,board,root) VALUES (?1,?2,?3,?4,'',-1,?5,?6,?7,?8)",
         params![task, id, chat, topic, at, project, board, root]).map_err(e)?;
     tx.execute("INSERT INTO audit_events(request_id,at,kind,target) VALUES (?1,?2,'board_event',?3)", params![id, at, format!("{project}#{task}")]).map_err(e)?;
@@ -686,10 +705,10 @@ fn finish_builtin(tx:&Connection,id:i64,text:&str,ok:bool,at:i64)->Result<(),Str
         let callback:Option<Vec<u8>>=tx.query_row("SELECT value FROM meta WHERE key=?1",[format!("callback:{id}")],|r|r.get(0)).optional().map_err(e)?;
         if onboarding && callback.is_some() {
             let callback=String::from_utf8(callback.unwrap()).map_err(|_|"Invalid callback identity")?;
-            let toast=if ok && input.starts_with("/release") {"Release request processed."} else if ok {"Setup updated."} else {text};
+            let toast=crate::builtins::localized(if ok && input.starts_with("/release") {"Release request processed."} else if ok {"Setup updated."} else {&reply},language.as_deref(),!ok);
             let acknowledged:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM outbox WHERE request_id=?1 AND kind LIKE 'toast:%')",[id],|r|r.get(0)).map_err(e)?;
             if !acknowledged {
-                outbox(tx,id,chat,topic,None,None,toast,at)?;
+                outbox(tx,id,chat,topic,None,None,&toast,at)?;
                 tx.execute("UPDATE outbox SET kind=?2 WHERE id=?1",params![tx.last_insert_rowid(),format!("toast:{callback}")]).map_err(e)?;
             }
         } else if !onboarding || !ok || input.ends_with(" override") || input.split_whitespace().next().and_then(|c|c.split('@').next())==Some("/onboard") {
@@ -703,6 +722,7 @@ fn finish_builtin(tx:&Connection,id:i64,text:&str,ok:bool,at:i64)->Result<(),Str
 /// R10/R13, §6: own DM self-service shares atomic admission and never changes grants.
 fn profile_control(tx:&Connection, request:i64, chat:i64, sender:i64, cmd:&str, at:i64)->Result<String,String> {
     let e=|e:rusqlite::Error|e.to_string();
+    let ru:bool=tx.query_row("SELECT coalesce(language,'en') LIKE 'ru%' FROM requests WHERE id=?1",[request],|r|r.get(0)).map_err(e)?;
     let topic:Option<i64>=tx.query_row("SELECT topic FROM requests WHERE id=?1",[request],|r|r.get(0)).map_err(e)?;
     if chat!=sender || topic.is_some() { return Ok("Use this control in a direct message with PilotQ; it shows only your own data.".into()); }
     let text:String=tx.query_row("SELECT text FROM requests WHERE id=?1",[request],|r|r.get(0)).map_err(e)?;
@@ -712,12 +732,12 @@ fn profile_control(tx:&Connection, request:i64, chat:i64, sender:i64, cmd:&str, 
     let usage="Usage: /profile | /profile set KEY VALUE | /profile forget KEY; /access takes no arguments.";
     if cmd=="/access" {
         if !args.is_empty() {return Ok(usage.into());}
-        return Ok(format!("Your current grants: {}. Ask an administrator to change or revoke access. Profiles cannot change grants.",grants_of(tx,sender)?.join(", ")));
+        return Ok(if ru {format!("Ваши текущие права: {}. Для изменения или отзыва обратитесь к администратору. Профиль не меняет права.",grants_of(tx,sender)?.join(", "))} else {format!("Your current grants: {}. Ask an administrator to change or revoke access. Profiles cannot change grants.",grants_of(tx,sender)?.join(", "))});
     }
     if args.is_empty() {
         let mut q=tx.prepare("SELECT key,value,private,source,revision FROM facts WHERE subject=?1 ORDER BY key").map_err(e)?;
-        let rows:Vec<String>=q.query_map([sender],|r|Ok(format!("{} = {} ({}; {}; revision {})",r.get::<_,String>(0)?,r.get::<_,String>(1)?,if r.get::<_,bool>(2)? {"private"} else {"shared"},r.get::<_,String>(3)?,r.get::<_,i64>(4)?))).and_then(Iterator::collect).map_err(e)?;
-        return Ok(format!("Your current remembered facts:\n{}",if rows.is_empty() {"none".into()} else {rows.join("\n")}));
+        let rows:Vec<String>=q.query_map([sender],|r|Ok(format!("{} = {} ({}; {}; {} {})",r.get::<_,String>(0)?,r.get::<_,String>(1)?,if r.get::<_,bool>(2)? {if ru {"личное"} else {"private"}} else {if ru {"общее"} else {"shared"}},r.get::<_,String>(3)?,if ru {"редакция"}else{"revision"},r.get::<_,i64>(4)?))).and_then(Iterator::collect).map_err(e)?;
+        return Ok(format!("{}\n{}",if ru {"Ваши сохранённые сведения:"} else {"Your current remembered facts:"},if rows.is_empty() {if ru {"нет"}else{"none"}.into()} else {rows.join("\n")}));
     }
     let mut parts=args.splitn(3,char::is_whitespace);
     let verb=parts.next().unwrap_or(""); let key=parts.next().unwrap_or(""); let value=parts.next().unwrap_or("").trim();
@@ -725,11 +745,11 @@ fn profile_control(tx:&Connection, request:i64, chat:i64, sender:i64, cmd:&str, 
     match verb {
         "set" if !value.is_empty() && value.len()<=1024 => {
             let revision:i64=tx.query_row("INSERT INTO facts(subject,key,value,private,source,revision,at) VALUES (?1,?2,?3,1,?4,1,?5) ON CONFLICT(subject,key) DO UPDATE SET value=excluded.value,private=1,source=excluded.source,revision=revision+1,at=excluded.at RETURNING revision",params![sender,key,value,format!("user:{sender}"),at],|r|r.get(0)).map_err(e)?;
-            Ok(format!("Remembered {key} = {value} (private; revision {revision}). Previous audit/history remain."))
+            Ok(if ru {format!("Сохранено {key} = {value} (личное; редакция {revision}). Прежние аудит и история сохранены.")} else {format!("Remembered {key} = {value} (private; revision {revision}). Previous audit/history remain.")})
         },
         "forget" if value.is_empty()=> {
             let removed=tx.execute("DELETE FROM facts WHERE subject=?1 AND key=?2",params![sender,key]).map_err(e)?;
-            Ok(format!("{key}: {}. Preference deletion does not erase audit/history.",if removed>0 {"forgotten"} else {"no current value"}))
+            Ok(if ru {format!("{key}: {}. Удаление предпочтения не стирает аудит и историю.",if removed>0 {"удалено"} else {"нет текущего значения"})} else {format!("{key}: {}. Preference deletion does not erase audit/history.",if removed>0 {"forgotten"} else {"no current value"})})
         },
         _=>Ok(usage.into())
     }
@@ -739,20 +759,21 @@ fn profile_control(tx:&Connection, request:i64, chat:i64, sender:i64, cmd:&str, 
 /// conversation (§ 12). Also returns a request that `/stop` cancelled.
 fn answer_control(tx: &Connection, session: &str, cmd: &str, request: i64, chat: i64, sender: i64, at: i64) -> Result<(String, Option<i64>), String> {
     let e = |e: rusqlite::Error| e.to_string();
+    let ru:bool=tx.query_row("SELECT coalesce(language,'en') LIKE 'ru%' FROM requests WHERE id=?1",[request],|r|r.get(0)).map_err(e)?;
     Ok((
         match cmd {
             "/stop" => {
                 let running: Option<i64> = tx.query_row("SELECT id FROM requests WHERE session=?1 AND state='running'", [session], |r| r.get(0)).optional().map_err(e)?;
-                let Some(id) = running else { return Ok(("Nothing is running in this conversation.".into(), None)) };
+                let Some(id) = running else { return Ok((if ru {"В этом диалоге ничего не выполняется."}else{"Nothing is running in this conversation."}.into(), None)) };
                 // the fence bump is the verified stop: the old run can no longer record a reply or effect
                 tx.execute("UPDATE requests SET state='cancelled', error='stopped by /stop' WHERE id=?1", [id]).map_err(e)?;
                 tx.execute("UPDATE conversations SET fence=fence+1 WHERE session=?1", [session]).map_err(e)?;
                 if stored_voice(tx,id)?.is_some() {
                     let (chat,topic,message)=tx.query_row("SELECT chat,topic,message FROM requests WHERE id=?1",[id],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,Option<i64>>(1)?,r.get::<_,i64>(2)?))).map_err(e)?;
-                    final_outbox(tx,id,chat,topic,Some(message),"Stopped; queued follow-ups stay queued.",at)?;
+                    final_outbox(tx,id,chat,topic,Some(message),if ru {"Остановлено; последующие сообщения остаются в очереди."}else{"Stopped; queued follow-ups stay queued."},at)?;
                     return Ok((String::new(),Some(id)));
                 }
-                return Ok(("Stopped; queued follow-ups stay queued.".into(), Some(id)));
+                return Ok((if ru {"Остановлено; последующие сообщения остаются в очереди."}else{"Stopped; queued follow-ups stay queued."}.into(), Some(id)));
             }
             "/loop" => {
                 let text:String=tx.query_row("SELECT text FROM requests WHERE id=?1",[request],|r|r.get(0)).map_err(e)?;
@@ -772,18 +793,18 @@ fn answer_control(tx: &Connection, session: &str, cmd: &str, request: i64, chat:
             "/doctor" | "/onboard" | "/onboard-button" | "/release" | "/release-confirm" => "Checking setup.".into(),
             "/model" | "/model-button" => "Checking model catalogue.".into(),
             // a group or topic would show one person's history to everyone in it
-            "/audit" if chat != sender => "Use /audit in a direct message with PilotQ; it shows only your own requests.".into(),
+            "/audit" if chat != sender => if ru {"Используйте /audit в личном чате с PilotQ; команда показывает только ваши запросы."}else{"Use /audit in a direct message with PilotQ; it shows only your own requests."}.into(),
             "/audit" => {
                 // Telegram shows a person their own records only, whatever their grants; `pilotq audit` serves the audit grant
                 let own = Filter { user: Some(sender), ..Filter::default() };
                 let rows: Vec<Value> = records(tx, sender, "telegram", &own, at)?.into_iter().filter(|r| r["request"] != request).collect();
-                let mut lines = vec![format!("Your requests are recorded ({RETENTION}). Latest:")];
+                let mut lines = vec![if ru {"Ваши запросы записываются (метаданные — 365 дней, текст — 90 дней). Последние:".into()}else{format!("Your requests are recorded ({RETENTION}). Latest:")}];
                 for r in rows.iter().rev().take(5) {
                     let text: String = r["text"].as_str().unwrap_or("").chars().take(60).collect();
-                    lines.push(format!("{}: {text}", r["outcome"].as_str().unwrap_or("")));
+                    lines.push(format!("{}: {text}", crate::conversation::request_state(r["outcome"].as_str().unwrap_or(""),if ru {Some("ru")}else{Some("en")})));
                 }
                 if rows.is_empty() {
-                    lines.push("none".into());
+                    lines.push(if ru {"нет"}else{"none"}.into());
                 }
                 lines.join("\n")
             }
@@ -816,7 +837,7 @@ fn answer_control(tx: &Connection, session: &str, cmd: &str, request: i64, chat:
                     .map_err(e)?;
                 let loop_stopped=crate::loops::reset(tx,request,at)?;
                 let selected: Option<String> = tx.query_row("SELECT CAST(value AS TEXT) FROM meta WHERE key=?1", [format!("model:{session}")], |r|r.get(0)).optional().map_err(e)?;
-                format!("New conversation started. Model: {}.{}", selected.as_deref().unwrap_or("default (Codex configuration)"),if loop_stopped {" Loop stopped."} else {""})
+                if ru {format!("Начат новый диалог. Модель: {}.{}",selected.as_deref().unwrap_or("по умолчанию (настройки Codex)"),if loop_stopped {" Цикл остановлен."}else{""})} else {format!("New conversation started. Model: {}.{}", selected.as_deref().unwrap_or("default (Codex configuration)"),if loop_stopped {" Loop stopped."} else {""})}
             }
         },
         None,
@@ -868,6 +889,7 @@ fn service_message(tx: &Connection, owner: i64, key: Option<&str>, text: &str, a
     }
     let update: i64 = tx.query_row("SELECT min(coalesce(min(update_id), 0), 0) - 1 FROM requests", [], |r| r.get(0)).map_err(e)?;
     let id = insert(tx, update, "service", owner, None, owner, None, 0, "incident", None, "answered", at, &format!("service:{owner}"), None)?;
+    inherit_reply_language(tx,id,at)?;
     tx.execute("UPDATE requests SET reply=?2 WHERE id=?1", params![id, text]).map_err(e)?;
     outbox(tx, id, owner, None, None, None, text, at)?;
     if let Some(k) = key {
@@ -1277,6 +1299,8 @@ impl Journal {
         tx.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?1,coalesce((SELECT generation FROM conversations WHERE session=?2),0))",params![format!("builtin-generation:{id}"),session]).map_err(|e|e.to_string())?;
         if !deferred {
             let (text,_)=answer_control(&tx,&session,cmd,id,sender,sender,at)?;
+            let language:Option<String>=tx.query_row("SELECT language FROM requests WHERE id=?1",[id],|r|r.get(0)).map_err(|e|e.to_string())?;
+            let text=crate::builtins::localized(&text,language.as_deref(),failed);
             tx.execute("UPDATE requests SET reply=?2,error=?3 WHERE id=?1",params![id,text,if failed {Some(&text)} else {None}]).map_err(|e|e.to_string())?;
         }
         tx.commit().map_err(|e|e.to_string())?;
@@ -1332,6 +1356,7 @@ impl Journal {
         } else { arg.map(str::to_string) };
         if args.next().is_some() { return Err("Use /model, /model MODEL or /model default.".into()); }
         if generation!=saved { return Err("Conversation was reset; use /model again.".into()); }
+        let ru:bool=tx.query_row("SELECT coalesce(language,'en') LIKE 'ru%' FROM requests WHERE id=?1",[r.id],|x|x.get(0)).map_err(e)?;
         let key=format!("model:{}",r.session);
         let before:Option<String>=tx.query_row("SELECT CAST(value AS TEXT) FROM meta WHERE key=?1",[&key],|x|x.get(0)).optional().map_err(e)?;
         let text=if let Some(name)=selected {
@@ -1341,13 +1366,13 @@ impl Journal {
             tx.execute("INSERT INTO meta(key,value) VALUES (?1,1) ON CONFLICT(key) DO UPDATE SET value=value+1",[format!("model-epoch:{}",r.session)]).map_err(e)?;
             tx.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?1,1)",[format!("refresh:{}",r.session)]).map_err(e)?;
             tx.execute("INSERT INTO audit_events(request_id,at,kind,item,result) VALUES (?1,?2,'model',?3,?4)",params![r.id,at,before,name]).map_err(e)?;
-            format!("Saved model: {name}. Applies to the next run in this conversation; active runs and TaskQ workers keep their policy.")
+            if ru {format!("Модель сохранена: {name}. Применится к следующему запуску в этом диалоге; активные запуски и исполнители TaskQ сохраняют свои настройки.")}else{format!("Saved model: {name}. Applies to the next run in this conversation; active runs and TaskQ workers keep their policy.")}
         } else {
             let mut choices=vec!["default".to_string()]; choices.extend_from_slice(models);
             tx.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?1,?2)",params![format!("models:{}",r.id),serde_json::to_string(&choices).map_err(|e|e.to_string())?]).map_err(e)?;
             tx.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?1,?2)",params![format!("models-epoch:{}",r.id),meta(&tx,&format!("model-epoch:{}",r.session))?.unwrap_or(0)]).map_err(e)?;
             let actual:Option<String>=tx.query_row("SELECT u.model FROM runs u JOIN requests q ON q.id=u.request_id WHERE q.session=?1 AND u.model IS NOT NULL ORDER BY u.id DESC LIMIT 1",[&r.session],|x|x.get(0)).optional().map_err(e)?;
-            format!("Saved choice: {}. Last reported model: {}.\\nCodex catalogue (access is verified only by a completed turn):\\n{}\\nUse a button or /model MODEL. Next run only; TaskQ worker policy is unchanged.",before.as_deref().unwrap_or("default"),actual.as_deref().unwrap_or("unknown"),choices.join("\\n")).replace("\\n","\n")
+            if ru {format!("Сохранённый выбор: {}. Последняя наблюдаемая модель: {}.\nКаталог Codex (доступ подтверждает только завершённый запрос):\n{}\nВыберите кнопку или /model MODEL. Только для следующего запуска; настройки исполнителей TaskQ не меняются.",before.as_deref().unwrap_or("по умолчанию"),actual.as_deref().unwrap_or("нет данных"),choices.iter().map(|m|if m=="default"{"по умолчанию"}else{m.as_str()}).collect::<Vec<_>>().join("\n"))}else{format!("Saved choice: {}. Last reported model: {}.\\nCodex catalogue (access is verified only by a completed turn):\\n{}\\nUse a button or /model MODEL. Next run only; TaskQ worker policy is unchanged.",before.as_deref().unwrap_or("default"),actual.as_deref().unwrap_or("unknown"),choices.join("\\n")).replace("\\n","\n")}
         };
         finish_builtin(&tx,r.id,&text,true,at)?;
         tx.commit().map_err(e)?; self.trace(r.id,at); Ok(())
@@ -1617,11 +1642,11 @@ impl Journal {
                         // §12: accepted text gets a reaction obligation below, without a text acknowledgement.
                         None => String::new(),
                     };
-                    let text=if matches!(cmd,Some("/profile"|"/access"|"/help"|"/version"|"/model"|"/model-button"|"/doctor"|"/onboard"|"/onboard-button"|"/release"|"/release-confirm"|"/restart"|"/skills"|"/skill"|"/unknown")) {
+                    let text=if cmd.is_some() {
                         crate::builtins::localized(&text,language.as_deref(),state=="failed")
                     } else {text};
                     // § 8: a person learns at admission that their requests are recorded, and for how long
-                    let notice = format!(" Your requests are recorded ({RETENTION}); /audit in a direct message shows yours.");
+                    let notice = if language.as_deref().unwrap_or("en").starts_with("ru") {"Ваши запросы записываются (метаданные — 365 дней, текст — 90 дней); /audit в личном чате показывает ваши записи.".into()}else{format!(" Your requests are recorded ({RETENTION}); /audit in a direct message shows yours.")};
                     if state != "queued" {
                         let error = if busy {Some("busy: backlog full")} else if state=="failed" && cmd.is_some() {Some(text.as_str())} else {None};
                         tx.execute("UPDATE requests SET reply=?2, error=coalesce(?3, error) WHERE id=?1", params![id, text, error]).map_err(|e| e.to_string())?;
@@ -1636,8 +1661,8 @@ impl Journal {
                     }
                     if let Some(callback)=&i.callback {
                         if cmd==Some("/model-button") || (i.kind=="action" && !text.is_empty()) {
-                            let toast=if i.kind=="action" {text.as_str()} else {"Model selection received."};
-                            outbox(&tx,id,i.chat,i.topic,None,None,toast,at)?;
+                            let toast=crate::builtins::localized(if i.kind=="action" {text.as_str()} else {"Model selection received."},language.as_deref(),false);
+                            outbox(&tx,id,i.chat,i.topic,None,None,&toast,at)?;
                             tx.execute("UPDATE outbox SET kind=?2 WHERE id=?1",params![tx.last_insert_rowid(),format!("toast:{callback}")]).map_err(|e|e.to_string())?;
                         }
                     }
@@ -2080,7 +2105,9 @@ impl Journal {
         let key = format!("rollback:{failed}:{restored}");
         let added = tx.execute("INSERT OR IGNORE INTO meta(key,value) VALUES (?1,?2)", params![key, at]).map_err(|e| e.to_string())? != 0;
         if added {
-            service_message(&tx, owner, None, &format!("PilotQ update failed: {failed}; restored {restored}."), at)?;
+            let ru=current_reply_language(&tx,"telegram",owner,owner)?.as_deref()==Some("ru");
+            let text=if ru {format!("Обновление PilotQ не удалось: {failed}; восстановлена версия {restored}.")}else{format!("PilotQ update failed: {failed}; restored {restored}.")};
+            service_message(&tx,owner,None,&text,at)?;
         }
         tx.commit().map_err(|e| e.to_string())?;
         Ok(added)
@@ -2091,7 +2118,9 @@ impl Journal {
     pub fn incidents(&mut self, owner: i64, at: i64) -> Result<(), String> {
         let e = |e: rusqlite::Error| e.to_string();
         let tx = self.0.transaction().map_err(e)?;
-        for (source, open, close) in INCIDENTS {
+        let ru=current_reply_language(&tx,"telegram",owner,owner)?.as_deref()==Some("ru");
+        for (source, open_en, close_en, open_ru, close_ru) in INCIDENTS {
+            let (open,close)=if ru {(open_ru,close_ru)}else{(open_en,close_en)};
             let state: Option<String> = tx.query_row("SELECT state FROM health WHERE source=?1", [source], |r| r.get(0)).optional().map_err(e)?;
             let key = format!("incident:{source}");
             let opened = meta(&tx, &key)?.is_some();
@@ -2125,7 +2154,7 @@ impl Journal {
         };
         for (source,reason) in held {
             let key=format!("notified:{source}");
-            if meta(&tx,&key)?.is_none() && service_message(&tx,owner,Some(&source),&format!("PilotQ Telegram route unavailable ({source}): {reason}. Output remains at its original destination; administrator revalidation is required."),at)? {
+            if meta(&tx,&key)?.is_none() && service_message(&tx,owner,Some(&source),&if ru {format!("Маршрут Telegram недоступен ({source}). Вывод остаётся в исходном чате; администратор должен повторно проверить доступ. Причина сохранена в аудите.")}else{format!("PilotQ Telegram route unavailable ({source}): {reason}. Output remains at its original destination; administrator revalidation is required.")},at)? {
                 tx.execute("INSERT INTO meta(key,value) VALUES (?1,?2)",params![key,at]).map_err(e)?;
             }
         }
@@ -2164,7 +2193,8 @@ impl Journal {
         let tx = self.0.transaction().map_err(e)?;
         if let (Some(from), Some(until)) = (meta(&tx, "down_from")?, meta(&tx, "down_until")?) {
             let gap = until - from;
-            let text = if gap > DOWNTIME {
+            let ru=current_reply_language(&tx,"telegram",owner,owner)?.as_deref()==Some("ru");
+            let text = if ru && gap>DOWNTIME {format!("⚠️ PilotQ был недоступен {} мин, до {:02}:{:02} UTC · сообщения за это время обрабатываются сейчас",gap/60,until%86400/3600,until%3600/60)} else if ru {"⚠️ PilotQ перезапущен без запланированной остановки".into()} else if gap > DOWNTIME {
                 format!("⚠️ PilotQ was unavailable for {} min, until {:02}:{:02} UTC · messages from that time are processed now", gap / 60, until % 86400 / 3600, until % 3600 / 60)
             } else {
                 "⚠️ PilotQ restarted without a planned stop".into()
@@ -2977,7 +3007,8 @@ impl Journal {
         let models:Option<String>=self.0.query_row("SELECT CAST(value AS TEXT) FROM meta WHERE key=?1",[format!("models:{source}")],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
         if let Some(models)=models {
             for (i,model) in serde_json::from_str::<Vec<String>>(&models).map_err(|e|e.to_string())?.iter().enumerate() {
-                buttons.push((format!("model:{source}:{i}"),model.chars().take(64).collect()));
+                let ru=self.language(source)?.as_deref()==Some("ru");
+                buttons.push((format!("model:{source}:{i}"),if ru && model=="default" {"По умолчанию".into()}else{model.chars().take(64).collect()}));
             }
         }
         if let Some((id,plan,options,language))=card {
@@ -5467,6 +5498,75 @@ mod tests {
 
     fn input(chat: i64, topic: Option<i64>, sender: Option<i64>, name: &str, kind: &'static str, text: Option<&str>) -> Option<Input> {
         Some(Input { files: vec![], callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat, topic, sender, name: Some(name.into()), message: 1, kind, text: text.map(str::to_string), reply_to: None })
+    }
+
+    // #344 / R10,R17, §6: delayed owner DM output uses that actor/chat,
+    // not the most recent group or another actor; already queued payloads stay frozen.
+    #[test]
+    fn language_344_delayed_owner_cards_are_scoped_and_frozen() {
+        let (mut j,p)=journal("language-344-delayed");
+        j.admit(&[(1,input(7,None,Some(7),"Owner","text",Some("Please show current tasks"))),
+            (2,input(-100,Some(3),Some(7),"Owner","text",Some("Покажи текущие задачи")))],1).unwrap();
+        j.rollback_notice(7,"1.0.1","1.0.0",2).unwrap();
+        let (id,before):(i64,String)=j.0.query_row("SELECT request_id,text FROM outbox WHERE text LIKE 'PilotQ update failed:%' ORDER BY id LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+        assert_eq!(j.language(id).unwrap().as_deref(),Some("en"));
+        j.admit(&[(3,input(7,None,Some(7),"Owner","text",Some("Ответь по-русски. Покажи задачи")))],3).unwrap();
+        j.rollback_notice(7,"1.0.2","1.0.0",4).unwrap();
+        let last:String=j.0.query_row("SELECT text FROM outbox ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).unwrap();
+        assert!(last.contains("Обновление PilotQ не удалось") && last.contains("1.0.2") && last.contains("1.0.0"),"{last}");
+        let unchanged:String=j.0.query_row("SELECT text FROM outbox WHERE request_id=?1 ORDER BY id LIMIT 1",[id],|r|r.get(0)).unwrap();
+        assert_eq!(unchanged,before);
+        drop(j);std::fs::remove_dir_all(p).unwrap();
+    }
+
+    // #344 / §9: generated catalog prose/buttons and callback confirmations
+    // localize around literal model IDs; callback identities and receipts are unchanged.
+    #[test]
+    fn language_344_models_and_callback_confirmation() {
+        let (mut j,p)=journal("language-344-models");
+        j.admit(&[(1,input(7,None,Some(7),"Owner","text",Some("Ответь по-русски. Покажи модели"))),
+            (2,input(7,None,Some(7),"Owner","text",Some("/model")))],1).unwrap();
+        let request=j.builtin_next().unwrap().unwrap();
+        j.builtin_models(&request,&["invented-Модель".into(),"gpt-test".into()],2).unwrap();
+        let reply=j.request(request.id).unwrap().1.unwrap();
+        assert!(reply.contains("Сохранённый выбор") && reply.contains("нет данных") && reply.contains("invented-Модель") && reply.contains("gpt-test"),"{reply}");
+        let delivery:i64=j.0.query_row("SELECT max(id) FROM outbox WHERE request_id=?1",[request.id],|r|r.get(0)).unwrap();
+        let buttons=j.card_buttons(delivery).unwrap();
+        assert!(buttons.iter().any(|(data,label)|data==&format!("model:{}:0",request.id) && label=="По умолчанию"));
+        let mut callback=input(7,None,Some(7),"Owner","text",Some("/onboard-button invented")).unwrap();callback.message=3;callback.callback=Some("invented-language-344".into());
+        j.admit(&[(3,Some(callback))],3).unwrap();
+        let id:i64=j.0.query_row("SELECT id FROM requests WHERE update_id=3",[],|r|r.get(0)).unwrap();
+        j.builtin_finish(id,"Setup updated.",true,4).unwrap();
+        let toast:String=j.0.query_row("SELECT text FROM outbox WHERE request_id=?1 AND kind LIKE 'toast:%'",[id],|r|r.get(0)).unwrap();
+        assert_eq!(toast,"Проверка настроек обновлена.");
+        drop(j);std::fs::remove_dir_all(p).unwrap();
+    }
+
+    // #344 / §§6,9: deterministic prose/metadata must localize even when
+    // source values contain another script; controls use the admitted snapshot.
+    #[test]
+    fn language_344_deterministic_controls_and_metadata() {
+        let (mut j,p)=journal("language-344-controls");
+        j.admit(&[(1,input(7,None,Some(7),"Owner","text",Some("Ответь по-русски. Покажи задачи")))],1).unwrap();
+        let retention:String=j.0.query_row("SELECT text FROM outbox WHERE request_id=1 AND kind<>'reaction' ORDER BY id LIMIT 1",[],|r|r.get(0)).unwrap();
+        assert!(retention.contains("записываются"),"retention: {retention}");
+        for (update,command,expected) in [(2,"/profile set note значение","Сохранено"),
+            (3,"/profile","Ваши сохранённые сведения"),(4,"/access","Ваши текущие права"),
+            (5,"/audit","Ваши запросы записываются"),(6,"/stop","В этом диалоге ничего не выполняется"),
+            (7,"/new","Начат новый диалог")] {
+            let mut m=input(7,None,Some(7),"Owner","text",Some(command)).unwrap();m.message=update;
+            j.admit(&[(update,Some(m))],update).unwrap();
+            let reply:String=j.0.query_row("SELECT reply FROM requests WHERE update_id=?1",[update],|r|r.get(0)).unwrap();
+            assert!(reply.contains(expected),"{command}: {reply}");
+            if command=="/profile" {assert!(reply.contains("личное") && reply.contains("редакция") && reply.contains("значение"));}
+        }
+        let id=j.builtin_cli(7,"/status",8).unwrap().unwrap();
+        assert!(j.language(id).unwrap().as_deref()!=Some("ru"),"Telegram language cannot import into CLI");
+        let r=j.ask(7,"Ответь по-русски. Проверь состояние",9).unwrap();
+        let id=j.builtin_cli(7,"/stop",10).unwrap().unwrap();
+        let reply=j.request(id).unwrap().1.unwrap();assert!(reply.contains("Остановлено"),"CLI: {reply}");
+        assert!(j.fenced(&r).unwrap());
+        drop(j);std::fs::remove_dir_all(p).unwrap();
     }
 
     // #344 / §6: upgrade fallback must not treat an internal service notice

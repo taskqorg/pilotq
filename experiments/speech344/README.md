@@ -561,3 +561,10 @@ Any later build and paired feature run need their own reviewed source/link
 identities, license/dependency closure, original effective caps/shared600s,
 process-group cleanup and retained observations. This proposal authorizes
 neither a build nor a production frontend patch (§9/R19).
+
+
+## Actual reference readback and KNF preparation (current continuation)
+
+PM note6565687464 reports the exact reference-only run completed55cases in1.763s/exit0/noOOM/high0 under originalcaps; peakself83104KiB. Worker read the retained JSON/arrays, checked hashes/shapes/finite values, and did not rerun the reference. Numeric observations and limits are in [the report](../../docs/research/344.md#current-continuation-output-coverage-catalog-correction-and-actual-reference-readback). No numerical tolerance, KNF/Torchaudio parity or ASR qualification is claimed.
+
+PM note6565715149 requests [the pinned KNF feature-only accessor source/build-closure review](knf-accessor-plan.md). It contains source/hash, archive/dependency/license identities and exact proposed acquisition/compiler/per-case argv. No acquisition/build/run is authorized by this preparation. Same-PCM guarded orchestration and actual engine parity remain separate; no production change.

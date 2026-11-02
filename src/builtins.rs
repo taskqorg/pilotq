@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 pub struct Request { pub id:i64, pub session:String, pub sender:i64, pub text:String }
 
 /// Each child has an absolute deadline and a process group; killed diagnostics cannot leave a CLI behind.
-fn setup_report(exe:&std::path::Path,budget:Duration) -> Result<String,String> {
+fn setup_report(exe:&std::path::Path,budget:Duration,language:Option<&str>) -> Result<String,String> {
     use std::io::Read;
     use std::process::{Command,Stdio};
     let mut command=Command::new(exe);
@@ -32,12 +32,21 @@ fn setup_report(exe:&std::path::Path,budget:Duration) -> Result<String,String> {
     if !completed { return Err("Setup checks timed out; dependency state is unknown.".into()); }
     let output=reader.join().map_err(|_|"Setup checks failed")?.map_err(|_|"Setup checks failed")?;
     let v:Value=serde_json::from_slice(&output).map_err(|_|"Setup checks returned no report")?;
-    let mut lines=vec!["Setup checks (read only):".to_string()];
-    for name in ["configuration","telegram","codex","taskq","voice","host_tools"] {
-        let state=match v["checks"][name].as_str() { Some("ok")=>"ok",Some("failed")=>"failed",_=>"unknown" };
-        lines.push(format!("{name}: {state}"));
+    Ok(setup_text(&v,language))
+}
+
+fn setup_text(v:&Value,language:Option<&str>)->String {
+    let ru=language.unwrap_or("en").starts_with("ru");
+    let mut lines=vec![if ru {"Проверка настроек (только чтение):"}else{"Setup checks (read only):"}.to_string()];
+    for (name,label) in [("configuration","настройки"),("telegram","Telegram"),("codex","Codex"),("taskq","TaskQ"),("voice","распознавание речи"),("host_tools","инструменты хоста")] {
+        let state=match (ru,v["checks"][name].as_str()) {
+            (true,Some("ok"))=>"доступно",(false,Some("ok"))=>"ok",
+            (true,Some("failed"))=>"сбой",(false,Some("failed"))=>"failed",
+            (true,_)=>"нет данных",(false,_)=>"unknown",
+        };
+        lines.push(format!("{}: {state}",if ru {label}else{name}));
     }
-    Ok(lines.join("\n"))
+    lines.join("\n")
 }
 
 pub fn execute(t:&Tool,j:&Shared,r:&Request,installed:bool) -> Result<(),String> {
@@ -75,7 +84,8 @@ pub fn execute(t:&Tool,j:&Shared,r:&Request,installed:bool) -> Result<(),String>
             }
             "/doctor" if r.text.split_whitespace().count()==1=> {
                 let exe=std::env::current_exe().map_err(|_|"Setup checks unavailable")?;
-                return setup_report(&exe,Duration::from_secs(20)).map(Some);
+                let language=j.lock().unwrap().language(r.id)?;
+                return setup_report(&exe,Duration::from_secs(20),language.as_deref()).map(Some);
             }
             "/restart" if r.text.split_whitespace().count()==1=> {
                 let config=crate::config(t)?.ok_or("PilotQ configuration unavailable")?;
@@ -147,6 +157,19 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     // A2/A4 / R13/R17: CLI help uses the same admitted control, catalog and durable reply, without Codex.
+    // #344 / §§6,9: doctor descriptive cells localize; malformed/absent state
+    // stays unknown and arbitrary diagnostic values never enter either language.
+    #[test]
+    fn language_344_doctor_fields_and_safe_errors() {
+        let v=serde_json::json!({"checks":{"configuration":"ok","telegram":"failed","codex":"invented-secret","voice":"unknown"}});
+        let ru=setup_text(&v,Some("ru"));let en=setup_text(&v,Some("en"));
+        assert!(ru.contains("настройки: доступно") && ru.contains("Telegram: сбой") && ru.contains("Codex: нет данных") && ru.contains("распознавание речи: нет данных"));
+        assert!(en.contains("configuration: ok") && en.contains("codex: unknown"));
+        assert!(!ru.contains("invented-secret") && !en.contains("invented-secret"));
+        assert_eq!(localized("Release request processed.",Some("ru"),false),"Запрос на выпуск обработан.");
+        assert_eq!(localized("Setup checks timed out; dependency state is unknown.",Some("ru"),true),"Время проверки настроек истекло; состояние зависимостей неизвестно.");
+    }
+
     #[test]
     fn command_163_help_uses_control_audit() {
         let mut t=crate::tool();
@@ -180,7 +203,7 @@ mod tests {
         let script=dir.join("doctor");
         crate::test_support::write_script(&script,"#!/bin/sh\necho '{\"checks\":{\"configuration\":\"ok\",\"codex\":\"invented-secret\"},\"secret\":\"invented-secret\"}'\necho invented-secret >&2\n").unwrap();
         std::fs::set_permissions(&script,std::fs::Permissions::from_mode(0o700)).unwrap();
-        let report=setup_report(&script,Duration::from_secs(1)).unwrap();
+        let report=setup_report(&script,Duration::from_secs(1),None).unwrap();
         assert!(report.contains("configuration: ok") && report.contains("codex: unknown"));
         assert!(!report.contains("invented-secret"));
         // Separate executable keeps the deadline case independent of the redaction case.
@@ -188,7 +211,7 @@ mod tests {
         crate::test_support::write_script(&slow_script,"#!/bin/sh\nsleep 30\n").unwrap();
         std::fs::set_permissions(&slow_script,std::fs::Permissions::from_mode(0o700)).unwrap();
         let start=Instant::now();
-        assert!(setup_report(&slow_script,Duration::from_millis(50)).unwrap_err().contains("timed out"));
+        assert!(setup_report(&slow_script,Duration::from_millis(50),None).unwrap_err().contains("timed out"));
         assert!(start.elapsed()<Duration::from_secs(2));
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -196,7 +219,7 @@ mod tests {
 
 /// Command failures follow the person's language; detailed dependency errors stay in the request audit (§12).
 pub fn localized(text:&str,language:Option<&str>,failed:bool)->String {
-    if !language.unwrap_or("en").starts_with("ru") || text.chars().any(|c| matches!(c,'А'..='я'|'ё'|'Ё')) { return text.into(); }
+    if !language.unwrap_or("en").starts_with("ru") { return text.into(); }
     if let Some(reason)=text.strip_prefix("Release: ") {
         return format!("Выпуск: {}",reason.replace("Release blocked by ","мешает выполняемая работа: ").replace("task #","задача #").replace("attempt ","попытка ").replace("release verified","выпуск проверен").replace("release outcome uncertain; no automatic retry","результат выпуска неизвестен; автоматического повтора не будет"));
     }
@@ -211,7 +234,7 @@ pub fn localized(text:&str,language:Option<&str>,failed:bool)->String {
         "Restart requested; waiting for active requests to drain."=>"Перезапуск запрошен; жду завершения активных запросов.".into(),
         "Restart refused: active requests did not drain; admission resumed."=>"Перезапуск отменён: активные запросы не завершились; приём работы возобновлён.".into(),
         "Restart refused: access revoked; admission resumed."=>"Перезапуск отменён: доступ отозван; приём работы возобновлён.".into(),
-        "PilotQ restarted and wrote healthy status. Earlier requests and TaskQ work remain recorded."=>"PilotQ перезапущен и записал healthy status; прежние запросы и работа TaskQ сохранены.".into(),
+        "PilotQ restarted and wrote healthy status. Earlier requests and TaskQ work remain recorded."=>"PilotQ перезапущен, исправное состояние записано; прежние запросы и работа TaskQ сохранены.".into(),
         "No callable native skills are enabled. Owner-installed PM packs load automatically on bound routes; /help operations shows the binding. /skill NAME TEXT is unavailable."=>"Вызываемые нативные навыки не включены. PM-пакеты владельца загружаются в привязанных темах; /help operations показывает привязку. /skill NAME TEXT недоступна.".into(),
         "Checking setup."=>"Проверяю настройки.".into(),
         "Checking model catalogue."=>"Проверяю каталог моделей.".into(),
@@ -220,7 +243,19 @@ pub fn localized(text:&str,language:Option<&str>,failed:bool)->String {
         "Model is not in the current Codex catalogue; choice unchanged."=>"Модели нет в текущем каталоге Codex; выбор не изменён.".into(),
         "Use /onboard NAME or /onboard NAME override"=>"Используйте /onboard NAME или /onboard NAME override, где NAME — имя проекта.".into(),
         "Use /model, /model MODEL or /model default."=>"Используйте /model, /model MODEL или /model default.".into(),
-        _ if failed=>"Команда не выполнена; проверьте /status и повторите позже.".into(),
+        "Release request processed."=>"Запрос на выпуск обработан.".into(),
+        "Setup updated."=>"Проверка настроек обновлена.".into(),
+        "Model selection received."=>"Выбор модели получен.".into(),
+        "Access revoked."=>"Доступ отозван.".into(),
+        "Setup checks could not start"=>"Не удалось запустить проверку настроек.".into(),
+        "Setup checks timed out; dependency state is unknown."=>"Время проверки настроек истекло; состояние зависимостей неизвестно.".into(),
+        "Setup checks failed"=>"Проверка настроек не завершилась.".into(),
+        "Setup checks returned no report"=>"Проверка настроек не вернула отчёт.".into(),
+        "Setup checks unavailable"=>"Проверка настроек недоступна.".into(),
+        "Use /loop [1m..24h] PROMPT, /loop or /loop stop."=>"Используйте /loop [1m..24h] PROMPT, /loop или /loop stop.".into(),
+        "Loop interval must be 1m..24h."=>"Интервал цикла должен быть от 1 минуты до 24 часов.".into(),
+        "PM review requires owner or shell access and chat access."=>"PM-обзор доступен владельцу или участнику с правами shell и chat.".into(),
+        _ if failed && !text.chars().any(|c| matches!(c,'А'..='я'|'ё'|'Ё'))=>"Команда не выполнена; проверьте /status и повторите позже.".into(),
         _=>text.into(),
     }
 }

@@ -454,6 +454,26 @@ pub(crate) fn check_with(d:&crate::direct::Direct,tq:&Taskq,j:&std::sync::Mutex<
 
 pub fn summary(project:&str,result:&Value)->String { text(project,result,false) }
 
+/// Owned remedies are translated without rewriting command arguments or external diagnostics.
+fn remedy_ru(check:&str,fix:&str)->String {
+    let known=match check {
+        "configuration"=>Some("Владелец: завершите защищённую настройку config.json и выполните pilotq doctor --json."),
+        "telegram"=>Some("Владелец: проверьте защищённый токен бота и соединение с Telegram; выполните pilotq doctor --json."),
+        "codex"=>Some("Владелец: восстановите изолированный вход Codex в ChatGPT для PilotQ; выполните pilotq doctor --json."),
+        "taskq"=>Some("Владелец: проверьте исполняемый файл TaskQ, корень и доску; выполните pilotq doctor --json."),
+        "voice"=>Some("Владелец: настройте voice.ffmpeg, voice.recognizer и файлы GigaAM по docs/tester-guide.md; выполните pilotq doctor --json."),
+        "host"=>Some("Нет свежего сигнала от хоста TaskQ для этой доски; задачи некому выполнять. Владелец: восстановите сервис TaskQ проекта на хосте выполнения и повторите проверку."),
+        "claim"=>Some("PM: завершите обязательную настройку create_claim_issue через TaskQ Add project с существующими учётными данными хоста; подтвердите результат через TaskQ и повторите проверку."),
+        "codex_capacity"=>Some("Владелец: задайте положительный лимит Codex в политике хоста TaskQ и повторите проверку."),
+        "host_tools"|"doctor"=>Some("Владелец: выполните pilotq doctor --json, устраните указанные проблемы и повторите проверку."),
+        "service" if fix=="PilotQ: waiting for TaskQ to observe the attached project; checks retry automatically."=>Some("PilotQ ожидает, когда TaskQ увидит подключённый проект; проверки повторяются автоматически."),
+        _=>None,
+    };
+    if let Some(text)=known {return format!("{text}\nИсходное указание: {fix}");}
+    // Retain the exact source remedy when it contains a command or a new external finding.
+    // The source is explicitly labelled; it is never mistaken for localized PilotQ prose.
+    format!("Исходное указание (без изменения команд): {fix}")
+}
 fn text(project:&str,result:&Value,ru:bool)->String {
     let title=if result["ready"]==true {if ru {format!("{project}: настройки проверены, проект готов к первой задаче.")} else {format!("{project}: setup passed; ready for the first task.")}}
         else if result["gaps"].as_array().is_some_and(|g|g.iter().any(|g|g["owner_only"]==false)) {
@@ -461,9 +481,13 @@ fn text(project:&str,result:&Value,ru:bool)->String {
         } else if ru {format!("{project}: проект пока не готов. Шаги для владельца:")} else {format!("{project}: not ready. Owner steps:")};
     let mut lines=vec![title];
     if result["merge_request_route"]["outcome"]=="skipped" {
-        lines.push(format!("merge_request_route: skipped; {}",result["merge_request_route"]["reason"].as_str().unwrap_or("qualification unavailable")));
+        lines.push(if ru {"Проверка маршрута merge request: пропущена; резервный ответ TaskQ не подтверждает этот маршрут. Проверки выполнения сохраняет TaskQ.".into()}else{format!("merge_request_route: skipped; {}",result["merge_request_route"]["reason"].as_str().unwrap_or("qualification unavailable"))});
     }
-    for g in result["gaps"].as_array().into_iter().flatten() {lines.push(format!("{}: {}",g["check"].as_str().unwrap_or("setup"),g["fix"].as_str().unwrap_or("Owner: run pilotq doctor --json")));}
+    for g in result["gaps"].as_array().into_iter().flatten() {
+        let check=g["check"].as_str().unwrap_or("setup");
+        let fix=g["fix"].as_str().unwrap_or("Owner: run pilotq doctor --json");
+        lines.push(if ru {format!("{check}: {}",remedy_ru(check,fix))}else{format!("{check}: {fix}")});
+    }
     if result["ready"]!=true {lines.push(if ru {"После исправления нажмите «Проверить снова»."} else {"After completing the listed steps, tap Recheck."}.into());}
     lines.join("\n")
 }
@@ -493,7 +517,8 @@ fn apply(j:&Journal,project:&str,epoch:&Value,result:&Value)->Result<(),String> 
     let source=card_request(j,&mut v,project,owner)?;
     let generation:i64=j.0.query_row("SELECT coalesce((SELECT generation FROM conversations WHERE session=?1),0)",[&session],|r|r.get(0)).map_err(err)?;
     v["generation"]=json!(generation);
-    let language:Option<String>=j.0.query_row("SELECT language FROM requests WHERE sender=?1 AND language IS NOT NULL ORDER BY id DESC LIMIT 1",[owner],|r|r.get(0)).optional().map_err(err)?;
+    crate::journal::inherit_reply_language(&j.0,source,at)?;
+    let language=j.language(source)?;
     let message=text(project,result,language.as_deref().unwrap_or("en").starts_with("ru"));
     j.0.execute("UPDATE outbox SET state='superseded' WHERE request_id=?1 AND kind='onboarding' AND state='pending'",[source]).map_err(err)?;
     crate::journal::outbox(&j.0,source,owner,None,None,Some(&crate::telegram::html(&message)),&message,at)?;
@@ -510,7 +535,7 @@ pub fn buttons(j:&Journal,delivery:i64)->Result<Vec<(String,String)>,String> {
     let Some((project,source,epoch))=row else {return Ok(vec![])};
     let v=saved(j,&project)?.ok_or("Onboarding unavailable")?;
     if v["ready"]==true || v["epoch"]!=epoch || v["pending"]==true {return Ok(vec![])}
-    Ok(vec![(format!("onboard:{source}:{epoch}"),"Recheck".into())])
+    Ok(vec![(format!("onboard:{source}:{epoch}"),if j.language(source)?.as_deref()==Some("ru") {"Проверить снова"}else{"Recheck"}.into())])
 }
 
 pub fn control(t:&coreq::Tool,j:&Shared,r:&crate::builtins::Request)->Result<(),String> {

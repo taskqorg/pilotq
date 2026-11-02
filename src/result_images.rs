@@ -342,8 +342,10 @@ fn queue(j:&Journal,b:&Binding,n:i64,images:&[(String,Vec<u8>)],gap:Option<&str>
     let tag=format!("result-images:{}:{n}:{revision}",b.request);
     if tx.query_row("SELECT EXISTS(SELECT 1 FROM meta WHERE key=?1)",[&tag],|r|r.get::<_,bool>(0)).map_err(|e|e.to_string())? {return Ok(());}
     let at=crate::now() as i64;
+    let language=j.language(b.request)?;
+    let revision_label=if language.as_deref().unwrap_or("en").starts_with("ru") {"редакция"}else{"revision"};
     for (i,(label,bytes)) in images.iter().enumerate() {
-        let text=format!("{} #{n} · revision {revision} · {} / {}\n{}",b.project,i+1,images.len(),label);
+        let text=format!("{} #{n} · {revision_label} {revision} · {} / {}\n{}",b.project,i+1,images.len(),label);
         tx.execute("INSERT INTO outbox(request_id,chat,topic,text,next_at,kind,project,task,revision) VALUES (?1,?2,?3,?4,?5,'result_image',?6,?7,?8)",params![b.request,b.chat,b.topic,text,at,b.project,n,revision]).map_err(|e|e.to_string())?;
         let id=tx.last_insert_rowid();
         if let Some(source)=sources.get(i) {
