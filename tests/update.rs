@@ -121,8 +121,8 @@ while IFS= read -r l; do
   *'"method":"account/rateLimits/read"'*) echo '{"id":'$id',"error":{"code":-32601,"message":"unsupported"}}' ;;
   *'"method":"thread/start"'*) echo '{"id":'$id',"result":{"thread":{"id":"t1"}}}' ;;
   *'"method":"turn/start"'*) echo '{"id":'$id',"result":{"turn":{"id":"u1"}}}'; sleep 3
-    echo '{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"m1","text":"drained"}}}'
-    echo '{"method":"turn/completed","params":{"turn":{"id":"u1","status":"completed"}}}' ;;
+    echo '{"method":"item/completed","params":{"threadId":"t1","turnId":"u1","item":{"type":"agentMessage","id":"m1","text":"drained"}}}'
+    echo '{"method":"turn/completed","params":{"threadId":"t1","turn":{"id":"u1","status":"completed"}}}' ;;
   esac
 done
 "#,

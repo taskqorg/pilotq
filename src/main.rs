@@ -318,7 +318,11 @@ fn doctor(t: &Tool) -> Value {
     let requirements = host::report(c.as_ref());
     let host_ok = host::healthy(&requirements);
     checks["host_tools"] = json!(if host_ok { "ok" } else { "failed" });
-    let Some(c) = c else { return json!({"ok": false, "checks": checks,"requirements":requirements}); };
+    let Some(c) = c else {
+        // without configuration the default runtime is unobserved, never healthy
+        checks[manager::NATIVE[0].name] = json!("unknown");
+        return json!({"ok": false, "checks": checks,"requirements":requirements});
+    };
     checks["configuration"] = json!("ok");
     let telegram = tokio::runtime::Builder::new_current_thread().enable_all().build().ok().is_some_and(|rt| rt.block_on(async {
         let mut bot = Bot::new(&c.token);
