@@ -14,7 +14,7 @@ mod result_images;
 mod instructions;
 mod keys;
 mod manager;
-mod claude;
+mod relay;
 mod slots;
 mod loops;
 mod pm;
@@ -211,7 +211,6 @@ fn config(t: &Tool) -> Result<Option<Config>, String> {
     let secs = |k: &str, d: u64| v["codex_limits"][k].as_u64().map_or(Ok(Duration::from_secs(d)), |n| if n > 0 { Ok(Duration::from_secs(n)) } else { Err(format!("config.json: codex_limits.{k} must be positive")) });
     let limits = manager::Limits { first_event: secs("first_event", 600)?, silent: secs("silent", 600)?, deadline: secs("deadline", 600)? };
     let optimization = pilotq::optimization(&v["optimization"])?;
-    let codex = manager::Codex { bin: v["codex"].as_str().unwrap_or("codex").to_string(), workspace: t.install.join("workspace"), home: t.install.join("codex"), limits, optimization };
     // § 5: the TaskQ CLI and the project root whose taskq.json names the board; absent, the manager has no TaskQ tools
     let tq = &v["taskq"];
     let taskq = match (tq["bin"].as_str(), tq["root"].as_str()) {
@@ -227,25 +226,35 @@ fn config(t: &Tool) -> Result<Option<Config>, String> {
         (None, None) if vc.is_null() => None,
         _ => return Err("config.json: voice needs recognizer and model".into()),
     };
-    // #265 A2: installation runtime (default Codex), per-route overrides and optional TaskQ host slots
-    let client = |v: &Value, k: &str| v.as_str().map_or(Ok(agentq_runtime::agent::Client::Codex), |s| agentq_runtime::agent::Client::parse(s).ok_or(format!("config.json: {k} must be codex or claude")));
-    let default = client(&v["runtime"], "runtime")?;
+    // #265/#359: `runtimes: {NAME: {bin, home, models}}`, the installation runtime (default: the first supported) and per-route
+    // overrides. The #265 keys `codex`, `claude`, `NAME_home` and `NAME_models` stay readable for existing installations.
+    for k in v["runtimes"].as_object().into_iter().flatten().map(|(k, _)| k) {
+        if manager::native(k).is_none() { return Err(format!("config.json: runtimes.{k} is not a supported runtime")); }
+    }
+    let mut agents = std::collections::BTreeMap::new();
+    for n in &manager::NATIVE {
+        let c = &v["runtimes"][n.name];
+        let home = c["home"].as_str().or(v[format!("{}_home", n.name)].as_str());
+        let models = match c["models"].as_array().or(v[format!("{}_models", n.name)].as_array()) {
+            Some(a) => a.iter().map(|m| m.as_str().filter(|s| !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b))).map(str::to_string)
+                .ok_or(format!("config.json: runtimes.{}.models are model codes", n.name))).collect::<Result<_, _>>()?,
+            None => vec![],
+        };
+        agents.insert(n.name.to_string(), manager::Agent { bin: c["bin"].as_str().or(v[n.name].as_str()).unwrap_or(n.name).into(),
+            // "default" keeps the service user's own login; otherwise PilotQ's isolated home
+            home: match home { Some("default") => None, Some(p) => Some(p.into()), None => Some(t.install.join(n.name)) }, models });
+    }
+    let name = |v: &Value, k: &str| v.as_str().map_or(Ok(manager::NATIVE[0].name.to_string()), |s| manager::native(s).filter(|n| agentq_runtime::agent::runtime(n.name).is_some())
+        .map(|n| n.name.to_string()).ok_or(format!("config.json: {k} must name a supported runtime")));
+    let default = name(&v["runtime"], "runtime")?;
     let mut routes = std::collections::BTreeMap::new();
-    for (route, value) in v["runtime_routes"].as_object().into_iter().flatten() { routes.insert(route.clone(), client(value, "runtime_routes")?); }
-    let claude = claude::Claude { bin: v["claude"].as_str().unwrap_or("claude").into(),
-        // "default" keeps the service user's own Claude login; otherwise PilotQ's isolated home, like Codex
-        home: match v["claude_home"].as_str() { Some("default") => None, Some(p) => Some(p.into()), None => Some(t.install.join("claude")) },
-        logs: t.install.join("claude-sessions"), optimization,
-        models: match v["claude_models"].as_array() {
-            Some(a) => a.iter().map(|m| m.as_str().filter(|s| !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b))).map(str::to_string).ok_or("config.json: claude_models are model codes")).collect::<Result<_, _>>()?,
-            None => ["opus", "sonnet", "haiku"].map(String::from).to_vec(),
-        } };
+    for (route, value) in v["runtime_routes"].as_object().into_iter().flatten() { routes.insert(route.clone(), name(value, "runtime_routes")?); }
     let slots = match (v["slot_root"].as_str(), &taskq) {
         (Some(root), Some(tq)) => Some(slots::Slots { bin: tq.bin.clone(), root: root.into() }),
         (Some(_), None) => return Err("config.json: slot_root needs taskq".into()),
         (None, _) => None,
     };
-    let runtime = manager::Runtime { codex, claude, default, routes, slots };
+    let runtime = manager::Runtime { workspace: t.install.join("workspace"), logs: t.install.clone(), limits, optimization, agents, default, routes, slots };
     Ok(Some(Config { token, owner, api_url, runtime, taskq, direct: direct(t), voice }))
 }
 
@@ -304,7 +313,7 @@ fn selftest(t: &Tool) -> Result<(), String> {
 fn doctor(t: &Tool) -> Value {
     use teloxide::prelude::*;
     use std::process::{Command, Stdio};
-    let mut checks = json!({"configuration": "failed", "telegram": "unknown", "codex": "unknown", "taskq": "unknown", "voice": "unknown"});
+    let mut checks = json!({"configuration": "failed", "telegram": "unknown", "taskq": "unknown", "voice": "unknown"});
     let c = config(t).ok().flatten();
     let requirements = host::report(c.as_ref());
     let host_ok = host::healthy(&requirements);
@@ -317,31 +326,25 @@ fn doctor(t: &Tool) -> Value {
         matches!(tokio::time::timeout(Duration::from_secs(20), bot.get_me().send()).await, Ok(Ok(me)) if me.is_bot)
     }));
     checks["telegram"] = json!(if telegram { "ok" } else { "failed" });
-    let codex = &c.runtime.codex;
-    let mut cmd = Command::new(&codex.bin);
-    cmd.env_clear();
-    for k in ["PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR", "SSL_CERT_FILE"] {
-        if let Some(v) = std::env::var_os(k) { cmd.env(k, v); }
-    }
-    cmd.env("CODEX_HOME", &codex.home)
-        .args(["-c", "forced_login_method=\"chatgpt\"", "login", "status"])
-        .stdin(Stdio::null());
-    let login = host::output(&mut cmd).ok().is_some_and(|o| {
-            o.status.success() && (String::from_utf8_lossy(&o.stdout).contains("Logged in using ChatGPT")
-                || String::from_utf8_lossy(&o.stderr).contains("Logged in using ChatGPT"))
+    // #359: each runtime a route uses reports the trait's readiness; R9 also needs its subscription login, never an API key
+    let mut login = true;
+    for name in c.runtime.used() {
+        let (Some(n), Some(a), Some(agent)) = (manager::native(name), agentq_runtime::agent::runtime(name), c.runtime.agents.get(name)) else { login = false; continue };
+        let ready = a.ready(agent.home.as_deref());
+        let mut cmd = Command::new(&agent.bin);
+        pilotq::configure(&mut cmd);
+        if let Some(home) = &agent.home { cmd.env(n.home, home); }
+        cmd.args(n.login).stdin(Stdio::null());
+        let subscription = host::output_with_budget(&mut cmd, Duration::from_secs(10)).ok().is_some_and(|o| {
+            let text: String = [o.stdout, o.stderr].concat().iter().map(|b| *b as char).filter(|c| !c.is_whitespace()).collect();
+            o.status.success() && n.subscription.iter().all(|m| text.contains(m))
         });
-    checks["codex"] = json!(if login { "ok" } else { "failed" });
-    // #265: a Claude route needs a Claude subscription login in PilotQ's own Claude home; API-key login does not qualify (R9)
-    let uses_claude = c.runtime.default == agentq_runtime::agent::Client::Claude || c.runtime.routes.values().any(|r| *r == agentq_runtime::agent::Client::Claude);
-    let claude = !uses_claude || {
-        let mut cmd = pilotq::base(&c.runtime.claude.bin);
-        if let Some(home) = &c.runtime.claude.home { cmd.env("CLAUDE_CONFIG_DIR", home); }
-        cmd.args(["auth", "status", "--json"]);
-        host::output_with_budget(&mut cmd, Duration::from_secs(10)).ok().and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok())
-            .is_some_and(|v| v["loggedIn"] == true && v["authMethod"] == "claude.ai" && v["apiProvider"] == "firstParty")
-    };
-    if uses_claude { checks["claude"] = json!(if claude { "ok" } else { "failed" }); }
-    let login = login && claude;
+        let ok = subscription && ready.login.state != "missing";
+        checks[name] = json!(if ok { "ok" } else { "failed" });
+        checks[format!("{name}_ready")] = json!({"install": ready.install.state, "version": ready.version.state, "login": ready.login.state});
+        login &= ok;
+    }
+    checks["runtime"] = json!(if login { "ok" } else { "failed" });
     let board = c.taskq.as_ref().and_then(|tq| tq.board().ok());
     checks["taskq"] = json!(if board.is_some() { "ok" } else { "failed" });
     let voice = voice::readiness(c.voice.as_ref());
@@ -399,7 +402,7 @@ fn service_run(t: &Tool) -> ! {
             bot = bot.set_api_url(u);
         }
         let (j, wake) = (j.clone(), Arc::new(tokio::sync::Notify::new()));
-        let deadline = c.runtime.codex.limits.deadline;
+        let deadline = c.runtime.limits.deadline;
         let tq = c.taskq.map(Arc::new);
         let (mj, mwake, rt, drain, mtq, d) = (j.clone(), wake.clone(), c.runtime, t.install.join(DRAIN), tq.clone(), Arc::new(c.direct));
         let image_direct=d.clone();
@@ -707,7 +710,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let [mode, name] = args.as_slice() {
         if mode == "--document-parser" { files::worker(name); return; }
-        if mode == "--mcp-bridge" { claude::bridge(name); return; }
+        if mode == "--mcp-bridge" { relay::bridge(name); return; }
     }
     let t = tool();
     // the installed launcher runs the current release (coreq launcher)
@@ -1007,5 +1010,47 @@ mod update_tests {
         assert!(matches!(update(&t, true), Err(e) if e.contains("update lock")), "a second updater cannot touch shared staging files");
         drop(lock);
         std::fs::remove_dir_all(&t.install).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    // #359 A1/A2: `runtimes: {NAME: ...}` configures each runtime as data, the #265 keys stay readable, and an unknown runtime
+    // is refused. Risk: an existing installation loses its Codex binary or Claude home on upgrade.
+    #[test]
+    fn config_359_runtimes() {
+        let dir = std::env::temp_dir().join(format!("pilotq-config359-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let t = Tool { install: dir.clone(), ..tool() };
+        let read = |v: Value| {
+            let p = dir.join("config.json");
+            std::fs::write(&p, v.to_string()).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
+            config(&t).map(|c| c.unwrap().runtime)
+        };
+        let base = json!({"bot_token": "invented", "owner_id": 7});
+        let mut v = base.clone();
+        v["runtimes"] = json!({"codex": {"bin": "/invented/codex"}, "claude": {"bin": "/invented/claude", "home": "default", "models": ["opus"]}});
+        v["runtime_routes"] = json!({"cli": "claude"});
+        let rt = read(v).unwrap();
+        assert_eq!((rt.default.as_str(), rt.name("cli"), rt.name("-100")), ("codex", "claude", "codex"));
+        assert_eq!(rt.agents["codex"], manager::Agent { bin: "/invented/codex".into(), home: Some(dir.join("codex")), models: vec![] });
+        assert_eq!(rt.agents["claude"], manager::Agent { bin: "/invented/claude".into(), home: None, models: vec!["opus".into()] });
+        let mut legacy = base.clone();
+        legacy["codex"] = json!("/legacy/codex");
+        legacy["claude_home"] = json!("/legacy/claude-home");
+        legacy["runtime"] = json!("claude");
+        let rt = read(legacy).unwrap();
+        assert_eq!((rt.default.as_str(), rt.agents["codex"].bin.as_str(), rt.agents["claude"].home.as_deref()), ("claude", "/legacy/codex", Some(std::path::Path::new("/legacy/claude-home"))));
+        for bad in [json!({"runtimes": {"invented": {}}}), json!({"runtime": "invented"}), json!({"runtime_routes": {"cli": "invented"}})] {
+            let mut v = base.clone();
+            for (k, x) in bad.as_object().unwrap() { v[k] = x.clone(); }
+            assert!(read(v).is_err());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -21,7 +21,7 @@ impl RebuildReason {
 }
 
 /// Schema this binary writes; a newer journal is refused rather than guessed (F08).
-const SCHEMA: i64 = 13;
+const SCHEMA: i64 = 14;
 /// Delivery attempts per episode, persisted across restart (§ 7).
 pub const ATTEMPTS: i64 = 5;
 /// Named grants (§ 2, § 5, § 8). `chat` admits conversation only; every other grant is separate. `project:NAME` scopes a project;
@@ -786,7 +786,7 @@ fn answer_control(tx: &Connection, session: &str, cmd: &str, request: i64, chat:
                 }
             }
             _ => {
-                tx.execute("INSERT INTO conversations(session, generation) VALUES (?1, 1) ON CONFLICT(session) DO UPDATE SET generation=generation+1, thread=NULL", [session])
+                tx.execute("INSERT INTO conversations(session, generation) VALUES (?1, 1) ON CONFLICT(session) DO UPDATE SET generation=generation+1, thread=NULL, runtime=NULL", [session])
                     .map_err(e)?;
                 let loop_stopped=crate::loops::reset(tx,request,at)?;
                 let selected: Option<String> = tx.query_row("SELECT CAST(value AS TEXT) FROM meta WHERE key=?1", [format!("model:{session}")], |r|r.get(0)).optional().map_err(e)?;
@@ -859,6 +859,8 @@ pub struct Run {
     pub generation: i64,
     pub fence: i64,
     pub thread: Option<String>,
+    /// The runtime that owns `thread` (#359 A2).
+    pub runtime: Option<String>,
     pub text: String,
     pub model: Option<String>,
     pub model_epoch: i64,
@@ -878,14 +880,14 @@ fn claim(tx: &Connection, request: i64, at: i64) -> Result<Option<Run>, String> 
         .map_err(e)?;
     let Some((session, text)) = row else { return Ok(None) };
     tx.execute("INSERT INTO conversations(session) VALUES (?1) ON CONFLICT(session) DO NOTHING", [&session]).map_err(e)?;
-    let (generation, thread, fence) = tx
-        .query_row("UPDATE conversations SET fence=fence+1 WHERE session=?1 RETURNING generation, thread, fence", [&session], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+    let (generation, thread, runtime, fence) = tx
+        .query_row("UPDATE conversations SET fence=fence+1 WHERE session=?1 RETURNING generation, thread, runtime, fence", [&session], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
         .map_err(e)?;
     tx.execute("INSERT INTO runs(request_id, session, generation, fence, state, started_at) VALUES (?1,?2,?3,?4,'running',?5)", params![request, session, generation, fence, at])
         .map_err(e)?;
     let model = tx.query_row("SELECT CAST(value AS TEXT) FROM meta WHERE key=?1",[format!("model:{session}")],|r|r.get(0)).optional().map_err(e)?;
     let model_epoch=meta(tx,&format!("model-epoch:{session}"))?.unwrap_or(0);
-    Ok(Some(Run { id: tx.last_insert_rowid(), request, session, generation, fence, thread, text, model, model_epoch, images: vec![], image_gaps: vec![], files: vec![], document_paths: vec![] }))
+    Ok(Some(Run { id: tx.last_insert_rowid(), request, session, generation, fence, thread, runtime, text, model, model_epoch, images: vec![], image_gaps: vec![], files: vec![], document_paths: vec![] }))
 }
 
 /// Marks recognized speech in the request text the model and history see (#104).
@@ -1209,6 +1211,18 @@ impl Journal {
             // TaskQ #2010: a relayed question keeps its typed TaskQ JSON; buttons and picks read choices from it, never from text
             let exists: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('outbox') WHERE name='question')",[],|r|r.get(0)).map_err(|e|e.to_string())?;
             up(if exists { "PRAGMA user_version=13;" } else { "BEGIN IMMEDIATE; ALTER TABLE outbox ADD COLUMN question TEXT; PRAGMA user_version=13; COMMIT;" })?;
+        }
+        if version < 14 {
+            // #359 A2: the runtime owning a conversation's native session and the runtime of each run are columns. Legacy
+            // sessions were `RUNTIME:ID` (#265) or a bare ID of the default runtime of that time.
+            // legacy fixtures built from the current schema already hold the columns
+            let has = |t: &str| c.query_row(&format!("SELECT EXISTS(SELECT 1 FROM pragma_table_info('{t}') WHERE name='runtime')"),[],|r|r.get::<_,bool>(0)).map_err(|e|e.to_string());
+            if !has("conversations")? { up("ALTER TABLE conversations ADD COLUMN runtime TEXT;")?; }
+            if !has("runs")? { up("ALTER TABLE runs ADD COLUMN runtime TEXT;")?; }
+            up("BEGIN IMMEDIATE;
+                UPDATE conversations SET runtime=CASE WHEN instr(thread,':')>0 THEN substr(thread,1,instr(thread,':')-1) ELSE 'codex' END,
+                    thread=substr(thread,instr(thread,':')+1) WHERE thread IS NOT NULL;
+                PRAGMA user_version=14; COMMIT;")?;
         }
         // TaskQ op IDs are permanent board claims; a random installation ID keeps a fresh journal from reusing another's
         let salt = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as i64) ^ ((std::process::id() as i64) << 40);
@@ -2517,6 +2531,11 @@ impl Journal {
         self.0.execute("INSERT INTO audit_events(request_id,run_id,at,kind,result,item) VALUES (?1,?2,?3,'kept_finding',?4,'project_list')",params![r.request,r.id,at,text]).map(drop).map_err(|e|e.to_string())
     }
 
+    /// #359 A2: the runtime a run uses, recorded before it starts.
+    pub fn run_runtime(&self, r: &Run, runtime: &str) -> Result<(), String> {
+        self.0.execute("UPDATE runs SET runtime=?2 WHERE id=?1", params![r.id, runtime]).map(drop).map_err(|e| e.to_string())
+    }
+
     /// Record every typed call before dispatch (R17); #190 removes the call-count cap.
     pub fn spend(&self, r: &Run, tool: &str, at: i64) -> Result<(), String> {
         self.0.execute("INSERT INTO audit_events(request_id,run_id,at,kind,target) VALUES (?1,?2,?3,'call',?4)",
@@ -2525,12 +2544,12 @@ impl Journal {
 
     /// Records a run's outcome, reply and native thread in one transaction, only while its fence holds. Returns false for a
     /// fenced run, which retires its running request without delivering a late reply.
-    pub fn finish(&self, r: &Run, thread: Option<&str>, model: Option<&str>, outcome: &crate::manager::Outcome, at: i64) -> Result<bool, String> {
+    pub fn finish(&self, r: &Run, thread: Option<(&str, &str)>, model: Option<&str>, outcome: &crate::manager::Outcome, at: i64) -> Result<bool, String> {
         self.finish_with_footer(r, thread, model, outcome, None, at)
     }
 
     /// #165 / §4: freeze the runtime observation in audit for /status, separate from the reply.
-    pub fn finish_with_footer(&self, r: &Run, thread: Option<&str>, model: Option<&str>, outcome: &crate::manager::Outcome, footer: Option<&str>, at: i64) -> Result<bool, String> {
+    pub fn finish_with_footer(&self, r: &Run, native: Option<(&str, &str)>, model: Option<&str>, outcome: &crate::manager::Outcome, footer: Option<&str>, at: i64) -> Result<bool, String> {
         use crate::manager::Outcome;
         let e = |e: rusqlite::Error| e.to_string();
         let tx = self.0.unchecked_transaction().map_err(e)?;
@@ -2599,7 +2618,9 @@ impl Journal {
         tx.execute("UPDATE requests SET state=?2, reply=?3, error=?4 WHERE id=?1", params![r.request, state, text, error]).map_err(e)?;
         close_drafts(&tx, &r.session, r.request, at)?;
         // a thread from before /new never attaches to the new conversation generation
-        tx.execute("UPDATE conversations SET thread=coalesce(?3, thread) WHERE session=?1 AND generation=?2", params![r.session, r.generation, thread]).map_err(e)?;
+        let (runtime, thread) = (native.map(|n| n.0), native.map(|n| n.1));
+        tx.execute("UPDATE conversations SET thread=coalesce(?3, thread), runtime=coalesce(?4, runtime) WHERE session=?1 AND generation=?2",
+            params![r.session, r.generation, thread, runtime]).map_err(e)?;
         if thread.is_some() && meta(&tx,&format!("model-epoch:{}",r.session))?.unwrap_or(0)==r.model_epoch {
             tx.execute("DELETE FROM meta WHERE key=?1", [format!("refresh:{}",r.session)]).map_err(e)?;
         }
@@ -3706,14 +3727,12 @@ impl Journal {
     /// can reach telemetry (§ 8). A telemetry failure is reported and never blocks the request.
     pub(crate) fn trace(&self, request: i64, at: i64) {
         let event = || -> Result<Option<Event>, String> {
-            // ponytail: the runtime is read from the conversation's native session (`claude:` prefix, #265); a per-run column if
-            // a route ever needs its runtime history
-            let (front, state, received, runs, model, runtime): (String, String, i64, i64, Option<String>, String) = self
+            let (front, state, received, runs, model, runtime): (String, String, i64, i64, Option<String>, Option<String>) = self
                 .0
                 .query_row(
                     "SELECT front, state, received_at, (SELECT count(*) FROM runs WHERE request_id=?1),
                         (SELECT model FROM runs WHERE request_id=?1 AND model IS NOT NULL ORDER BY id DESC LIMIT 1),
-                        coalesce((SELECT CASE WHEN thread LIKE 'claude:%' THEN 'claude' END FROM conversations WHERE session=requests.session), 'codex')
+                        (SELECT runtime FROM runs WHERE request_id=?1 AND runtime IS NOT NULL ORDER BY id DESC LIMIT 1)
                         FROM requests WHERE id=?1",
                     [request],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
@@ -3735,7 +3754,7 @@ impl Journal {
                 json!({"product": "pilotq", "version": env!("CARGO_PKG_VERSION"), "operation": "request", "kind": "pilotq.request",
                     "trace": trace_id(request), "span": "request", "started_ms": received.max(0) * 1000, "duration_us": (at - received).max(0) * 1_000_000,
                     "outcome": outcome, "error": if outcome == "ok" { "none" } else { state.as_str() }, "source": front, "attempt": runs,
-                    "runtime": (runs > 0).then_some(runtime), "model": model}),
+                    "runtime": runtime.filter(|_| runs > 0), "model": model}),
             ).map(Some)
         };
         let r = event().and_then(|ev| match ev {
@@ -4003,7 +4022,7 @@ mod tests {
         j.optimization(&run,&json!({"effective":"on"}),4).unwrap();
         assert_eq!(j.0.query_row("SELECT agentq FROM runs WHERE id=?1",[run.id],|r|r.get::<_,String>(0)).unwrap(),"unknown");
         assert_eq!(count(&j,"SELECT count(*) FROM audit_events WHERE kind='optimization'"),1);
-        assert_eq!(j.0.query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),13);
+        assert_eq!(j.0.query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),SCHEMA);
         drop(j); std::fs::remove_dir_all(p).unwrap();
     }
 
@@ -4590,7 +4609,7 @@ mod tests {
             if current {j.0.execute_batch("DELETE FROM outbox WHERE kind='question_answered'; UPDATE outbox SET state='pending',sent_message=NULL WHERE revision=20 AND kind='question'").unwrap();}
             drop(j);
             let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
-            assert_eq!(j.0.query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),13);
+            assert_eq!(j.0.query_row("PRAGMA user_version",[],|r|r.get::<_,i64>(0)).unwrap(),SCHEMA);
             j.reconcile(10).unwrap();
             let mut retired=false;
             while let Some(d)=j.due(20).unwrap().0 {
@@ -5314,13 +5333,13 @@ mod tests {
         j.admit(&[(4, Some(Input { files: vec![], callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: 4, kind: "text", text: Some("/stop".into()), reply_to: None }))], 5).unwrap();
         assert!(j.fenced(&r).unwrap());
         assert!(j.typing(5, 60).unwrap().is_empty(), "#91: cancellation ends typing");
-        assert!(!j.finish(&r, Some("t-old"), None, &Outcome::Answered("late".into()), 6).unwrap(), "a stopped run cannot reply");
+        assert!(!j.finish(&r, Some(("codex","t-old")), None, &Outcome::Answered("late".into()), 6).unwrap(), "a stopped run cannot reply");
         assert_eq!(j.request(r.request).unwrap(), ("cancelled".into(), None, Some("stopped by /stop".into())));
 
         j.admit(&[(5, msg(7, 7, 5))], 7).unwrap();
         let r = j.claim_next(4, 7).unwrap().remove(0);
         j.admit(&[(6, Some(Input { files: vec![], callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat: 7, topic: None, sender: Some(7), name: None, message: 6, kind: "text", text: Some("/new".into()), reply_to: None }))], 8).unwrap();
-        assert!(j.finish(&r, Some("t-old"), None, &Outcome::Answered("ok".into()), 9).unwrap());
+        assert!(j.finish(&r, Some(("codex","t-old")), None, &Outcome::Answered("ok".into()), 9).unwrap());
         assert_eq!(count(&j, "SELECT count(*) FROM conversations WHERE session='dm:7' AND thread IS NULL AND generation=1"), 1);
         drop(j);
         let _ = std::fs::remove_dir_all(p);
@@ -5368,8 +5387,8 @@ mod tests {
         let runs = j.claim_next(4, 11).unwrap();
         j.tool(&runs[0], "commandExecution", "c1", None, 12).unwrap();
         j.tool(&runs[0], "commandExecution", "c1", Some("completed"), 13).unwrap();
-        j.finish(&runs[0], Some("t1"), Some("gpt-test"), &Outcome::Answered("dm answer".into()), 14).unwrap();
-        j.finish(&runs[1], Some("t2"), None, &Outcome::Failed("usage limit reached".into()), 15).unwrap();
+        j.finish(&runs[0], Some(("codex","t1")), Some("gpt-test"), &Outcome::Answered("dm answer".into()), 14).unwrap();
+        j.finish(&runs[1], Some(("codex","t2")), None, &Outcome::Failed("usage limit reached".into()), 15).unwrap();
         let cli = j.ask(7, "cli question", 16).unwrap();
         j.finish(&cli, None, Some("gpt-test"), &Outcome::Answered("cli answer".into()), 17).unwrap();
 
@@ -5513,7 +5532,7 @@ mod tests {
             let mut i=msg(-100,sender,message).unwrap(); i.topic=Some(5); Some(i)
         };
         j.admit(&[(1,msg(8,8,1)),(2,shared(8,2))],1).unwrap();
-        for r in j.claim_next(4,2).unwrap() { j.finish(&r,Some("thread"),None,&Outcome::Answered("prior result".into()),3).unwrap(); }
+        for r in j.claim_next(4,2).unwrap() { j.finish(&r,Some(("codex","thread")),None,&Outcome::Answered("prior result".into()),3).unwrap(); }
         j.admit(&[(3,shared(7,3))],4).unwrap();
         let r=j.claim_next(4,5).unwrap().remove(0);
         j.save_plan(&r,&json!([{"title":"Keep context"}]),"pilotq","taskqorg/pilotq","invented-root",5).unwrap();
@@ -5538,7 +5557,7 @@ mod tests {
         j.0.execute("UPDATE projects SET root='changed-root' WHERE name='pilotq'",[]).unwrap();
         assert!(j.related_target(&r,"92",Some("pilotq")).is_err(),"changed registration disables contextual target");
         j.0.execute("UPDATE projects SET root='invented-root' WHERE name='pilotq'",[]).unwrap();
-        j.finish(&r,Some("thread"),None,&Outcome::Answered("clarify: to task 92 or new?".into()),6).unwrap();
+        j.finish(&r,Some(("codex","thread")),None,&Outcome::Answered("clarify: to task 92 or new?".into()),6).unwrap();
         drop(j);
         let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
         j.admit(&[(4,shared(7,4))],7).unwrap();
@@ -5863,7 +5882,7 @@ mod tests {
         for version in [8,9] {
         let (mut j,p)=journal("schema8-tools");
         let r=j.ask(7,"earlier request",0).unwrap();
-        j.finish(&r,Some("native-old"),None,&Outcome::Answered("earlier answer".into()),1).unwrap();
+        j.finish(&r,Some(("codex","native-old")),None,&Outcome::Answered("earlier answer".into()),1).unwrap();
         j.0.execute_batch(&format!("ALTER TABLE requests DROP COLUMN image; ALTER TABLE requests DROP COLUMN language; PRAGMA user_version={version}")).unwrap();
         drop(j);
         let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
@@ -5871,7 +5890,7 @@ mod tests {
         assert!(j.refresh_tools(&r).unwrap());
         let context=j.rebuild(&r,3, RebuildReason::PolicyRefresh).unwrap().to_string();
         assert!(context.contains("earlier request") && context.contains("earlier answer"));
-        j.finish(&r,Some("native-new"),None,&Outcome::Answered("projects".into()),4).unwrap();
+        j.finish(&r,Some(("codex","native-new")),None,&Outcome::Answered("projects".into()),4).unwrap();
         let next=j.ask(7,"follow up",5).unwrap();
         assert!(!j.refresh_tools(&next).unwrap());
         assert_eq!(next.thread.as_deref(),Some("native-new"));
@@ -5886,7 +5905,7 @@ mod tests {
         use crate::manager::Outcome;
         let (mut j,p)=journal("instruction-change");
         let r=j.ask(7,"earlier request",0).unwrap();
-        j.finish(&r,Some("old"),None,&Outcome::Answered("earlier answer".into()),1).unwrap();
+        j.finish(&r,Some(("codex","old")),None,&Outcome::Answered("earlier answer".into()),1).unwrap();
         j.0.execute("UPDATE meta SET value=0 WHERE key='instructions'", []).unwrap();
         drop(j);
         let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
@@ -5896,7 +5915,7 @@ mod tests {
         assert!(context.contains("earlier request") && context.contains("earlier answer"));
         let reason: String = j.0.query_row("SELECT result FROM audit_events WHERE kind='rebuild'", [], |x| x.get(0)).unwrap();
         assert_eq!(reason, "planned policy refresh; journal context prepared", "#339 / R17: refresh must not claim a native resume failed");
-        j.finish(&r,Some("new"),None,&Outcome::Answered("answer".into()),4).unwrap();
+        j.finish(&r,Some(("codex","new")),None,&Outcome::Answered("answer".into()),4).unwrap();
         drop(j);
         let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
         let r=j.ask(7,"follow up",5).unwrap();
@@ -6447,7 +6466,7 @@ mod tests {
         send(&mut j,7,7,"/model default");
         let default=j.builtin_next().unwrap().unwrap();j.builtin_models(&default,&models,7).unwrap();
         assert_eq!(active.model.as_deref(),Some("invented-b"),"active run keeps its claimed model");
-        j.finish(&active,Some("old-model-thread"),Some("invented-b"),&crate::manager::Outcome::Answered("done".into()),8).unwrap();
+        j.finish(&active,Some(("codex","old-model-thread")),Some("invented-b"),&crate::manager::Outcome::Answered("done".into()),8).unwrap();
         send(&mut j,8,7,"next");
         let next=j.claim_next(4,8).unwrap().remove(0);
         assert_eq!(next.model,None);
@@ -6474,7 +6493,7 @@ mod tests {
         let (mut j,p)=journal("u93-upgrade");
         let r=j.ask(7,"existing plan",0).unwrap();
         j.save_plan(&r,&json!([{"title":"Keep me"}]),"pilotq","taskqorg/pilotq","",1).unwrap();
-        j.finish(&r,Some("native-old"),None,&Outcome::Answered("Saved".into()),2).unwrap();
+        j.finish(&r,Some(("codex","native-old")),None,&Outcome::Answered("Saved".into()),2).unwrap();
         j.0.execute_batch("DROP TABLE cards; ALTER TABLE plans DROP COLUMN draft; PRAGMA user_version=10;").unwrap();
         drop(j);
         let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
@@ -6489,4 +6508,30 @@ mod tests {
         drop(j);let _=std::fs::remove_dir_all(p);
     }
 
+    // #359 A2: schema 14 moves each conversation's runtime out of its native session ID into a column, so a later turn
+    // resumes only its own runtime's session. Risk: a legacy `claude:` session reaches Codex, or a Codex thread is lost.
+    #[test]
+    fn schema_14_runtime_column_359() {
+        use crate::manager::Outcome;
+        let (mut j,p)=journal("schema14-runtime");
+        for (user,thread) in [(7,"claude:invented-claude-session"),(8,"invented-codex-thread")] {
+            if user==8 { j.grant(7,8,&["chat".into()],0).unwrap(); }
+            let r=j.ask(user,"hello",1).unwrap();
+            j.finish(&r,Some(("codex","placeholder")),None,&Outcome::Answered("ok".into()),2).unwrap();
+            j.0.execute("UPDATE conversations SET thread=?1 WHERE session=?2",params![thread,r.session]).unwrap();
+        }
+        j.0.execute_batch("ALTER TABLE conversations DROP COLUMN runtime; ALTER TABLE runs DROP COLUMN runtime; PRAGMA user_version=13;").unwrap();
+        drop(j);
+        let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
+        assert_eq!(count(&j,"PRAGMA user_version"),SCHEMA);
+        assert_eq!(count(&j,"SELECT count(*) FROM conversations WHERE thread LIKE '%:%'"),0,"no runtime prefix remains in a session ID");
+        for (user,runtime,thread) in [(7,"claude","invented-claude-session"),(8,"codex","invented-codex-thread")] {
+            let r=j.ask(user,"again",3).unwrap();
+            assert_eq!((r.runtime.as_deref(),r.thread.as_deref()),(Some(runtime),Some(thread)));
+            j.run_runtime(&r,runtime).unwrap();
+            j.finish(&r,Some((runtime,thread)),None,&Outcome::Answered("ok".into()),4).unwrap();
+            assert_eq!(count(&j,&format!("SELECT count(*) FROM runs WHERE id={} AND runtime='{runtime}'",r.id)),1);
+        }
+        drop(j);let _=std::fs::remove_dir_all(p);
+    }
 }

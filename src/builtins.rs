@@ -33,7 +33,7 @@ fn setup_report(exe:&std::path::Path,budget:Duration) -> Result<String,String> {
     let output=reader.join().map_err(|_|"Setup checks failed")?.map_err(|_|"Setup checks failed")?;
     let v:Value=serde_json::from_slice(&output).map_err(|_|"Setup checks returned no report")?;
     let mut lines=vec!["Setup checks (read only):".to_string()];
-    for name in ["configuration","telegram","codex","taskq","voice","host_tools"] {
+    for name in ["configuration","telegram","runtime","taskq","voice","host_tools"] {
         let state=match v["checks"][name].as_str() { Some("ok")=>"ok",Some("failed")=>"failed",_=>"unknown" };
         lines.push(format!("{name}: {state}"));
     }
@@ -178,10 +178,10 @@ mod tests {
         let dir=std::env::temp_dir().join(format!("pilotq-command-doctor-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir_all(&dir).unwrap();
         let script=dir.join("doctor");
-        crate::test_support::write_script(&script,"#!/bin/sh\necho '{\"checks\":{\"configuration\":\"ok\",\"codex\":\"invented-secret\"},\"secret\":\"invented-secret\"}'\necho invented-secret >&2\n").unwrap();
+        crate::test_support::write_script(&script,"#!/bin/sh\necho '{\"checks\":{\"configuration\":\"ok\",\"runtime\":\"invented-secret\"},\"secret\":\"invented-secret\"}'\necho invented-secret >&2\n").unwrap();
         std::fs::set_permissions(&script,std::fs::Permissions::from_mode(0o700)).unwrap();
         let report=setup_report(&script,Duration::from_secs(1)).unwrap();
-        assert!(report.contains("configuration: ok") && report.contains("codex: unknown"));
+        assert!(report.contains("configuration: ok") && report.contains("runtime: unknown"));
         assert!(!report.contains("invented-secret"));
         // Separate executable keeps the deadline case independent of the redaction case.
         let slow_script=dir.join("doctor-slow");
