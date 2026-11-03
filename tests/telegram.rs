@@ -2638,7 +2638,7 @@ fn native_rebuild_339_reasons() {
     assert_eq!(query_text(&d, "SELECT result FROM audit_events WHERE kind='rebuild' ORDER BY id DESC LIMIT 1"),
         "native session unavailable after failed resume; journal context prepared");
     rusqlite::Connection::open(d.join("journal.sqlite")).unwrap()
-        .execute("UPDATE conversations SET thread='claude:foreign' WHERE thread IS NOT NULL", []).unwrap();
+        .execute("UPDATE conversations SET runtime='claude', thread='foreign' WHERE thread IS NOT NULL", []).unwrap();
     ok(cli(&d, &["ask", "foreign runtime", "--json"]));
     assert_eq!(query_text(&d, "SELECT result FROM audit_events WHERE kind='rebuild' ORDER BY id DESC LIMIT 1"),
         "foreign runtime; journal context prepared");

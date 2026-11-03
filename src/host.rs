@@ -98,16 +98,17 @@ fn recorded_version(bin: &str) -> Option<String> {
 pub fn report(c: Option<&crate::Config>) -> Value {
     let voice = c.and_then(|c|c.voice.as_ref());
     let mut checks = vec![
-        probe("codex",c.map(|c|c.runtime.codex.bin.as_str()),&["--version"],"0.162.0","codex-cli ","Install @openai/codex@0.162.0 or newer; set config.json codex to its absolute path"),
         probe("taskq",c.and_then(|c|c.taskq.as_ref()).and_then(|t|t.bin.to_str()),&["--version"],"4.6.46","","Update TaskQ CLI to 4.6.46 or newer; set taskq.bin"),
         probe("taskq_service",c.and_then(|c|c.taskq.as_ref()).and_then(|t|t.bin.to_str()),&["service","status","--json"],"4.6.40","","Update the existing TaskQ service to 4.6.40 or newer"),
         probe("ffmpeg",voice.map(|v|v.ffmpeg.as_str()),&["-version"],"6.1.0","ffmpeg version ","Install ffmpeg 6.1 or newer; set voice.ffmpeg"),
         probe("sherpa-onnx-offline",voice.map(|v|v.recognizer.as_str()),&["--version"],"2.0.1","","Install static sherpa-onnx 2.0.1 or newer; set voice.recognizer and create its verified .pilotq-version.json receipt (tester guide)"),
         probe("curl",Some("curl"),&["--version"],"7.68.0","curl ","Install curl 7.68 or newer on the service PATH"),
     ];
-    // #265: Claude Code only where the installation or a route runs the manager on it
-    if let Some(c) = c.filter(|c| c.runtime.default == agentq_runtime::agent::Client::Claude || c.runtime.routes.values().any(|r| *r == agentq_runtime::agent::Client::Claude)) {
-        checks.push(probe("claude",Some(&c.runtime.claude.bin),&["--version"],"2.1.0","","Install Claude Code 2.1.0 or newer; set config.json claude to its absolute path"));
+    // #265/#359: each runtime the installation or a route runs the manager on; without config, the default runtime
+    let used = c.map_or_else(|| vec![crate::manager::NATIVE[0].name], |c| c.runtime.used());
+    for n in crate::manager::NATIVE.iter().filter(|n| used.contains(&n.name)) {
+        let bin = c.and_then(|c| c.runtime.agents.get(n.name)).map(|a| a.bin.as_str());
+        checks.push(probe(n.name, bin, &["--version"], n.minimum, n.prefix, n.fix));
     }
     if cfg!(target_os="linux") {
         checks.extend([

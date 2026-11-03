@@ -160,7 +160,7 @@ fn report(tq:&Taskq,board:&str,doctor:&Value,status:&Value,service:&Value,at:i64
     for (check,step) in [
         ("configuration","Owner: complete protected PilotQ config.json, then run pilotq doctor --json"),
         ("telegram","Owner: verify the protected bot token and Telegram connectivity; run pilotq doctor --json"),
-        ("codex","Owner: restore the isolated Codex ChatGPT login configured for PilotQ; run pilotq doctor --json"),
+        ("runtime","Owner: restore the isolated subscription login of each manager runtime configured for PilotQ; run pilotq doctor --json"),
         ("taskq","Owner: verify the configured TaskQ binary, root and board; run pilotq doctor --json"),
         ("voice","Owner: configure voice.ffmpeg, voice.recognizer and GigaAM model files using docs/tester-guide.md; run pilotq doctor --json"),
     ] {
@@ -614,7 +614,7 @@ mod tests {
         let tq=Taskq{bot:None,bin:"/invented/taskq".into(),root:dir.clone(),poll:Duration::from_secs(15)};
         (j,dir,tq)
     }
-    fn doctor()->Value {json!({"ok":true,"checks":{"configuration":"ok","telegram":"ok","codex":"ok","taskq":"ok","voice":"ok","host_tools":"ok"}})}
+    fn doctor()->Value {json!({"ok":true,"checks":{"configuration":"ok","telegram":"ok","runtime":"ok","taskq":"ok","voice":"ok","host_tools":"ok"}})}
     fn service(tq:&Taskq)->Value {
         json!({"schema":"taskq.service/1","service":{"state":"running","version":"4.6.40","fresh":true,"at":1000},
             "projects":[{"root":tq.root,"status":{"complete":true,"at":1000,"capacity":{"limits":{"codex":4},"gate":"open"},

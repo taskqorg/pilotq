@@ -14,8 +14,8 @@ They use the same admission and audit boundary as other requests (R10, R13, R17)
   deep-link payload, returns the same top-level help; `/version` reports this binary's version; `/doctor` runs
   bounded, read-only setup checks and returns check names and outcomes only. Unknown commands
   receive a usage error, not a model turn. Commands accept Telegram's `@bot` suffix.
-- `/model` reads the route runtime's model catalogue (Codex app-server `model/list`, or the
-  configured `claude_models` aliases) and displays selection buttons;
+- `/model` reads the route runtime's model choices (configured `runtimes.NAME.models`, else Codex
+  app-server `model/list` or the Claude aliases) and displays selection buttons;
   `/model MODEL` selects an exact catalogue name, and `/model default` removes the override. The
   catalogue is not proof of subscription entitlement. Record the requested model separately from the
   last model reported by the runtime. An unavailable catalogue refuses selection without changing the
@@ -55,14 +55,15 @@ identity from protected configuration.
 | `pilotq pilot start\|note\|report [--since T] [--json]` | Seven-day pilot start, intervention and outage notes, gate 4 counts (section 10 step 5) |
 | `pilotq audit [--user U] [--route R] [--project P] [--since T] [--request ID] [--json]` | Request audit records (section 8, R17), filtered by who, where, what and when |
 | `pilotq service install\|run\|stop\|status` | coreq service unit |
-| `pilotq update [--check|--pause|--resume]`, `pilotq selftest`, `pilotq doctor` | coreq update, smoke test and setup check (bot identity, Codex login, TaskQ reachability) |
+| `pilotq update [--check|--pause|--resume]`, `pilotq selftest`, `pilotq doctor` | coreq update, smoke test and setup check (bot identity, runtime logins, TaskQ reachability) |
 
 Every command that writes prints the readback, supports `--json` and returns a nonzero exit code on
 failure.
 
 `pilotq doctor [--json]` performs read-only setup checks: Telegram `getMe` returns a bot identity,
-the configured isolated Codex home reports a ChatGPT login, a configured Claude route's home
-reports a `claude.ai` first-party login (`claude auth status`), and TaskQ returns a complete snapshot
+each runtime the installation or a route uses reports the trait's `ready()` (install, version and
+login state, as `NAME_ready`) and a subscription login in its configured home (Codex ChatGPT login,
+Claude `claude.ai` first-party login), summarized as `runtime`, and TaskQ returns a complete snapshot
 matching its configured board. It never polls updates, starts a model turn or changes grants.
 Missing configuration, failed checks and unavailable dependencies return nonzero; diagnostics expose
 only check names and outcomes, never dependency output or credentials. This checks setup, not the
@@ -96,8 +97,8 @@ command. Offline selftest remains independent of host setup.
 
 | Host tool | Minimum | Required by / remediation |
 |---|---|---|
-| Codex CLI | 0.162.0 | Subscription app-server and catalogue; install `@openai/codex@0.162.0` or newer and set the absolute `codex` path; retain the isolated ChatGPT login |
-| Claude Code | 2.1.0 | Only when `runtime` or a `runtime_routes` entry is `claude`; set the absolute `claude` path and keep its subscription login |
+| Codex CLI | 0.162.0 | Only when `runtime` or a `runtime_routes` entry is `codex` (the default); install `@openai/codex@0.162.0` or newer, set the absolute `runtimes.codex.bin` path and retain the isolated ChatGPT login |
+| Claude Code | 2.1.0 | Only when `runtime` or a `runtime_routes` entry is `claude`; set the absolute `runtimes.claude.bin` path and keep its subscription login |
 | TaskQ CLI | 4.6.46 | Task #145 file handoff, operation receipts and task #151 `taskq issue`; update the CLI to 4.6.46 or newer; doctor reads `taskq --version` |
 | TaskQ service | 4.6.40 | Board commands; doctor checks the service version from `service status --json` |
 | ffmpeg | 6.1.0 | Audio decode; install ffmpeg 6.1 or newer and set `voice.ffmpeg` |
@@ -191,9 +192,10 @@ activation exits the service with code 75; the coreq Linux unit restarts it thro
 `pilotq update --pause` and `--resume` persist and read back automatic-update admission; pausing
 does not stop health or conversations. Manual updates remain available.
 
-This release retains coreq `v0.18.0` (locked in `Cargo.lock`) and journal schema 13. It opens
-existing schemas 0–13 through the current migrations and refuses newer schemas; rollback to a binary
-that cannot read the resulting schema is unsafe. The installation owner runs the user service and
+This release uses coreq `v0.19.1` (locked in `Cargo.lock`) and journal schema 14. It opens
+existing schemas 0–14 through the current migrations and refuses newer schemas; rollback to a binary
+that cannot read the resulting schema is unsafe. Schema 14 (#359) adds the runtime columns;
+builds before it read at most schema 13, so rollback across it uses the pre-upgrade journal snapshot. The installation owner runs the user service and
 owns its protected configuration. See the [tester guide](tester-guide.md) for installation,
 checks and current limitations. The prior shipped 0.2.37 source
 `3a581fff3e3336fa1bc60bf7178629598c52052e` already supports schema 13, as does
@@ -202,7 +204,7 @@ migrates older journals by adding `outbox.question` when absent, and refuses `us
 before schema writes. This source evidence establishes compatibility, not a restore or live qualification.
 Existing protection includes `schema_1_journal_upgrades`, `schema_9_existing_image_columns_preserve_rows`,
 `u93_schema_10_keeps_work_and_refreshes_tools` and `newer_schema_and_corrupt_journal_are_refused`
-in `src/journal.rs`; no migration or guarding assertion changes here. A published release and successful selftest do not qualify
+in `src/journal.rs`; `schema_14_runtime_column_359` guards the schema 14 runtime columns. A published release and successful selftest do not qualify
 production cutover or the open decisions in section 11.
 
 ### Development
