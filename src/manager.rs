@@ -34,6 +34,8 @@ pub struct Limits {
 /// config and instruction file.
 pub(crate) struct Native {
     pub name: &'static str,
+    /// The runtime's name in replies and failure lines.
+    pub title: &'static str,
     /// Home variable of PilotQ's isolated login home.
     pub home: &'static str,
     /// Turns use an app-server session (input, server-request replies) instead of one CLI turn with stream-json input.
@@ -63,7 +65,7 @@ const fn policy(write: Scope, approval: Approval) -> Policy {
 /// The first entry is the installation default runtime.
 pub(crate) static NATIVE: [Native; 2] = [
     Native {
-        name: "codex", home: "CODEX_HOME", app_server: true,
+        name: "codex", title: "Codex", home: "CODEX_HOME", app_server: true,
         // subscription login only, no API-key fallback (R9); native shell and web follow the principal (#190)
         always: &["--disable", "apps", "--disable", "plugins", "--disable", "browser_use", "--disable", "computer_use", "--disable", "multi_agent",
             "--disable", "image_generation", "-c", "forced_login_method=\"chatgpt\""],
@@ -76,7 +78,7 @@ pub(crate) static NATIVE: [Native; 2] = [
         login: &["-c", "forced_login_method=\"chatgpt\"", "login", "status"], subscription: &["LoggedinusingChatGPT"],
     },
     Native {
-        name: "claude", home: "CLAUDE_CONFIG_DIR", app_server: false,
+        name: "claude", title: "Claude", home: "CLAUDE_CONFIG_DIR", app_server: false,
         always: &["--input-format", "stream-json", "--include-partial-messages", "--strict-mcp-config", "--setting-sources", "project",
             "--disable-slash-commands", "--system-prompt-snapshot", "off", "--mcp-config", "{mcp}", "--append-system-prompt-file", "{instructions}",
             "--allowedTools", "mcp__pilotq"],
@@ -143,17 +145,18 @@ impl Runtime {
         let unavailable = || "Model catalogue unavailable".to_string();
         let mut l = self.launch(n, agent, false, Path::new("-"), Path::new("-"), None, None)?;
         l.mode = Mode::AppServer { initialize: json!({"clientInfo": {"name": "pilotq", "version": env!("CARGO_PKG_VERSION")}}), thread: json!({"cwd": self.workspace}) };
-        let mut run = { let _start = START.lock().unwrap_or_else(|e| e.into_inner()); a.launch(&l).map_err(|_| unavailable())? };
-        let _group = Group(run.id());
+        let run = { let _start = START.lock().unwrap_or_else(|e| e.into_inner()); a.launch(&l).map_err(|_| unavailable())? };
+        let mut owned = Owned { a, run };
+        let run = &mut owned.run;
         let end = Instant::now() + Duration::from_secs(10);
         let mut models = vec![];
         let mut params = json!({"limit": 100, "includeHidden": false});
         for _ in 0..5 {
-            a.send(&mut run, &json!({"method": "model/list", "params": params})).map_err(|_| unavailable())?;
+            a.send(run, &json!({"method": "model/list", "params": params})).map_err(|_| unavailable())?;
             let page = loop {
                 if Instant::now() >= end { return Err("Model catalogue timed out".into()); }
                 // a catalogue page is the reply whose result carries `data`; the open's own replies carry none
-                if let Some(m) = a.progress(&mut run).map_err(|_| unavailable())?.into_iter().find(|m| m.get("method").is_none() && (m["result"]["data"].is_array() || m["error"].is_object())) { break m; }
+                if let Some(m) = a.progress(run).map_err(|_| unavailable())?.into_iter().find(|m| m.get("method").is_none() && (m["result"]["data"].is_array() || m["error"].is_object())) { break m; }
                 std::thread::sleep(Duration::from_millis(50));
             };
             if page["error"].is_object() { return Err("Model catalogue refused".into()); }
@@ -171,9 +174,10 @@ impl Runtime {
     fn launch(&self, n: &Native, agent: &Agent, native: bool, mcp: &Path, instructions: &Path, model: Option<&str>, session: Option<&str>) -> Result<Launch, String> {
         std::fs::create_dir_all(&self.workspace).map_err(|e| format!("workspace: {e}"))?;
         if let Some(home) = &agent.home { std::fs::create_dir_all(home).map_err(|e| format!("{} home: {e}", n.name))?; }
-        // an app-server log holds private stderr of every turn; a CLI turn log is its session's stream, appended on resume
-        let log = if n.app_server { "app-server.log".to_string() } else { format!("{}.jsonl", session.map_or_else(token, str::to_string)) };
-        let dir = self.logs.join(format!("{}-sessions", n.name));
+        // an app-server log holds private stderr of every turn in the runtime home; a CLI turn log is its session's stream,
+        // appended on resume
+        let sessions = self.logs.join(format!("{}-sessions", n.name));
+        let (dir, log) = if n.app_server { (agent.home.clone().unwrap_or(sessions), "app-server.log".to_string()) } else { (sessions, format!("{}.jsonl", session.map_or_else(token, str::to_string))) };
         std::fs::create_dir_all(&dir).map_err(|e| format!("{} logs: {e}", n.name))?;
         let mut l = Launch::new(&self.workspace, dir.join(log), "", "pilotq");
         let fill = |f: &&str| match *f { "{mcp}" => mcp.as_os_str().to_owned(), "{instructions}" => instructions.as_os_str().to_owned(), f => f.into() };
@@ -210,13 +214,19 @@ pub(crate) fn group_kill_args(pid: u32) -> [String; 3] {
     ["-9".into(), "--".into(), format!("-{pid}")]
 }
 
-/// The turn's process group ends with the turn, whatever its runtime left running (a server or tool relay children).
-struct Group(Option<u32>);
-impl Drop for Group {
+/// A launched run. Its process group ends with the turn, whatever the runtime left running (a server or tool relay children),
+/// and the runtime reaps its child, so no zombie outlives the turn.
+struct Owned { a: &'static dyn agent::Runtime, run: agent::Run }
+impl Drop for Owned {
     fn drop(&mut self) {
         // ponytail: `kill` on the process group; a pidfd/cgroup supervisor if children escape the group
         #[cfg(unix)]
-        if let Some(pid) = self.0 { let _ = crate::host::kill_group(pid); }
+        if let Some(pid) = self.run.id() { let _ = crate::host::kill_group(pid); }
+        for _ in 0..20 {
+            if matches!(self.a.cancel(&mut self.run), Ok(true)) { break; }
+            let _ = self.a.poll(&mut self.run);
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 }
 
@@ -281,7 +291,7 @@ impl Runtime {
                     input.as_array_mut().unwrap().insert(0, json!({"type": "text", "text": history.to_string()}));
                     thread = None;
                 }
-                Err(()) => return (None, None, Outcome::Failed("The runtime could not open the conversation; no work was repeated.".into())),
+                Err(()) => return (None, None, Outcome::Failed(format!("{} could not open the conversation; no work was repeated.", self::native(name).map_or(name, |n| n.title)))),
                 Ok(done) => return done,
             }
         }
@@ -307,7 +317,7 @@ impl Runtime {
     ) -> Result<(Option<String>, Option<String>, Outcome), ()> {
         let failed = |e: String| Ok((resume.map(str::to_string), None, Outcome::Failed(e)));
         let (n, a, agent) = match self.parts(name) { Ok(p) => p, Err(e) => return failed(e) };
-        let label = a.descriptor().label;
+        let label = n.title;
         // the first-event watch starts once this turn may spawn, before the runtime runs (§ 12)
         let start = Instant::now();
         let relay = match crate::relay::Relay::open(&self.workspace, dynamic) { Ok(r) => r, Err(e) => return failed(e) };
@@ -325,16 +335,20 @@ impl Runtime {
             let _start = n.app_server.then(|| START.lock().unwrap_or_else(|e| e.into_inner()));
             match resume { Some(s) => a.resume(s, &l), None => a.launch(&l) }
         };
-        let mut run = match launched {
+        let run = match launched {
             Ok(run) => run,
             Err(e) if resume.is_some() && MISSING.iter().any(|m| e.contains(m)) => return Err(()),
             // native diagnostics can name paths or account details: operator log only, never a reply, the journal or telemetry
-            Err(e) => { crate::host::log(name, &e); return failed(format!("{label} did not start; check login and runtime health.")); }
+            Err(e) => {
+                crate::host::log(name, &e);
+                return failed(if e.contains("spawn") { format!("{label} did not start; check login and runtime health.") } else { format!("{label} exited without a terminal event") });
+            }
         };
-        let _group = Group(run.id());
+        let mut owned = Owned { a, run };
+        let run = &mut owned.run;
         observation("spawned", &json!(run.id()));
         observation("optimization", &run.optimization().json());
-        if n.app_server && let Err(e) = a.input(&mut run, &parts(input)) { return failed(format!("{label} refused the input: {e}")); }
+        if n.app_server && let Err(e) = a.input(run, &parts(input)) { return failed(format!("{label} refused the input: {e}")); }
         let (mut first, mut last, mut tooled, mut answer, mut error) = (false, start, false, None::<String>, None::<String>);
         let (mut draft_item, mut draft, mut used, mut window) = (String::new(), String::new(), None::<u64>, None::<u64>);
         let mut model = None::<String>;
@@ -348,10 +362,10 @@ impl Runtime {
         };
         let session = |run: &agent::Run| a.session_id(run).or_else(|| resume.map(str::to_string));
         loop {
-            if !alive() { stop(&mut run); return Ok((session(&run), model, Outcome::Fenced)); }
+            if !alive() { stop(run); return Ok((session(run), model, Outcome::Fenced)); }
             let mut progressed = relay.serve(&mut *call, &version);
-            let state = a.poll(&mut run);
-            for m in a.progress(&mut run).unwrap_or_default() {
+            let state = a.poll(run);
+            for m in a.progress(run).unwrap_or_default() {
                 progressed = true;
                 let method = m["method"].as_str().unwrap_or("");
                 if m.get("id").is_some() && !method.is_empty() {
@@ -361,13 +375,13 @@ impl Runtime {
                         let (ok, out) = call(m["params"]["tool"].as_str().unwrap_or(""), &m["params"]["arguments"], &version);
                         json!({"id": m["id"], "result": {"contentItems": [{"type": "inputText", "text": out}], "success": ok}})
                     } else { json!({"id": m["id"], "error": {"code": -32601, "message": "PilotQ does not grant this request"}}) };
-                    if let Err(e) = a.send(&mut run, &reply) { eprintln!("{name}: {e}"); }
+                    if let Err(e) = a.send(run, &reply) { eprintln!("{name}: {e}"); }
                     continue;
                 }
                 if m.get("id").is_some() {
                     if let Some(e) = m.get("error") {
-                        stop(&mut run);
-                        return Ok((session(&run), model, fail(tooled, format!("{label} refused {}: {}", m["id"], e["message"].as_str().unwrap_or("error")))));
+                        stop(run);
+                        return Ok((session(run), model, fail(tooled, format!("{label} refused {}: {}", m["id"], e["message"].as_str().unwrap_or("error")))));
                     }
                     if let Some(v) = m["result"]["userAgent"].as_str() { version = v.to_string(); }
                     if let Some(v) = m["result"]["model"].as_str() { model = Some(v.to_string()); }
@@ -390,7 +404,7 @@ impl Runtime {
                     ("item/completed", _) if item["type"] == "agentMessage" => answer = item["text"].as_str().map(str::to_string),
                     ("error", _) => error = m["params"]["error"]["message"].as_str().map(str::to_string),
                     ("account/rateLimits/updated", _) => observation("quota", &m["params"]["rateLimits"]),
-                    ("thread/tokenUsage/updated", _) if m["params"]["threadId"].as_str().is_some() && m["params"]["threadId"].as_str() == a.session_id(&run).as_deref() =>
+                    ("thread/tokenUsage/updated", _) if m["params"]["threadId"].as_str().is_some() && m["params"]["threadId"].as_str() == a.session_id(run).as_deref() =>
                         observation("context", &m["params"]["tokenUsage"]),
                     (_, Some("stream_event")) => match m["event"]["type"].as_str() {
                         Some("message_start") => draft.clear(),
@@ -430,27 +444,27 @@ impl Runtime {
             match state {
                 Ok(State::Running) => {}
                 Ok(_) => break,
-                Err(e) => { stop(&mut run); return Ok((session(&run), model, fail(tooled, e))); }
+                Err(e) => { stop(run); return Ok((session(run), model, fail(tooled, e))); }
             }
             let (limit, why, secs) = if first { (last + self.limits.silent, "sent no event for", self.limits.silent) } else { (start + self.limits.first_event, "sent no first event within", self.limits.first_event) };
             if Instant::now() >= limit {
                 let fenced = !alive();
-                stop(&mut run);
-                return Ok((session(&run), model, if fenced { Outcome::Fenced } else { fail(tooled, format!("{label} {why} {} s", secs.as_secs())) }));
+                stop(run);
+                return Ok((session(run), model, if fenced { Outcome::Fenced } else { fail(tooled, format!("{label} {why} {} s", secs.as_secs())) }));
             }
             if !progressed { std::thread::sleep(Duration::from_millis(50)); }
         }
-        let Ok(r) = a.report(&run) else {
+        let Ok(r) = a.report(run) else {
             let why = error.map_or(format!("{label} exited without a terminal event"), |e| format!("{label} exited without a terminal event after: {e}"));
-            return Ok((session(&run), model, fail(tooled, why)));
+            return Ok((session(run), model, fail(tooled, why)));
         };
         if resume.is_some() && r.outcome != "ok" && !tooled && answer.is_none()
-            && a.transcript(&run).ok().and_then(|p| std::fs::read_to_string(p).ok()).is_some_and(|t| MISSING.iter().any(|m| t.contains(m))) {
+            && a.transcript(run).ok().and_then(|p| std::fs::read_to_string(p).ok()).is_some_and(|t| MISSING.iter().any(|m| t.contains(m))) {
             return Err(());
         }
         // A5: one CoreQ usage observation per turn, attributed to this route
         let ctx = Context { product: "pilotq", version: env!("CARGO_PKG_VERSION"), project: "other", task: None, route: Some(route), account: "default" };
-        let cell = RefCell::new(&mut run);
+        let cell = RefCell::new(&mut *run);
         record(&|store| cell.borrow_mut().record(&ctx, store).map(drop));
         if let (Some(used), Some(window)) = (used, window) {
             observation("context", &json!({"last": {"inputTokens": used}, "modelContextWindow": window}));
