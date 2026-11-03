@@ -403,6 +403,8 @@ impl Runtime {
                     }
                     ("item/completed", _) if item["type"] == "agentMessage" => answer = item["text"].as_str().map(str::to_string),
                     ("error", _) => error = m["params"]["error"]["message"].as_str().map(str::to_string),
+                    // the native terminal reason, kept over AgentQ's outcome code
+                    ("turn/completed", _) => error = m["params"]["turn"]["error"]["message"].as_str().map(str::to_string).or(error),
                     ("account/rateLimits/updated", _) => observation("quota", &m["params"]["rateLimits"]),
                     ("thread/tokenUsage/updated", _) if m["params"]["threadId"].as_str().is_some() && m["params"]["threadId"].as_str() == a.session_id(run).as_deref() =>
                         observation("context", &m["params"]["tokenUsage"]),
@@ -476,7 +478,7 @@ impl Runtime {
         let outcome = match (r.outcome, answer.or(r.text.clone())) {
             ("ok", Some(a)) if !a.trim().is_empty() => Outcome::Answered(a),
             ("ok", _) => Outcome::Failed(format!("{label} ended the turn without an answer")),
-            (o, _) => fail(tooled, format!("{label} turn {o}: {}", if r.error.is_empty() { error.as_deref().unwrap_or("no reason given") } else { r.error })),
+            (o, _) => fail(tooled, format!("{label} turn {o}: {}", error.as_deref().or((!r.error.is_empty()).then_some(r.error)).unwrap_or("no reason given"))),
         };
         let run = cell.into_inner();
         Ok((session(run), model, outcome))
