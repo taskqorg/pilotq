@@ -331,12 +331,26 @@ impl Runtime {
         } else {
             l.input = match crate::relay::message(input) { Ok(t) => t, Err(e) => return failed(e) };
         }
-        let launched = {
-            let _start = n.app_server.then(|| START.lock().unwrap_or_else(|e| e.into_inner()));
-            match resume { Some(s) => a.resume(s, &l), None => a.launch(&l) }
+        // The launch (an app-server handshake) runs beside the first-event watch and the fence: a runtime that never answers
+        // fails within the watch, and the launching thread then drops what it started, ending its process group.
+        // ponytail: a late handshake keeps START up to AgentQ's 30 s reply deadline; a cancellable launch in the trait if it matters
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (app_server, session) = (n.app_server, resume.map(str::to_string));
+        std::thread::spawn(move || {
+            let _start = app_server.then(|| START.lock().unwrap_or_else(|e| e.into_inner()));
+            let _ = tx.send(match &session { Some(s) => a.resume(s, &l), None => a.launch(&l) }.map(|run| Owned { a, run }));
+        });
+        let launched = loop {
+            match rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(r) => break r,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break Err("launch ended without an outcome".to_string()),
+                Err(_) if !alive() => return Ok((resume.map(str::to_string), None, Outcome::Fenced)),
+                Err(_) if start.elapsed() >= self.limits.first_event => return failed(format!("{label} sent no first event within {} s", self.limits.first_event.as_secs())),
+                Err(_) => {}
+            }
         };
-        let run = match launched {
-            Ok(run) => run,
+        let mut owned = match launched {
+            Ok(owned) => owned,
             Err(e) if resume.is_some() && MISSING.iter().any(|m| e.contains(m)) => return Err(()),
             // native diagnostics can name paths or account details: operator log only, never a reply, the journal or telemetry
             Err(e) => {
@@ -344,7 +358,6 @@ impl Runtime {
                 return failed(if e.contains("spawn") { format!("{label} did not start; check login and runtime health.") } else { format!("{label} exited without a terminal event") });
             }
         };
-        let mut owned = Owned { a, run };
         let run = &mut owned.run;
         observation("spawned", &json!(run.id()));
         observation("optimization", &run.optimization().json());
