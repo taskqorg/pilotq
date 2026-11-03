@@ -28,13 +28,14 @@ keeps the service user's own login). `runtime` selects the installation runtime 
 or `claude`); `runtime_routes` maps a route (`cli`, `CHAT` or `CHAT:TOPIC`) to an override. The
 #265 keys `codex`, `claude`, `claude_home` and `claude_models` remain readable for existing
 installations. Every manager turn runs through the `agentq-runtime` runtime trait
-(`agent::runtime(name)`), pinned to remote revision `e5e004f7f41fb770404bda18774c650170bb07ad`,
+(`agent::runtime(name)`), pinned to remote revision `97abcebb305447800fec5875e3cbaf24c8e7f22e`,
 one process group per turn, and keeps the existing grants, native-shell authority, private answer
 drafts, model choice, inactivity watches and recovery rules.
 
-- PilotQ keeps no per-runtime driver. Each runtime's native flags, home variable, policies, login
-  check and host minimum are one data entry (`NATIVE` in `src/manager.rs`); the turn loop reads
-  native records by their shape and never branches on a runtime name.
+- PilotQ keeps no runtime data and never branches on a runtime name. It states only its policy in
+  trait types (isolated, subscription login, built-in tools, write scope and approval) and picks
+  runtimes by capability; flags, home variable, labels, models, refusal causes, login check and
+  host minimum come from the adapter (`descriptor()`, `launch_refusal()`, `ready()`).
 - Codex runs as a trait app-server session (`Mode::AppServer`) with PilotQ's isolated `CODEX_HOME`,
   the forced ChatGPT login and its dynamic tools; the owner and shell grantees get
   `danger-full-access`, others `read-only`, both without approval prompts.

@@ -34,7 +34,7 @@ fn setup_report(exe:&std::path::Path,budget:Duration) -> Result<String,String> {
     let v:Value=serde_json::from_slice(&output).map_err(|_|"Setup checks returned no report")?;
     let mut lines=vec!["Setup checks (read only):".to_string()];
     // each manager runtime the report checks (#359), between the fixed setup checks
-    let runtimes=crate::manager::NATIVE.iter().map(|n|n.name).filter(|n|!v["checks"][*n].is_null());
+    let runtimes=crate::manager::supported().map(|r|r.descriptor().name).filter(|n|!v["checks"][*n].is_null());
     for name in ["configuration","telegram"].into_iter().chain(runtimes).chain(["taskq","voice","host_tools"]) {
         let state=match v["checks"][name].as_str() { Some("ok")=>"ok",Some("failed")=>"failed",_=>"unknown" };
         lines.push(format!("{name}: {state}"));

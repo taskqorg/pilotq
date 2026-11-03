@@ -105,10 +105,10 @@ pub fn report(c: Option<&crate::Config>) -> Value {
         probe("curl",Some("curl"),&["--version"],"7.68.0","curl ","Install curl 7.68 or newer on the service PATH"),
     ];
     // #265/#359: each runtime the installation or a route runs the manager on; without config, the default runtime
-    let used = c.map_or_else(|| vec![crate::manager::NATIVE[0].name], |c| c.runtime.used());
-    for n in crate::manager::NATIVE.iter().filter(|n| used.contains(&n.name)) {
-        let bin = c.and_then(|c| c.runtime.agents.get(n.name)).map(|a| a.bin.as_str());
-        checks.push(probe(n.name, bin, &["--version"], n.minimum, n.prefix, n.fix));
+    let used = c.map_or_else(|| vec![crate::manager::default_runtime()], |c| c.runtime.used());
+    for r in crate::manager::supported().filter(|r| used.contains(&r.descriptor().name)) {
+        let agent = c.and_then(|c| c.runtime.agents.get(r.descriptor().name));
+        checks.push(runtime_check(r, agent.map_or(r.descriptor().name, |a| a.bin.as_str()), agent.and_then(|a| a.home.as_deref())));
     }
     if cfg!(target_os="linux") {
         checks.extend([
@@ -135,6 +135,17 @@ pub fn report(c: Option<&crate::Config>) -> Value {
     }
     checks.extend(crate::release::host_checks(&crate::tool().install.join("journal.sqlite")));
     json!(checks)
+}
+
+/// § 9 runtime row from the trait's readiness (#363): install and minimum version; login is doctor's runtime check.
+pub(crate) fn runtime_check(r: &dyn agentq_runtime::agent::Runtime, bin: &str, home: Option<&std::path::Path>) -> Value {
+    let d = r.descriptor();
+    let ready = r.ready(Some(std::path::Path::new(bin)), home);
+    let ok = ready.install.state == "ok" && ready.version.state == "ok";
+    let fix = format!("Install {} {} or newer; set config.json runtimes.{}.bin to its absolute path", d.label, d.minimum, d.name);
+    let found = (ready.version.state != "unknown").then(|| ready.version.detail.clone());
+    if !ok { log(d.name, &format!("found {}; minimum {}; {fix}", found.as_deref().unwrap_or("unavailable"), d.minimum)); }
+    json!({"tool": d.name, "found": found, "minimum": d.minimum, "outcome": if ok {"ok"} else {"failed"}, "fix": fix})
 }
 
 pub fn healthy(v: &Value) -> bool { v.as_array().is_some_and(|a|a.iter().all(|v|v["outcome"]=="ok")) }

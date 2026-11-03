@@ -1,14 +1,15 @@
 //! Manager turns through the AgentQ runtime trait (pilotq.md § 3, § 4 Runs, § 12 Runtime, #359). One process per turn: the
 //! process group is the fault boundary, so stop and deadlines end it, and its native session ID carries the conversation to
-//! the next turn. Every runtime difference is data in `NATIVE`; the turn loop reads records by their shape, never by name.
+//! the next turn. Runtime specifics live in the AgentQ adapters (#363); PilotQ states only its policy and reads records by
+//! their shape, never by name.
 
 use crate::journal::{Journal, Run, RebuildReason};
-use agentq_runtime::agent::{self, Approval, Context, Launch, Mode, Network, Part, Policy, Process, Roots, Scope, State};
+use agentq_runtime::agent::{self, Approval, Builtin, Cause, Context, Launch, Mode, Part, Policy, Process, Scope, State};
 use agentq_runtime::optimization::Intent;
 use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -16,10 +17,10 @@ use std::time::{Duration, Instant};
 pub(crate) const GRACE: Duration = Duration::from_secs(5);
 /// Item types that act outside the model; once one starts, a missing terminal outcome is uncertain, never a clean failure.
 const TOOLS: [&str; 5] = ["commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch"];
-/// Native evidence that a resumed session does not exist and nothing ran: the turn is rebuilt once from the journal.
+/// The trait's cause for a resumed session that does not exist and ran nothing: the turn is rebuilt once from the journal.
 // ponytail: AgentQ reports every refused app-server resume alike, so a refusal for another reason is also rebuilt once and then
-// fails on the new session; a typed refusal cause in the trait if the audit reason must tell them apart
-const MISSING: [&str; 2] = ["app-server thread/resume refused", "No conversation found with session ID"];
+// fails on the new session; a finer refusal cause in the trait if the audit reason must tell them apart
+fn missing(a: &dyn agent::Runtime, text: &str) -> bool { a.launch_refusal(text) == Some(Cause("session-missing")) }
 
 /// Section 7 inactivity watches and the separate bounded media-preparation budget.
 #[derive(Clone)]
@@ -30,70 +31,33 @@ pub struct Limits {
     pub deadline: Duration,
 }
 
-/// What PilotQ passes to one runtime. Data, never a branch (#359 A1): `{mcp}` and `{instructions}` name the turn's tool relay
-/// config and instruction file.
-pub(crate) struct Native {
-    pub name: &'static str,
-    /// The runtime's name in replies and failure lines.
-    pub title: &'static str,
-    /// Home variable of PilotQ's isolated login home.
-    pub home: &'static str,
-    /// Turns use an app-server session (input, server-request replies) instead of one CLI turn with stream-json input.
-    pub app_server: bool,
-    pub always: &'static [&'static str],
-    pub native: &'static [&'static str],
-    pub restricted: &'static [&'static str],
-    pub native_policy: Policy,
-    pub restricted_policy: Policy,
-    /// The launch excludes user settings, so their AgentQ hooks cannot prove effective optimization (#294).
-    pub settings_excluded: bool,
-    /// `/model` offers these when config.json names none and the runtime has no catalogue read.
-    pub models: &'static [&'static str],
-    /// § 9 host minimum, its `--version` prefix and the operator remedy.
-    pub minimum: &'static str,
-    pub prefix: &'static str,
-    pub fix: &'static str,
-    /// R9: the subscription login check and the markers its whitespace-free output must all contain.
-    pub login: &'static [&'static str],
-    pub subscription: &'static [&'static str],
+/// Runtimes PilotQ can drive (#363): an app-server session, or a CLI turn that carries PilotQ's tool relay, instructions and
+/// input parts.
+pub(crate) fn supported() -> impl Iterator<Item = &'static dyn agent::Runtime> {
+    agent::runtimes().into_iter().filter(|r| {
+        let d = r.descriptor();
+        d.has("app-server") || ["mcp-config", "instructions-file", "turn-parts"].iter().all(|c| d.has(c))
+    })
 }
 
-const fn policy(write: Scope, approval: Approval) -> Policy {
-    Policy { read: Scope::Native, write, network: Network::Native, tools: None, approval, roots: Roots::Native, unelevated: false }
+pub(crate) fn runtime(name: &str) -> Option<&'static dyn agent::Runtime> { supported().find(|r| r.descriptor().name == name) }
+
+/// The installation default: the first supported app-server runtime.
+pub(crate) fn default_runtime() -> &'static str {
+    supported().find(|r| r.descriptor().has("app-server")).or_else(|| supported().next()).map_or("", |r| r.descriptor().name)
 }
 
-/// The first entry is the installation default runtime.
-pub(crate) static NATIVE: [Native; 2] = [
-    Native {
-        name: "codex", title: "Codex", home: "CODEX_HOME", app_server: true,
-        // subscription login only, no API-key fallback (R9); native shell and web follow the principal (#190)
-        always: &["--disable", "apps", "--disable", "plugins", "--disable", "browser_use", "--disable", "computer_use", "--disable", "multi_agent",
-            "--disable", "image_generation", "-c", "forced_login_method=\"chatgpt\""],
-        native: &["--enable", "shell_tool", "-c", "web_search=\"live\""],
-        restricted: &["--disable", "shell_tool", "-c", "web_search=\"disabled\""],
-        native_policy: policy(Scope::Any, Approval::Bypass),
-        restricted_policy: policy(Scope::None, Approval::Deny),
-        settings_excluded: false, models: &[],
-        minimum: "0.162.0", prefix: "codex-cli ", fix: "Install @openai/codex@0.162.0 or newer; set config.json runtimes.codex.bin to its absolute path",
-        login: &["-c", "forced_login_method=\"chatgpt\"", "login", "status"], subscription: &["LoggedinusingChatGPT"],
-    },
-    Native {
-        name: "claude", title: "Claude", home: "CLAUDE_CONFIG_DIR", app_server: false,
-        always: &["--input-format", "stream-json", "--include-partial-messages", "--strict-mcp-config", "--setting-sources", "project",
-            "--disable-slash-commands", "--system-prompt-snapshot", "off", "--mcp-config", "{mcp}", "--append-system-prompt-file", "{instructions}",
-            "--allowedTools", "mcp__pilotq"],
-        native: &[],
-        // PilotQ's granted tools only: no built-in tool
-        restricted: &["--tools", ""],
-        native_policy: policy(Scope::Native, Approval::Bypass),
-        restricted_policy: policy(Scope::Native, Approval::Native),
-        settings_excluded: true, models: &["opus", "sonnet", "haiku"],
-        minimum: "2.1.0", prefix: "", fix: "Install Claude Code 2.1.0 or newer; set config.json runtimes.claude.bin to its absolute path",
-        login: &["auth", "status", "--json"], subscription: &["\"loggedIn\":true", "\"authMethod\":\"claude.ai\"", "\"apiProvider\":\"firstParty\""],
-    },
-];
-
-pub(crate) fn native(name: &str) -> Option<&'static Native> { NATIVE.iter().find(|n| n.name == name) }
+/// PilotQ's policy (#190, R9, #294): no user settings and subscription login only; native shell and web follow the principal.
+fn policy(native: bool, relay: bool) -> Policy {
+    let base = Policy { isolated: true, subscription: true, ..Policy::default() };
+    match (native, relay) {
+        (true, _) => Policy { write: Scope::Any, approval: Approval::Bypass, builtin: Builtin::On, ..base },
+        // relay tools write only through PilotQ's own boundary, and no runtime enforces read-only beside an MCP server, so a
+        // relay turn drops built-in tools and keeps the native write scope
+        (false, true) => Policy { builtin: Builtin::Off, ..base },
+        (false, false) => Policy { write: Scope::None, approval: Approval::Deny, builtin: Builtin::Off, ..base },
+    }
+}
 
 /// One configured runtime: `runtimes.NAME` of config.json.
 #[derive(Clone, Debug, PartialEq)]
@@ -130,20 +94,20 @@ impl Runtime {
         v.sort(); v.dedup(); v
     }
 
-    fn parts(&self, name: &str) -> Result<(&'static Native, &'static dyn agent::Runtime, &Agent), String> {
-        let n = native(name).ok_or_else(|| format!("runtime {name} is not supported"))?;
-        let a = agent::runtime(name).ok_or_else(|| format!("runtime {name} is not available"))?;
-        Ok((n, a, self.agents.get(name).ok_or_else(|| format!("runtime {name} is not configured"))?))
+    fn parts(&self, name: &str) -> Result<(&'static dyn agent::Runtime, &Agent), String> {
+        let a = runtime(name).ok_or_else(|| format!("runtime {name} is not supported"))?;
+        Ok((a, self.agents.get(name).ok_or_else(|| format!("runtime {name} is not configured"))?))
     }
 
     /// #106: configured choices, else the runtime catalogue; a catalogue read never starts inference (R9).
     pub fn models(&self, route: &str) -> Result<Vec<String>, String> {
         let name = self.name(route);
-        let (n, a, agent) = self.parts(name)?;
+        let (a, agent) = self.parts(name)?;
+        let d = a.descriptor();
         if !agent.models.is_empty() { return Ok(agent.models.clone()); }
-        if !n.models.is_empty() || !a.descriptor().has("app-server") { return Ok(n.models.iter().map(|s| s.to_string()).collect()); }
+        if !d.models.is_empty() || !d.has("app-server") { return Ok(d.models.iter().map(|s| s.to_string()).collect()); }
         let unavailable = || "Model catalogue unavailable".to_string();
-        let mut l = self.launch(n, agent, false, Path::new("-"), Path::new("-"), None, None)?;
+        let mut l = self.launch(a, agent, false, None, None, None)?;
         l.mode = Mode::AppServer { initialize: json!({"clientInfo": {"name": "pilotq", "version": env!("CARGO_PKG_VERSION")}}), thread: json!({"cwd": self.workspace}) };
         let run = { let _start = START.lock().unwrap_or_else(|e| e.into_inner()); a.launch(&l).map_err(|_| unavailable())? };
         let mut owned = Owned { a, run };
@@ -170,22 +134,27 @@ impl Runtime {
         Err("Model catalogue exceeds limit".into())
     }
 
-    /// The runtime-neutral launch of one turn: native flags from `NATIVE`, the principal's policy and PilotQ's process setup.
-    fn launch(&self, n: &Native, agent: &Agent, native: bool, mcp: &Path, instructions: &Path, model: Option<&str>, session: Option<&str>) -> Result<Launch, String> {
+    /// The runtime-neutral launch of one turn: PilotQ's policy, its relay data for a CLI turn and its process setup.
+    fn launch(&self, a: &dyn agent::Runtime, agent: &Agent, native: bool, relay: Option<&crate::relay::Relay>, model: Option<&str>, session: Option<&str>) -> Result<Launch, String> {
+        let name = a.descriptor().name;
+        let app_server = a.descriptor().has("app-server");
         std::fs::create_dir_all(&self.workspace).map_err(|e| format!("workspace: {e}"))?;
-        if let Some(home) = &agent.home { std::fs::create_dir_all(home).map_err(|e| format!("{} home: {e}", n.name))?; }
+        if let Some(home) = &agent.home { std::fs::create_dir_all(home).map_err(|e| format!("{name} home: {e}"))?; }
         // an app-server log holds private stderr of every turn in the runtime home; a CLI turn log is its session's stream,
         // appended on resume
-        let sessions = self.logs.join(format!("{}-sessions", n.name));
-        let (dir, log) = if n.app_server { (agent.home.clone().unwrap_or(sessions), "app-server.log".to_string()) } else { (sessions, format!("{}.jsonl", session.map_or_else(token, str::to_string))) };
-        std::fs::create_dir_all(&dir).map_err(|e| format!("{} logs: {e}", n.name))?;
+        let sessions = self.logs.join(format!("{name}-sessions"));
+        let (dir, log) = if app_server { (agent.home.clone().unwrap_or(sessions), "app-server.log".to_string()) } else { (sessions, format!("{}.jsonl", session.map_or_else(token, str::to_string))) };
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{name} logs: {e}"))?;
         let mut l = Launch::new(&self.workspace, dir.join(log), "", "pilotq");
-        let fill = |f: &&str| match *f { "{mcp}" => mcp.as_os_str().to_owned(), "{instructions}" => instructions.as_os_str().to_owned(), f => f.into() };
-        l.command = std::iter::once(agent.bin.as_str().into()).chain(n.always.iter().chain(if native { n.native } else { n.restricted }).map(fill)).collect();
-        l.policy = if native { n.native_policy.clone() } else { n.restricted_policy.clone() };
+        l.command = vec![agent.bin.as_str().into()];
+        l.policy = policy(native, !app_server);
+        if !app_server {
+            if let Some(r) = relay { (l.mcp, l.instructions) = (Some(r.config.clone()), Some(r.instructions.clone())); }
+            l.deltas = true;
+        }
         l.model = model.map(str::to_string);
-        if let Some(home) = &agent.home { l.env.push((n.home.into(), home.into())); }
-        l.optimization = if n.settings_excluded { Intent::Off } else { self.optimization };
+        l.home = agent.home.clone();
+        l.optimization = self.optimization;
         l.install = agentq_runtime::optimization::install_root();
         l.process = Process { configure: Some(std::sync::Arc::new(pilotq::configure)), spawned: None };
         Ok(l)
@@ -291,7 +260,7 @@ impl Runtime {
                     input.as_array_mut().unwrap().insert(0, json!({"type": "text", "text": history.to_string()}));
                     thread = None;
                 }
-                Err(()) => return (None, None, Outcome::Failed(format!("{} could not open the conversation; no work was repeated.", self::native(name).map_or(name, |n| n.title)))),
+                Err(()) => return (None, None, Outcome::Failed(format!("{} could not open the conversation; no work was repeated.", runtime(name).map_or(name, |a| a.descriptor().label)))),
                 Ok(done) => return done,
             }
         }
@@ -316,26 +285,27 @@ impl Runtime {
         route: &str,
     ) -> Result<(Option<String>, Option<String>, Outcome), ()> {
         let failed = |e: String| Ok((resume.map(str::to_string), None, Outcome::Failed(e)));
-        let (n, a, agent) = match self.parts(name) { Ok(p) => p, Err(e) => return failed(e) };
-        let label = n.title;
+        let (a, agent) = match self.parts(name) { Ok(p) => p, Err(e) => return failed(e) };
+        let label = a.descriptor().label;
+        let app_server = a.descriptor().has("app-server");
         // the first-event watch starts once this turn may spawn, before the runtime runs (§ 12)
         let start = Instant::now();
         let relay = match crate::relay::Relay::open(&self.workspace, dynamic) { Ok(r) => r, Err(e) => return failed(e) };
-        let mut l = match self.launch(n, agent, native, &relay.config, &relay.instructions, selected_model, resume) { Ok(l) => l, Err(e) => return failed(e) };
-        if n.app_server {
+        let mut l = match self.launch(a, agent, native, Some(&relay), selected_model, resume) { Ok(l) => l, Err(e) => return failed(e) };
+        if app_server {
             // dynamic tools are an experimental app-server field; they are fixed at thread creation, so schema upgrades
             // explicitly rebuild older catalogues from the journal
             let mut thread = json!({"cwd": self.workspace, "developerInstructions": dynamic.1});
             if resume.is_none() { thread["dynamicTools"] = dynamic.0.clone(); }
             l.mode = Mode::AppServer { initialize: json!({"clientInfo": {"name": "pilotq", "title": "PilotQ", "version": env!("CARGO_PKG_VERSION")}, "capabilities": {"experimentalApi": true}}), thread };
         } else {
-            l.input = match crate::relay::message(input) { Ok(t) => t, Err(e) => return failed(e) };
+            l.parts = parts(input);
         }
         // The launch (an app-server handshake) runs beside the first-event watch and the fence: a runtime that never answers
         // fails within the watch, and the launching thread then drops what it started, ending its process group.
         // ponytail: a late handshake keeps START up to AgentQ's 30 s reply deadline; a cancellable launch in the trait if it matters
         let (tx, rx) = std::sync::mpsc::channel();
-        let (app_server, session) = (n.app_server, resume.map(str::to_string));
+        let session = resume.map(str::to_string);
         std::thread::spawn(move || {
             let _start = app_server.then(|| START.lock().unwrap_or_else(|e| e.into_inner()));
             let _ = tx.send(match &session { Some(s) => a.resume(s, &l), None => a.launch(&l) }.map(|run| Owned { a, run }));
@@ -351,7 +321,7 @@ impl Runtime {
         };
         let mut owned = match launched {
             Ok(owned) => owned,
-            Err(e) if resume.is_some() && MISSING.iter().any(|m| e.contains(m)) => return Err(()),
+            Err(e) if resume.is_some() && missing(a, &e) => return Err(()),
             // native diagnostics can name paths or account details: operator log only, never a reply, the journal or telemetry
             Err(e) => {
                 crate::host::log(name, &e);
@@ -361,7 +331,7 @@ impl Runtime {
         let run = &mut owned.run;
         observation("spawned", &json!(run.id()));
         observation("optimization", &run.optimization().json());
-        if n.app_server && let Err(e) = a.input(run, &parts(input)) { return failed(format!("{label} refused the input: {e}")); }
+        if app_server && let Err(e) = a.input(run, &parts(input)) { return failed(format!("{label} refused the input: {e}")); }
         let (mut first, mut last, mut tooled, mut answer, mut error) = (false, start, false, None::<String>, None::<String>);
         let (mut draft_item, mut draft, mut used, mut window) = (String::new(), String::new(), None::<u64>, None::<u64>);
         let mut model = None::<String>;
@@ -474,7 +444,7 @@ impl Runtime {
             return Ok((session(run), model, fail(tooled, why)));
         };
         if resume.is_some() && r.outcome != "ok" && !tooled && answer.is_none()
-            && a.transcript(run).ok().and_then(|p| std::fs::read_to_string(p).ok()).is_some_and(|t| MISSING.iter().any(|m| t.contains(m))) {
+            && a.transcript(run).ok().and_then(|p| std::fs::read_to_string(p).ok()).is_some_and(|t| missing(a, &t)) {
             return Err(());
         }
         // A5: one CoreQ usage observation per turn, attributed to this route
@@ -989,7 +959,8 @@ def send(v):
  print(json.dumps(v),flush=True)
 tid=['invented']
 native = sys.argv[sys.argv.index('shell_tool')-1]=='--enable'
-assert sys.argv.index('app-server') > sys.argv.index('shell_tool'), 'native flags precede the subcommand'
+assert sys.argv.index('app-server') < sys.argv.index('shell_tool'), 'AgentQ passes policy flags after the subcommand'
+assert 'forced_login_method="chatgpt"' in sys.argv and '--disable' in sys.argv, 'R9 subscription login and isolation'
 assert 'OPENAI_API_KEY' not in __import__('os').environ, 'R9: no host API key reaches the runtime'
 assert ('web_search="live"' if native else 'web_search="disabled"') in sys.argv
 for line in sys.stdin:
