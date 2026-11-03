@@ -110,6 +110,8 @@ fn session(chat: i64, topic: Option<i64>, sender: i64, shared: bool) -> String {
 fn control(text: Option<&str>) -> Option<&'static str> {
     let cmd = text?.split_whitespace().next()?.split('@').next()?;
     if !cmd.starts_with('/') { return None; }
+    // #360: Telegram sends /start (optionally with a deep-link payload) as a new person's first message; it gets top-level help.
+    if cmd=="/start" { return Some("/help"); }
     if matches!(cmd,"/model-button"|"/release-confirm"|"/onboard-button") { return Some(match cmd {"/model-button"=>"/model-button","/release-confirm"=>"/release-confirm",_=>"/onboard-button"}); }
     Some(crate::catalog::CATALOG.iter().find(|c|c.name==cmd && c.name.starts_with('/')).map(|c|c.name).unwrap_or("/unknown"))
 }
@@ -4918,6 +4920,31 @@ mod tests {
         for diagnostic in ["invented internal error /private/path", "Use /onboard NAME or /onboard NAME override: invented-secret"] {
             assert_eq!(crate::builtins::localized(diagnostic,Some("ru"),true),"Команда не выполнена; проверьте /status и повторите позже.");
         }
+    }
+
+    // #360 A1 / §9: Telegram's first message /start, with or without a deep-link payload or @bot suffix,
+    // must reach the same top-level help as /help instead of the unknown-command refusal.
+    #[test]
+    fn start_360_routes_to_help() {
+        let (mut j,p)=journal("start-360");
+        let commands=["/help","/start","/start invited-payload_42","/start@PilotQBot invited-payload"];
+        for (u,command) in commands.iter().enumerate() {
+            let mut input=msg(7,7,u as i64+1).unwrap();input.text=Some((*command).into());
+            j.admit(&[(u as i64+1,Some(input))],0).unwrap();
+        }
+        let shared=std::sync::Arc::new(std::sync::Mutex::new(j));
+        let mut replies=Vec::new();
+        for command in commands {
+            let request=shared.lock().unwrap().builtin_next().unwrap().unwrap_or_else(||panic!("{command} was not a built-in"));
+            crate::builtins::execute(&crate::tool(),&shared,&request,false).unwrap();
+            let (state,reply,_)=shared.lock().unwrap().request(request.id).unwrap();
+            assert_eq!(state,"answered","{command}");
+            let reply=reply.unwrap();
+            assert!(!reply.contains("Unknown command") && !reply.contains("Invalid command"),"{command}: {reply}");
+            replies.push(reply);
+        }
+        assert!(replies.iter().all(|r|r==&replies[0]),"{replies:?}");
+        drop(shared);std::fs::remove_dir_all(p).unwrap();
     }
 
     fn count(j: &Journal, sql: &str) -> i64 {

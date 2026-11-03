@@ -50,8 +50,9 @@ pub fn execute(t:&Tool,j:&Shared,r:&Request,installed:bool) -> Result<(),String>
                 crate::onboarding::control(t,j,r)?;
                 return Ok(None);
             }
-            "/help"=> {
-                let words:Vec<_>=r.text.split_whitespace().collect();
+            "/help"|"/start"=> {
+                // #360: a /start deep-link payload is not a help area; /start always shows top-level help.
+                let words:Vec<_>=if cmd=="/start" { vec![cmd] } else { r.text.split_whitespace().collect() };
                 if words.len()>2 { return Err("Invalid command arguments; use /help.".into()); }
                 let config=crate::config(t)?;
                 let keys=crate::keys::Keys(t.install.join("keys.json"));

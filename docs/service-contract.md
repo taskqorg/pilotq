@@ -10,7 +10,8 @@ clauses remain unqualified design targets, not shipped guarantees or deployment 
 Deterministic built-in commands never enter the model backlog, including while a chat run is active.
 They use the same admission and audit boundary as other requests (R10, R13, R17).
 
-- `/help` lists available controls; `/version` reports this binary's version; `/doctor` runs
+- `/help` lists available controls; Telegram's first-message `/start`, with or without a
+  deep-link payload, returns the same top-level help; `/version` reports this binary's version; `/doctor` runs
   bounded, read-only setup checks and returns check names and outcomes only. Unknown commands
   receive a usage error, not a model turn. Commands accept Telegram's `@bot` suffix.
 - `/model` reads the route runtime's model catalogue (Codex app-server `model/list`, or the
