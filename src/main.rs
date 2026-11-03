@@ -229,10 +229,10 @@ fn config(t: &Tool) -> Result<Option<Config>, String> {
     // #265/#359: `runtimes: {NAME: {bin, home, models}}`, the installation runtime (default: the first supported) and per-route
     // overrides. The #265 keys `codex`, `claude`, `NAME_home` and `NAME_models` stay readable for existing installations.
     for k in v["runtimes"].as_object().into_iter().flatten().map(|(k, _)| k) {
-        if manager::native(k).is_none() { return Err(format!("config.json: runtimes.{k} is not a supported runtime")); }
+        if manager::runtime(k).is_none() { return Err(format!("config.json: runtimes.{k} is not a supported runtime")); }
     }
     let mut agents = std::collections::BTreeMap::new();
-    for n in &manager::NATIVE {
+    for n in manager::supported().map(|r| r.descriptor()) {
         let c = &v["runtimes"][n.name];
         let home = c["home"].as_str().or(v[format!("{}_home", n.name)].as_str());
         let models = match c["models"].as_array().or(v[format!("{}_models", n.name)].as_array()) {
@@ -244,8 +244,8 @@ fn config(t: &Tool) -> Result<Option<Config>, String> {
             // "default" keeps the service user's own login; otherwise PilotQ's isolated home
             home: match home { Some("default") => None, Some(p) => Some(p.into()), None => Some(t.install.join(n.name)) }, models });
     }
-    let name = |v: &Value, k: &str| v.as_str().map_or(Ok(manager::NATIVE[0].name.to_string()), |s| manager::native(s).filter(|n| agentq_runtime::agent::runtime(n.name).is_some())
-        .map(|n| n.name.to_string()).ok_or(format!("config.json: {k} must name a supported runtime")));
+    let name = |v: &Value, k: &str| v.as_str().map_or(Ok(manager::default_runtime().to_string()), |s| manager::runtime(s)
+        .map(|r| r.descriptor().name.to_string()).ok_or(format!("config.json: {k} must name a supported runtime")));
     let default = name(&v["runtime"], "runtime")?;
     let mut routes = std::collections::BTreeMap::new();
     for (route, value) in v["runtime_routes"].as_object().into_iter().flatten() { routes.insert(route.clone(), name(value, "runtime_routes")?); }
@@ -312,7 +312,6 @@ fn selftest(t: &Tool) -> Result<(), String> {
 /// §9 setup checks; dependency diagnostics are deliberately withheld (§8).
 fn doctor(t: &Tool) -> Value {
     use teloxide::prelude::*;
-    use std::process::{Command, Stdio};
     let mut checks = json!({"configuration": "failed", "telegram": "unknown", "taskq": "unknown", "voice": "unknown"});
     let c = config(t).ok().flatten();
     let requirements = host::report(c.as_ref());
@@ -320,7 +319,7 @@ fn doctor(t: &Tool) -> Value {
     checks["host_tools"] = json!(if host_ok { "ok" } else { "failed" });
     let Some(c) = c else {
         // without configuration the default runtime is unobserved, never healthy
-        checks[manager::NATIVE[0].name] = json!("unknown");
+        checks[manager::default_runtime()] = json!("unknown");
         return json!({"ok": false, "checks": checks,"requirements":requirements});
     };
     checks["configuration"] = json!("ok");
@@ -330,20 +329,12 @@ fn doctor(t: &Tool) -> Value {
         matches!(tokio::time::timeout(Duration::from_secs(20), bot.get_me().send()).await, Ok(Ok(me)) if me.is_bot)
     }));
     checks["telegram"] = json!(if telegram { "ok" } else { "failed" });
-    // #359: each runtime a route uses reports the trait's readiness; R9 also needs its subscription login, never an API key
+    // #359/#363: each runtime a route uses reports the trait's readiness; R9 needs its subscription login (`ok`), never an API key
     let mut login = true;
     for name in c.runtime.used() {
-        let (Some(n), Some(a), Some(agent)) = (manager::native(name), agentq_runtime::agent::runtime(name), c.runtime.agents.get(name)) else { login = false; continue };
-        let ready = a.ready(agent.home.as_deref());
-        let mut cmd = Command::new(&agent.bin);
-        pilotq::configure(&mut cmd);
-        if let Some(home) = &agent.home { cmd.env(n.home, home); }
-        cmd.args(n.login).stdin(Stdio::null());
-        let subscription = host::output_with_budget(&mut cmd, Duration::from_secs(10)).ok().is_some_and(|o| {
-            let text: String = [o.stdout, o.stderr].concat().iter().map(|b| *b as char).filter(|c| !c.is_whitespace()).collect();
-            o.status.success() && n.subscription.iter().all(|m| text.contains(m))
-        });
-        let ok = subscription && ready.login.state != "missing";
+        let (Some(a), Some(agent)) = (manager::runtime(name), c.runtime.agents.get(name)) else { login = false; continue };
+        let ready = a.ready(Some(std::path::Path::new(&agent.bin)), agent.home.as_deref());
+        let ok = ready.install.state == "ok" && ready.login.state == "ok";
         checks[name] = json!(if ok { "ok" } else { "failed" });
         checks[format!("{name}_ready")] = json!({"install": ready.install.state, "version": ready.version.state, "login": ready.login.state});
         login &= ok;

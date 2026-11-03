@@ -21,8 +21,8 @@ dependencies = [
 
 [[package]]
 name = "agentq-runtime"
-version = "0.2.0"
-source = "git+https://github.com/taskqorg/agentq?rev=e5e004f7f41fb770404bda18774c650170bb07ad#e5e004f7f41fb770404bda18774c650170bb07ad"
+version = "0.4.0"
+source = "git+https://github.com/taskqorg/agentq?rev=97abcebb305447800fec5875e3cbaf24c8e7f22e#97abcebb305447800fec5875e3cbaf24c8e7f22e"
 dependencies = [
  "coreq",
  "libc",

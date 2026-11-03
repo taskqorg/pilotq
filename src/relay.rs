@@ -1,6 +1,6 @@
 //! PilotQ's own tools for a runtime without app-server tool calls: a per-turn stdio MCP relay (`pilotq --mcp-bridge SOCKET`)
 //! forwards each call over a private Unix socket to the same tool boundary app-server calls use; the relay holds no authority
-//! or state of its own. Also the stream-json input and tool-item helpers for CLI turns (#265, #359).
+//! or state of its own. Also the tool-item helper for CLI turns (#265, #359).
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -9,35 +9,6 @@ use std::time::Duration;
 
 const SERVER: &str = "pilotq";
 const TOKEN: &str = "PILOTQ_MCP_TOKEN";
-
-fn b64(bytes: &[u8]) -> String {
-    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut s = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for c in bytes.chunks(3) {
-        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
-        for i in 0..4 { s.push(if i <= c.len() { A[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' }); }
-    }
-    s
-}
-
-/// PilotQ's app-server-shaped input items as one stream-json user message; images travel inline.
-pub fn message(input: &Value) -> Result<String, String> {
-    let mut content = vec![];
-    for item in input.as_array().ok_or("invalid turn input")? {
-        match item["type"].as_str() {
-            Some("localImage") => {
-                let path = Path::new(item["path"].as_str().ok_or("invalid image")?);
-                let bytes = std::fs::read(path).map_err(|_| "image unreadable for this turn")?;
-                let media = match path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase().as_str() {
-                    "png" => "image/png", "webp" => "image/webp", "gif" => "image/gif", _ => "image/jpeg",
-                };
-                content.push(json!({"type": "image", "source": {"type": "base64", "media_type": media, "data": b64(&bytes)}}));
-            }
-            _ => content.push(json!({"type": "text", "text": item["text"].as_str().unwrap_or("")})),
-        }
-    }
-    Ok(format!("{}\n", json!({"type": "user", "message": {"role": "user", "content": content}})))
-}
 
 /// The native item PilotQ records for a stream-json tool use, in the app-server item vocabulary the journal and audit use.
 pub fn item(block: &Value) -> Value {
@@ -160,11 +131,6 @@ mod tests {
     use agentq_runtime::optimization::Intent;
     use std::os::unix::fs::PermissionsExt;
 
-    #[test]
-    fn base64_matches_rfc4648() {
-        for (raw, enc) in [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foobar", "Zm9vYmFy")] { assert_eq!(b64(raw.as_bytes()), enc); }
-    }
-
     // #265 A2/A3/A6: a fake Claude CLI receives one stream-json message, lists and calls a PilotQ tool through the per-turn
     // relay socket, streams a draft and answers; the next turn resumes the same session ID, and a missing session is rebuilt
     // once. Restricted principals get no built-in tools. No paid model is involved.
@@ -182,7 +148,7 @@ sid=val('--resume') if '--resume' in a else val('--session-id')
 native='--permission-mode' in a
 assert native or val('--tools')==''
 assert '--strict-mcp-config' in a and val('--allowedTools')=='mcp__pilotq'
-assert 'ANTHROPIC_API_KEY' not in os.environ and os.environ['CLAUDE_CONFIG_DIR'], 'R9: no host API key reaches the runtime'
+assert not os.environ.get('ANTHROPIC_API_KEY') and not os.environ.get('ANTHROPIC_AUTH_TOKEN') and os.environ['CLAUDE_CONFIG_DIR'], 'R9: no host API key reaches the runtime'
 assert os.environ['AGENTQ_LAUNCHER']=='pilotq' and os.environ['AGENTQ_OPTIMIZATION']=='off'
 if sid=='00000000-0000-4000-8000-000000000000':
   print('No conversation found with session ID: '+sid, file=sys.stderr); sys.exit(1)
