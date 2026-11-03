@@ -734,7 +734,7 @@ pub fn serve(
                                             let speech = match crate::voice::transcribe(v, &bytes, left()) {
                                                 Ok(t) => {
                                                     j.lock().unwrap().video_transcript(&r,&t,now())?;
-                                                    format!("Speech, automatic Russian, English or Hebrew recognition that may contain errors: {t}")
+                                                    format!("Speech, automatic speech recognition that may contain errors: {t}")
                                                 },
                                                 Err(e) => format!("No speech recognized ({}).", e.trim_start_matches("voice ")),
                                             };

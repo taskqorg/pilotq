@@ -1,22 +1,22 @@
 --- a/sherpa-onnx/csrc/features.h
 +++ b/sherpa-onnx/csrc/features.h
 @@ -83,6 +83,11 @@
- 
+
    bool is_t_one = false;
- 
+
 +#ifdef SHERPA_ONNX_EXPERIMENT_GIGA344
 +  // Candidate-only; never registered as a user option.
 +  bool is_giga344 = false;
 +#endif
 +
    bool round_to_power_of_two = true;
- 
+
    std::string ToString() const;
 --- a/sherpa-onnx/csrc/features.cc
 +++ b/sherpa-onnx/csrc/features.cc
 @@ -5,6 +5,8 @@
  #include "sherpa-onnx/csrc/features.h"
- 
+
  #include <algorithm>
 +#include <cmath>
 +#include <stdexcept>
@@ -24,7 +24,7 @@
  #include <mutex>
  #include <sstream>
 @@ -205,6 +207,15 @@
- 
+
      for (int32_t i = 0; i != n; ++i) {
        const float *f = GetFrameWrapper(i + frame_index);
 +#ifdef SHERPA_ONNX_EXPERIMENT_GIGA344
@@ -40,9 +40,9 @@
        p += feature_dim;
      }
 @@ -302,6 +313,16 @@
- 
+
      opts_.mel_opts.is_librosa = config_.is_librosa;
- 
+
 +#ifdef SHERPA_ONNX_EXPERIMENT_GIGA344
 +    if (config_.is_giga344) {
 +      opts_.mel_opts.use_slaney_mel_scale = false;
@@ -55,7 +55,7 @@
 +#endif
      fbank_ = std::make_unique<knf::OnlineFbank>(opts_);
    }
- 
+
 --- a/sherpa-onnx/csrc/offline-recognizer-ctc-impl.h
 +++ b/sherpa-onnx/csrc/offline-recognizer-ctc-impl.h
 @@ -121,6 +121,17 @@
@@ -80,7 +80,7 @@
 +++ b/sherpa-onnx/csrc/offline-nemo-enc-dec-ctc-model.cc
 @@ -5,6 +5,8 @@
  #include "sherpa-onnx/csrc/offline-nemo-enc-dec-ctc-model.h"
- 
+
  #include <memory>
 +#include <stdexcept>
 +#include <cmath>
@@ -88,7 +88,7 @@
  #include <utility>
  #include <vector>
 @@ -52,16 +54,38 @@
- 
+
    std::vector<Ort::Value> Forward(Ort::Value features,
                                    Ort::Value features_length) {
 +#ifdef SHERPA_ONNX_EXPERIMENT_GIGA344
@@ -97,7 +97,7 @@
 +#endif
      std::vector<int64_t> shape =
          features_length.GetTensorTypeAndShapeInfo().GetShape();
- 
+
 +#ifdef SHERPA_ONNX_EXPERIMENT_GIGA344
 +    const auto f_info = features.GetTensorTypeAndShapeInfo();
 +    const auto f_shape = f_info.GetShape();
@@ -112,7 +112,7 @@
 +#endif
      Ort::Value out_features_length = Ort::Value::CreateTensor<int64_t>(
          allocator_, shape.data(), shape.size());
- 
+
      const int64_t *src = features_length.GetTensorData<int64_t>();
      int64_t *dst = out_features_length.GetTensorMutableData<int64_t>();
      for (int64_t i = 0; i != shape[0]; ++i) {
@@ -124,12 +124,12 @@
        dst[i] = src[i] / subsampling_factor_;
 +#endif
      }
- 
+
      // (B, T, C) -> (B, C, T)
 @@ -73,6 +97,30 @@
          sess_->Run({}, input_names_ptr_.data(), inputs.data(), inputs.size(),
                     output_names_ptr_.data(), output_names_ptr_.size());
- 
+
 +#ifdef SHERPA_ONNX_EXPERIMENT_GIGA344
 +    if (out.size() != 2 || !out[0].IsTensor() || !out[1].IsTensor())
 +      throw std::runtime_error("giga344 missing output tensors");
@@ -160,7 +160,7 @@
 @@ -125,6 +173,15 @@
                                                 "normalize_type");
      SHERPA_ONNX_READ_META_DATA_WITH_DEFAULT(is_giga_am_, "is_giga_am", 0);
- 
+
 +#ifdef SHERPA_ONNX_EXPERIMENT_GIGA344
 +    // Structural guard only. Exact file SHA is a mandatory outer harness guard;
 +    // metadata is not provenance and this build must never be installed.

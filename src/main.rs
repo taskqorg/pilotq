@@ -228,7 +228,7 @@ fn config(t: &Tool) -> Result<Option<Config>, String> {
     let paths = if whisper { (vc["whisper_recognizer"].as_str(), vc["whisper_model"].as_str()) }
         else { (vc["recognizer"].as_str(), vc["model"].as_str()) };
     let voice = match paths {
-        (Some(recognizer), Some(model)) => Some(voice::Voice { ffmpeg: vc["ffmpeg"].as_str().unwrap_or("ffmpeg").into(), recognizer: recognizer.into(),
+        (Some(recognizer), Some(model)) => Some(voice::Voice { whisper, ffmpeg: vc["ffmpeg"].as_str().unwrap_or("ffmpeg").into(), recognizer: recognizer.into(),
             model: model.into(), threads: vc["threads"].as_u64().filter(|n| (1..=64).contains(n)).unwrap_or(4) as u32 }),
         (None, None) if vc.is_null() => None,
         _ if whisper => return Err("config.json: voice needs both whisper_recognizer and whisper_model".into()),

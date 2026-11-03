@@ -1,17 +1,17 @@
 --- a/src/whisper.cpp
 +++ b/src/whisper.cpp
 @@ -5938,6 +5938,7 @@
- 
+
          /*.language          =*/ "en",
          /*.detect_language   =*/ false,
 +        /*.experimental_first_window_reuse =*/ false,
- 
+
          /*.suppress_blank    =*/ true,
          /*.suppress_nst      =*/ false,
 @@ -6804,6 +6805,13 @@
          }
      }
- 
+
 +    // Function-local, never carried across recordings or failed detection.
 +    bool reuse_first_window = false;
 +    const bool reuse_eligible = params.experimental_first_window_reuse &&
@@ -29,11 +29,11 @@
 +        reuse_first_window = reuse_eligible;
          state->lang_id = lang_id;
          params.language = whisper_lang_str(lang_id);
- 
+
 @@ -7012,8 +7021,20 @@
              }
          }
- 
+
 +        // Keep encoder_begin_callback above and the original decoder reset below.
 +        // Consume even on a nonmatching seek: never reuse at a later window.
 +        const bool reuse_now = reuse_first_window && seek == 0 && state->exp_n_audio_ctx == 0;
@@ -57,7 +57,7 @@
 @@ -533,6 +533,10 @@
          const char * language;
          bool detect_language;
- 
+
 +        // EXPERIMENT ONLY: caller guarantees callbacks do not mutate encoder state.
 +        // Default false; not a stable API or production selection.
 +        bool experimental_first_window_reuse;
@@ -70,7 +70,7 @@
 @@ -1265,6 +1265,11 @@
                  wparams.abort_callback_user_data = &is_aborted;
              }
- 
+
 +#ifdef PILOTQ_344_EXPERIMENT
 +            // Only this pinned CLI's non-mutating callbacks opt in. Library
 +            // callers stay off. Never use parallel states for this experiment.

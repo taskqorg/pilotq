@@ -18,10 +18,8 @@ pub fn resolve(text: &str) -> Option<(&'static str, &'static str)> {
     let own=address;
     let normalized = own.to_lowercase().replace(['-', '—'], " ");
     let mut explicit = None;
-    for (index,clause) in normalized.split(['.', '?', '!', ';']).enumerate() {
+    for (index,clause) in normalized.split(['.', '?', '!', ';', ',', '\n']).enumerate() {
         let words: Vec<_> = clause.split(|c: char| !c.is_alphabetic() && c != '\'').filter(|x| !x.is_empty()).collect();
-        // A negated instruction is not an instruction to use the named language.
-        if words.iter().any(|w| matches!(*w,"not"|"don't"|"never"|"не")) { continue; }
         let joined = words.join(" ");
         for (lang, patterns) in [
             ("en", &["reply in english", "answer in english", "respond in english", "write in english", "ответь на английском", "отвечай на английском", "ответь по английски", "отвечай по английски", "пиши по английски"][..]),
@@ -29,6 +27,8 @@ pub fn resolve(text: &str) -> Option<(&'static str, &'static str)> {
         ] {
             for pattern in patterns {
                 if let Some(pos) = joined.rfind(pattern) {
+                    // Only negation of this instruction matters, not unrelated actions.
+                    if joined[..pos].split_whitespace().last().is_some_and(|w| matches!(w, "not" | "don't" | "never" | "не")) { continue; }
                     // Position within a clause determines the final explicit request.
                     if explicit.as_ref().is_none_or(|(_,old,_)| (index,pos) >= *old) { explicit = Some((lang,(index,pos),"explicit_request")); }
                 }
@@ -93,6 +93,10 @@ mod tests {
             ("Ответь по-английски. Покажи текущие задачи.",Some("en")),
             ("Answer in Russian. Please show the table.",Some("ru")),
             ("Answer in Russian. Actually reply in English.",Some("en")),
+            ("Ответь на английском, но не запускай задачи",Some("en")),
+            ("Reply in Russian, but do not launch tasks",Some("ru")),
+            ("Reply in Russian but do not launch tasks",Some("ru")),
+            ("Не отвечай на английском. Покажи задачи.",Some("ru")),
             ("Do not answer in Russian. Please show the table.",Some("en")),
             ("New York",None),("123",None),("deployment",None),
             ("```rust\nпокажи задачи\n```",None),("/status",None),

@@ -1,5 +1,5 @@
-//! Voice and audio input (pilotq.md § 12, #104): ffmpeg decodes to 16 kHz mono WAV, then CPU-only `whisper-cli` with multilingual Whisper small Q5_1
-//! recognizes Russian, English and Hebrew speech on the local CPU. Both run as subprocesses, so the static build needs no onnxruntime.
+//! Voice and audio input (pilotq.md § 12, #104): ffmpeg decodes to 16 kHz mono WAV, then the existing Sherpa/GigaAM Russian recognizer.
+//! Explicit historical Whisper configuration remains separate; multilingual qualification is incomplete. Both run as subprocesses, so the static build needs no onnxruntime.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -8,12 +8,13 @@ use std::time::{Duration, Instant};
 /// Longest accepted recording (§ 12).
 pub const SECONDS: u32 = 300;
 
-/// Installation config `voice`: the recognizer binary, the multilingual Whisper small Q5_1 model directory and the ffmpeg binary.
+/// Captured installation speech paths; legacy configuration retains Sherpa/GigaAM.
 pub struct Voice {
     pub ffmpeg: String,
     pub recognizer: String,
     pub model: PathBuf,
     pub threads: u32,
+    pub whisper: bool,
 }
 
 /// Private per-recording directory; removed with everything in it when the turn's recognition ends.
@@ -109,6 +110,18 @@ pub fn transcribe(v: &Voice, audio: &[u8], budget: Duration) -> Result<String, S
     for (n, (segment, silent)) in segments.into_iter().enumerate() {
         // Each invocation gets a fresh output name: success without a new JSON file cannot
         // accidentally reuse the preceding segment. No translation, GPU or remote fallback.
+        if !v.whisper {
+            let files = [("tokens", "tokens.txt"), ("encoder", "encoder.int8.onnx"), ("decoder", "decoder.onnx"), ("joiner", "joiner.onnx")];
+            run(Command::new(&v.recognizer).args(files.map(|(k, f)| format!("--{k}={}", v.model.join(f).display())))
+                .args(["--model-type=nemo_transducer", &format!("--num-threads={}", v.threads)]).arg(&segment), &out, until)
+                .map_err(|e| fail(if e == "failed" { "recognizer failed" } else { e }))?;
+            let printed = std::fs::read_to_string(&out).map_err(|_| fail("recognizer failed"))?;
+            let text = printed.lines().rev().find_map(|line| serde_json::from_str::<serde_json::Value>(line).ok()?["text"].as_str().map(str::to_string))
+                .ok_or_else(|| fail("recognizer failed"))?;
+            if text.contains('\u{fffd}') { return Err(fail("recognizer returned invalid transcript text")); }
+            if !text.trim().is_empty() { transcripts.push(text.trim().to_string()); }
+            continue;
+        }
         let result = dir.0.join(format!("result-{n}"));
         let mut recognizer = Command::new(&v.recognizer);
         recognizer.arg("--model").arg(v.model.join("ggml-small-q5_1.bin"))
@@ -148,7 +161,7 @@ pub fn readiness(v: Option<&Voice>) -> Result<(), String> {
     };
     if !executable(&v.ffmpeg) { return Err("voice ffmpeg unavailable".into()); }
     if !executable(&v.recognizer) { return Err("voice recognizer unavailable".into()); }
-    for f in ["ggml-small-q5_1.bin"] {
+    for f in if v.whisper { &["ggml-small-q5_1.bin"][..] } else { &["tokens.txt", "encoder.int8.onnx", "decoder.onnx", "joiner.onnx"][..] } {
         if !std::fs::metadata(v.model.join(f)).is_ok_and(|m| m.is_file() && m.len() > 0) {
             return Err("voice model unavailable".into());
         }
@@ -178,6 +191,7 @@ mod tests {
     #[ignore = "requires verified whisper.cpp 1.8.2 and multilingual small Q5_1 assets"]
     fn multilingual_344() {
         let v = super::Voice {
+            whisper: true,
             ffmpeg: "ffmpeg".into(),
             recognizer: std::env::var("PILOTQ_TEST_RECOGNIZER").expect("verified recognizer path"),
             model: std::env::var("PILOTQ_TEST_VOICE_MODEL").expect("verified model directory").into(),
@@ -201,6 +215,7 @@ mod tests {
     #[ignore = "requires the same verified local assets as multilingual_344"]
     fn multilingual_containers_344() {
         let v = super::Voice {
+            whisper: true,
             ffmpeg: "ffmpeg".into(),
             recognizer: std::env::var("PILOTQ_TEST_RECOGNIZER").expect("verified recognizer path"),
             model: std::env::var("PILOTQ_TEST_VOICE_MODEL").expect("verified model directory").into(),
@@ -248,7 +263,7 @@ mod tests {
         wav.extend_from_slice(&[1,0]); fs::write(&source, &wav).unwrap();
         fs::write(&ffmpeg, format!("#!/bin/sh\nfor last; do :; done\ncp '{}' \"$last\"\n", source.display())).unwrap();
         fs::set_permissions(&ffmpeg, fs::Permissions::from_mode(0o700)).unwrap();
-        let v = super::Voice { ffmpeg: ffmpeg.display().to_string(), recognizer: recognizer.display().to_string(), model: dir.0.clone(), threads: 1 };
+        let v = super::Voice { ffmpeg: ffmpeg.display().to_string(), recognizer: recognizer.display().to_string(), model: dir.0.clone(), threads: 1, whisper: true };
         for (output, expected) in [
             (b"{\"transcription\":[{\"text\":\"\xd7\xa9\xd7\x9c\xd7\x95\xd7\x9d\"}]}".as_slice(), Ok("שלום")),
             (b"{\"transcription\":[{\"text\":\"\xd7\"}]}", Err("voice recognizer failed")),
@@ -282,7 +297,7 @@ mod tests {
         fs::write(&ffmpeg,format!("#!/bin/sh\nfor last; do :; done\ncp '{}' \"$last\"\n",dir.join("fixture.wav").display())).unwrap();
         fs::write(&recognizer,"#!/bin/sh\nfor last; do :; done\n[ $(wc -c < \"$last\") -le 1000000 ] || exit 1\nwhile [ \"$1\" != --output-file ]; do shift; done\necho '{\"transcription\":[{\"text\":\"segment\"}]}' > \"$2.json\"\n").unwrap();
         for path in [&ffmpeg,&recognizer] {fs::set_permissions(path,fs::Permissions::from_mode(0o700)).unwrap();}
-        let v=super::Voice{ffmpeg:ffmpeg.display().to_string(),recognizer:recognizer.display().to_string(),model:dir.clone(),threads:1};
+        let v=super::Voice{ffmpeg:ffmpeg.display().to_string(),recognizer:recognizer.display().to_string(),model:dir.clone(),threads:1,whisper:true};
         let result=super::transcribe(&v,b"invented recording",Duration::from_secs(10));
         fs::remove_dir_all(dir).unwrap();
         let result=result.unwrap();
@@ -299,7 +314,7 @@ mod tests {
         let path = dir.join("v.mp4");
         let made = std::process::Command::new("ffmpeg").args(["-nostdin", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=duration=62:size=320x240:rate=5", "-pix_fmt", "yuv420p"]).arg(&path).status().unwrap();
         assert!(made.success());
-        let v = super::Voice { ffmpeg: "/usr/bin/ffmpeg".into(), recognizer: "none".into(), model: dir.clone(), threads: 1 };
+        let v = super::Voice { ffmpeg: "/usr/bin/ffmpeg".into(), recognizer: "none".into(), model: dir.clone(), threads: 1, whisper: true };
         let frames = super::frames(&v, &std::fs::read(&path).unwrap(), std::time::Duration::from_secs(30)).unwrap();
         assert_eq!(frames.len(), super::FRAMES);
         assert!(frames.iter().all(|f| f.starts_with(b"\xff\xd8\xff")));

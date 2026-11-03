@@ -63,7 +63,7 @@ pub(crate) fn version(raw: &str) -> Option<Vec<u64>> {
 }
 
 pub(crate) fn probe(name: &str, bin: Option<&str>, args: &[&str], minimum: &str, prefix: &str, fix: &str) -> Value {
-    let recorded = if name == "whisper-cli" { bin.and_then(recorded_version) } else { None };
+    let recorded = if matches!(name, "whisper-cli" | "sherpa-onnx-offline") { bin.and_then(recorded_version) } else { None };
     let found = recorded.or_else(|| bin.and_then(|bin|output(Command::new(bin).args(args)).ok()).and_then(|o| {
         let text = String::from_utf8_lossy(&o.stdout).to_string()+&String::from_utf8_lossy(&o.stderr);
         if name == "taskq_service" {
@@ -84,7 +84,7 @@ pub(crate) fn probe(name: &str, bin: Option<&str>, args: &[&str], minimum: &str,
     json!({"tool":name,"found":found,"minimum":minimum,"outcome":if ok {"ok"} else {"failed"},"fix":fix})
 }
 
-// whisper.cpp 1.8.2 has no version command. Bind owner-provisioned release identity to the actual bytes.
+// Sherpa 2.0.1 and whisper.cpp 1.8.2 have no version command. Bind owner-provisioned release identity to the actual bytes.
 fn recorded_version(bin: &str) -> Option<String> {
     let receipt:Value=serde_json::from_slice(&std::fs::read(format!("{bin}.pilotq-version.json")).ok()?).ok()?;
     let metadata=std::fs::metadata(bin).ok()?;
@@ -102,7 +102,9 @@ pub fn report(c: Option<&crate::Config>) -> Value {
         probe("taskq",c.and_then(|c|c.taskq.as_ref()).and_then(|t|t.bin.to_str()),&["--version"],"4.6.46","","Update TaskQ CLI to 4.6.46 or newer; set taskq.bin"),
         probe("taskq_service",c.and_then(|c|c.taskq.as_ref()).and_then(|t|t.bin.to_str()),&["service","status","--json"],"4.6.40","","Update the existing TaskQ service to 4.6.40 or newer"),
         probe("ffmpeg",voice.map(|v|v.ffmpeg.as_str()),&["-version"],"6.1.0","ffmpeg version ","Install ffmpeg 6.1 or newer; set voice.ffmpeg"),
-        probe("whisper-cli",voice.map(|v|v.recognizer.as_str()),&["--version"],"1.8.2","","Provision verified CPU whisper.cpp 1.8.2 or newer; set voice.recognizer and its verified .pilotq-version.json receipt (tester guide)"),
+        if voice.is_some_and(|v| v.whisper) {
+            probe("whisper-cli",voice.map(|v|v.recognizer.as_str()),&["--version"],"1.8.2","","Provision verified CPU whisper.cpp 1.8.2 or newer; set voice.recognizer and its verified .pilotq-version.json receipt (tester guide)")
+        } else { probe("sherpa-onnx-offline",voice.map(|v|v.recognizer.as_str()),&["--version"],"2.0.1","","Provision sherpa-onnx-offline 2.0.1 or newer; retain voice.recognizer and GigaAM model paths") },
         probe("curl",Some("curl"),&["--version"],"7.68.0","curl ","Install curl 7.68 or newer on the service PATH"),
     ];
     // #265: Claude Code only where the installation or a route runs the manager on it
@@ -189,6 +191,7 @@ mod tests {
         let receipt=format!("{}.pilotq-version.json",bin.display());
         std::fs::write(&receipt,json!({"version":"2.0.1","sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}).to_string()).unwrap();
         assert_eq!(recorded_version(bin.to_str().unwrap()).as_deref(),Some("2.0.1"));
+        assert_eq!(probe("sherpa-onnx-offline",bin.to_str(),&["--version"],"2.0.1","","retain verified receipt")["outcome"],"ok");
         std::fs::write(&bin,"changed").unwrap();
         assert!(recorded_version(bin.to_str().unwrap()).is_none());
         std::fs::remove_dir_all(d).unwrap();

@@ -937,7 +937,7 @@ fn claim(tx: &Connection, request: i64, at: i64) -> Result<Option<Run>, String> 
 }
 
 /// Marks recognized speech in the request text the model and history see (#104).
-pub const VOICE: &str = "[Voice message, automatic Russian, English or Hebrew speech recognition; may contain recognition errors]";
+pub const VOICE: &str = "[Voice message, automatic speech recognition; may contain recognition errors]";
 
 /// Proposed audit retention, told to each person at their first admitted request (§ 7, § 8; an open decision in § 11).
 const RETENTION: &str = "metadata 365 days, message text 90 days";

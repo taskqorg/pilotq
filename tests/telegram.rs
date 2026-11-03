@@ -3330,7 +3330,7 @@ fn related_live_context() {
     stop(c,d);
 }
 
-/// #104/#344: fake ffmpeg accepts Ogg-like bytes; the recognizer logs arguments and writes whisper-cli JSON.
+/// #104/#344: fake ffmpeg accepts Ogg-like bytes; the recognizer logs arguments and writes Sherpa JSON.
 /// These fixtures protect wiring and failures, not multilingual recognition quality.
 fn use_voice(d: &Path) {
     let ffmpeg = script(d, "fake-ffmpeg", r#"while [ "$1" != "-i" ]; do shift; done; in=$2; for a; do out=$a; done
@@ -3338,8 +3338,7 @@ fn use_voice(d: &Path) {
 cp "$in" "$out""#);
     let recognizer = script(d, "fake-recognizer", r#"d=$(dirname "$0"); printf '%s\n' "$*" >> "$d/recognizer.log"
 for a; do wav=$a; done; test -s "$wav" || exit 3
-while [ "$1" != --output-file ]; do shift; done
-echo '{"transcription":[{"text":"Проверь место на диске."}]}' > "$2.json""#);
+echo '{"text":"Проверь место на диске."}'"#);
     let cfg = d.join("config.json");
     let mut c: Value = serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
     c["voice"] = json!({"ffmpeg": ffmpeg, "recognizer": recognizer, "model": d.join("model"), "threads": 2});
@@ -3468,7 +3467,7 @@ fn telegram_voice_becomes_sender_text() {
         voice_update(4, OWNER, "document", json!({"file_id":"invented-voice-opus","file_unique_id":"invented-opus","file_size":include_bytes!("fixtures/speech/he.ogg").len(),"file_name":"note.opus","mime_type":"application/ogg"})),
     ] { push(&st, u); }
     wait("voice answered", 20, || try_query(&d, "SELECT count(*) FROM requests WHERE kind='voice' AND state='answered'") == Some(4));
-    let marked = "[Voice message, automatic Russian, English or Hebrew speech recognition; may contain recognition errors]\nПроверь место на диске.";
+    let marked = "[Voice message, automatic speech recognition; may contain recognition errors]\nПроверь место на диске.";
     let log = fs::read_to_string(d.join("codex.log")).unwrap();
     let turns: Vec<Value> = log.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter(|v| v["method"] == "turn/start").collect();
     let texts: Vec<&str> = turns.iter().map(|t| t["params"]["input"][2]["text"].as_str().unwrap()).collect();
@@ -3493,7 +3492,7 @@ fn telegram_voice_becomes_sender_text() {
     let calls = fs::read_to_string(d.join("recognizer.log")).unwrap();
     assert_eq!(calls.lines().count(), 4);
     for l in calls.lines() {
-        assert!(l.contains("/model/ggml-small-q5_1.bin") && l.contains("--language auto") && l.contains("--threads 2") && l.contains("--no-gpu") && !l.contains("--translate"));
+        assert!(l.contains("/model/encoder.int8.onnx") && l.contains("--model-type=nemo_transducer") && l.contains("--num-threads=2") && !l.contains("--language") && !l.contains("--translate"));
         let wav = l.rsplit(' ').next().unwrap();
         assert!(!Path::new(wav).exists(), "temporary audio removed after recognition");
     }
@@ -3658,7 +3657,7 @@ fn doctor_voice_readiness() {
     c.as_object_mut().unwrap().remove("voice");
     c["codex"] = json!(script(&d, "login", "echo 'Logged in using ChatGPT'"));
     let ffmpeg = script(&d, "decode", r#"while [ "$1" != "-i" ]; do shift; done; input=$2; for a; do out=$a; done; cp "$input" "$out""#);
-    let recognizer = script(&d, "recognize", "while [ \"$1\" != --output-file ]; do shift; done; echo '{\"transcription\":[]}' > \"$2.json\"");
+    let recognizer = script(&d, "recognize", "echo '{\"text\":\"\"}'");
     // #144 / §9: an unusable gh cannot affect CLI-only doctor.
     let gh_ok = r#"if [ "$1" = --version ]; then echo 'gh version 2.45.0 (invented)'; else echo '[]'; fi"#;
     script(&d, "gh", gh_ok);
@@ -3670,8 +3669,8 @@ fn doctor_voice_readiness() {
         if mode > 0 { c["voice"] = json!({"ffmpeg":ffmpeg,"recognizer":recognizer,"model":model}); }
         if mode == 1 { c["voice"]["recognizer"] = json!(d.join("absent")); }
         if mode >= 3 {
-            for f in ["ggml-small-q5_1.bin"] { fs::write(model.join(f), "invented model").unwrap(); }
-            script(&d, "recognize", if mode == 3 { "echo private-dependency-output >&2; exit 1" } else { "while [ \"$1\" != --output-file ]; do shift; done; echo '{\"transcription\":[]}' > \"$2.json\"" });
+            for f in ["tokens.txt", "encoder.int8.onnx", "decoder.onnx", "joiner.onnx"] { fs::write(model.join(f), "invented model").unwrap(); }
+            script(&d, "recognize", if mode == 3 { "echo private-dependency-output >&2; exit 1" } else { "echo '{\"text\":\"\"}'" });
         }
         if mode == 6 { script(&d, "recognize", "echo private-dependency-output"); }
         if mode == 7 { script(&d, "recognize", "exec sleep 20"); }
@@ -3679,7 +3678,7 @@ fn doctor_voice_readiness() {
         fs::write(&cfg, c.to_string()).unwrap();
         host_support::wrap(std::path::Path::new(c["codex"].as_str().unwrap()),"--version","codex-cli 0.162.0");
         host_support::wrap(&ffmpeg,"-version","ffmpeg version 6.1.0");
-        host_support::wrap(&recognizer,"--version","1.8.2");
+        host_support::wrap(&recognizer,"--version","2.0.1");
         let out = Command::new(env!("CARGO_BIN_EXE_pilotq")).env("PILOTQ_INSTALL", &d).env("PATH", &gh_path).args(["doctor","--json"]).output().unwrap();
         let report: Value = serde_json::from_slice(&out.stdout).unwrap();
         assert_eq!(report["checks"]["voice"], expected, "mode {mode}: {report}");
@@ -3984,9 +3983,9 @@ fn onboarding_168_cli_telegram_recheck() {
     c["codex"]=json!(script(&d,"onboard-codex","if [ \"$*\" = --version ]; then echo 'codex-cli 0.162.0'; else echo 'Logged in using ChatGPT'; fi"));
     let ffmpeg=script(&d,"onboard-decode",r#"if [ "$1" = -version ]; then echo 'ffmpeg version 6.1.0'; exit; fi
 while [ "$1" != -i ]; do shift; done; input=$2; for a; do out=$a; done; cp "$input" "$out""#);
-    let recognizer=script(&d,"onboard-recognize",r#"if [ "$1" = --version ]; then echo 1.8.2; else while [ "$1" != --output-file ]; do shift; done; echo '{"transcription":[]}' > "$2.json"; fi"#);
+    let recognizer=script(&d,"onboard-recognize",r#"if [ "$1" = --version ]; then echo 2.0.1; else echo '{"text":""}'; fi"#);
     let model=d.join("model");fs::create_dir_all(&model).unwrap();
-    for f in ["ggml-small-q5_1.bin"] {fs::write(model.join(f),"invented").unwrap();}
+    for f in ["tokens.txt", "encoder.int8.onnx", "decoder.onnx", "joiner.onnx"] {fs::write(model.join(f),"invented").unwrap();}
     c["voice"]=json!({"ffmpeg":ffmpeg,"recognizer":recognizer,"model":model});
     fs::write(&config,c.to_string()).unwrap();
     host_support::provision(&d,&config);

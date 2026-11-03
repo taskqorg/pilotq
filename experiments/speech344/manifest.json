@@ -8,17 +8,19 @@
     "include/whisper.h": "0525b758571ab71c00ddd8ea2845f74af7c62dfa5100c5586655f75bdc5ef4be",
     "examples/cli/cli.cpp": "307b5b77fcc265ffed5e02ff0853afb95786001fd81fbc605672e604f0bb4904"
   },
-  "patch_sha256": "8cfaf6e6830af59c68c2e266eabaea848768e4477bf2370f6ed269e5622b1f4b",
+  "patch_sha256": "6de91cd133bfddec8a56ad2b236828fe40a10fec183c854390798a28660d429c",
   "baseline_binary_sha256": "30ab87ffca69ba2e03f6c9c110c158cc5d7e4099eaa0179793559215b99aed70",
   "archive_sha256": "ec8e33f4c838ed459ad0a23da255c0262f150a6f54839a17e504ddf1495305d5",
   "pm_experimental_binary_sha256": "a3e6f4ae6303793b89adfba1edbbc25c4a6477ea1428e67f92831612d6927d9a",
   "boundary_inputs_sha256": {
-    "first-window.patch": "8cfaf6e6830af59c68c2e266eabaea848768e4477bf2370f6ed269e5622b1f4b",
-    "instrumentation.patch": "4072a3f140514f5a9011a580c361b788343c5871f0e1ccc14054aab701b360db",
+    "first-window.patch": "6de91cd133bfddec8a56ad2b236828fe40a10fec183c854390798a28660d429c",
+    "instrumentation.patch": "941bccec0b06720a6e08210bb139a4c501dde08cfcbdccf0f62e4f4ff29fc1da",
     "boundary.cpp": "1070cd69800d69a6f11eeeeb324b801e56f6c8d5476e791626520fb29d136ce3",
     "prepare-boundaries.py": "7c85b4be1e21bfa569bd2c3f9ffa9f45bb449622c6ee440149342ac5f395de84",
     "run-boundaries.py": "1de9256a1b0eaf55d051d68f143ff15e99a17a134c20476219d6dc22f3a7ad4b",
     "check-observer.py": "8e3684fb1b451586061cf39f06151053831d620e3c8cace242e55361ff3495af"
   },
-  "paired_performance_sha256": "f08b40d315268c97db6062c36ae14dc86809d16c7b5dd77021e43b63e16ee784"
+  "paired_performance_sha256": "f08b40d315268c97db6062c36ae14dc86809d16c7b5dd77021e43b63e16ee784",
+  "historical_build_patch_sha256": "8cfaf6e6830af59c68c2e266eabaea848768e4477bf2370f6ed269e5622b1f4b",
+  "formatting_note": "Current patches remove whitespace-only context markers; historical binary/build evidence retains original patch identity and is not a new build proof."
 }
