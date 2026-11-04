@@ -135,6 +135,15 @@ pub(crate) fn current_reply_language(c:&Connection,front:&str,chat:i64,sender:i6
     raw.map(|s|serde_json::from_str::<Value>(&s).map(|v|v["language"].as_str().map(str::to_string)).map_err(|e|e.to_string())).transpose().map(Option::flatten)
 }
 
+// New subscription observations follow the latest own address; the originating
+// request and previously queued payloads retain their admitted language.
+fn event_reply_language(c:&Connection,request:i64)->Result<Option<String>,String> {
+    let (front,chat,sender,saved):(String,i64,i64,Option<String>)=c.query_row(
+        "SELECT front,chat,sender,language FROM requests WHERE id=?1",[request],
+        |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(|e|e.to_string())?;
+    Ok(current_reply_language(c,if front=="service" {"telegram"}else{&front},chat,sender)?.or(saved))
+}
+
 pub(crate) fn inherit_reply_language(c:&Connection,id:i64,at:i64)->Result<(),String> {
     let (front,chat,sender):(String,i64,i64)=c.query_row("SELECT front,chat,sender FROM requests WHERE id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|e|e.to_string())?;
     let route=if front=="service" {"telegram"}else{&front};
@@ -533,7 +542,7 @@ fn final_outbox(tx: &Connection, request: i64, chat: i64, topic: Option<i64>, re
 /// Queues one task message (§ 5): a `status` row, edited in place on delivery when the task already has a delivered status
 /// message; a `question`; or the `final` outcome. Answer receipts edit their original question (#94).
 #[allow(clippy::too_many_arguments)]
-fn notice(tx: &Connection, request: i64, chat: i64, topic: Option<i64>, kind: &str, project: &str, task: i64, revision: i64, text: &str, at: i64) -> Result<(), String> {
+fn notice(tx: &Connection, request: i64, chat: i64, topic: Option<i64>, kind: &str, project: &str, task: i64, revision: i64, text: &str, at: i64) -> Result<i64, String> {
     let at=if kind=="status" {
         let last:Option<i64>=tx.query_row("SELECT max(next_at) FROM outbox WHERE request_id=?1 AND kind='status' AND state='delivered'",[request],|r|r.get(0)).map_err(|e|e.to_string())?;
         at.max(last.map(|at|at.saturating_add(2)).unwrap_or(at))
@@ -543,8 +552,15 @@ fn notice(tx: &Connection, request: i64, chat: i64, topic: Option<i64>, kind: &s
         params![request, chat, topic, text, at, kind, task, revision, project, crate::telegram::html(text)],
     )
     .map_err(|e| e.to_string())?;
-    if project.is_empty() { tx.execute(STAMP_PROJECT,[tx.last_insert_rowid()]).map_err(|e|e.to_string())?; }
-    Ok(())
+    let delivery=tx.last_insert_rowid();
+    if project.is_empty() { tx.execute(STAMP_PROJECT,[delivery]).map_err(|e|e.to_string())?; }
+    let language=event_reply_language(tx,request)?;
+    // Freeze the event's language with the payload so retries/buttons cannot
+    // import a later address. Existing audit retains actor/chat and input order.
+    tx.execute("INSERT INTO audit_events(request_id,at,kind,target,result,item)
+        SELECT ?1,?2,'delivery_reply_language',?3,?4,(SELECT CAST(value AS TEXT) FROM meta WHERE key='reply-language:' || CASE WHEN q.front='service' THEN 'telegram' ELSE q.front END || ':' || q.chat || ':' || q.sender) FROM requests q WHERE q.id=?1",
+        params![request,at,delivery.to_string(),language]).map_err(|e|e.to_string())?;
+    Ok(delivery)
 }
 
 /// #110: an earlier draft display, or one whose draft was launched or cancelled, loses its buttons; only the current one stays
@@ -3023,7 +3039,7 @@ impl Journal {
             let ru=language.as_deref().unwrap_or("en").starts_with("ru");
             return Ok(vec![(format!("retry:{id}"),if ru {"Повторить"} else {"Retry"}.into()),(format!("cancel_launch:{id}"),if ru {"Отменить"} else {"Cancel"}.into())]);
         }
-        let board:Option<Option<String>>=self.0.query_row("SELECT q.language FROM outbox o JOIN requests q ON q.id=o.request_id WHERE o.id=?1 AND o.kind='status' AND q.kind='board_event'",[delivery],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
+        let board:Option<Option<String>>=self.0.query_row("SELECT coalesce((SELECT a.result FROM audit_events a WHERE a.request_id=q.id AND a.kind='delivery_reply_language' AND a.target=CAST(o.id AS TEXT) ORDER BY a.id DESC LIMIT 1),q.language) FROM outbox o JOIN requests q ON q.id=o.request_id WHERE o.id=?1 AND o.kind='status' AND q.kind='board_event'",[delivery],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
         if let Some(language)=board {
             return Ok(vec![(format!("explain:{delivery}"),if language.as_deref().unwrap_or("en").starts_with("ru") {"Объяснить"} else {"Explain"}.into())]);
         }
@@ -3417,12 +3433,13 @@ impl Journal {
     }
 
     pub fn task_language(&self, project: &str, task: i64) -> Result<Option<String>,String> {
-        self.0.query_row("SELECT q.language FROM requests q JOIN tasks t ON t.request_id=q.id WHERE t.project=?1 AND t.number=?2",params![project,task],|r|r.get(0)).map_err(|e|e.to_string())
+        let request:i64=self.0.query_row("SELECT request_id FROM tasks WHERE project=?1 AND number=?2",params![project,task],|r|r.get(0)).map_err(|e|e.to_string())?;
+        event_reply_language(&self.0,request)
     }
 
     /// #165 A5: all tasks in a launch project into one status card, never one message per transition.
     fn launch_status(&self, request: i64, at: i64) -> Result<String,String> {
-        let language:Option<String>=self.0.query_row("SELECT language FROM requests WHERE id=?1",[request],|r|r.get(0)).map_err(|e|e.to_string())?;
+        let language:Option<String>=event_reply_language(&self.0,request)?;
         let mut q=self.0.prepare("SELECT project,board,number,state,closed,observed FROM tasks WHERE request_id=?1 ORDER BY project,number").map_err(|e|e.to_string())?;
         let rows:Vec<(String,String,i64,String,bool,i64)>=q.query_map([request],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).and_then(Iterator::collect).map_err(|e|e.to_string())?;
         let ru=language.as_deref().unwrap_or("en").starts_with("ru");
@@ -3470,7 +3487,7 @@ impl Journal {
         if let (Some(q), "ask") = (question, state) {
             // §2/§4: retirement is presentation, never an accepted-answer receipt.
             // Queue it before the replacement so route ordering also covers unsent questions.
-            let ru: bool = tx.query_row("SELECT coalesce(language,'en') LIKE 'ru%' FROM requests WHERE id=?1", [request], |r| r.get(0)).map_err(e)?;
+            let ru = event_reply_language(&tx,request)?.as_deref().unwrap_or("en").starts_with("ru");
             let text = if ru { "Вопрос заменён новым; используйте текущий вопрос." } else { "Superseded by a newer question; use the current question." };
             tx.execute("INSERT INTO outbox(request_id,chat,topic,text,html,next_at,kind,project,task,revision)
                 SELECT request_id,chat,topic,text || char(10) || char(10) || ?7,NULL,?8,'question_superseded',project,task,revision FROM outbox o
@@ -3478,8 +3495,8 @@ impl Journal {
                 AND NOT EXISTS (SELECT 1 FROM outbox a WHERE a.request_id=o.request_id AND a.project=o.project AND a.task=o.task
                     AND a.chat=o.chat AND a.topic IS o.topic AND a.revision=o.revision AND a.kind IN ('question_answered','question_superseded'))",
                 params![request,project,task,chat,topic,revision,text,at]).map_err(e)?;
-            notice(&tx, request, chat, topic, "question", project, task, revision, q, at)?;
-            tx.execute("UPDATE outbox SET question=?1 WHERE id=last_insert_rowid()", [card]).map_err(e)?;
+            let delivery=notice(&tx, request, chat, topic, "question", project, task, revision, q, at)?;
+            tx.execute("UPDATE outbox SET question=?1 WHERE id=?2", params![card,delivery]).map_err(e)?;
         }
         tx.commit().map_err(e)?;
         Ok(true)
@@ -5546,6 +5563,56 @@ mod tests {
 
     fn input(chat: i64, topic: Option<i64>, sender: Option<i64>, name: &str, kind: &'static str, text: Option<&str>) -> Option<Input> {
         Some(Input { files: vec![], callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat, topic, sender, name: Some(name.into()), message: 1, kind, text: text.map(str::to_string), reply_to: None })
+    }
+
+    // #344 / §§4,6: event cards and answer errors localize owned prose,
+    // preserve source questions and routes, and freeze already queued payloads.
+    #[test]
+    fn language_344_events_and_answer_errors() {
+        for (lang,address,working,superseded,explain,failed,uncertain) in [
+            ("ru","Покажи текущие задачи","Исполнитель работает","Вопрос заменён","Объяснить","Ответ не сохранён","Сохранение ответа не подтверждено"),
+            ("en","Please show current tasks","Worker is working","Superseded","Explain","Answer was not saved","Answer delivery is not confirmed"),
+        ] {
+            let (mut j,p)=journal(&format!("language-344-events-{lang}"));
+            j.admit(&[(1,input(7,None,Some(7),"Owner","text",Some(address)))],1).unwrap();
+            assert!(board_card(&j.0,"pilotq","invented/pilotq","/invented/pilotq",344,2).unwrap());
+            assert!(j.observe("pilotq",344,"doing",1,None,"ignored adapter prose",None,3).unwrap());
+            let (status,text):(i64,String)=j.0.query_row("SELECT id,text FROM outbox WHERE kind='status' ORDER BY id DESC LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+            assert!(text.contains(working),"{text}");
+            assert_eq!(j.card_buttons(status).unwrap(),vec![(format!("explain:{status}"),explain.into())]);
+            let source="Original source question — keep English and русский";
+            let q=json!({"parsed":true,"choices":[{"id":7,"label":"Source option"}]}).to_string();
+            j.observe("pilotq",344,"ask",2,Some(&q),"",Some(source),4).unwrap();
+            j.observe("pilotq",344,"ask",3,Some(&q),"",Some("Replacement source"),5).unwrap();
+            let retired:String=j.0.query_row("SELECT text FROM outbox WHERE kind='question_superseded' ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).unwrap();
+            assert!(retired.contains(source) && retired.contains(superseded),"{retired}");
+            assert_eq!(j.question_answer("pilotq",344,2).unwrap(),None,"retirement never authorizes an answer");
+            for (update,state,expected) in [(10,"failed",failed),(11,"uncertain",uncertain)] {
+                let mut i=input(7,None,Some(7),"Owner","text",Some("123")).unwrap();i.message=update;
+                j.admit(&[(update,Some(i))],update).unwrap();
+                let id:i64=j.0.query_row("SELECT id FROM requests WHERE update_id=?1",[update],|r|r.get(0)).unwrap();
+                j.0.execute("INSERT INTO meta(key,value) VALUES (?1,?2)",params![format!("callback:{id}"),"invented-callback"]).unwrap();
+                let a=Answer{request:id,sender:7,text:"123".into(),task:344,revision:3,project:"pilotq".into()};
+                j.end_answer(&a,state,"invented-private-diagnostic",Some("invented-error"),update).unwrap();
+                let toast:String=j.0.query_row("SELECT text FROM outbox WHERE request_id=?1 AND kind='toast:invented-callback'",[id],|r|r.get(0)).unwrap();
+                assert!(toast.contains(expected) && !toast.contains("invented-private"),"{toast}");
+                assert_eq!(j.request(id).unwrap().0,state);
+            }
+            let (new_address,new_label,new_button)=if lang=="ru" {("Please show current tasks","Queued for a worker","Explain")}else{("Покажи текущие задачи","В очереди к исполнителю","Объяснить")};
+            let mut i=input(7,None,Some(7),"Owner","text",Some(new_address)).unwrap();i.message=12;
+            j.admit(&[(12,Some(i))],12).unwrap();
+            j.observe("pilotq",344,"ready",4,None,"",None,13).unwrap();
+            let (latest,body):(i64,String)=j.0.query_row("SELECT id,text FROM outbox WHERE kind='status' ORDER BY id DESC LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+            assert!(body.contains(new_label),"new event follows latest own address: {body}");
+            assert_eq!(j.card_buttons(latest).unwrap(),vec![(format!("explain:{latest}"),new_button.into())]);
+            let basis:String=j.0.query_row("SELECT item FROM audit_events WHERE kind='delivery_reply_language' AND target=?1",[latest.to_string()],|r|r.get(0)).unwrap();
+            let basis:Value=serde_json::from_str(&basis).unwrap();
+            assert!(basis["order"].as_i64().unwrap()>0 && basis["revision"].as_i64().unwrap()>0);
+            assert_eq!(j.card_buttons(status).unwrap(),vec![(format!("explain:{status}"),explain.into())],"old payload controls stay frozen");
+            let frozen:String=j.0.query_row("SELECT text FROM outbox WHERE id=?1",[status],|r|r.get(0)).unwrap();
+            assert_eq!(frozen,text);
+            drop(j);std::fs::remove_dir_all(p).unwrap();
+        }
     }
 
     // #344 / R10,R17, §6: delayed owner DM output uses that actor/chat,

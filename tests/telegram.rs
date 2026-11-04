@@ -2979,6 +2979,15 @@ fn u95_pinned_instructions_reach_codex() {
         .find(|m| m["method"] == "thread/resume").unwrap();
     assert_eq!(resumed["params"]["developerInstructions"], policy,
         "#139: a native resume receives the same communication profiles as a new session");
+    // #344 / §6: a later mixed address must update the resumed turn's language,
+    // including table prose, while preserving every shared communication rule.
+    push(&st, text(3, OWNER, None, OWNER, "Please check tasks. Покажи текущие задачи."));
+    wait("Russian resumed answer", 15, || sent_has(&st, "re: Please check tasks. Покажи текущие задачи."));
+    let log = fs::read_to_string(d.join("codex.log")).unwrap();
+    let latest: Value = log.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|m| m["method"] == "thread/resume").last().unwrap();
+    let updated=latest["params"]["developerInstructions"].as_str().unwrap();
+    assert_eq!(updated, policy.replace("admitted actor/chat reply language is en", "admitted actor/chat reply language is ru"));
     stop(c, d);
 }
 
