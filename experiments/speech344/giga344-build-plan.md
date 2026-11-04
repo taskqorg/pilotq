@@ -59,3 +59,8 @@ Any identity/license/link/path/shape/finite/build/process-group/deadline failure
 ## Preparation verification
 
 The existing whole-archive source extractor refused the actual Sherpa archive's unrelated platform symlinks before extraction. The source-specific selector then retained722 regular C++/license/pin files without following those links. Two synthetic guard tests pass, preserving selected-link/path/full-digest/license/deadline refusals before source writes; the original six KNF handoff guards still pass. Independent review verified all nine runtime file identities, four archive hashes/sizes and six license/notice digests, and found no actionable source defect. These are preparation checks only. No compile, link, feature call, library load, graph inference, installation or service mutation ran here.
+
+
+## Actual PM result (supersedes preparation-only status)
+
+PM note6626094249 reports the single episode at `ab7b652` completed48.028s/exit0 under the original actual caps, with all memory events0 and independent cleanup/services unchanged. Retained observations record181 reaped/gone child groups,66 synthetic validation cases and55 feature cases. Worker readback verified the binary/PCM/array identities and disabled/pristine byte equality; [the numerical analysis](../../docs/research/344.md#actual-no-model-episode-readback-note6626094249) retains all differences without a tolerance or ASR verdict. **Do not run this episode again.** No model was loaded; full recognizer build, official equivalence, quality/readiness/long/live and deployment remain unqualified (§9/R19).
