@@ -38,7 +38,10 @@ fn setup_report(exe:&std::path::Path,budget:Duration,language:Option<&str>) -> R
 fn setup_text(v:&Value,language:Option<&str>)->String {
     let ru=language.unwrap_or("en").starts_with("ru");
     let mut lines=vec![if ru {"Проверка настроек (только чтение):"}else{"Setup checks (read only):"}.to_string()];
-    for (name,label) in [("configuration","настройки"),("telegram","Telegram"),("codex","Codex"),("taskq","TaskQ"),("voice","распознавание речи"),("host_tools","инструменты хоста")] {
+    // Runtime rows follow the same supported catalogue as the doctor (#359).
+    let runtimes=crate::manager::supported().map(|r|r.descriptor().name).filter(|n|!v["checks"][*n].is_null());
+    for name in ["configuration","telegram"].into_iter().chain(runtimes).chain(["taskq","voice","host_tools"]) {
+        let label=match name {"configuration"=>"настройки","telegram"=>"Telegram","codex"=>"Codex","claude"=>"Claude Code","taskq"=>"TaskQ","voice"=>"распознавание речи","host_tools"=>"инструменты хоста",other=>other};
         let state=match (ru,v["checks"][name].as_str()) {
             (true,Some("ok"))=>"доступно",(false,Some("ok"))=>"ok",
             (true,Some("failed"))=>"сбой",(false,Some("failed"))=>"failed",
@@ -59,8 +62,9 @@ pub fn execute(t:&Tool,j:&Shared,r:&Request,installed:bool) -> Result<(),String>
                 crate::onboarding::control(t,j,r)?;
                 return Ok(None);
             }
-            "/help"=> {
-                let words:Vec<_>=r.text.split_whitespace().collect();
+            "/help"|"/start"=> {
+                // #360: a /start deep-link payload is not a help area; /start always shows top-level help.
+                let words:Vec<_>=if cmd=="/start" { vec![cmd] } else { r.text.split_whitespace().collect() };
                 if words.len()>2 { return Err("Invalid command arguments; use /help.".into()); }
                 let config=crate::config(t)?;
                 let keys=crate::keys::Keys(t.install.join("keys.json"));
@@ -161,10 +165,11 @@ mod tests {
     // stays unknown and arbitrary diagnostic values never enter either language.
     #[test]
     fn language_344_doctor_fields_and_safe_errors() {
-        let v=serde_json::json!({"checks":{"configuration":"ok","telegram":"failed","codex":"invented-secret","voice":"unknown"}});
+        let v=serde_json::json!({"checks":{"configuration":"ok","telegram":"failed","codex":"invented-secret","voice":"unknown","claude":"failed"}});
         let ru=setup_text(&v,Some("ru"));let en=setup_text(&v,Some("en"));
         assert!(ru.contains("настройки: доступно") && ru.contains("Telegram: сбой") && ru.contains("Codex: нет данных") && ru.contains("распознавание речи: нет данных"));
         assert!(en.contains("configuration: ok") && en.contains("codex: unknown"));
+        assert!(ru.contains("Claude Code: сбой") && en.contains("claude: failed"));
         assert!(!ru.contains("invented-secret") && !en.contains("invented-secret"));
         assert_eq!(localized("Release request processed.",Some("ru"),false),"Запрос на выпуск обработан.");
         assert_eq!(localized("Setup checks timed out; dependency state is unknown.",Some("ru"),true),"Время проверки настроек истекло; состояние зависимостей неизвестно.");
@@ -243,6 +248,7 @@ pub fn localized(text:&str,language:Option<&str>,failed:bool)->String {
         "Model is not in the current Codex catalogue; choice unchanged."=>"Модели нет в текущем каталоге Codex; выбор не изменён.".into(),
         "Use /onboard NAME or /onboard NAME override"=>"Используйте /onboard NAME или /onboard NAME override, где NAME — имя проекта.".into(),
         "Use /model, /model MODEL or /model default."=>"Используйте /model, /model MODEL или /model default.".into(),
+        "Release started."=>"Выпуск начат.".into(),
         "Release request processed."=>"Запрос на выпуск обработан.".into(),
         "Setup updated."=>"Проверка настроек обновлена.".into(),
         "Model selection received."=>"Выбор модели получен.".into(),

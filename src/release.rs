@@ -325,7 +325,7 @@ fn release_text(text:&str,ru:bool)->String {
         for (en,ru) in [
             ("Release ","Выпуск "),("Target SHA: ","Целевой SHA: "),
             ("Commits since LIVE: ","Коммитов после LIVE: "),("Authors:","Авторы:"),
-            ("Tasks: ","Задачи: "),("Migrations: ","Миграции: "),
+            ("Tasks: ","Задачи: "),("Migrations: ","Миграции: "),("LIVE SHA: ","LIVE SHA: "),
             ("preflight: ","Предварительная проверка: "),("backup: ","Резервная копия: "),
             ("release: ","Выпуск: "),("pipeline: ","Конвейер: "),
             ("smoke: ","Проверка работоспособности: "),("backmerge: ","Обратное слияние: "),
@@ -451,6 +451,7 @@ fn validate(j:&Journal,r:&crate::builtins::Request,id:i64)->Result<Value,String>
 }
 fn confirm(tq:&Taskq,j:&Shared,r:&crate::builtins::Request,id:i64)->Result<String,String> {
     let v={let j=j.lock().unwrap();validate(&j,r,id)?};
+    let ru=j.lock().unwrap().language(r.id)?.as_deref()==Some("ru");
     let c=&v["config"];let p=v["project"].as_str().unwrap();let target=v["sha"].as_str().ok_or("Pinned SHA unavailable")?;
     if !sha(target) {return Err("Pinned SHA invalid".into());}
     // ponytail: one installation-wide release lock; per-repository locks only if simultaneous releases are needed.
@@ -467,11 +468,11 @@ fn confirm(tq:&Taskq,j:&Shared,r:&crate::builtins::Request,id:i64)->Result<Strin
         if draining {return Err("Service is draining; release refused".into());}
         current["state"]=json!("intent");current["confirmation"]=json!(r.id);
         put(&j,&format!("release-preview:{id}"),&current)?;audit(&j,r.id,p,"intent",&current)?;
-        result_card(&j,r.id,id,&format!("{p}: release started for {target}."))?;
+        result_card(&j,r.id,id,&if ru {format!("{p}: начат выпуск {target}.")}else{format!("{p}: release started for {target}.")})?;
         let callback:Vec<u8>=j.0.query_row("SELECT CAST(value AS BLOB) FROM meta WHERE key=?1",[format!("callback:{}",r.id)],|x|x.get(0)).map_err(err)?;
         let callback=String::from_utf8(callback).map_err(|_|"Invalid callback")?;
         let (chat,topic):(i64,Option<i64>)=j.0.query_row("SELECT chat,topic FROM requests WHERE id=?1",[r.id],|x|Ok((x.get(0)?,x.get(1)?))).map_err(err)?;
-        crate::journal::outbox(&j.0,r.id,chat,topic,None,None,"Release started.",crate::now() as i64)?;
+        crate::journal::outbox(&j.0,r.id,chat,topic,None,None,if ru {"Выпуск начат."}else{"Release started."},crate::now() as i64)?;
         j.0.execute("UPDATE outbox SET kind=?2 WHERE id=?1",params![j.0.last_insert_rowid(),format!("toast:{callback}")]).map_err(err)?;
         tx.commit().map_err(err)?;
     }
@@ -514,7 +515,6 @@ fn confirm(tq:&Taskq,j:&Shared,r:&crate::builtins::Request,id:i64)->Result<Strin
         if !stages.iter().any(|s|s.starts_with("release:")) {stages.push("release: not run".into());}
         stages.extend(["smoke: unconfirmed".into(),"backmerge: unconfirmed".into(),"LIVE SHA: unknown".into()]);
     }
-    let ru=j.lock().unwrap().language(r.id)?.as_deref()==Some("ru");
     let message=format!("{p}: {}\n{}",if uncertain {"release outcome uncertain; no automatic retry"}else{"release verified"},stages.join("\n"));
     let message=if ru {format!("{p}: {}\n{}",if uncertain {"исход выпуска неясен; автоматического повтора не будет"}else{"выпуск подтверждён"},release_text(&stages.join("\n"),true))}else{message};
     let j=j.lock().unwrap();let tx=j.0.unchecked_transaction().map_err(err)?;
@@ -561,6 +561,9 @@ mod tests {
         assert!(ru.contains("Выпуск sample") && ru.contains("Целевой SHA: abc123") && ru.contains("Миграции: да"));
         assert!(ru.contains("Проверка работоспособности: ошибка https://example.invalid/jobs/1"));
         assert_eq!(release_text("Автор Release sample",true),"Автор Release sample");
+        assert_eq!(release_text("LIVE SHA: unknown",true),"LIVE SHA: нет данных");
+        assert_eq!(release_text("LIVE SHA: abc123",true),"LIVE SHA: abc123");
+        assert_eq!(crate::builtins::localized("Release started.",Some("ru"),false),"Выпуск начат.");
     }
     fn fixture(tag:&str)->Fixture {
         let dir=std::env::temp_dir().join(format!("pilotq-release-{tag}-{}",std::process::id()));let _=std::fs::remove_dir_all(&dir);std::fs::create_dir_all(&dir).unwrap();

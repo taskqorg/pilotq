@@ -155,26 +155,32 @@ fn routed_message(d: &Path, m: &Value, launched_task: i64) -> bool {
         None | Some(Value::Null) => None,
         Some(value) => match value.as_i64() { Some(topic) => Some(topic), None => return false },
     };
-    let c = rusqlite::Connection::open(d.join("journal.sqlite")).unwrap();
+    let c = rusqlite::Connection::open_with_flags(d.join("journal.sqlite"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
     let mut stmt=c.prepare("SELECT o.text,o.html FROM outbox o JOIN requests q ON q.id=o.request_id
         WHERE o.sent_message=?1 AND o.chat=?2 AND o.topic IS ?3 AND o.state='delivered'
         AND ((o.chat=-100 AND o.topic=5 AND q.chat=-100 AND q.topic=5)
           OR (o.chat=7 AND o.topic IS NULL AND o.kind='onboarding' AND o.project='pilotq'
             AND q.front='service' AND q.kind='onboarding' AND q.state='answered'
             AND q.sender=7 AND q.chat=7 AND q.topic IS NULL AND q.update_id<0)
-          OR (o.chat=7 AND o.topic IS NULL AND o.kind IN ('status','question')
+          OR (o.chat=7 AND o.topic IS NULL AND (o.kind IN ('status','question')
+              OR (?5 AND o.kind IN ('question_answered','question_superseded') AND o.revision>0
+                AND EXISTS(SELECT 1 FROM outbox source
+                  WHERE source.request_id=o.request_id AND source.sent_message=o.sent_message
+                  AND source.chat=o.chat AND source.topic IS o.topic AND source.state='delivered'
+                  AND source.kind='question' AND source.project=o.project AND source.task=o.task
+                  AND source.revision=o.revision)))
             AND q.front='telegram' AND q.kind='board_event' AND q.state='answered'
             AND q.sender=7 AND q.chat=7 AND q.topic IS NULL AND q.update_id<0
             AND EXISTS(SELECT 1 FROM tasks t JOIN audit_events a ON a.request_id=t.request_id
               WHERE t.request_id=q.id AND t.project='pilotq' AND t.number<>?4
               AND ((t.project=o.project AND t.number=o.task)
-                OR (o.project='' AND o.task=0 AND EXISTS(SELECT 1 FROM outbox original
+                OR (o.kind IN ('status','question') AND o.project='' AND o.task=0 AND EXISTS(SELECT 1 FROM outbox original
                   WHERE original.request_id=o.request_id AND original.sent_message=o.sent_message
                   AND original.chat=o.chat AND original.topic IS o.topic AND original.state='delivered'
                   AND original.kind=o.kind AND original.project=t.project AND original.task=t.number)))
               AND t.chat=o.chat AND t.topic IS o.topic AND q.text=t.project||'#'||t.number
               AND a.kind='board_event' AND a.target=q.text)))").unwrap();
-    stmt.query_map(rusqlite::params![id,chat,topic,launched_task], |r| Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?))).unwrap()
+    stmt.query_map(rusqlite::params![id,chat,topic,launched_task,m["edit"]==true], |r| Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?))).unwrap()
         .any(|row| {
             let (text,html)=row.unwrap();
             let expected=if m.get("rich_message").is_some() {
@@ -195,9 +201,9 @@ fn a40_final_route_receipts() {
       CREATE TABLE requests(id INTEGER,front TEXT,kind TEXT,state TEXT,sender INTEGER,chat INTEGER,topic INTEGER,update_id INTEGER,text TEXT);
       CREATE TABLE tasks(request_id INTEGER,project TEXT,number INTEGER,chat INTEGER,topic INTEGER);
       CREATE TABLE audit_events(request_id INTEGER,kind TEXT,target TEXT);
-      CREATE TABLE outbox(request_id INTEGER,sent_message INTEGER,chat INTEGER,topic INTEGER,state TEXT,kind TEXT,project TEXT,text TEXT,html TEXT,task INTEGER);
+      CREATE TABLE outbox(request_id INTEGER,sent_message INTEGER,chat INTEGER,topic INTEGER,state TEXT,kind TEXT,project TEXT,text TEXT,html TEXT,task INTEGER,revision INTEGER DEFAULT 0);
       INSERT INTO requests VALUES(1,'service','onboarding','answered',7,7,NULL,-1,'Onboard pilotq');
-      INSERT INTO outbox VALUES(1,903,7,NULL,'delivered','onboarding','pilotq','Onboard pilotq',NULL,NULL);").unwrap();
+      INSERT INTO outbox VALUES(1,903,7,NULL,'delivered','onboarding','pilotq','Onboard pilotq',NULL,NULL,0);").unwrap();
     let mut m=json!({"id":903,"chat_id":7,"text":"Onboard pilotq"});
     assert!(routed_message(&d,&m,298), "run7 verified owner onboarding is not a topic leak");
     for (key,value) in [("id",json!(904)),("chat_id",json!(8)),("message_thread_id",json!(5)),("text",json!("foreign content"))] {
@@ -210,14 +216,14 @@ fn a40_final_route_receipts() {
         c.execute_batch("UPDATE requests SET front='service',sender=7,update_id=-1,kind='onboarding',state='answered'; UPDATE outbox SET kind='onboarding',state='delivered',project='pilotq'").unwrap();
     }
     c.execute_batch("INSERT INTO requests VALUES(2,'telegram','text','answered',7,-100,5,2,'Run task');
-      INSERT INTO outbox VALUES(2,907,-100,5,'delivered','status','pilotq','Task closed; see the result',NULL,298);").unwrap();
+      INSERT INTO outbox VALUES(2,907,-100,5,'delivered','status','pilotq','Task closed; see the result',NULL,298,0);").unwrap();
     let topic=json!({"id":907,"chat_id":CHAT,"message_thread_id":5,"text":"Task closed; see the result"});
     assert!(routed_message(&d,&topic,298));
     let mut wrong=topic.clone(); wrong["text"]=json!("foreign content");
     assert!(!routed_message(&d,&wrong,298), "topic content also needs its exact receipt");
     wrong=topic.clone(); wrong["message_thread_id"]=json!(6);
     assert!(!routed_message(&d,&wrong,298), "foreign topic is never admitted");
-    c.execute_batch("INSERT INTO outbox VALUES(2,907,-100,5,'delivered','status','pilotq','Task is doing',NULL,298);").unwrap();
+    c.execute_batch("INSERT INTO outbox VALUES(2,907,-100,5,'delivered','status','pilotq','Task is doing',NULL,298,0);").unwrap();
     let mut historical=topic.clone(); historical["text"]=json!("Task is doing"); historical["edit"]=json!(true);
     assert!(routed_message(&d,&historical,298), "historical edits retain their own exact receipt content");
     for text in ["Task closed; see the result", "Read docs/my file.md & <raw>\n[task](https://example.invalid)"] {
@@ -235,12 +241,12 @@ fn a40_final_route_receipts() {
     c.execute_batch("INSERT INTO requests VALUES(12,'telegram','board_event','answered',7,7,NULL,-12,'pilotq#294');
       INSERT INTO tasks VALUES(12,'pilotq',294,7,NULL);
       INSERT INTO audit_events VALUES(12,'board_event','pilotq#294');
-      INSERT INTO outbox VALUES(12,921,7,NULL,'delivered','status','pilotq','Task 294 status',NULL,294);").unwrap();
+      INSERT INTO outbox VALUES(12,921,7,NULL,'delivered','status','pilotq','Task 294 status',NULL,294,0);").unwrap();
     let event=json!({"id":921,"chat_id":7,"text":"Task 294 status"});
     assert!(routed_message(&d,&event,298), "run7 board observer owns its owner-DM fallback");
     // Run7 outbox39 owns message921; refreshes42/43/44 omit project/task metadata.
     for (row, text) in [(42,"Task 294 refreshed"),(43,"Task 294 reviewed"),(44,"Task 294 closed")] {
-        c.execute("INSERT INTO outbox VALUES(12,921,7,NULL,'delivered','status','','temporary',NULL,0)", []).unwrap();
+        c.execute("INSERT INTO outbox VALUES(12,921,7,NULL,'delivered','status','','temporary',NULL,0,0)", []).unwrap();
         c.execute("UPDATE outbox SET text=?1 WHERE rowid=(SELECT max(rowid) FROM outbox)",[text]).unwrap();
         let refresh=json!({"id":921,"chat_id":7,"text":text});
         assert!(routed_message(&d,&refresh,298), "run7 refresh outbox{row} uses original ownership receipt");
@@ -267,6 +273,67 @@ fn a40_final_route_receipts() {
     assert!(!routed_message(&d,&wrong,298));
     m["id"]=json!(910); m["text"]=Value::Null;
     assert!(!routed_message(&d,&m,298), "run7 phantom delete is not a delivery");
+    drop(c); fs::remove_dir_all(d).unwrap();
+}
+
+// §§2,4–5: external terminal edits inherit only their exact delivered question source.
+#[test]
+fn a40_external_question_terminal_receipts() {
+    let d = std::env::temp_dir().join(format!("pilotq-a40-terminal-{}", std::process::id()));
+    fs::create_dir_all(&d).unwrap();
+    let c = rusqlite::Connection::open(d.join("journal.sqlite")).unwrap();
+    let fixture="DROP TABLE IF EXISTS requests; DROP TABLE IF EXISTS tasks; DROP TABLE IF EXISTS audit_events; DROP TABLE IF EXISTS outbox;
+      CREATE TABLE requests(id INTEGER,front TEXT,kind TEXT,state TEXT,sender INTEGER,chat INTEGER,topic INTEGER,update_id INTEGER,text TEXT);
+      CREATE TABLE tasks(request_id INTEGER,project TEXT,number INTEGER,chat INTEGER,topic INTEGER);
+      CREATE TABLE audit_events(request_id INTEGER,kind TEXT,target TEXT);
+      CREATE TABLE outbox(request_id INTEGER,sent_message INTEGER,chat INTEGER,topic INTEGER,state TEXT,kind TEXT,project TEXT,text TEXT,html TEXT,task INTEGER,revision INTEGER);
+      INSERT INTO requests VALUES(12,'telegram','board_event','answered',7,7,NULL,-3,'pilotq#344');
+      INSERT INTO tasks VALUES(12,'pilotq',344,7,NULL);
+      INSERT INTO audit_events VALUES(12,'board_event','pilotq#344');
+      INSERT INTO outbox VALUES(12,921,7,NULL,'delivered','question','pilotq','Original question',NULL,344,6561255971);
+      INSERT INTO outbox VALUES(12,921,7,NULL,'delivered','question_answered','pilotq','Answered externally',NULL,344,6561255971);";
+    c.execute_batch(fixture).unwrap();
+    let mut m=json!({"id":921,"chat_id":7,"text":"Answered externally","edit":true});
+    for kind in ["question_answered", "question_superseded"] {
+        c.execute("UPDATE outbox SET kind=?1 WHERE kind<>'question'",[kind]).unwrap();
+        assert!(routed_message(&d,&m,347), "valid external {kind}");
+        for sql in [
+            "UPDATE requests SET sender=8", "UPDATE requests SET chat=8",
+            "UPDATE requests SET topic=5", "UPDATE requests SET text='pilotq#345'",
+            "UPDATE requests SET front='service'", "UPDATE requests SET kind='text'",
+            "UPDATE requests SET state='running'", "UPDATE requests SET update_id=3",
+            "UPDATE tasks SET request_id=13", "DELETE FROM tasks", "DELETE FROM audit_events",
+            "UPDATE tasks SET number=345", "UPDATE tasks SET project='other'",
+            "UPDATE tasks SET chat=8", "UPDATE tasks SET topic=5",
+            "UPDATE audit_events SET target='pilotq#345'",
+            "UPDATE outbox SET request_id=13 WHERE kind='question'",
+            "UPDATE outbox SET sent_message=922 WHERE kind='question'",
+            "UPDATE outbox SET chat=8 WHERE kind='question'",
+            "UPDATE outbox SET topic=5 WHERE kind='question'",
+            "UPDATE outbox SET project='other' WHERE kind='question'",
+            "UPDATE outbox SET task=345 WHERE kind='question'",
+            "UPDATE outbox SET revision=6561255972 WHERE kind='question'",
+            "UPDATE outbox SET state='pending' WHERE kind='question'",
+            "UPDATE outbox SET kind='status' WHERE kind='question'",
+            "DELETE FROM outbox WHERE kind='question'",
+            "UPDATE outbox SET revision=0 WHERE kind<>'question'",
+            "UPDATE outbox SET task=0,project='' WHERE kind<>'question'",
+            "INSERT INTO outbox SELECT request_id,sent_message,chat,topic,state,kind,project,'Other terminal',html,task,revision FROM outbox WHERE kind<>'question'; UPDATE outbox SET task=0,project='' WHERE text<>'Other terminal'",
+        ] {
+            c.execute_batch(sql).unwrap();
+            assert!(!routed_message(&d,&m,347), "{kind}: {sql}");
+            c.execute_batch("DROP TABLE requests; DROP TABLE tasks; DROP TABLE audit_events; DROP TABLE outbox").unwrap();
+            c.execute_batch(fixture).unwrap();
+            c.execute("UPDATE outbox SET kind=?1 WHERE kind<>'question'",[kind]).unwrap();
+        }
+        assert!(!routed_message(&d,&m,344), "launched task cannot escape its route");
+        for (key,value) in [("chat_id",json!(8)),("message_thread_id",json!(5)),("id",json!(922)),("text",json!("foreign content")),("edit",json!(false))] {
+            let mut wrong=m.clone(); wrong[key]=value;
+            assert!(!routed_message(&d,&wrong,347), "{kind}: changed {key}");
+        }
+    }
+    m["text"]=json!("Original question"); m.as_object_mut().unwrap().remove("edit");
+    assert!(routed_message(&d,&m,347), "retain historical question payload");
     drop(c); fs::remove_dir_all(d).unwrap();
 }
 

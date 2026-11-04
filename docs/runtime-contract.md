@@ -12,7 +12,7 @@ PilotQ is one small Rust service in the TaskQ tool family.
 | Language and packaging | Rust single binary on [coreq](https://github.com/taskqorg/coreq) | Same release, update, service, status, selftest and incident path as taskq, agentq and dashq (R14) |
 | Telegram | [teloxide](https://github.com/teloxide/teloxide) for the Bot API only | Maintained Rust library; PilotQ keeps its own durable ingress and outbox (section 4) |
 | Telegram behavior | Patterns adapted from the Hermes gateway: update intake, delivery retry, stall watch, topic routing | Already exercised on our server (R12); read as reference, no change to Hermes |
-| Manager runtime | AgentQ runtime: Codex over its app-server compatibility path or Claude Code CLI turns, each under its subscription login ([manager runtimes](#manager-runtimes)) | R9; [core options](core-options.md) |
+| Manager runtime | AgentQ runtime trait: Codex over its app-server path or Claude Code CLI turns, each under its subscription login ([manager runtimes](#manager-runtimes)) | R9; [core options](core-options.md) |
 | Journal | SQLite (section 7 settings) | One local file, supported snapshot backup |
 | Work execution | Existing TaskQ CLI | Section 5 |
 | Voice recognition | ffmpeg and `sherpa-onnx-offline` with GigaAM v3 RNNT-punct int8, local CPU subprocesses | Best Russian accuracy per CPU in the #89 benchmark; keeps the static PilotQ build free of onnxruntime |
@@ -22,25 +22,36 @@ Grammy, Pi and a new runtime framework are out of scope. Earlier source findings
 
 ### Manager runtimes
 
-`config.json` `runtime` selects `codex` (default) or `claude` for the installation;
-`runtime_routes` maps a route (`cli`, `CHAT` or `CHAT:TOPIC`) to an override. Both runtimes run
-through `agentq-runtime` 0.1.0 pinned to remote revision `513193c8a96f3de1c71a86291a679230817ce0b2`,
-one process per turn, and keep the existing grants, native-shell
-authority, private answer drafts, model choice, inactivity watches and recovery rules.
+`config.json` `runtimes` names each runtime's settings as `{NAME: {"bin", "home", "models"}}`
+(`bin` defaults to the runtime name on `PATH`; `home` defaults to `<install>/NAME`, and `default`
+keeps the service user's own login). `runtime` selects the installation runtime (`codex` default,
+or `claude`); `runtime_routes` maps a route (`cli`, `CHAT` or `CHAT:TOPIC`) to an override. The
+#265 keys `codex`, `claude`, `claude_home` and `claude_models` remain readable for existing
+installations. Every manager turn runs through the `agentq-runtime` runtime trait
+(`agent::runtime(name)`), pinned to remote revision `97abcebb305447800fec5875e3cbaf24c8e7f22e`,
+one process group per turn, and keeps the existing grants, native-shell authority, private answer
+drafts, model choice, inactivity watches and recovery rules.
 
-- Codex uses AgentQ `AppServer` and `AppSession` with PilotQ's isolated `CODEX_HOME`, the forced
-  ChatGPT login and its dynamic tools. The separate PilotQ app-server adapter is removed.
-- Claude uses AgentQ `Turn` (`claude -p`, stream-json input and output, partial messages for drafts)
-  with `claude_home` (default `<install>/claude`; `default` keeps the service user's own login).
-  The child environment carries no API key, so no paid API fallback exists (R9). Restricted
-  principals get no built-in tools (`--tools ""`); the owner and shell grantees run with
-  `bypassPermissions`. `/model` offers `claude_models` (default `opus`, `sonnet`, `haiku`).
+- PilotQ keeps no runtime data and never branches on a runtime name. It states only its policy in
+  trait types (isolated, subscription login, built-in tools, write scope and approval) and picks
+  runtimes by capability; flags, home variable, labels, models, refusal causes, login check and
+  host minimum come from the adapter (`descriptor()`, `launch_refusal()`, `ready()`).
+- Codex runs as a trait app-server session (`Mode::AppServer`) with PilotQ's isolated `CODEX_HOME`,
+  the forced ChatGPT login and its dynamic tools; the owner and shell grantees get
+  `danger-full-access`, others `read-only`, both without approval prompts.
+- Claude runs as one trait CLI turn (`claude -p`, stream-json input and output, partial messages for
+  drafts). Restricted principals get no built-in tools (`--tools ""`); the owner and shell grantees
+  run with `bypassPermissions`. `/model` offers configured `models` (Claude default `opus`, `sonnet`,
+  `haiku`; Codex reads its app-server catalogue).
+- The trait's process setup keeps only runtime necessities and the adapter's launch variables in the
+  child environment, so no API key reaches it and no paid API fallback exists (R9).
 - Claude reaches PilotQ's own tools through a per-turn stdio MCP relay, `pilotq --mcp-bridge
   SOCKET`. The relay forwards each list or call over an owner-only Unix socket with a per-turn token
   to the same tool boundary Codex dynamic tools use. It holds no grant, state or decision.
-- The journal stores a Claude session as `claude:<id>`. A turn resumes its runtime's session by ID;
-  a session of the other runtime, or a missing native session, is rebuilt once from the journal on a
-  new session without repeating work.
+- The journal stores the runtime owning a conversation's native session in `conversations.runtime`
+  and each run's runtime in `runs.runtime` (schema 14). A turn resumes the session only when its
+  route runtime owns it; a session of another runtime, or a missing native session, is rebuilt once
+  from the journal on a new session without repeating work.
   The shared rebuild audit records the known cause: planned policy refresh, foreign runtime,
   or native session unavailable after a failed resume. Planned refresh never claims a missing
   rollout or resume failure. Keep the old ID as the audit target, retain context and receipts,
@@ -51,21 +62,21 @@ authority, private answer drafts, model choice, inactivity watches and recovery 
   the runtime process group and its tools, and waits for TaskQ's `released` readback. A start after a
   crash releases a left slot only when the recorded runtime group is gone; unknown liveness keeps
   the slot.
-- Each completed turn appends one AgentQ runtime usage observation to CoreQ (`agent.app` for Codex,
-  `agent.turn` for Claude) with the route code. Every launch carries `AGENTQ_LAUNCHER=pilotq` so an
-  attached optimizer does not count the turn again. Account/quota reads and model catalogue calls
-  use the same AgentQ transport without generating inference or usage observations.
+- Each completed turn appends one AgentQ runtime usage observation to CoreQ through the trait run's
+  `record` with the route code. Every launch carries `AGENTQ_LAUNCHER=pilotq` so an attached
+  optimizer does not count the turn again. Model catalogue reads use the same trait session without
+  generating inference or usage observations.
 - `config.json` `optimization` accepts `off` (default), `inherit` or `on`. AgentQ prepares only the
   child launch and reports intent, effective state and reason to request audit. `on` observes an
   existing approved attachment; it never enables or installs one. Host disable and inherited `off`
   prevail. No client configuration or original replay bytes are edited; an optimizer is optional.
-  Claude excludes user settings, so its launch forces compression off and records `settings_excluded`
-  for `inherit`/`on` intent rather than claiming those excluded hooks are active.
+  Claude excludes user settings, so its launch requests compression off rather than claiming those
+  excluded hooks are active.
   Tool-result compression still needs section 11's dynamic-tool qualification, separate from runtime adoption.
-- CoreQ remains v0.18.0 for installation, process and telemetry primitives; PilotQ does not call
-  its frozen `agent` API. Journal schema 13, native Codex IDs and `claude:<id>` storage remain
-  compatible with the previous immutable build. Rollback uses that build and the same journal/session
-  homes after drain; never replay interrupted effects or erase pending delivery to downgrade.
+- CoreQ is v0.19.1 for installation, process and telemetry primitives. Schema 14 converts legacy
+  `RUNTIME:ID` sessions into the runtime column on first open. A build reading at most schema 13
+  refuses the migrated journal, so rollback across this upgrade needs a build that reads schema 14 or
+  the pre-upgrade snapshot; never replay interrupted effects or erase pending delivery to downgrade.
 
 ```mermaid
 flowchart LR

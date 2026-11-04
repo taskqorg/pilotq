@@ -6,8 +6,8 @@ publish = false
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-coreq = { git = "https://github.com/taskqorg/coreq", tag = "v0.18.0" }
-agentq-runtime = { git = "https://github.com/taskqorg/agentq", rev = "513193c8a96f3de1c71a86291a679230817ce0b2" }
+coreq = { git = "https://github.com/taskqorg/coreq", tag = "v0.19.1" }
+agentq-runtime = { git = "https://github.com/taskqorg/agentq", rev = "97abcebb305447800fec5875e3cbaf24c8e7f22e" }
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 teloxide = { version = "0.17.0", default-features = false, features = ["rustls"] }

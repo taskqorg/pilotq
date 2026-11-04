@@ -834,10 +834,10 @@ fn f03_provider_faults_are_bounded() {
     let (d, _st) = setup("f03", vec![]);
     use_codex(&d, &script(&d, "fake-codex", FAKE));
     let cases = [
-        ("stall", "failed", "Codex sent no event for 2 s"),
-        ("exit", "failed", "Codex exited without a terminal event"),
-        ("tool", "uncertain", "Codex exited without a terminal event"),
-        ("empty", "failed", "Codex ended the turn without an answer"),
+        ("stall", "failed", "Codex CLI sent no event for 2 s"),
+        ("exit", "failed", "Codex CLI exited without a terminal event"),
+        ("tool", "uncertain", "Codex CLI exited without a terminal event"),
+        ("empty", "failed", "Codex CLI ended the turn without an answer"),
         ("failed", "failed", "usage limit reached"),
     ];
     for (input, state, error) in cases {
@@ -864,7 +864,7 @@ fn f03_provider_faults_are_bounded() {
     // no first event at all
     use_codex(&d, &d.join("mute"));
     let o = cli(&d, &["ask", "--json", "hello"]);
-    assert_eq!(serde_json::from_slice::<Value>(&o.stdout).unwrap()["error"], "Codex sent no first event within 2 s");
+    assert_eq!(serde_json::from_slice::<Value>(&o.stdout).unwrap()["error"], "Codex CLI sent no first event within 2 s");
     cleanup(&d);
 }
 
@@ -956,7 +956,7 @@ fn crash_during_turn_reports_interruption() {
 }
 
 // Found in the A8 run: three conversations started Codex together on a fresh Codex home, and all but one app-server exited with
-// `failed to initialize sqlite state runtime`, read by PilotQ only as "Codex exited without a terminal event". Startup is now
+// `failed to initialize sqlite state runtime`, read by PilotQ only as "Codex CLI exited without a terminal event". Startup is now
 // serialized until `initialize` answers, so every request is answered; a Codex that exits early names its stderr reason in the
 // private codex/app-server.log only, never in the reply.
 #[test]
@@ -976,7 +976,7 @@ sleep 0.5; rmdir "$d/init.lock"; exec "$d/fake-codex""#);
     let (d, _st) = setup("dead", vec![]);
     use_codex(&d, &script(&d, "dead-codex", "echo 'Error: boom' >&2; exit 1"));
     let o = cli(&d, &["ask", "--json", "hi"]);
-    assert_eq!(serde_json::from_slice::<Value>(&o.stdout).unwrap()["error"], "Codex exited without a terminal event", "the reply carries no raw stderr");
+    assert_eq!(serde_json::from_slice::<Value>(&o.stdout).unwrap()["error"], "Codex CLI exited without a terminal event", "the reply carries no raw stderr");
     assert!(fs::read_to_string(d.join("codex/app-server.log")).unwrap().contains("Error: boom"), "the private operator log names the reason");
     cleanup(&d);
 }
@@ -1275,7 +1275,7 @@ fn plan_218_empty_turn_and_acknowledgement() {
         } else {
             assert_eq!(reply.lines().count(), 1, "{reply}");
             assert!(!reply.contains("Draft") && !reply.contains("revision"), "{reply}");
-            assert_eq!(query_text(&d, "SELECT error FROM requests ORDER BY id DESC LIMIT 1"), "Codex ended the turn without an answer");
+            assert_eq!(query_text(&d, "SELECT error FROM requests ORDER BY id DESC LIMIT 1"), "Codex CLI ended the turn without an answer");
             assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE kind='failed_draft'"), 1);
         }
         cleanup(&d);
@@ -1977,7 +1977,7 @@ fn u11_l05_unlimited_calls_and_inactivity_keep_evidence() {
     // §4: the uncertain state commits with its outbox row; Telegram delivery follows asynchronously, so wait for the send itself.
     wait("inactivity",20,||query(&d,"SELECT count(*) FROM requests WHERE update_id=2 AND state='uncertain'")==1);
     wait("#212 A3: localized uncertainty without tool diagnostics",15,||sent_has(&st,"Результат действия неизвестен"));
-    assert!(!sent_has(&st,"Codex sent no event for 2 s"),"#212 A3: diagnostic stays in audit");
+    assert!(!sent_has(&st,"Codex CLI sent no event for 2 s"),"#212 A3: diagnostic stays in audit");
     assert_eq!(query(&d,"SELECT count(*) FROM audit_events a JOIN requests q ON q.id=a.request_id WHERE q.update_id=2 AND a.kind='kept_finding' AND a.result LIKE '%Доступные проекты: other, pilotq%'"),1,"read findings survive inactivity in audit");
     assert_eq!(query(&d,"SELECT count(*) FROM requests WHERE update_id=2 AND state='uncertain'"),1);
     stop(c,d);
@@ -2640,7 +2640,7 @@ fn native_rebuild_339_reasons() {
     assert_eq!(query_text(&d, "SELECT result FROM audit_events WHERE kind='rebuild' ORDER BY id DESC LIMIT 1"),
         "native session unavailable after failed resume; journal context prepared");
     rusqlite::Connection::open(d.join("journal.sqlite")).unwrap()
-        .execute("UPDATE conversations SET thread='claude:foreign' WHERE thread IS NOT NULL", []).unwrap();
+        .execute("UPDATE conversations SET runtime='claude', thread='foreign' WHERE thread IS NOT NULL", []).unwrap();
     ok(cli(&d, &["ask", "foreign runtime", "--json"]));
     assert_eq!(query_text(&d, "SELECT result FROM audit_events WHERE kind='rebuild' ORDER BY id DESC LIMIT 1"),
         "foreign runtime; journal context prepared");

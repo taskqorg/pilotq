@@ -160,7 +160,7 @@ fn report(tq:&Taskq,board:&str,doctor:&Value,status:&Value,service:&Value,at:i64
     for (check,step) in [
         ("configuration","Owner: complete protected PilotQ config.json, then run pilotq doctor --json"),
         ("telegram","Owner: verify the protected bot token and Telegram connectivity; run pilotq doctor --json"),
-        ("codex","Owner: restore the isolated Codex ChatGPT login configured for PilotQ; run pilotq doctor --json"),
+        ("runtime","Owner: restore the isolated subscription login of each manager runtime configured for PilotQ; run pilotq doctor --json"),
         ("taskq","Owner: verify the configured TaskQ binary, root and board; run pilotq doctor --json"),
         ("voice","Owner: configure voice.ffmpeg, voice.recognizer and GigaAM model files using docs/tester-guide.md; run pilotq doctor --json"),
     ] {
@@ -493,6 +493,11 @@ fn text(project:&str,result:&Value,ru:bool)->String {
 }
 
 /// #256 A4: Recheck buttons bind to the owner's DM card (§5); a typed recheck elsewhere names that card and the command.
+fn override_message(project:&str,ru:bool)->String {
+    if ru {format!("{project}: обход проверки готовности записан; проблемы остаются. Допуск TaskQ и права доступа продолжают действовать.")}
+    else {format!("{project}: readiness override recorded; gaps remain. TaskQ admission and grants still apply.")}
+}
+
 fn typed_reply(project:&str,result:&Value,ru:bool,dm:bool)->String {
     let mut message=text(project,result,ru);
     if !dm && result["ready"]!=true {
@@ -579,12 +584,15 @@ pub fn control(t:&coreq::Tool,j:&Shared,r:&crate::builtins::Request)->Result<(),
         let callback:Option<Vec<u8>>=j.0.query_row("SELECT value FROM meta WHERE key=?1",[format!("callback:{}",r.id)],|x|x.get(0)).optional().map_err(err)?;
         if let Some(callback)=callback {
             let callback=String::from_utf8(callback).map_err(|_|"Invalid callback")?;
-            crate::journal::outbox(&j.0,r.id,r.sender,None,None,None,"Recheck received.",crate::now() as i64)?;
+            crate::journal::outbox(&j.0,r.id,r.sender,None,None,None,if j.language(r.id)?.as_deref()==Some("ru") {"Повторная проверка запрошена."}else{"Recheck received."},crate::now() as i64)?;
             j.0.execute("UPDATE outbox SET kind=?2 WHERE id=?1",params![j.0.last_insert_rowid(),format!("toast:{callback}")]).map_err(err)?;
         }
         tx.commit().map_err(err)?;
     }
-    let message=if action==Some("override") {format!("{project}: readiness override recorded; gaps remain. TaskQ admission and grants still apply.")}
+    let message=if action==Some("override") {
+        let ru=j.lock().unwrap().language(r.id)?.as_deref()==Some("ru");
+        override_message(&project,ru)
+    }
         else {
             let result=check(t,j,&project)?;
             let (ru,dm)={let j=j.lock().unwrap();(j.language(r.id)?.as_deref().unwrap_or("en").starts_with("ru"),j.owner()?.is_some_and(|o|r.session==format!("dm:{o}")))};
@@ -639,7 +647,7 @@ mod tests {
         let tq=Taskq{bot:None,bin:"/invented/taskq".into(),root:dir.clone(),poll:Duration::from_secs(15)};
         (j,dir,tq)
     }
-    fn doctor()->Value {json!({"ok":true,"checks":{"configuration":"ok","telegram":"ok","codex":"ok","taskq":"ok","voice":"ok","host_tools":"ok"}})}
+    fn doctor()->Value {json!({"ok":true,"checks":{"configuration":"ok","telegram":"ok","runtime":"ok","taskq":"ok","voice":"ok","host_tools":"ok"}})}
     fn service(tq:&Taskq)->Value {
         json!({"schema":"taskq.service/1","service":{"state":"running","version":"4.6.40","fresh":true,"at":1000},
             "projects":[{"root":tq.root,"status":{"complete":true,"at":1000,"capacity":{"limits":{"codex":4},"gate":"open"},
@@ -823,8 +831,10 @@ mod tests {
         drop(j);let mut j=Journal::open(&dir.join("journal.sqlite")).unwrap();
         assert!(gate(&j,"cyprusbz-board").is_err());
         let id=j.builtin_cli(7,"/onboard cyprusbz-board override",4).unwrap().unwrap();
+        j.0.execute("UPDATE requests SET language='ru' WHERE id=?1",[id]).unwrap();
         let r=j.builtin_take(id).unwrap().unwrap();let j=std::sync::Arc::new(std::sync::Mutex::new(j));
         control(&crate::tool(),&j,&r).unwrap();
+        assert!(j.lock().unwrap().request(id).unwrap().1.unwrap().contains("обход проверки готовности записан"));
         {let locked=j.lock().unwrap();assert!(gate(&locked,"cyprusbz-board").is_ok());assert_eq!(saved(&locked,"cyprusbz-board").unwrap().unwrap()["ready"],false);}
         let locked=j.lock().unwrap();queue(&locked,"cyprusbz-board").unwrap();
         let epoch2=saved(&locked,"cyprusbz-board").unwrap().unwrap()["epoch"].clone();

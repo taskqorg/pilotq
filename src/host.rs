@@ -98,7 +98,6 @@ fn recorded_version(bin: &str) -> Option<String> {
 pub fn report(c: Option<&crate::Config>) -> Value {
     let voice = c.and_then(|c|c.voice.as_ref());
     let mut checks = vec![
-        probe("codex",c.map(|c|c.runtime.codex.bin.as_str()),&["--version"],"0.162.0","codex-cli ","Install @openai/codex@0.162.0 or newer; set config.json codex to its absolute path"),
         probe("taskq",c.and_then(|c|c.taskq.as_ref()).and_then(|t|t.bin.to_str()),&["--version"],"4.6.46","","Update TaskQ CLI to 4.6.46 or newer; set taskq.bin"),
         probe("taskq_service",c.and_then(|c|c.taskq.as_ref()).and_then(|t|t.bin.to_str()),&["service","status","--json"],"4.6.40","","Update the existing TaskQ service to 4.6.40 or newer"),
         probe("ffmpeg",voice.map(|v|v.ffmpeg.as_str()),&["-version"],"6.1.0","ffmpeg version ","Install ffmpeg 6.1 or newer; set voice.ffmpeg"),
@@ -107,9 +106,11 @@ pub fn report(c: Option<&crate::Config>) -> Value {
         } else { probe("sherpa-onnx-offline",voice.map(|v|v.recognizer.as_str()),&["--version"],"2.0.1","","Provision sherpa-onnx-offline 2.0.1 or newer; retain voice.recognizer and GigaAM model paths") },
         probe("curl",Some("curl"),&["--version"],"7.68.0","curl ","Install curl 7.68 or newer on the service PATH"),
     ];
-    // #265: Claude Code only where the installation or a route runs the manager on it
-    if let Some(c) = c.filter(|c| c.runtime.default == agentq_runtime::agent::Client::Claude || c.runtime.routes.values().any(|r| *r == agentq_runtime::agent::Client::Claude)) {
-        checks.push(probe("claude",Some(&c.runtime.claude.bin),&["--version"],"2.1.0","","Install Claude Code 2.1.0 or newer; set config.json claude to its absolute path"));
+    // #265/#359: each runtime the installation or a route runs the manager on; without config, the default runtime
+    let used = c.map_or_else(|| vec![crate::manager::default_runtime()], |c| c.runtime.used());
+    for r in crate::manager::supported().filter(|r| used.contains(&r.descriptor().name)) {
+        let agent = c.and_then(|c| c.runtime.agents.get(r.descriptor().name));
+        checks.push(runtime_check(r, agent.map_or(r.descriptor().name, |a| a.bin.as_str()), agent.and_then(|a| a.home.as_deref())));
     }
     if cfg!(target_os="linux") {
         checks.extend([
@@ -136,6 +137,17 @@ pub fn report(c: Option<&crate::Config>) -> Value {
     }
     checks.extend(crate::release::host_checks(&crate::tool().install.join("journal.sqlite")));
     json!(checks)
+}
+
+/// § 9 runtime row from the trait's readiness (#363): install and minimum version; login is doctor's runtime check.
+pub(crate) fn runtime_check(r: &dyn agentq_runtime::agent::Runtime, bin: &str, home: Option<&std::path::Path>) -> Value {
+    let d = r.descriptor();
+    let ready = r.ready(Some(std::path::Path::new(bin)), home);
+    let ok = ready.install.state == "ok" && ready.version.state == "ok";
+    let fix = format!("Install {} {} or newer; set config.json runtimes.{}.bin to its absolute path", d.label, d.minimum, d.name);
+    let found = (ready.version.state != "unknown").then(|| ready.version.detail.clone());
+    if !ok { log(d.name, &format!("found {}; minimum {}; {fix}", found.as_deref().unwrap_or("unavailable"), d.minimum)); }
+    json!({"tool": d.name, "found": found, "minimum": d.minimum, "outcome": if ok {"ok"} else {"failed"}, "fix": fix})
 }
 
 pub fn healthy(v: &Value) -> bool { v.as_array().is_some_and(|a|a.iter().all(|v|v["outcome"]=="ok")) }

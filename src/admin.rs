@@ -523,12 +523,12 @@ mod tests {
         let r=j.ask(7,"hello",1).unwrap();
         let ordinary=json!([{"name":"project_list"}]);
         j.catalogue(&r,&ordinary).unwrap();
-        j.finish(&r,Some("invented-native-thread"),None,&crate::manager::Outcome::Answered("hello".into()),2).unwrap();
+        j.finish(&r,Some(("codex","invented-native-thread")),None,&crate::manager::Outcome::Answered("hello".into()),2).unwrap();
         let r=j.ask(7,"administer",3).unwrap();
         j.catalogue(&r,&ordinary).unwrap();assert!(!j.refresh_tools(&r).unwrap());
         j.catalogue(&r,&json!(tools())).unwrap();assert!(j.refresh_tools(&r).unwrap());
         j.rebuild(&r,4, crate::journal::RebuildReason::NativeUnavailable).unwrap();
-        j.finish(&r,Some("invented-replacement-thread"),None,&crate::manager::Outcome::Answered("ready".into()),5).unwrap();
+        j.finish(&r,Some(("codex","invented-replacement-thread")),None,&crate::manager::Outcome::Answered("ready".into()),5).unwrap();
         assert!(!j.refresh_tools(&r).unwrap());
         let _=std::fs::remove_dir_all(dir);
     }
@@ -684,7 +684,7 @@ mod tests {
             "hosts":[{"name":"mac","version":"4.6.58","updated":updated},{"name":"win","version":"4.6.58","updated":updated}]});
         std::fs::write(dir.join("board.json"),board(now-400).to_string()).unwrap();
         let doctor=dir.join("doctor-fixture");
-        std::fs::write(&doctor,format!("#!/bin/sh\nprintf '%s' '{}'\n",json!({"ok":true,"checks":{"configuration":"ok","telegram":"ok","codex":"ok","taskq":"ok","voice":"ok","host_tools":"ok"}}))).unwrap();
+        std::fs::write(&doctor,format!("#!/bin/sh\nprintf '%s' '{}'\n",json!({"ok":true,"checks":{"configuration":"ok","telegram":"ok","runtime":"ok","taskq":"ok","voice":"ok","host_tools":"ok"}}))).unwrap();
         std::fs::set_permissions(&doctor,std::fs::Permissions::from_mode(0o700)).unwrap();
         let t=Taskq{bin,..tq(None)};
         let url="https://gitlab.example.test/alex/csgo";
@@ -818,7 +818,7 @@ mod tests {
             std::fs::write(&bin,format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{0}/calls'\ncase \"$1\" in\nstatus) cat '{0}/board.json';;\nservice) if grep -Fxq -- \"$TASKQ_ROOT\" '{0}/projects'; then cat '{0}/service-after.json'; else cat '{0}/service-before.json'; fi;;\n*) exit 42;;\nesac\n",install.display())).unwrap();
             std::fs::set_permissions(&bin,std::fs::Permissions::from_mode(0o700)).unwrap();
             let doctor=dir.join("doctor-fixture");
-            let healthy=json!({"ok":true,"checks":{"configuration":"ok","telegram":"ok","codex":"ok","taskq":"ok","voice":"ok","host_tools":"ok"}});
+            let healthy=json!({"ok":true,"checks":{"configuration":"ok","telegram":"ok","runtime":"ok","taskq":"ok","voice":"ok","host_tools":"ok"}});
             std::fs::write(&doctor,format!("#!/bin/sh\nprintf '%s' '{healthy}'\n")).unwrap();
             std::fs::set_permissions(&doctor,std::fs::Permissions::from_mode(0o700)).unwrap();
             let t=Taskq{bin,..tq(None)};
