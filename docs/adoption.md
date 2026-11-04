@@ -18,7 +18,7 @@ For a later same-token cutover, stop and verify the old poller before enabling P
 ## 11. Decisions still open
 
 - Codex account and subscription entitlement for a shared server deployment.
-- Required behavior for documents that are neither images nor audio, and for video, at Hermes cutover. Image input is decided by the owner in task #72. Voice and audio input are decided by the owner in task #89 (option 1): local GigaAM v3 recognition of Russian speech; a Parakeet fallback for other languages is added only if real use shows the need.
+- Required behavior for documents that are neither images nor audio, and for video, at Hermes cutover. Image input is decided by the owner in task #72. Voice and audio input now require local Russian, English and Hebrew recognition (§1); multilingual Whisper small Q5_1 replaces the earlier Russian-only GigaAM decision. No API fallback exists.
 - Final retention/capacity thresholds and permitted telemetry content, including the proposed audit retention (365 days metadata, 90 days message text).
 
 Closed 2026-10-23 (owner, option B): short-action grants and Telegram key entry. The original read-only direct-work limit is superseded by §5’s full-agent decision. Typed issue tools retain their owner/repository gates, and keys enter only through the CLI ([section 5](integration-contract.md#direct-actions-keys-and-project-switching)).

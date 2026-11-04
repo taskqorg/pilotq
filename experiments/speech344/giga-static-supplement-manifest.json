@@ -1,0 +1,10 @@
+{
+  "purpose": "PM-only static supplement; no model execution",
+  "files": {
+    "experiments/speech344/supplement-giga-static.py": "a455804450c1ce2d3a34a725fd90fe9f28b46ee12ee2384fce0025ce32975e15",
+    "experiments/speech344/inspect-giga-multilingual.py": "aa522759b2be643c2add0c5e0746869e262c75565a881043b7cda70be5886b8d",
+    "scripts/probe-speech-344.py": "dee1fcd1f3873b64971a62f9a71c939c900fc2359c3e8458a33b5f4c773fe88e",
+    "target/pm344-giga-static-tools-v2/inspection/inspection.json": "f9e908ce933d6e6e72dfedfcd2cc0c8f28be04dcf7db13da27c5bfa2417291dd",
+    "target/pm344-giga-static-tools-v2/setup-result.json": "e5250887ab9702421f2235f2d5536fe987a6157d77dc4facc25dc3aa9abc98fc"
+  }
+}

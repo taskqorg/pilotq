@@ -1,0 +1,26 @@
+--- a/src/whisper.cpp
++++ b/src/whisper.cpp
+@@ -2358,6 +2358,7 @@
+               const int   n_threads,
+     ggml_abort_callback   abort_callback,
+                    void * abort_callback_data) {
++    WHISPER_LOG_INFO("PILOTQ344 encode offset=%d context=%d\n", mel_offset, wstate.exp_n_audio_ctx);
+     const int64_t t_start_us = ggml_time_us();
+
+     // conv
+@@ -7135,6 +7136,7 @@
+                     state->kv_self_n_dec = n_decoders_cur;
+                 }
+
++                WHISPER_LOG_INFO("PILOTQ344 decoder-reset\n");
+                 whisper_kv_cache_clear(state->kv_self);
+
+                 whisper_batch_prep_legacy(state->batch, prompt.data(), prompt.size(), 0, 0);
+@@ -8997,3 +8999,7 @@
+     fputs(text, stderr);
+     fflush(stderr);
+ }
++
++// Test-only observations/fault injection; never linked into production.
++extern "C" int pilotq344_encode_count(whisper_context * ctx) { return ctx->state->n_encode; }
++extern "C" void pilotq344_invalidate_mel(whisper_context * ctx) { ctx->state->mel.n_len_org = 0; }

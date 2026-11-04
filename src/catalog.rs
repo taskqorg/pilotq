@@ -229,6 +229,11 @@ mod tests {
 
 /// Read machine help afresh. Keep the external catalog as source JSON: its schema is owned by TaskQ.
 /// No board access, shell, inherited credentials, or dependency output in an availability error.
+// A successfully exited command can precede its stdout reader's scheduling.
+fn catalog_bytes(bytes:Option<Vec<u8>>,rx:&std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>,end:std::time::Instant)->Option<Vec<u8>> {
+    bytes.or_else(||rx.recv_timeout(end.saturating_duration_since(std::time::Instant::now())).ok().and_then(Result::ok))
+}
+
 pub fn taskq_help(bin:Option<&std::path::Path>,language:Option<&str>)->String {
     let ru=language.unwrap_or("en").starts_with("ru");
     let unavailable=if ru {"Каталог TaskQ недоступен; нужен TaskQ с машинно-читаемой справкой."} else {"TaskQ catalog unavailable; install TaskQ with machine-readable help."};
@@ -257,7 +262,7 @@ pub fn taskq_help(bin:Option<&std::path::Path>,language:Option<&str>)->String {
         #[cfg(unix)] let _=Command::new("/bin/kill").args(["-KILL","--",&format!("-{}",child.id())]).stdout(Stdio::null()).stderr(Stdio::null()).status();
         let _=child.kill();let _=child.wait();
         if !success {return None;}
-        let bytes=bytes.or_else(||rx.recv_timeout(Duration::from_millis(100)).ok().and_then(Result::ok))?;
+        let bytes=catalog_bytes(bytes,&rx,end)?;
         if bytes.len()>16384 {return None;}
         let v:Value=serde_json::from_slice(&bytes).ok()?;
         if !(v.as_object().is_some_and(|v|!v.is_empty()) || v.as_array().is_some_and(|v|!v.is_empty())) {return None;}
@@ -340,6 +345,22 @@ mod behavior_tests {
         assert!(render(&j,8,Some("invented"),None,&keys,"cli").is_err());
         drop(j);std::fs::remove_dir_all(path).unwrap();
     }
+    // #344 / §9: a valid stdout handoff delayed beyond100ms must use the
+    // remaining original3s budget, without extending the command deadline.
+    #[test]
+    fn catalog_344_reader_handoff_uses_original_deadline() {
+        use std::{sync::mpsc,time::{Instant,Duration}};
+        let (tx,rx)=mpsc::channel();
+        let reader=std::thread::spawn(move || {std::thread::sleep(Duration::from_millis(200));let _=tx.send(Ok(b"{\"commands\":[]}".to_vec()));});
+        let result=super::catalog_bytes(None,&rx,Instant::now()+Duration::from_secs(3));
+        reader.join().unwrap();
+        assert!(result.is_some(),"valid help lost only because reader handoff exceeded100ms");
+        let (_tx,rx)=mpsc::channel();
+        let start=Instant::now();
+        assert!(super::catalog_bytes(None,&rx,start+Duration::from_millis(20)).is_none());
+        assert!(start.elapsed()<Duration::from_millis(150),"handoff cannot start a fresh deadline");
+    }
+
     // A6: live JSON is read on every call; old text help and oversized output remain unavailable.
     #[cfg(unix)]
     #[test]

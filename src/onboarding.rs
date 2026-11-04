@@ -162,7 +162,7 @@ fn report(tq:&Taskq,board:&str,doctor:&Value,status:&Value,service:&Value,at:i64
         ("telegram","Owner: verify the protected bot token and Telegram connectivity; run pilotq doctor --json"),
         ("runtime","Owner: restore the isolated subscription login of each manager runtime configured for PilotQ; run pilotq doctor --json"),
         ("taskq","Owner: verify the configured TaskQ binary, root and board; run pilotq doctor --json"),
-        ("voice","Owner: configure voice.ffmpeg, voice.recognizer and GigaAM model files using docs/tester-guide.md; run pilotq doctor --json"),
+        ("voice","Owner: configure voice.ffmpeg, stock voice.recognizer and voice.model/model_type=nemo_ctc with pinned GigaAM-Multilingual large assets using docs/tester-guide.md; run pilotq doctor --json"),
     ] {
         if doctor["checks"][check]!="ok" { gap(&mut gaps,check,step); }
     }
@@ -454,6 +454,33 @@ pub(crate) fn check_with(d:&crate::direct::Direct,tq:&Taskq,j:&std::sync::Mutex<
 
 pub fn summary(project:&str,result:&Value)->String { text(project,result,false) }
 
+/// Owned remedies are translated without rewriting command arguments or external diagnostics.
+fn remedy_ru(check:&str,fix:&str)->String {
+    let known=match check {
+        "configuration"=>Some("Владелец: завершите защищённую настройку config.json и выполните pilotq doctor --json."),
+        "telegram"=>Some("Владелец: проверьте защищённый токен бота и соединение с Telegram; выполните pilotq doctor --json."),
+        "runtime"=>Some("Владелец: восстановите изолированный вход по подписке для каждой настроенной среды выполнения PilotQ; выполните pilotq doctor --json."),
+        "codex"=>Some("Владелец: восстановите изолированный вход Codex в ChatGPT для PilotQ; выполните pilotq doctor --json."),
+        "taskq"=>Some("Владелец: проверьте исполняемый файл TaskQ, корень и доску; выполните pilotq doctor --json."),
+        "voice"=>Some("Владелец: настройте voice.ffmpeg, стандартный voice.recognizer и voice.model/model_type=nemo_ctc с проверенными файлами GigaAM-Multilingual large по docs/tester-guide.md; выполните pilotq doctor --json."),
+        "host"=>Some("Нет свежего сигнала от хоста TaskQ для этой доски; задачи некому выполнять. Владелец: восстановите сервис TaskQ проекта на хосте выполнения и повторите проверку."),
+        "claim"=>Some("PM: завершите обязательную настройку create_claim_issue через TaskQ Add project с существующими учётными данными хоста; подтвердите результат через TaskQ и повторите проверку."),
+        "service" if fix=="PilotQ: waiting for TaskQ to observe the attached project; checks retry automatically."=>Some("PilotQ ожидает, когда TaskQ увидит подключённый проект; проверки повторяются автоматически."),
+        "board"=>Some("Владелец: проверьте соответствие taskq.json зарегистрированной доске и выполните указанную ниже команду."),
+        "service" if fix.starts_with("Owner:")=>Some("Владелец: проверьте и восстановите сервис TaskQ для зарегистрированного корня, затем повторите проверку."),
+        "admission"=>Some("Владелец: проверьте состояние сервиса TaskQ и устраните причину приостановки допуска, затем повторите проверку."),
+        "codex_grant"=>Some("PM: проверьте доступ Codex к рабочей области проекта; выполните указанную команду и повторите проверку. Требуется владелец или явное право shell."),
+        "codex_access"=>Some("Владелец: проверьте разрешения TaskQ и устраните отказ или неподдерживаемую изоляцию среды выполнения, затем повторите проверку."),
+        "issue_read_key"=>Some("Владелец: проверьте защищённый ключ чтения задач и его права для CLI и личного чата, затем повторите проверку."),
+        "codex_capacity"=>Some("Владелец: задайте положительный лимит Codex в политике хоста TaskQ и повторите проверку."),
+        "host_tools"|"doctor"=>Some("Владелец: выполните pilotq doctor --json, устраните указанные проблемы и повторите проверку."),
+        _=>None,
+    };
+    if let Some(text)=known {return format!("{text}\nИсходное указание: {fix}");}
+    // Retain the exact source remedy when it contains a command or a new external finding.
+    // The source is explicitly labelled; it is never mistaken for localized PilotQ prose.
+    format!("Исходное указание (без изменения команд): {fix}")
+}
 fn text(project:&str,result:&Value,ru:bool)->String {
     let title=if result["ready"]==true {if ru {format!("{project}: настройки проверены, проект готов к первой задаче.")} else {format!("{project}: setup passed; ready for the first task.")}}
         else if result["gaps"].as_array().is_some_and(|g|g.iter().any(|g|g["owner_only"]==false)) {
@@ -461,14 +488,29 @@ fn text(project:&str,result:&Value,ru:bool)->String {
         } else if ru {format!("{project}: проект пока не готов. Шаги для владельца:")} else {format!("{project}: not ready. Owner steps:")};
     let mut lines=vec![title];
     if result["merge_request_route"]["outcome"]=="skipped" {
-        lines.push(format!("merge_request_route: skipped; {}",result["merge_request_route"]["reason"].as_str().unwrap_or("qualification unavailable")));
+        lines.push(if ru {"Проверка маршрута merge request: пропущена; резервный ответ TaskQ не подтверждает этот маршрут. Проверки выполнения сохраняет TaskQ.".into()}else{format!("merge_request_route: skipped; {}",result["merge_request_route"]["reason"].as_str().unwrap_or("qualification unavailable"))});
     }
-    for g in result["gaps"].as_array().into_iter().flatten() {lines.push(format!("{}: {}",g["check"].as_str().unwrap_or("setup"),g["fix"].as_str().unwrap_or("Owner: run pilotq doctor --json")));}
+    for g in result["gaps"].as_array().into_iter().flatten() {
+        let check=g["check"].as_str().unwrap_or("setup");
+        let fix=g["fix"].as_str().unwrap_or("Owner: run pilotq doctor --json");
+        let label=match check {
+            "configuration"|"setup"=>"Настройка", "runtime"=>"Среда выполнения", "telegram"=>"Telegram", "codex"=>"Codex", "taskq"=>"TaskQ", "voice"=>"Распознавание речи",
+            "host"=>"Хост выполнения", "claim"=>"Создание задач", "board"=>"Доска", "service"=>"Сервис TaskQ", "admission"=>"Допуск",
+            "codex_grant"=>"Доступ проекта Codex", "codex_access"=>"Изоляция Codex", "codex_capacity"=>"Лимит Codex",
+            "issue_read_key"=>"Ключ чтения задач", "host_tools"=>"Инструменты хоста", "doctor"=>"Диагностика", _=>check,
+        };
+        lines.push(if ru {format!("{label}: {}",remedy_ru(check,fix))}else{format!("{check}: {fix}")});
+    }
     if result["ready"]!=true {lines.push(if ru {"После исправления нажмите «Проверить снова»."} else {"After completing the listed steps, tap Recheck."}.into());}
     lines.join("\n")
 }
 
 /// #256 A4: Recheck buttons bind to the owner's DM card (§5); a typed recheck elsewhere names that card and the command.
+fn override_message(project:&str,ru:bool)->String {
+    if ru {format!("{project}: обход проверки готовности записан; проблемы остаются. Допуск TaskQ и права доступа продолжают действовать.")}
+    else {format!("{project}: readiness override recorded; gaps remain. TaskQ admission and grants still apply.")}
+}
+
 fn typed_reply(project:&str,result:&Value,ru:bool,dm:bool)->String {
     let mut message=text(project,result,ru);
     if !dm && result["ready"]!=true {
@@ -493,7 +535,8 @@ fn apply(j:&Journal,project:&str,epoch:&Value,result:&Value)->Result<(),String> 
     let source=card_request(j,&mut v,project,owner)?;
     let generation:i64=j.0.query_row("SELECT coalesce((SELECT generation FROM conversations WHERE session=?1),0)",[&session],|r|r.get(0)).map_err(err)?;
     v["generation"]=json!(generation);
-    let language:Option<String>=j.0.query_row("SELECT language FROM requests WHERE sender=?1 AND language IS NOT NULL ORDER BY id DESC LIMIT 1",[owner],|r|r.get(0)).optional().map_err(err)?;
+    crate::journal::inherit_reply_language(&j.0,source,at)?;
+    let language=j.language(source)?;
     let message=text(project,result,language.as_deref().unwrap_or("en").starts_with("ru"));
     j.0.execute("UPDATE outbox SET state='superseded' WHERE request_id=?1 AND kind='onboarding' AND state='pending'",[source]).map_err(err)?;
     crate::journal::outbox(&j.0,source,owner,None,None,Some(&crate::telegram::html(&message)),&message,at)?;
@@ -510,7 +553,7 @@ pub fn buttons(j:&Journal,delivery:i64)->Result<Vec<(String,String)>,String> {
     let Some((project,source,epoch))=row else {return Ok(vec![])};
     let v=saved(j,&project)?.ok_or("Onboarding unavailable")?;
     if v["ready"]==true || v["epoch"]!=epoch || v["pending"]==true {return Ok(vec![])}
-    Ok(vec![(format!("onboard:{source}:{epoch}"),"Recheck".into())])
+    Ok(vec![(format!("onboard:{source}:{epoch}"),if j.language(source)?.as_deref()==Some("ru") {"Проверить снова"}else{"Recheck"}.into())])
 }
 
 pub fn control(t:&coreq::Tool,j:&Shared,r:&crate::builtins::Request)->Result<(),String> {
@@ -535,7 +578,9 @@ pub fn control(t:&coreq::Tool,j:&Shared,r:&crate::builtins::Request)->Result<(),
     };
     {
         let j=j.lock().unwrap();
-        let tx=j.0.unchecked_transaction().map_err(err)?;
+        // §7: reserve the writer before reading the revision/grants. A deferred
+        // WAL read snapshot cannot upgrade after the service commits concurrently.
+        let tx=rusqlite::Transaction::new_unchecked(&j.0,rusqlite::TransactionBehavior::Immediate).map_err(err)?;
         if j.owner()?!=Some(r.sender) || !j.builtin_allowed(r)? {return Err("Only the configured owner can manage onboarding".into());}
         let (board,root)=binding(&j,&project)?;
         if action==Some("override") && cmd=="/onboard" {
@@ -554,12 +599,15 @@ pub fn control(t:&coreq::Tool,j:&Shared,r:&crate::builtins::Request)->Result<(),
         let callback:Option<Vec<u8>>=j.0.query_row("SELECT value FROM meta WHERE key=?1",[format!("callback:{}",r.id)],|x|x.get(0)).optional().map_err(err)?;
         if let Some(callback)=callback {
             let callback=String::from_utf8(callback).map_err(|_|"Invalid callback")?;
-            crate::journal::outbox(&j.0,r.id,r.sender,None,None,None,"Recheck received.",crate::now() as i64)?;
+            crate::journal::outbox(&j.0,r.id,r.sender,None,None,None,if j.language(r.id)?.as_deref()==Some("ru") {"Повторная проверка запрошена."}else{"Recheck received."},crate::now() as i64)?;
             j.0.execute("UPDATE outbox SET kind=?2 WHERE id=?1",params![j.0.last_insert_rowid(),format!("toast:{callback}")]).map_err(err)?;
         }
         tx.commit().map_err(err)?;
     }
-    let message=if action==Some("override") {format!("{project}: readiness override recorded; gaps remain. TaskQ admission and grants still apply.")}
+    let message=if action==Some("override") {
+        let ru=j.lock().unwrap().language(r.id)?.as_deref()==Some("ru");
+        override_message(&project,ru)
+    }
         else {
             let result=check(t,j,&project)?;
             let (ru,dm)={let j=j.lock().unwrap();(j.language(r.id)?.as_deref().unwrap_or("en").starts_with("ru"),j.owner()?.is_some_and(|o|r.session==format!("dm:{o}")))};
@@ -740,6 +788,20 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    // §6 / #344: check identifiers are machine data, not Russian card headings.
+    // Preserve exact remediation commands/source findings while localizing owned labels.
+    #[test]
+    fn language_344_onboarding_findings() {
+        let cases=[("board","Доска"),("service","Сервис TaskQ"),("admission","Допуск"),
+            ("codex_grant","Доступ проекта Codex"),("codex_access","Изоляция Codex"),
+            ("issue_read_key","Ключ чтения задач"),("voice","Распознавание речи"),("runtime","Среда выполнения")];
+        let report=json!({"ready":false,"gaps":cases.iter().map(|(check,_)|json!({"check":check,"fix":"invented source: /exact/path/taskq --json", "owner_only":true})).collect::<Vec<_>>()});
+        let ru=text("sample",&report,true);
+        for (check,label) in cases {assert!(ru.contains(&format!("{label}:")),"missing {check}: {ru}");}
+        assert!(ru.contains("invented source: /exact/path/taskq --json"),"source command changed");
+        assert!(text("sample",&report,false).contains("board: invented source: /exact/path/taskq --json"));
+    }
+
     // #256 A3/A4 / R11, §5: a typed /onboard always gets a reply at its own route; outside the owner DM the reply
     // names the DM card that holds the Recheck button. The DM card itself is still edited separately.
     #[test]
@@ -798,8 +860,10 @@ mod tests {
         drop(j);let mut j=Journal::open(&dir.join("journal.sqlite")).unwrap();
         assert!(gate(&j,"cyprusbz-board").is_err());
         let id=j.builtin_cli(7,"/onboard cyprusbz-board override",4).unwrap().unwrap();
+        j.0.execute("UPDATE requests SET language='ru' WHERE id=?1",[id]).unwrap();
         let r=j.builtin_take(id).unwrap().unwrap();let j=std::sync::Arc::new(std::sync::Mutex::new(j));
         control(&crate::tool(),&j,&r).unwrap();
+        assert!(j.lock().unwrap().request(id).unwrap().1.unwrap().contains("обход проверки готовности записан"));
         {let locked=j.lock().unwrap();assert!(gate(&locked,"cyprusbz-board").is_ok());assert_eq!(saved(&locked,"cyprusbz-board").unwrap().unwrap()["ready"],false);}
         let locked=j.lock().unwrap();queue(&locked,"cyprusbz-board").unwrap();
         let epoch2=saved(&locked,"cyprusbz-board").unwrap().unwrap()["epoch"].clone();

@@ -1,0 +1,37 @@
+{
+  "scope": "PM-only preparation; one original-caps shared600s episode; no model access; no numeric PASS tolerance",
+  "files": {
+    "scripts/probe-speech-344.py": "dee1fcd1f3873b64971a62f9a71c939c900fc2359c3e8458a33b5f4c773fe88e",
+    "experiments/speech344/probe-sherpa-english.py": "e9ada7ab8bf31f77f4915f1a8c95ce07f829d96edc7c71903b39524875df4fcf",
+    "experiments/speech344/knf-feature-accessor.cc": "6e28d9660acdef9126e0f011c7b20426ee5c7cc7f7a73e09ec0bebd1df39e8e1",
+    "experiments/speech344/reference-giga-frontend.py": "4949dd17b8508be45d214e6b836cfc0a626544e58c899b78c57fe109700e265c",
+    "experiments/speech344/frontend-reference-sources.json": "23b3bc05342f199d3c4a680541fab6360cd958bfad1787daf4f7862e97f666fe",
+    "experiments/speech344/knf-frontend-episode.py": "50f76b4bf3de1212f75ae5c5a67354f937bfb8a171e19b2042f69c666d661a54"
+  },
+  "reference_sha256": "8e374bb4b5ce6d7194f439fcc1c42d9a569e5ba5808f8208f1a563296d30c5cc",
+  "archives": [
+    {
+      "name": "knf",
+      "filename": "knf.tar.gz",
+      "format": "tar.gz",
+      "prefix": "kaldi-native-fbank-1.22.4",
+      "url": "https://github.com/csukuangfj/kaldi-native-fbank/archive/refs/tags/v1.22.4.tar.gz",
+      "sha256": "257fea639585ca6ee00860493bb9d7ab32488b8a5407ffe434c1f361ea545fae",
+      "licenses": {
+        "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+      }
+    },
+    {
+      "name": "kissfft",
+      "filename": "kissfft.zip",
+      "format": "zip",
+      "prefix": "kissfft-febd4caeed32e33ad8b2e0bb5ea77542c40f18ec",
+      "url": "https://github.com/mborgerding/kissfft/archive/febd4caeed32e33ad8b2e0bb5ea77542c40f18ec.zip",
+      "sha256": "497103e664168ebe39580b757adbe616f6cf85a16572af581ca7bc42d0ab13fd",
+      "licenses": {
+        "COPYING": "a2840585f8411be8e6826a31ef15ae65c950bd74a2437a73b013398a934ad0c6",
+        "LICENSES/BSD-3-Clause": "4d6bcab46f27d6d0c878e8305d4bdcfe040d52bf6656b9771f04c9fb9902c0ed"
+      }
+    }
+  ]
+}

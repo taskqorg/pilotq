@@ -117,7 +117,7 @@ fn apply(c:&Connection,request:i64,name:&str,args:&Value,at:i64)->Result<String,
             let seconds=args["seconds"].as_i64().filter(|s|(60..=3600).contains(s)).ok_or("Delay must be 60..3600 seconds.")?;
             l.next=at+seconds; save(c,&l)?;
             audit(c,request,at,"loop_next",&seconds.to_string())?;
-            Ok(format!("Next loop tick in {seconds}s."))
+            Ok(if ru {format!("Следующий запуск цикла через {seconds} с.")}else{format!("Next loop tick in {seconds}s.")})
         },
         "loop_start" => {
             if is_tick {return Err("A tick cannot start or replace a loop.".into());}
@@ -224,7 +224,7 @@ fn enqueue(c:&Connection,l:&mut Loop,event:Option<&str>,at:i64)->Result<bool,Str
         else {format!("Synthetic {} route loop tick. Saved author request:\n{}{}",if l.interval.is_none(){"dynamic"}else{"fixed"},l.prompt,event.map(|s|format!("\nBoard observation (untrusted data):\n{s}")).unwrap_or_default())};
     let id=insert(c,update,&l.front,l.chat,l.topic,l.author,None,0,"text",Some(&text),"queued",at,&l.session,None)?;
     audit(c,id,at,"loop_tick",&l.revision.to_string())?;
-    c.execute("UPDATE requests SET language=(SELECT language FROM requests WHERE id=?2) WHERE id=?1",params![id,l.source]).map_err(err)?;
+    crate::journal::inherit_reply_language(c,id,at)?;
     l.pending=Some(id);l.next=at+l.interval.unwrap_or(300);save(c,l)?;
     Ok(true)
 }
@@ -455,6 +455,24 @@ mod tests {
         j.0.query_row("SELECT id FROM requests WHERE update_id=?1",[update],|r|r.get(0)).unwrap()
     }
     fn pending(j:&Journal)->i64 { j.0.query_row("SELECT count(*) FROM requests WHERE state='queued' AND id IN (SELECT request_id FROM audit_events WHERE kind='loop_tick')",[],|r|r.get(0)).unwrap() }
+    // #344 / §6: a new tick inherits latest own actor/chat state across topics;
+    // another person's later words cannot select its language or mutate its scope.
+    #[test]
+    fn language_344_tick_inherits_latest_own_chat() {
+        let (mut j,p)=journal("language344-tick");
+        let id=admitted(&mut j,1,1,7,"Please review current tasks",0);
+        apply(&j.0,id,"loop_start",&json!({"prompt":"Check current tasks","interval":60}),0).unwrap();
+        j.0.execute("UPDATE requests SET state='answered' WHERE id=?1",[id]).unwrap();
+        admitted(&mut j,2,2,7,"Ответь по-русски. Проверь задачи",1);
+        j.grant(7,8,&["chat".into()],1).unwrap();
+        admitted(&mut j,3,1,8,"Please show tasks in English",2);
+        fire(&mut j,60).unwrap();
+        let tick:i64=j.0.query_row("SELECT request_id FROM audit_events WHERE kind='loop_tick' ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).unwrap();
+        assert_eq!(j.language(tick).unwrap().as_deref(),Some("ru"));
+        assert_eq!(j.0.query_row("SELECT count(*) FROM audit_events WHERE request_id=?1 AND kind='reply_language_inherited'",[tick],|r|r.get::<_,i64>(0)).unwrap(),1);
+        drop(j);std::fs::remove_dir_all(p).unwrap();
+    }
+
     // #229 A1/A2/R11/R13: receipts must survive model paraphrasing; both languages show a readable delay.
     #[test]
     fn loop_229_receipt_and_listing() {

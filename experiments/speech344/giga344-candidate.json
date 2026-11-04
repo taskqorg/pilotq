@@ -1,0 +1,16 @@
+{
+  "scope": "candidate patch and no-model harness preparation only; no build/inference/install approval",
+  "upstream_commit": "af2d8d81dbfa61c4cea4c568da78f3982edca005",
+  "upstream_tag": "v2.0.1",
+  "model_sha256": "2d94f93ffd4ef58e7899c9de885c25bbbc8c9f1073618868d118a674450ba5f7",
+  "model_bytes": 224762524,
+  "tokens_sha256": "9b5df7987cb4ca52c1a468649ce897fab1cd182067416e29fef49dfaa7a856c2",
+  "define": "SHERPA_ONNX_EXPERIMENT_GIGA344",
+  "patch_sha256": "1fd40797067dee98386df7daca538a4440e96e6854de572b18bf921ee6b586bc",
+  "sources": {
+    "features.h": "98d7cced1049d2dcaca085d8b309e7296d8b6f811db8c8f0762907d4fd31d66e",
+    "features.cc": "1d2f19982d5e9c410a7101027a0251ef63ca7d50413d91edab029d546c9cf2e8",
+    "offline-recognizer-ctc-impl.h": "b8bb437481dd45bb7867701d00368acd2a5d4fac8235080f74b5fb39f3874281",
+    "offline-nemo-enc-dec-ctc-model.cc": "a40a678873936427d34af54f7f22d58b67d0be56564ac165d981a03d85fc03ec"
+  }
+}

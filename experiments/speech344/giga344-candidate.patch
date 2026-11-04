@@ -1,0 +1,235 @@
+--- a/sherpa-onnx/csrc/features.h
++++ b/sherpa-onnx/csrc/features.h
+@@ -6,12 +6,23 @@
+ #define SHERPA_ONNX_CSRC_FEATURES_H_
+
+ #include <memory>
++#ifdef SHERPA_ONNX_EXPERIMENT_GIGA344
++#include <cmath>
++#include <stdexcept>
++#endif
+ #include <string>
+ #include <vector>
+
+ #include "sherpa-onnx/csrc/parse-options.h"
+
+ namespace sherpa_onnx {
++#ifdef SHERPA_ONNX_EXPERIMENT_GIGA344
++inline float Giga344LogEnergy(float energy) {
++  if (!std::isfinite(energy) || energy < 0)
++    throw std::runtime_error("giga344 invalid mel energy");
++  return std::log(energy < 1e-9f ? 1e-9f : energy > 1e9f ? 1e9f : energy);
++}
++#endif
+
+ struct FeatureExtractorConfig {
+   // Sampling rate used by the feature extractor. If it is different from
+@@ -83,6 +94,11 @@
+
+   bool is_t_one = false;
+
++#ifdef SHERPA_ONNX_EXPERIMENT_GIGA344
++  // Candidate-only; never registered as a user option.
++  bool is_giga344 = false;
++#endif
++
+   bool round_to_power_of_two = true;
+
+   std::string ToString() const;
+--- a/sherpa-onnx/csrc/features.cc
++++ b/sherpa-onnx/csrc/features.cc
+@@ -5,6 +5,8 @@
+ #include "sherpa-onnx/csrc/features.h"
+
+ #include <algorithm>
++#include <cmath>
++#include <stdexcept>
+ #include <memory>
+ #include <mutex>
+ #include <sstream>
+@@ -205,6 +207,13 @@
+
+     for (int32_t i = 0; i != n; ++i) {
+       const float *f = GetFrameWrapper(i + frame_index);
++#ifdef SHERPA_ONNX_EXPERIMENT_GIGA344
++      if (config_.is_giga344) {
++        for (int32_t j = 0; j != feature_dim; ++j) {
++          p[j] = Giga344LogEnergy(f[j]);
++        }
++      } else
++#endif
+       std::copy(f, f + feature_dim, p);
+       p += feature_dim;
+     }
+@@ -302,6 +311,16 @@
+
+     opts_.mel_opts.is_librosa = config_.is_librosa;
+
++#ifdef SHERPA_ONNX_EXPERIMENT_GIGA344
++    if (config_.is_giga344) {
++      opts_.mel_opts.use_slaney_mel_scale = false;
++      opts_.mel_opts.norm = "";
++      opts_.mel_opts.floor_to_int_bin = false;
++      opts_.use_energy = false;
++      opts_.use_power = true;
++      opts_.use_log_fbank = false;  // Explicit source clamp/log in GetFrames.
++    }
++#endif
+     fbank_ = std::make_unique<knf::OnlineFbank>(opts_);
+   }
+
+--- a/sherpa-onnx/csrc/offline-recognizer-ctc-impl.h
++++ b/sherpa-onnx/csrc/offline-recognizer-ctc-impl.h
+@@ -121,6 +121,17 @@
+         //
+         // GigaAM uses n_fft 400
+         config_.feat_config.round_to_power_of_two = false;
++#ifdef SHERPA_ONNX_EXPERIMENT_GIGA344
++        // Only a separately hash-guarded candidate episode may use this build.
++        config_.feat_config.is_giga344 = true;
++        config_.feat_config.sampling_rate = 16000;
++        config_.feat_config.frame_length_ms = 20;
++        config_.feat_config.frame_shift_ms = 10;
++        config_.feat_config.snip_edges = true;
++        config_.feat_config.normalize_samples = true;
++        config_.feat_config.dither = 0;
++        config_.feat_config.is_librosa = true;
++#endif
+       } else {
+         config_.feat_config.low_freq = 0;
+         config_.feat_config.high_freq = 0;
+--- a/sherpa-onnx/csrc/offline-nemo-enc-dec-ctc-model.cc
++++ b/sherpa-onnx/csrc/offline-nemo-enc-dec-ctc-model.cc
+@@ -5,6 +5,12 @@
+ #include "sherpa-onnx/csrc/offline-nemo-enc-dec-ctc-model.h"
+
+ #include <memory>
++#include <algorithm>
++#ifdef SHERPA_ONNX_EXPERIMENT_GIGA344
++#include "sherpa-onnx/csrc/giga344-validation.h"
++#endif
++#include <stdexcept>
++#include <cmath>
+ #include <string>
+ #include <utility>
+ #include <vector>
+@@ -52,8 +58,11 @@
+
+   std::vector<Ort::Value> Forward(Ort::Value features,
+                                   Ort::Value features_length) {
+-    std::vector<int64_t> shape =
+-        features_length.GetTensorTypeAndShapeInfo().GetShape();
++#ifdef SHERPA_ONNX_EXPERIMENT_GIGA344
++    const auto expected_lengths = giga344::Input(features, features_length);
++    const auto f_shape = features.GetTensorTypeAndShapeInfo().GetShape();
++#endif
++    const auto shape = features_length.GetTensorTypeAndShapeInfo().GetShape();
+
+     Ort::Value out_features_length = Ort::Value::CreateTensor<int64_t>(
+         allocator_, shape.data(), shape.size());
+@@ -61,7 +70,9 @@
+     const int64_t *src = features_length.GetTensorData<int64_t>();
+     int64_t *dst = out_features_length.GetTensorMutableData<int64_t>();
+     for (int64_t i = 0; i != shape[0]; ++i) {
++#ifndef SHERPA_ONNX_EXPERIMENT_GIGA344
+       dst[i] = src[i] / subsampling_factor_;
++#endif
+     }
+
+     // (B, T, C) -> (B, C, T)
+@@ -73,6 +84,10 @@
+         sess_->Run({}, input_names_ptr_.data(), inputs.data(), inputs.size(),
+                    output_names_ptr_.data(), output_names_ptr_.size());
+
++#ifdef SHERPA_ONNX_EXPERIMENT_GIGA344
++    const auto lengths = giga344::Output(out, shape[0], f_shape[1], expected_lengths);
++    std::copy(lengths.begin(), lengths.end(), dst);
++#endif
+     std::vector<Ort::Value> ans;
+     ans.reserve(2);
+     ans.push_back(std::move(out[0]));
+@@ -125,6 +140,15 @@
+                                                "normalize_type");
+     SHERPA_ONNX_READ_META_DATA_WITH_DEFAULT(is_giga_am_, "is_giga_am", 0);
+
++#ifdef SHERPA_ONNX_EXPERIMENT_GIGA344
++    // Structural guard only. Exact file SHA is a mandatory outer harness guard;
++    // metadata is not provenance and this build must never be installed.
++    if (!is_giga_am_ || vocab_size_ != 71 || subsampling_factor_ != 4 ||
++        !normalize_type_.empty() ||
++        input_names_ != std::vector<std::string>{"features", "feature_lengths"} ||
++        output_names_ != std::vector<std::string>{"log_probs", "encoded_lengths"})
++      throw std::runtime_error("giga344 wrong candidate interface");
++#endif
+     if (normalize_type_ == "NA") {
+       normalize_type_ = "";
+     }
+--- /dev/null
++++ b/sherpa-onnx/csrc/giga344-validation.h
+@@ -0,0 +1,66 @@
++// Candidate-only validation seam: shared by Forward and the no-session harness.
++// Sherpa-onnx Apache-2.0; experiment #344, never installed.
++#ifndef SHERPA_ONNX_CSRC_GIGA344_VALIDATION_H_
++#define SHERPA_ONNX_CSRC_GIGA344_VALIDATION_H_
++#include <cmath>
++#include <cstdint>
++#include <stdexcept>
++#include <vector>
++#include "onnxruntime_cxx_api.h"
++namespace sherpa_onnx { namespace giga344 {
++inline std::vector<int64_t> Input(const Ort::Value &features,
++                                 const Ort::Value &features_length) {
++    if (!features.IsTensor() || !features_length.IsTensor())
++      throw std::runtime_error("giga344 requires feature tensors");
++    const auto shape = features_length.GetTensorTypeAndShapeInfo().GetShape();
++    const auto f_info = features.GetTensorTypeAndShapeInfo();
++    const auto f_shape = f_info.GetShape();
++    if (features_length.GetTensorTypeAndShapeInfo().GetElementType() !=
++            ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64 ||
++        shape.size() != 1 || shape[0] <= 0 ||
++        f_info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
++        f_shape.size() != 3 || f_shape[0] != shape[0] ||
++        f_shape[1] <= 0 || f_shape[1] > 2499 || f_shape[2] != 64)
++      throw std::runtime_error("giga344 invalid feature input");
++    const auto *src = features_length.GetTensorData<int64_t>();
++    std::vector<int64_t> expected_lengths(shape[0]);
++    for (int64_t i=0; i<shape[0]; ++i) {
++      if (src[i] <= 0 || src[i] > f_shape[1])
++        throw std::runtime_error("giga344 invalid feature length");
++      expected_lengths[i] = (src[i] + 3) / 4;
++    }
++    return expected_lengths;
++}
++inline std::vector<int64_t> Output(const std::vector<Ort::Value> &out,
++    int64_t batch, int64_t padded_frames,
++    const std::vector<int64_t> &expected_lengths) {
++    if (batch <= 0 || padded_frames <= 0 || padded_frames > 2499 ||
++        expected_lengths.size() != static_cast<size_t>(batch))
++      throw std::runtime_error("giga344 invalid validation context");
++    if (out.size() != 2 || !out[0].IsTensor() || !out[1].IsTensor())
++      throw std::runtime_error("giga344 missing output tensors");
++    const auto p_info = out[0].GetTensorTypeAndShapeInfo();
++    const auto p_shape = p_info.GetShape();
++    const auto l_info = out[1].GetTensorTypeAndShapeInfo();
++    if (p_info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
++        p_shape.size() != 3 || p_shape[0] != batch ||
++        p_shape[1] != (padded_frames + 3) / 4 || p_shape[2] != 71 ||
++        l_info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32 ||
++        l_info.GetShape() != std::vector<int64_t>{batch})
++      throw std::runtime_error("giga344 invalid output shape/type");
++    const float *log_probs = out[0].GetTensorData<float>();
++    for (size_t i = 0; i != p_info.GetElementCount(); ++i) {
++      if (!std::isfinite(log_probs[i]))
++        throw std::runtime_error("giga344 nonfinite log probabilities");
++    }
++    const int32_t *encoded = out[1].GetTensorData<int32_t>();
++    std::vector<int64_t> lengths(batch);
++    for (int64_t i = 0; i != batch; ++i) {
++      if (encoded[i] <= 0 || encoded[i] != expected_lengths[i] || encoded[i] > p_shape[1])
++        throw std::runtime_error("giga344 invalid encoded length");
++      lengths[i] = encoded[i];  // Checked numeric conversion, never reinterpret.
++    }
++    return lengths;
++}
++}}  // namespace sherpa_onnx::giga344
++#endif

@@ -1,0 +1,73 @@
+{
+  "status": "proposed wheels only; not acquired/installed/import-tested",
+  "python": "CPython3.14 standard GIL x86_64 glibc>=2.27",
+  "packages": [
+    {
+      "package": "onnx",
+      "version": "1.20.1",
+      "filename": "onnx-1.20.1-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "url": "https://files.pythonhosted.org/packages/fb/71/d3fec0dcf9a7a99e7368112d9c765154e81da70fcba1e3121131a45c245b/onnx-1.20.1-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "size": 17510450,
+      "sha256": "9336b6b8e6efcf5c490a845f6afd7e041c89a56199aeda384ed7d58fb953b080",
+      "requires_python": ">=3.10",
+      "requires_dist": [
+        "numpy>=1.23.2",
+        "protobuf>=4.25.1",
+        "typing_extensions>=4.7.1",
+        "ml_dtypes>=0.5.0",
+        "Pillow; extra == \"reference\""
+      ]
+    },
+    {
+      "package": "numpy",
+      "version": "2.4.2",
+      "filename": "numpy-2.4.2-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "url": "https://files.pythonhosted.org/packages/5d/6c/7f237821c9642fb2a04d2f1e88b4295677144ca93285fd76eff3bcba858d/numpy-2.4.2-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "size": 16611738,
+      "sha256": "bba37bc29d4d85761deed3954a1bc62be7cf462b9510b51d367b769a8c8df325",
+      "requires_python": ">=3.11",
+      "requires_dist": null
+    },
+    {
+      "package": "protobuf",
+      "version": "6.33.5",
+      "filename": "protobuf-6.33.5-cp39-abi3-manylinux2014_x86_64.whl",
+      "url": "https://files.pythonhosted.org/packages/9b/53/a9443aa3ca9ba8724fdfa02dd1887c1bcd8e89556b715cfbacca6b63dbec/protobuf-6.33.5-cp39-abi3-manylinux2014_x86_64.whl",
+      "size": 323465,
+      "sha256": "cbf16ba3350fb7b889fca858fb215967792dc125b35c7976ca4818bee3521cf0",
+      "requires_python": ">=3.9",
+      "requires_dist": null
+    },
+    {
+      "package": "ml_dtypes",
+      "version": "0.5.4",
+      "filename": "ml_dtypes-0.5.4-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "url": "https://files.pythonhosted.org/packages/c6/bb/82c7dcf38070b46172a517e2334e665c5bf374a262f99a283ea454bece7c/ml_dtypes-0.5.4-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "size": 5010230,
+      "sha256": "14a4fd3228af936461db66faccef6e4f41c1d82fcc30e9f8d58a08916b1d811f",
+      "requires_python": ">=3.9",
+      "requires_dist": [
+        "numpy>=1.21",
+        "numpy>=1.21.2; python_version >= \"3.10\"",
+        "numpy>=1.23.3; python_version >= \"3.11\"",
+        "numpy>=1.26.0; python_version >= \"3.12\"",
+        "numpy>=2.1.0; python_version >= \"3.13\"",
+        "absl-py; extra == \"dev\"",
+        "pytest; extra == \"dev\"",
+        "pytest-xdist; extra == \"dev\"",
+        "pylint>=2.6.0; extra == \"dev\"",
+        "pyink; extra == \"dev\""
+      ]
+    },
+    {
+      "package": "typing_extensions",
+      "version": "4.15.0",
+      "filename": "typing_extensions-4.15.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/18/67/36e9267722cc04a6b9f15c7f3441c2363321a3ea07da7ae0c0707beb2a9c/typing_extensions-4.15.0-py3-none-any.whl",
+      "size": 44614,
+      "sha256": "f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548",
+      "requires_python": ">=3.9",
+      "requires_dist": null
+    }
+  ]
+}

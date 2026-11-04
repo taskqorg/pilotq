@@ -89,7 +89,7 @@ fn handle(stream: std::net::TcpStream, st: &State) {
         f.api.push((method.clone(),body.clone(),Instant::now()));
         let size=if f.image_large { 20*1024*1024+1 } else { 68 };
         let id=body["file_id"].as_str().unwrap_or("");
-        let path=if id.contains("voice") { "voice/invented.oga".into() } else if id.starts_with("invented-doc-") { format!("documents/{id}") } else { "photos/invented.png".into() };
+        let path=if id == "invented-voice-opus" { "voice/speech344.oga".into() } else if id.contains("voice") { "voice/invented.oga".into() } else if id.starts_with("invented-doc-") { format!("documents/{id}") } else { "photos/invented.png".into() };
         return respond(&mut out,200,&json!({"ok":true,"result":{"file_id":body["file_id"],"file_unique_id":"invented-id","file_size":size,"file_path":path}}).to_string());
     }
     // #186: invented documents, by file ID
@@ -105,9 +105,9 @@ fn handle(stream: std::net::TcpStream, st: &State) {
         out.write_all(bytes).unwrap();
         return;
     }
-    if method == "invented.oga" {
+    if method == "invented.oga" || method == "speech344.oga" {
         let f=st.lock().unwrap();
-        let bytes: &[u8]=if f.image_bad { b"not audio" } else { b"OggS invented voice note" };
+        let bytes: &[u8]=if f.image_bad { b"not audio" } else if method == "speech344.oga" { include_bytes!("fixtures/speech/he.ogg") } else { b"OggS invented voice note" };
         write!(out,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",bytes.len()).unwrap();
         out.write_all(bytes).unwrap();
         return;
@@ -1969,7 +1969,9 @@ fn u11_l05_unlimited_calls_and_inactivity_keep_evidence() {
     drop(c);
     limits(&d, &d.join("fake-codex"), json!({"first_event": 10, "silent": 2, "deadline": 4}));
     let c = spawn(&d, None);
-    let mut u = text(2, OWNER, None, OWNER, &format!("multi {}", json!({"calls": [["project_list", {}]], "sleep": 8})));
+    // #344: exercise Russian uncertainty through the person's explicit address,
+    // not a Russian client label overriding the preceding English conversation.
+    let mut u = text(2, OWNER, None, OWNER, &format!("Project: pilotq. Ответь по-русски.\nmulti {}", json!({"calls": [["project_list", {}]], "sleep": 8})));
     u["message"]["from"]["language_code"] = json!("ru");
     push(&st, u);
     // §4: the uncertain state commits with its outbox row; Telegram delivery follows asynchronously, so wait for the send itself.
@@ -2965,6 +2967,9 @@ fn u95_pinned_instructions_reach_codex() {
         "For yes/да after an either-or question",
         "name the other option in one line",
         "For an ambiguous voice transcript",
+        "Preserve the actual transcript language",
+        "every table heading and descriptive cell",
+        "admitted actor/chat reply language is en",
         "note the reading taken",
         "Never infer mutation authority",
     ] {
@@ -2974,6 +2979,15 @@ fn u95_pinned_instructions_reach_codex() {
         .find(|m| m["method"] == "thread/resume").unwrap();
     assert_eq!(resumed["params"]["developerInstructions"], policy,
         "#139: a native resume receives the same communication profiles as a new session");
+    // #344 / §6: a later mixed address must update the resumed turn's language,
+    // including table prose, while preserving every shared communication rule.
+    push(&st, text(3, OWNER, None, OWNER, "Please check tasks. Покажи текущие задачи."));
+    wait("Russian resumed answer", 15, || sent_has(&st, "re: Please check tasks. Покажи текущие задачи."));
+    let log = fs::read_to_string(d.join("codex.log")).unwrap();
+    let latest: Value = log.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|m| m["method"] == "thread/resume").last().unwrap();
+    let updated=latest["params"]["developerInstructions"].as_str().unwrap();
+    assert_eq!(updated, policy.replace("admitted actor/chat reply language is en", "admitted actor/chat reply language is ru"));
     stop(c, d);
 }
 
@@ -3325,16 +3339,15 @@ fn related_live_context() {
     stop(c,d);
 }
 
-/// #104: fake ffmpeg decodes only bytes that start like OGG; the fake recognizer logs its arguments and prints the
-/// recognizer's configuration line followed by its JSON result, as `sherpa-onnx-offline` does.
+/// #104/#344: fake ffmpeg accepts Ogg-like bytes; the recognizer logs arguments and writes Sherpa JSON.
+/// These fixtures protect wiring and failures, not multilingual recognition quality.
 fn use_voice(d: &Path) {
     let ffmpeg = script(d, "fake-ffmpeg", r#"while [ "$1" != "-i" ]; do shift; done; in=$2; for a; do out=$a; done
 [ "$(head -c 4 "$in")" = OggS ] || exit 1
 cp "$in" "$out""#);
     let recognizer = script(d, "fake-recognizer", r#"d=$(dirname "$0"); printf '%s\n' "$*" >> "$d/recognizer.log"
 for a; do wav=$a; done; test -s "$wav" || exit 3
-echo 'OfflineRecognizerConfig(feat_config=...)'
-echo '{"lang": "", "text": "Проверь место на диске.", "timestamps": []}'"#);
+echo '{"text":"Проверь место на диске."}'"#);
     let cfg = d.join("config.json");
     let mut c: Value = serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
     c["voice"] = json!({"ffmpeg": ffmpeg, "recognizer": recognizer, "model": d.join("model"), "threads": 2});
@@ -3387,14 +3400,131 @@ fn telegram_intake_259() {
     stop(c,d);
 }
 
+// #344 / §9: staging new explicit speech paths must not hot-swap the running Voice;
+// cold activation selects them, and retaining/restoring legacy fields permits rollback.
+#[test]
+fn voice_config_activation_344() {
+    let (d, st) = setup("voice-activation-344", vec![]);
+    use_codex(&d, &script(&d, "fake-codex", FAKE));
+    use_voice(&d);
+    let config = d.join("config.json");
+    let original = fs::read(&config).unwrap();
+    let mut c = spawn(&d, None);
+    let send = |id| push(&st, voice_update(id, OWNER, "voice", json!({"file_id":format!("invented-voice-{id}"),"file_unique_id":format!("invented-{id}"),"file_size":24,"duration":3,"mime_type":"audio/ogg"})));
+    send(1);
+    wait("old voice captured", 15, || try_query(&d, "SELECT count(*) FROM requests WHERE state='answered'") == Some(1));
+    let next = script(&d, "next-recognizer", r#"while [ "$1" != --output-file ]; do shift; done
+echo '{"transcription":[{"text":"New speech engine."}]}' > "$2.json""#);
+    let mut staged: Value = serde_json::from_slice(&original).unwrap();
+    let legacy = staged["voice"].clone();
+    staged["voice"]["whisper_recognizer"] = json!(next);
+    staged["voice"]["whisper_model"] = json!(d.join("next-model"));
+    // Match protected atomic config activation; legacy fields and all other settings remain.
+    let save = |bytes: &[u8]| {
+        use std::os::unix::fs::PermissionsExt;
+        let pending = d.join("config.pending");
+        fs::write(&pending, bytes).unwrap();
+        fs::set_permissions(&pending, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::rename(pending, &config).unwrap();
+    };
+    save(staged.to_string().as_bytes());
+    let saved: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    for field in ["recognizer", "model", "threads", "ffmpeg"] { assert_eq!(saved["voice"][field], legacy[field]); }
+    send(2);
+    wait("staging leaves captured voice", 15, || try_query(&d, "SELECT count(*) FROM audit_events WHERE kind='transcript' AND item='Проверь место на диске.'") == Some(2));
+    wait("captured work completed before activation", 15, || try_query(&d, "SELECT count(*) FROM requests WHERE state='answered'") == Some(2));
+    c.kill().unwrap(); c.wait().unwrap();
+    let mut partial = staged.clone();
+    partial["voice"].as_object_mut().unwrap().remove("whisper_model");
+    save(partial.to_string().as_bytes());
+    use std::os::unix::process::CommandExt;
+    let mut refused = Svc(service(&d, None).stderr(Stdio::piped()).process_group(0).spawn().unwrap());
+    wait("partial voice paths refused", 5, || refused.try_wait().unwrap().is_some());
+    assert!(!refused.wait().unwrap().success());
+    let mut error = String::new();
+    refused.stderr.take().unwrap().read_to_string(&mut error).unwrap();
+    assert!(error.contains("both whisper_recognizer and whisper_model"));
+    save(staged.to_string().as_bytes());
+    c = spawn(&d, None);
+    send(3);
+    wait("cold activation uses new voice", 15, || try_query(&d, "SELECT count(*) FROM audit_events WHERE kind='transcript' AND item='New speech engine.'") == Some(1));
+    wait("new voice answered", 15, || try_query(&d, "SELECT count(*) FROM requests WHERE state='answered'") == Some(3));
+    c.kill().unwrap(); c.wait().unwrap();
+    save(&original); // Restore protected voice fields before the rollback process starts.
+    c = spawn(&d, None);
+    send(4);
+    wait("rollback voice answered", 15, || try_query(&d, "SELECT count(*) FROM requests WHERE state='answered'") == Some(4));
+    assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE kind='transcript' AND item='Проверь место на диске.'"), 3);
+    stop(c, d);
+}
+
+// §1/§9/#344: selected CTC route is captured until restart; rollback restores legacy.
+// Invalid route types and conflicting old overrides fail closed rather than silently selecting Russian.
+#[test]
+fn ctc_config_activation_344() {
+    let (d, st) = setup("ctc-activation344", vec![]);
+    use_codex(&d, &script(&d, "fake-codex", FAKE));
+    use_voice(&d);
+    let path = d.join("config.json");
+    let original = fs::read(&path).unwrap();
+    let mut staged: Value = serde_json::from_slice(&original).unwrap();
+    staged["voice"]["model_type"] = json!("nemo_ctc");
+    staged["voice"]["model"] = json!(d.join("ctc-model"));
+    let send = |id| push(&st,voice_update(id,OWNER,"voice",json!({"file_id":format!("invented-voice-ctc-{id}"),"file_unique_id":format!("invented-{id}"),"file_size":24,"duration":3,"mime_type":"audio/ogg"})));
+    let mut c = spawn(&d,None);
+    send(1);
+    wait("legacy answer",15,||try_query(&d,"SELECT count(*) FROM requests WHERE state='answered'")==Some(1));
+    fs::write(&path,staged.to_string()).unwrap();
+    send(2);
+    wait("captured legacy answer",15,||try_query(&d,"SELECT count(*) FROM requests WHERE state='answered'")==Some(2));
+    assert!(fs::read_to_string(d.join("recognizer.log")).unwrap().lines().all(|l|l.contains("--model-type=nemo_transducer")));
+    c.kill().unwrap(); c.wait().unwrap();
+    use std::os::unix::process::CommandExt;
+    for invalid in [json!(42),json!("unsupported"),Value::Null] {
+        let mut bad = staged.clone(); bad["voice"]["model_type"] = invalid;
+        fs::write(&path,bad.to_string()).unwrap();
+        let mut refused = Svc(service(&d,None).stderr(Stdio::piped()).process_group(0).spawn().unwrap());
+        wait("invalid route refused",5,||refused.try_wait().unwrap().is_some());
+        assert!(!refused.wait().unwrap().success());
+        let mut error=String::new(); refused.stderr.take().unwrap().read_to_string(&mut error).unwrap();
+        assert!(error.contains("voice.model_type"),"{error}");
+    }
+    let mut bad = staged.clone();
+    bad["voice"]["whisper_recognizer"] = json!("invented");
+    bad["voice"]["whisper_model"] = json!("invented");
+    fs::write(&path,bad.to_string()).unwrap();
+    let mut refused = Svc(service(&d,None).stderr(Stdio::piped()).process_group(0).spawn().unwrap());
+    wait("conflicting route refused",5,||refused.try_wait().unwrap().is_some());
+    assert!(!refused.wait().unwrap().success());
+    fs::write(&path,staged.to_string()).unwrap();
+    c = spawn(&d,None); send(3);
+    wait("CTC answer",15,||try_query(&d,"SELECT count(*) FROM requests WHERE state='answered'")==Some(3));
+    assert!(fs::read_to_string(d.join("recognizer.log")).unwrap().lines().last().unwrap().contains("--nemo-ctc-model="));
+    c.kill().unwrap(); c.wait().unwrap();
+    fs::write(&path,original).unwrap();
+    c = spawn(&d,None); send(4);
+    wait("legacy rollback answer",15,||try_query(&d,"SELECT count(*) FROM requests WHERE state='answered'")==Some(4));
+    assert!(fs::read_to_string(d.join("recognizer.log")).unwrap().lines().last().unwrap().contains("--model-type=nemo_transducer"));
+    stop(c,d);
+}
+
 // #104 A2/A3 / R13, R17: an OGG/Opus voice note, an audio file with a caption and an audio document reach the model as the
 // sender's marked transcript; the journal keeps file identity and transcript; no audio, URL or token reaches Codex.
 // Regression risk: voice falls back to the unsupported reply, or a transcript loses its caption, marker or audit record.
 #[test]
 fn telegram_voice_becomes_sender_text() {
-    let (d, st) = setup("voice", vec![]);
+    for ctc in [false, true] {
+    let (d, st) = setup(if ctc { "voice-ctc344" } else { "voice" }, vec![]);
     use_codex(&d, &script(&d, "fake-codex", FAKE));
     use_voice(&d);
+    if ctc {
+        fs::create_dir_all(d.join("model")).unwrap();
+        fs::write(d.join("model/model.int8.onnx"), b"invented CTC fixture").unwrap();
+        let path = d.join("config.json");
+        let mut config: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        config["voice"]["model_type"] = json!("nemo_ctc");
+        fs::write(path,config.to_string()).unwrap();
+    }
     let c = spawn(&d, None);
     let mut caption = voice_update(2, OWNER, "audio", json!({"file_id":"invented-voice-audio","file_unique_id":"invented-a","file_size":24,"duration":4,"mime_type":"audio/mpeg"}));
     caption["message"]["caption"] = json!("about the disk");
@@ -3402,22 +3532,23 @@ fn telegram_voice_becomes_sender_text() {
         voice_update(1, OWNER, "voice", json!({"file_id":"invented-voice-note","file_unique_id":"invented-v","file_size":24,"duration":3,"mime_type":"audio/ogg"})),
         caption,
         voice_update(3, OWNER, "document", json!({"file_id":"invented-voice-doc","file_unique_id":"invented-d","file_size":24,"file_name":"note.M4A"})),
+        voice_update(4, OWNER, "document", json!({"file_id":"invented-voice-opus","file_unique_id":"invented-opus","file_size":include_bytes!("fixtures/speech/he.ogg").len(),"file_name":"note.opus","mime_type":"application/ogg"})),
     ] { push(&st, u); }
-    wait("voice answered", 20, || try_query(&d, "SELECT count(*) FROM requests WHERE kind='voice' AND state='answered'") == Some(3));
-    let marked = "[Voice message, automatic Russian speech recognition; may contain recognition errors]\nПроверь место на диске.";
+    wait("voice answered", 20, || try_query(&d, "SELECT count(*) FROM requests WHERE kind='voice' AND state='answered'") == Some(4));
+    let marked = "[Voice message, automatic speech recognition; may contain recognition errors]\nПроверь место на диске.";
     let log = fs::read_to_string(d.join("codex.log")).unwrap();
     let turns: Vec<Value> = log.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter(|v| v["method"] == "turn/start").collect();
     let texts: Vec<&str> = turns.iter().map(|t| t["params"]["input"][2]["text"].as_str().unwrap()).collect();
-    assert_eq!(texts, [marked.to_string(), format!("about the disk\n\n{marked}"), marked.to_string()]);
+    assert_eq!(texts, [marked.to_string(), format!("about the disk\n\n{marked}"), marked.to_string(), marked.to_string()]);
     assert!(turns.iter().all(|t| t["params"]["input"].as_array().unwrap().iter().all(|i| i["type"] == "text")), "no audio reaches Codex");
     assert!(!log.contains("123:fake") && !log.contains("invented.oga"), "no token or download path reaches Codex");
-    assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE kind='voice' AND item LIKE 'invented-voice-%'"), 3);
-    assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE kind='transcript' AND item='Проверь место на диске.'"), 3);
-    assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE text LIKE '%Проверь место на диске.'"), 3, "history and audit keep the transcript");
-    // #222 / R13: check the actual outbound Bot API payload after all three ingress forms.
-    wait("voice transcript delivered",15,||st.lock().unwrap().sent.iter().filter(|m|m["text"].as_str().is_some_and(|t|t.starts_with("<blockquote expandable>🎤 "))).count()==3);
+    assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE kind='voice' AND item LIKE 'invented-voice-%'"), 4);
+    assert_eq!(query(&d, "SELECT count(*) FROM audit_events WHERE kind='transcript' AND item='Проверь место на диске.'"), 4);
+    assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE text LIKE '%Проверь место на диске.'"), 4, "history and audit keep the transcript");
+    // #222 / R13: check the actual outbound Bot API payload after all ingress forms, including a true Ogg/Opus document.
+    wait("voice transcript delivered",15,||st.lock().unwrap().sent.iter().filter(|m|m["text"].as_str().is_some_and(|t|t.starts_with("<blockquote expandable>🎤 "))).count()==4);
     let sent=st.lock().unwrap().sent.clone();
-    for message in 101..=103 {
+    for message in 101..=104 {
         let replies=sent.iter().filter(|m|m["reply_parameters"]["message_id"]==message && m["text"].as_str().is_some_and(|t|t.contains("🎤"))).collect::<Vec<_>>();
         assert_eq!(replies.len(),1,"one answer with speech per voice input");
         let text=replies[0]["text"].as_str().unwrap();
@@ -3427,13 +3558,20 @@ fn telegram_voice_becomes_sender_text() {
         assert!(replies[0]["rich_message"]["markdown"].as_str().unwrap().starts_with("<blockquote expandable>"));
     }
     let calls = fs::read_to_string(d.join("recognizer.log")).unwrap();
-    assert_eq!(calls.lines().count(), 3);
+    assert_eq!(calls.lines().count(), 4);
     for l in calls.lines() {
-        assert!(l.contains("/model/encoder.int8.onnx") && l.contains("--model-type=nemo_transducer") && l.contains("--num-threads=2"));
+        assert!(l.contains("--num-threads=2") && !l.contains("--language") && !l.contains("--translate"));
+        if ctc {
+            assert!(l.contains("--nemo-ctc-model=") && l.contains("/model/model.int8.onnx") && l.contains("--provider=cpu") && l.contains("--decoding-method=greedy_search"));
+            assert!(!l.contains("--encoder="));
+        } else {
+            assert!(l.contains("/model/encoder.int8.onnx") && l.contains("--model-type=nemo_transducer"));
+        }
         let wav = l.rsplit(' ').next().unwrap();
         assert!(!Path::new(wav).exists(), "temporary audio removed after recognition");
     }
     stop(c, d);
+    }
 }
 
 // #104 A2/A4 / R10, §12: undecodable, oversized, too long or unconfigured voice ends in one short line and no model turn;
@@ -3922,7 +4060,7 @@ fn onboarding_168_cli_telegram_recheck() {
 while [ "$1" != -i ]; do shift; done; input=$2; for a; do out=$a; done; cp "$input" "$out""#);
     let recognizer=script(&d,"onboard-recognize",r#"if [ "$1" = --version ]; then echo 2.0.1; else echo '{"text":""}'; fi"#);
     let model=d.join("model");fs::create_dir_all(&model).unwrap();
-    for f in ["tokens.txt","encoder.int8.onnx","decoder.onnx","joiner.onnx"] {fs::write(model.join(f),"invented").unwrap();}
+    for f in ["tokens.txt", "encoder.int8.onnx", "decoder.onnx", "joiner.onnx"] {fs::write(model.join(f),"invented").unwrap();}
     c["voice"]=json!({"ffmpeg":ffmpeg,"recognizer":recognizer,"model":model});
     fs::write(&config,c.to_string()).unwrap();
     host_support::provision(&d,&config);

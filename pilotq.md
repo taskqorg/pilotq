@@ -29,9 +29,9 @@ Owner and explicit shell-grant routes may run authorized conversational loops un
 ## 1. Scope and input boundaries
 
 **Proposed scope:** one Linux host, one Telegram bot, one manager runtime, existing TaskQ boards and explicitly registered project roots. The input choices below are mandatory within that scope.
-
-Accept text, replies, task links, inline decisions, photos and image documents with captions retained. Recognize voice notes, audio files and audio documents locally as Russian speech. Photos and arbitrary documents may be TaskQ reply attachments through answer, steer and owner requeue.
-
+Accept text, replies, task links, inline decisions, photos and image documents with captions retained. Recognize Russian and English automatically, including both within one recording, across voice notes, audio files, audio documents and video speech. No language switch or per-recording retry selection; Hebrew is not required. Preserve existing Russian quality until qualified normal activation.
+Photos and arbitrary documents may be TaskQ reply attachments through answer, steer and owner requeue. A language label alone proves neither transcription nor mixed-speech quality. Natural mixed human speech is unqualified; separate-clip and synthetic-join omissions are accepted route limits.
+Stock GigaAM-Multilingual large int8 uses one path; lowercase, no punctuation and some Cyrillic English transliteration are known limits. Text languages: ru/en/kk/ky/uz, not Hebrew. [Pinned assets and provisioning](docs/tester-guide.md#gigaam-multilingual-provisioning).
 Other documents up to 20 MiB reach the turn as readable original files with a PDF text, ZIP listing or plain-text preview, else the exact reason. The scoped `reads_document` tool pages current UTF-8 attachments beyond the preview without shell access; videos and video notes as frames plus recognized speech.
 An album is one durable request retaining every file and caption. Audio is recognized in bounded segments within the recording and turn limits. Larger files get one short file-limit line; other input one unsupported-input line, both in the chat's language.
 Recurring task execution stays with TaskQ or the existing scheduler. For the owner and explicit shell grantees, PilotQ also schedules route-local conversational loops and TaskQ board wakes under §2. Detailed media, retention and admission protections are in §§2, 5, 7 and 12.
@@ -68,7 +68,7 @@ Plain-language controls are primary. `/status`, `/stop` and `/new` remain availa
 
 ## 3. Architecture and authority
 
-**Mandatory:** one Rust binary on CoreQ; teloxide only for the Bot API; manager turns via the pinned `agentq-runtime` runtime trait on Codex (app-server path) or Claude Code, per the installation `runtime` (default Codex) or a route override; SQLite journal; installed TaskQ CLI for execution; ffmpeg and static `sherpa-onnx-offline` with GigaAM v3 RNNT-punct int8 for local CPU recognition.
+**Mandatory:** one Rust binary on CoreQ; teloxide only for the Bot API; manager turns via pinned `agentq-runtime` runtime trait on Codex (app-server path) or Claude Code, per the installation `runtime` (default Codex) or a route override; SQLite journal; installed TaskQ CLI for execution; ffmpeg and stock static `sherpa-onnx-offline` NeMo CTC (§1); legacy transducer rollback.
 
 [Architecture detail](docs/runtime-contract.md#3-architecture-and-ownership) assigns journal, runtime, proposal, TaskQ and agentq authority. PilotQ owns durable input and delivery; TaskQ owns admitted execution. Registered roots and host policy own capacity. Never discover roots or silently enroll projects.
 
@@ -161,9 +161,9 @@ model or replies. TaskQ workers and §9 release qualification retain their exist
 ## 6. Memory and agentq
 
 **Mandatory:** [memory detail](docs/runtime-contract.md#6-memory-and-agentq) separates conversation history, scoped remembered preferences and authoritative TaskQ facts. Profiles retain subject, visibility, source and revision across restarts and resets; private DM facts never silently enter shared routes. Profiles cannot change grants.
-
+Replies and every user-visible table follow the latest own address: explicit reply-language request wins, else the last substantive direct clause. Quotes, code, names, borrowed words and ASR labels do not switch language.
+Keep language by actor and chat, shared across its topics; never import another actor or chat. Ambiguous or wordless input retains the last resolved language, else the bounded default. Record admitted input revision/order and resolution reason; apply it to manager and deterministic replies/errors/cards/table headings/cells.
 Telegram `/profile` inspects own facts in DM; `/profile set KEY VALUE` corrects or remembers a private preference and `/profile forget KEY` removes it. `/access` inspects own current grants in DM; neither control accepts another subject or changes grants. Both use the CLI/Telegram admission, audit and durable reply path.
-
 Preserve identities, grants, revocations, project references, operation IDs, task URLs, pending questions, plan revisions, prohibitions and receipts outside lossy summaries. Use fresh TaskQ reads for task state.
 AgentQ runtime preserves each conversation's native session ID across turns, restart and update, including rollback to the previous build. A changed route runtime rebuilds from the journal.
 

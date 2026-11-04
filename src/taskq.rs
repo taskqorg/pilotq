@@ -373,14 +373,16 @@ pub(crate) fn choices(q: &Value) -> &[Value] {
 
 /// TaskQ #2010: a question renders from the snapshot's typed `question` field, never from card text.
 /// In Telegram an option button or a reply answers, so the CLI `To answer:` line never shows (#82).
-pub(crate) fn question_body(q: &Value) -> String {
+pub(crate) fn question_body(q: &Value) -> String { question_body_language(q,None) }
+
+fn question_body_language(q: &Value, language: Option<&str>) -> String {
     if q["parsed"] != true { return q["text"].as_str().unwrap_or("").to_string(); }
     let mut lines = Vec::new();
     if let Some(t) = q["done"].as_str() { lines.push(format!("✓ {t}")); }
     if let Some(t) = q["problem"].as_str() { lines.push(format!("⚑ {t}")); }
     let evidence: Vec<String> = q["evidence"].as_array().into_iter().flatten()
         .filter_map(|e| Some(format!("[{}]({})", e["label"].as_str()?, e["url"].as_str()?))).collect();
-    if !evidence.is_empty() { lines.push(format!("Evidence: {}", evidence.join(", "))); }
+    if !evidence.is_empty() { lines.push(format!("{}: {}", if language.unwrap_or("en").starts_with("ru") {"Подтверждение"} else {"Evidence"}, evidence.join(", "))); }
     for c in choices(q) {
         lines.push(format!("{}. {}{}", c["id"], c["label"].as_str().unwrap_or(""), if c["recommended"] == true { " ★" } else { "" }));
         // a detail that starts with `+` would render as a Markdown bullet
@@ -389,8 +391,8 @@ pub(crate) fn question_body(q: &Value) -> String {
     lines.join("\n")
 }
 
-fn question_text(board: &str, task: i64, q: &Value, title: Option<&str>, url: Option<&str>) -> String {
-    format!("? {}\n{}", task_link(board, task, title, url), question_body(q))
+fn question_text(board: &str, task: i64, q: &Value, title: Option<&str>, url: Option<&str>, language: Option<&str>) -> String {
+    format!("? {}\n{}", task_link(board, task, title, url), question_body_language(q,language))
 }
 
 fn now() -> i64 {
@@ -742,7 +744,7 @@ fn dispatch_until(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Va
                         }
                         Err(e) => text += &format!("\nIssue state and closing evidence unavailable: {e}"),
                     }
-                    if let (true,Ok(issue))=(release_question,&issue) {let end=std::time::Instant::now()+Duration::from_secs(10);let (dev,delivery)=crate::release::task_observations(j,r.request,&project,issue,end);text += &format!("\nDEV health: {dev}\nDelivery: {}",crate::release::delivery_text(&delivery));}
+                    if let (true,Ok(issue))=(release_question,&issue) {let end=std::time::Instant::now()+Duration::from_secs(10);let (dev,delivery)=crate::release::task_observations(j,r.request,&project,issue,end);let ru=j.lock().unwrap().language(r.request)?.as_deref().unwrap_or("en").starts_with("ru");text += &format!("\n{}: {dev}\n{}: {}",if ru {"Проверка DEV (исходные данные)"}else{"DEV health"},if ru {"Доставка"}else{"Delivery"},crate::release::delivery_text_localized(&delivery,ru));}
                     text
                 }
                 None => {
@@ -754,7 +756,7 @@ fn dispatch_until(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Va
                         let end=std::time::Instant::now()+Duration::from_secs(10);
                         let (dev,delivery)=crate::release::task_observations(j,r.request,&project,&issue,end);
                         result["dev"]=dev;
-                        result["delivery"]=json!(crate::release::delivery_text(&delivery));
+                        result["delivery"]=json!(crate::release::delivery_text_localized(&delivery,j.lock().unwrap().language(r.request)?.as_deref().unwrap_or("en").starts_with("ru")));
                     }
                     result.to_string()
                 },
@@ -1165,8 +1167,9 @@ fn scan(tq: &Taskq, j: &Mutex<Journal>) -> bool {
                 let saved = j.task_title(&project, n).ok().flatten();
                 let title = t["title"].as_str().or(saved.as_deref());
                 let _=j.remember_task_url(&project,n,t["url"].as_str(),now());
+                let language=j.task_language(&project,n).ok().flatten();
                 let task_url=j.task_url(&project,n).ok().flatten();
-                j.observe(&project, n, state, t["revision"].as_i64().unwrap_or(0), question.map(Value::to_string).as_deref(), &status_text(&board, n, state, title, task_url.as_deref()), question.map(|q| question_text(&board, n, q, title, task_url.as_deref())).as_deref(), now())
+                j.observe(&project, n, state, t["revision"].as_i64().unwrap_or(0), question.map(Value::to_string).as_deref(), &status_text(&board, n, state, title, task_url.as_deref()), question.map(|q| question_text(&board, n, q, title, task_url.as_deref(), language.as_deref())).as_deref(), now())
             }
             None => {
                 let language=j.task_language(&project,n).ok().flatten();
@@ -1223,11 +1226,26 @@ pub fn watch(tq: std::sync::Arc<Taskq>, j: crate::telegram::Shared, wake: std::s
 mod tests {
     use super::*;
 
+    // #344 / §6: localize owned question labels, never source evidence,
+    // tradeoffs, choice identities or URLs (including the unparsed fallback).
+    #[test]
+    fn language_344_question_evidence() {
+        let q=json!({"parsed":true,"done":"Checked source","problem":"Choose source",
+            "evidence":[{"label":"Original English title","url":"https://forge.invalid/344"}],
+            "choices":[{"id":7,"label":"Keep original","detail":"+ source; - cost","recommended":true}]});
+        let ru=question_body_language(&q,Some("ru"));
+        assert!(ru.contains("Подтверждение: [Original English title](https://forge.invalid/344)"),"{ru}");
+        assert!(ru.contains("7. Keep original ★") && ru.contains("Checked source") && ru.contains("Choose source") && ru.contains("source; - cost"));
+        assert_eq!(question_body_language(&q,Some("en")),question_body(&q));
+        let raw=json!({"parsed":false,"text":"Evidence: exact external source"});
+        assert_eq!(question_body_language(&raw,Some("ru")),raw["text"].as_str().unwrap());
+    }
+
     // #97 / §12: preserve bilingual source trade-offs, while controls omit details and CLI boilerplate.
     #[test]
     fn ask_layout() {
         let fixture:Value=serde_json::from_str(include_str!("fixtures/conversation-165.json")).unwrap();
-        assert_eq!(question_text("taskqorg/pilotq",97,&fixture["worker_question"]["question"],Some("Ask layout"),Some("https://forge.invalid/task/97")),fixture["worker_question"]["snapshot"].as_str().unwrap());
+        assert_eq!(question_text("taskqorg/pilotq",97,&fixture["worker_question"]["question"],Some("Ask layout"),Some("https://forge.invalid/task/97"),None),fixture["worker_question"]["snapshot"].as_str().unwrap());
         for (done, problem, label, other, gain, cost) in [
             ("checked", "Choose retention", "Keep", "Drop", "history", "disk space"),
             ("проверено", "Выберите хранение", "Хранить", "Удалить", "история", "место на диске"),
@@ -1235,7 +1253,7 @@ mod tests {
             let q = json!({"parsed":true,"text":"unused card text","done":done,"problem":problem,"evidence":[],"choices":[
                 {"id":1,"label":label,"detail":format!("+ {gain}; - {cost}"),"recommended":true},
                 {"id":2,"label":other,"detail":format!("+ {cost}; - {gain}"),"recommended":false}]});
-            let text = question_text("taskqorg/pilotq", 97, &q, Some("Ask layout"), Some("https://forge.invalid/task/97"));
+            let text = question_text("taskqorg/pilotq", 97, &q, Some("Ask layout"), Some("https://forge.invalid/task/97"),None);
             assert_eq!(text, format!("? {}\n✓ {done}\n⚑ {problem}\n1. {label} ★\n\\+ {gain}; - {cost}\n2. {other}\n\\+ {cost}; - {gain}", task_link("taskqorg/pilotq", 97, Some("Ask layout"), Some("https://forge.invalid/task/97"))));
             assert!(!text.contains("unused card text"), "a parsed question renders from typed fields, never card text");
             assert_eq!(crate::telegram::options(&q), vec![("answer:1".into(), format!("1. {label} ★")), ("answer:2".into(), format!("2. {other}"))]);

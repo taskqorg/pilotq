@@ -2,6 +2,11 @@
 use serde_json::Value;
 
 /// Internal failure prose is retained by the caller in audit, never forwarded to chat.
+pub fn request_state<'a>(state:&'a str,language:Option<&str>)->&'a str {
+    if !language.unwrap_or("en").starts_with("ru") {return state;}
+    match state {"queued"=>"в очереди","running"=>"в работе","waiting"=>"ожидается ответ","delegated"=>"передано TaskQ","answered"=>"отвечено","failed"=>"сбой","cancelled"=>"отменено","uncertain"=>"результат неизвестен",_=>"нет данных"}
+}
+
 pub fn reply(text: &str, language: Option<&str>) -> String {
     let mut changed=false;
     let lines:Vec<String>=text.lines().filter_map(|line| {

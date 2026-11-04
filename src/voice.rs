@@ -1,5 +1,5 @@
-//! Voice and audio input (pilotq.md § 12, #104): ffmpeg decodes to 16 kHz mono WAV, then `sherpa-onnx-offline` with GigaAM v3
-//! RNNT-punct int8 recognizes Russian speech on the local CPU. Both run as subprocesses, so the static build needs no onnxruntime.
+//! Voice and audio input (pilotq.md § 12, #104): ffmpeg decodes to 16 kHz mono WAV, then stock Sherpa/GigaAM multilingual NeMo CTC (or the retained legacy transducer).
+//! Explicit historical Whisper configuration remains separate; multilingual qualification is incomplete. Both run as subprocesses, so the static build needs no onnxruntime.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -8,12 +8,14 @@ use std::time::{Duration, Instant};
 /// Longest accepted recording (§ 12).
 pub const SECONDS: u32 = 300;
 
-/// Installation config `voice`: the recognizer binary, the GigaAM model directory and the ffmpeg binary.
+/// Captured installation speech paths; legacy configuration retains Sherpa/GigaAM.
 pub struct Voice {
     pub ffmpeg: String,
     pub recognizer: String,
     pub model: PathBuf,
     pub threads: u32,
+    pub whisper: bool,
+    pub nemo_ctc: bool,
 }
 
 /// Private per-recording directory; removed with everything in it when the turn's recognition ends.
@@ -90,7 +92,7 @@ pub fn transcribe(v: &Voice, audio: &[u8], budget: Duration) -> Result<String, S
     let samples=data.map(|(header,end)|(end-header-8) as u64 / 2)
         .unwrap_or(decoded.len().saturating_sub(44) as u64 / 2);
     if samples > SECONDS as u64 * 16000 { return Err(fail("is longer than 5 minutes")); }
-    // GigaAM's attention tensors must stay bounded; the recording cap is not a model segment cap.
+    // The recognizer's attention tensors must stay bounded; the recording cap is not a model segment cap.
     // Keep the original deadline across every segment and join transcripts only after all succeeded.
     let mut segments = vec![];
     if samples > 25 * 16000 {
@@ -102,26 +104,61 @@ pub fn transcribe(v: &Voice, audio: &[u8], budget: Duration) -> Result<String, S
             part.extend_from_slice(pcm);
             let path=dir.0.join(format!("segment-{n}.wav"));
             std::fs::write(&path,part).map_err(|_| fail("storage unavailable"))?;
-            segments.push(path);
+            segments.push((path, pcm.iter().all(|b| *b == 0)));
         }
-    } else { segments.push(wav); }
-    let files = [("tokens", "tokens.txt"), ("encoder", "encoder.int8.onnx"), ("decoder", "decoder.onnx"), ("joiner", "joiner.onnx")];
-    let mut transcripts=vec![];
-    for segment in segments {
-        run(Command::new(&v.recognizer).args(files.map(|(k, f)| format!("--{k}={}", v.model.join(f).display())))
-            .args(["--model-type=nemo_transducer", &format!("--num-threads={}", v.threads)]).arg(&segment), &out, until)
+    } else { segments.push((wav, data.is_some_and(|(header, end)| decoded[header+8..end].iter().all(|b| *b == 0)))); }
+    let mut transcripts = vec![];
+    for (n, (segment, silent)) in segments.into_iter().enumerate() {
+        // Each invocation gets a fresh output name: success without a new JSON file cannot
+        // accidentally reuse the preceding segment. No translation, GPU or remote fallback.
+        if !v.whisper {
+            let files = [("tokens", "tokens.txt"), ("encoder", "encoder.int8.onnx"), ("decoder", "decoder.onnx"), ("joiner", "joiner.onnx")];
+            let mut recognizer = Command::new(&v.recognizer);
+            if v.nemo_ctc {
+                recognizer.arg(format!("--nemo-ctc-model={}", v.model.join("model.int8.onnx").display()))
+                    .arg(format!("--tokens={}", v.model.join("tokens.txt").display()))
+                    .args(["--provider=cpu", "--decoding-method=greedy_search"]);
+            } else {
+                recognizer.args(files.map(|(k, f)| format!("--{k}={}", v.model.join(f).display())))
+                    .arg("--model-type=nemo_transducer");
+            }
+            run(recognizer.arg(format!("--num-threads={}", v.threads)).arg(&segment), &out, until)
+                .map_err(|e| fail(if e == "failed" { "recognizer failed" } else { e }))?;
+            let printed = std::fs::read_to_string(&out).map_err(|_| fail("recognizer failed"))?;
+            let text = printed.lines().rev().find_map(|line| serde_json::from_str::<serde_json::Value>(line).ok()?["text"].as_str().map(str::to_string))
+                .ok_or_else(|| fail("recognizer failed"))?;
+            if text.contains('\u{fffd}') { return Err(fail("recognizer returned invalid transcript text")); }
+            if !silent && !text.trim().is_empty() { transcripts.push(text.trim().to_string()); }
+            continue;
+        }
+        let result = dir.0.join(format!("result-{n}"));
+        let mut recognizer = Command::new(&v.recognizer);
+        recognizer.arg("--model").arg(v.model.join("ggml-small-q5_1.bin"))
+            .args(["--language", "auto", "--threads", &v.threads.to_string(), "--no-gpu", "--no-prints",
+                "--beam-size", "1", "--best-of", "1", "--no-fallback", "--output-json", "--output-file"])
+            .arg(&result).arg("--file").arg(&segment);
+        // Digital silence has no words to lose. A one-second encoder context keeps the
+        // doctor’s actual model/JSON probe inside its existing ten-second budget.
+        if silent { recognizer.args(["--audio-ctx", "50", "--language", "en"]); }
+        run(&mut recognizer, &out, until)
             .map_err(|e| fail(if e == "failed" { "recognizer failed" } else { e }))?;
-        let printed = std::fs::read_to_string(&out).map_err(|_| fail("recognizer failed"))?;
-        let text = printed.lines().rev().find_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()?["text"].as_str().map(str::to_string))
-            .ok_or_else(|| { crate::host::log(&v.recognizer,"recognition returned no valid result JSON"); fail("recognizer failed") })?;
-        if !text.trim().is_empty() { transcripts.push(text.trim().to_string()); }
+        let printed = std::fs::read(result.with_extension("json")).map_err(|_| fail("recognizer failed"))?;
+        let json: serde_json::Value = serde_json::from_slice(&printed).map_err(|_| fail("recognizer failed"))?;
+        let parts = json["transcription"].as_array().ok_or_else(|| fail("recognizer failed"))?;
+        for part in parts {
+            let text = part["text"].as_str().ok_or_else(|| fail("recognizer failed"))?;
+            if text.contains('\u{fffd}') { return Err(fail("recognizer returned invalid transcript text")); }
+            if !silent && !text.trim().is_empty() { transcripts.push(text.trim().to_string()); }
+        }
     }
+    // Discard digital-silence hallucinations per segment, including pauses after real speech.
     if transcripts.is_empty() { Err(fail("had no recognized speech")) } else { Ok(transcripts.join(" ")) }
 
 }
 
 /// §9 / #120: local setup probe; silence may return empty text but must decode and produce valid recognizer JSON.
 pub fn readiness(v: Option<&Voice>) -> Result<(), String> {
+    let until = Instant::now()+Duration::from_secs(10);
     let v = v.ok_or("voice not configured")?;
     let executable = |bin: &str| {
         let usable = |p: PathBuf| {
@@ -134,11 +171,12 @@ pub fn readiness(v: Option<&Voice>) -> Result<(), String> {
     };
     if !executable(&v.ffmpeg) { return Err("voice ffmpeg unavailable".into()); }
     if !executable(&v.recognizer) { return Err("voice recognizer unavailable".into()); }
-    for f in ["tokens.txt", "encoder.int8.onnx", "decoder.onnx", "joiner.onnx"] {
+    for f in if v.whisper { &["ggml-small-q5_1.bin"][..] } else if v.nemo_ctc { &["tokens.txt", "model.int8.onnx", "LICENSE"][..] } else { &["tokens.txt", "encoder.int8.onnx", "decoder.onnx", "joiner.onnx"][..] } {
         if !std::fs::metadata(v.model.join(f)).is_ok_and(|m| m.is_file() && m.len() > 0) {
             return Err("voice model unavailable".into());
         }
     }
+    if v.nemo_ctc { crate::host::verify_ctc_assets(&v.model)?; }
     // One second of 16 kHz, mono, 16-bit PCM. No network, user recording or retained transcript.
     let mut wav = Vec::with_capacity(32044);
     wav.extend_from_slice(b"RIFF"); wav.extend_from_slice(&32036u32.to_le_bytes());
@@ -147,7 +185,9 @@ pub fn readiness(v: Option<&Voice>) -> Result<(), String> {
     wav.extend_from_slice(&16000u32.to_le_bytes()); wav.extend_from_slice(&32000u32.to_le_bytes());
     wav.extend_from_slice(&2u16.to_le_bytes()); wav.extend_from_slice(&16u16.to_le_bytes());
     wav.extend_from_slice(b"data"); wav.extend_from_slice(&32000u32.to_le_bytes()); wav.resize(32044, 0);
-    match transcribe(v, &wav, Duration::from_secs(10)) {
+    let remaining = until.saturating_duration_since(Instant::now());
+    if remaining.is_zero() { return Err("voice recognition timed out".into()); }
+    match transcribe(v, &wav, remaining) {
         Ok(_) => Ok(()),
         Err(e) if e == "voice had no recognized speech" => Ok(()),
         Err(e) => Err(e),
@@ -156,6 +196,233 @@ pub fn readiness(v: Option<&Voice>) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+    // #344 / §§1,3,12: real human speech must survive the shared decoder in its original
+    // language. Fakes cannot detect a Russian-only model or Hebrew transliterated into guesses.
+    // Run explicitly with verified assets; ordinary offline tests need no model download.
+    #[test]
+    #[ignore = "requires verified whisper.cpp 1.8.2 and multilingual small Q5_1 assets"]
+    fn multilingual_344() {
+        let v = super::Voice {
+            whisper: true, nemo_ctc: false,
+            ffmpeg: "ffmpeg".into(),
+            recognizer: std::env::var("PILOTQ_TEST_RECOGNIZER").expect("verified recognizer path"),
+            model: std::env::var("PILOTQ_TEST_VOICE_MODEL").expect("verified model directory").into(),
+            threads: 4,
+        };
+        for (lang, bytes, words) in [
+            ("ru", include_bytes!("../tests/fixtures/speech/ru.ogg").as_slice(), &["Основной", "Молдавии", "христианство"][..]),
+            ("en", include_bytes!("../tests/fixtures/speech/en.ogg").as_slice(), &["beer", "pleasant", "refreshing"][..]),
+            ("he", include_bytes!("../tests/fixtures/speech/he.ogg").as_slice(), &["טכנולוגי", "מתקדם", "מותנות חברתית"][..]),
+        ] {
+            let started = std::time::Instant::now();
+            let text = super::transcribe(&v, bytes, std::time::Duration::from_secs(120)).unwrap();
+            eprintln!("{lang}: {:?}: {text}", started.elapsed());
+            for word in words { assert!(text.to_lowercase().contains(&word.to_lowercase()), "{lang}: missing {word}: {text}"); }
+        }
+    }
+
+    // #344 / §§1,9,12: the real decoder accepts MP3 and video speech through the same
+    // recognizer as Ogg/Opus documents; silence/readiness and corruption remain honest.
+    #[test]
+    #[ignore = "requires the same verified local assets as multilingual_344"]
+    fn multilingual_containers_344() {
+        let v = super::Voice {
+            whisper: true, nemo_ctc: false,
+            ffmpeg: "ffmpeg".into(),
+            recognizer: std::env::var("PILOTQ_TEST_RECOGNIZER").expect("verified recognizer path"),
+            model: std::env::var("PILOTQ_TEST_VOICE_MODEL").expect("verified model directory").into(),
+            threads: 4,
+        };
+        assert_eq!(super::readiness(Some(&v)), Ok(()));
+        assert!(super::transcribe(&v, b"corrupt audio", Duration::from_secs(10)).unwrap_err().contains("could not be decoded"));
+        for (video, bytes, expected) in [
+            (false, include_bytes!("../tests/fixtures/speech/ru.ogg").as_slice(), "христианство"),
+            (true, include_bytes!("../tests/fixtures/speech/he.ogg").as_slice(), "מותנות חברתית"),
+        ] {
+            let (dir, input) = super::workdir(bytes).unwrap();
+            let output = dir.0.join(if video { "clip.mp4" } else { "clip.mp3" });
+            let mut c = std::process::Command::new(&v.ffmpeg);
+            c.args(["-nostdin", "-loglevel", "error"]);
+            if video { c.args(["-f", "lavfi", "-i", "color=c=black:s=16x16:r=1"]); }
+            c.arg("-i").arg(input);
+            if video { c.args(["-shortest", "-c:v", "mpeg4", "-c:a", "aac"]); }
+            c.arg(&output);
+            super::run(&mut c, &dir.0.join("stdout"), std::time::Instant::now() + Duration::from_secs(30)).unwrap();
+            let bytes = std::fs::read(output).unwrap();
+            if video { assert!(!super::frames(&v, &bytes, Duration::from_secs(10)).unwrap().is_empty()); }
+            let text = super::transcribe(&v, &bytes, Duration::from_secs(120)).unwrap();
+            eprintln!("{}: {text}", if video { "mp4" } else { "mp3" });
+            assert!(text.contains(expected), "{text}");
+        }
+    }
+
+    // #344 / §12: readable Hebrew JSON must reach the transcript unchanged; invalid text and
+    // digital-silence hallucinations must never become the sender's words.
+    #[test]
+    #[cfg(unix)]
+    fn recognizer_output_344() {
+        use std::{fs, os::unix::fs::PermissionsExt, time::Duration};
+        let dir = super::workdir(b"fixture").unwrap().0;
+        let ffmpeg = dir.0.join("ffmpeg");
+        let recognizer = dir.0.join("recognizer");
+        let source = dir.0.join("fixture.wav");
+        let mut wav = b"RIFF".to_vec();
+        wav.extend_from_slice(&38u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt "); wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&[1,0,1,0]); wav.extend_from_slice(&16000u32.to_le_bytes());
+        wav.extend_from_slice(&32000u32.to_le_bytes()); wav.extend_from_slice(&[2,0,16,0]);
+        wav.extend_from_slice(b"data"); wav.extend_from_slice(&2u32.to_le_bytes());
+        wav.extend_from_slice(&[1,0]); fs::write(&source, &wav).unwrap();
+        fs::write(&ffmpeg, format!("#!/bin/sh\nfor last; do :; done\ncp '{}' \"$last\"\n", source.display())).unwrap();
+        fs::set_permissions(&ffmpeg, fs::Permissions::from_mode(0o700)).unwrap();
+        let v = super::Voice { ffmpeg: ffmpeg.display().to_string(), recognizer: recognizer.display().to_string(), model: dir.0.clone(), threads: 1, whisper: true, nemo_ctc: false };
+        for (output, expected) in [
+            (b"{\"transcription\":[{\"text\":\"\xd7\xa9\xd7\x9c\xd7\x95\xd7\x9d\"}]}".as_slice(), Ok("שלום")),
+            (b"{\"transcription\":[{\"text\":\"\xd7\"}]}", Err("voice recognizer failed")),
+            (b"not JSON", Err("voice recognizer failed")),
+        ] {
+            fs::write(dir.0.join("result"), output).unwrap();
+            fs::write(&recognizer, format!("#!/bin/sh\nwhile [ \"$1\" != --output-file ]; do shift; done\ncp '{}' \"$2.json\"\n", dir.0.join("result").display())).unwrap();
+            fs::set_permissions(&recognizer, fs::Permissions::from_mode(0o700)).unwrap();
+            assert_eq!(super::transcribe(&v, b"fixture", Duration::from_secs(5)).as_deref().map_err(String::as_str), expected);
+        }
+        let n = wav.len(); wav[n-2] = 0; fs::write(source, wav).unwrap();
+        fs::write(dir.0.join("result"), b"{\"transcription\":[{\"text\":\"invented hallucination\"}]}").unwrap();
+        assert_eq!(super::transcribe(&v, b"fixture", Duration::from_secs(5)).unwrap_err(), "voice had no recognized speech");
+    }
+
+    // §1/#344: real audio through the selected stock route. These assertions retain
+    // meaningful words, not a fabricated full-reference PASS; full output is evidence.
+    #[test]
+    #[ignore = "requires verified stock Sherpa 2.0.1 and pinned GigaAM-Multilingual large assets"]
+    fn stock_ctc_real_344() {
+        let v = super::Voice { whisper: false, nemo_ctc: true, ffmpeg: "/usr/bin/ffmpeg".into(),
+            recognizer: std::env::var("PILOTQ_TEST_RECOGNIZER").expect("verified stock recognizer"),
+            model: std::env::var("PILOTQ_TEST_VOICE_MODEL").expect("verified CTC assets").into(), threads: 4 };
+        super::readiness(Some(&v)).unwrap();
+        for (lang, bytes, words) in [
+            ("ru", include_bytes!("../tests/fixtures/speech/ru.ogg").as_slice(), &["молдавии", "христианство"][..]),
+            ("en", include_bytes!("../tests/fixtures/speech/en.ogg").as_slice(), &["beer", "pleasant", "refreshing"][..]),
+        ] {
+            let started = std::time::Instant::now();
+            let text = super::transcribe(&v, bytes, Duration::from_secs(120)).unwrap();
+            eprintln!("stock CTC {lang} {:?}: {text}", started.elapsed());
+            for word in words { assert!(text.contains(word), "{lang}: missing {word}: {text}"); }
+        }
+        assert!(super::transcribe(&v,b"corrupt audio",Duration::from_secs(10)).unwrap_err().contains("could not be decoded"));
+        // Two real speakers joined without hints, both language orders. Record full text:
+        // concatenated speech is a diagnostic, not natural code-switching acceptance.
+        for reverse in [false, true] {
+            let (dir, ru) = super::workdir(include_bytes!("../tests/fixtures/speech/ru.ogg")).unwrap();
+            let en = dir.0.join("en.ogg");
+            std::fs::write(&en,include_bytes!("../tests/fixtures/speech/en.ogg")).unwrap();
+            let mixed = dir.0.join("mixed.wav");
+            let inputs = if reverse { [&en,&ru] } else { [&ru,&en] };
+            super::run(std::process::Command::new(&v.ffmpeg).args(["-nostdin","-loglevel","error","-i"])
+                .arg(inputs[0]).arg("-i").arg(inputs[1])
+                .args(["-filter_complex","[0:a][1:a]concat=n=2:v=0:a=1","-ac","1","-ar","16000"]).arg(&mixed),
+                &dir.0.join("decode"),std::time::Instant::now()+Duration::from_secs(30)).unwrap();
+            let text=super::transcribe(&v,&std::fs::read(mixed).unwrap(),Duration::from_secs(120)).unwrap();
+            eprintln!("stock CTC mixed reverse={reverse}: {text}");
+        }
+        // MP3 files and MP4 speech use the exact same decoder/recognizer, not another language route.
+        for video in [false, true] {
+            let (dir, input) = super::workdir(include_bytes!("../tests/fixtures/speech/ru.ogg")).unwrap();
+            let output = dir.0.join(if video { "clip.mp4" } else { "clip.mp3" });
+            let mut c = std::process::Command::new(&v.ffmpeg);
+            c.args(["-nostdin", "-loglevel", "error"]);
+            if video { c.args(["-f", "lavfi", "-i", "color=c=black:s=16x16:r=1"]); }
+            c.arg("-i").arg(input);
+            if video { c.args(["-shortest", "-c:v", "mpeg4", "-c:a", "aac"]); }
+            c.arg(&output);
+            super::run(&mut c, &dir.0.join("stdout"), std::time::Instant::now()+Duration::from_secs(30)).unwrap();
+            let text = super::transcribe(&v,&std::fs::read(output).unwrap(),Duration::from_secs(120)).unwrap();
+            eprintln!("stock CTC video={video}: {text}");
+            assert!(text.contains("христианство"), "{text}");
+        }
+    }
+
+    // §1/#344 diagnostic, not a full-quality oracle: compare the current hard-cut path
+    // with the same real PCM unsplit. Repetition introduces abrupt joins; it is not natural35s speech.
+    #[test]
+    #[ignore = "requires verified stock Sherpa and pinned CTC assets; emits fidelity observations"]
+    fn stock_ctc_chunks_344() {
+        let v = super::Voice { whisper: false, nemo_ctc: true, ffmpeg: "/usr/bin/ffmpeg".into(),
+            recognizer: std::env::var("PILOTQ_TEST_RECOGNIZER").unwrap(),
+            model: std::env::var("PILOTQ_TEST_VOICE_MODEL").unwrap().into(), threads: 4 };
+        crate::host::verify_ctc_assets(&v.model).unwrap();
+        let (dir,input) = super::workdir(include_bytes!("../tests/fixtures/speech/en.ogg")).unwrap();
+        let wav = dir.0.join("repeat35.wav");
+        let until = std::time::Instant::now()+Duration::from_secs(120);
+        super::run(std::process::Command::new(&v.ffmpeg).args(["-nostdin","-loglevel","error","-stream_loop","-1","-i"])
+            .arg(input).args(["-t","35","-ac","1","-ar","16000"]).arg(&wav), &dir.0.join("decode"), until).unwrap();
+        let bytes = std::fs::read(&wav).unwrap();
+        super::run(std::process::Command::new(&v.recognizer)
+            .arg(format!("--nemo-ctc-model={}",v.model.join("model.int8.onnx").display()))
+            .arg(format!("--tokens={}",v.model.join("tokens.txt").display()))
+            .args(["--provider=cpu","--num-threads=4","--decoding-method=greedy_search"]).arg(&wav), &dir.0.join("direct"), until).unwrap();
+        let direct = std::fs::read_to_string(dir.0.join("direct")).unwrap();
+        let chunked = super::transcribe(&v,&bytes,until.saturating_duration_since(std::time::Instant::now())).unwrap();
+        eprintln!("unsplit35: {direct}\nchunked25+10: {chunked}");
+        assert!(!chunked.is_empty());
+    }
+
+    // §1/#344: stock CTC must receive automatic CPU arguments and preserve mixed text;
+    // malformed JSON/UTF-8 and silence must fail closed, with no transducer fallback.
+    #[test]
+    #[cfg(unix)]
+    fn nemo_ctc_344() {
+        use std::{fs, os::unix::fs::PermissionsExt};
+        let dir = super::workdir(b"fixture").unwrap().0;
+        let mut wav = b"RIFF".to_vec();
+        wav.extend_from_slice(&38u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt "); wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&[1,0,1,0]); wav.extend_from_slice(&16000u32.to_le_bytes());
+        wav.extend_from_slice(&32000u32.to_le_bytes()); wav.extend_from_slice(&[2,0,16,0]);
+        wav.extend_from_slice(b"data"); wav.extend_from_slice(&2u32.to_le_bytes()); wav.extend_from_slice(&[1,0]);
+        fs::write(dir.0.join("fixture.wav"), &wav).unwrap();
+        fs::write(dir.0.join("model.int8.onnx"), b"invented model").unwrap();
+        let ffmpeg = dir.0.join("ffmpeg");
+        let recognizer = dir.0.join("recognizer");
+        fs::write(&ffmpeg, format!("#!/bin/sh\nfor last; do :; done\ncp '{}' \"$last\"\n", dir.0.join("fixture.wav").display())).unwrap();
+        fs::write(&recognizer, format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\ncat '{}'\n", dir.0.join("args").display(), dir.0.join("response").display())).unwrap();
+        for p in [&ffmpeg, &recognizer] { fs::set_permissions(p, fs::Permissions::from_mode(0o700)).unwrap(); }
+        let mut v = super::Voice { ffmpeg: ffmpeg.display().to_string(), recognizer: recognizer.display().to_string(), model: dir.0.clone(), threads: 4, whisper: false, nemo_ctc: true };
+        for (response, expected) in [
+            ("banner\n{\"text\":\"привет bring five green cups\"}\n", Ok("привет bring five green cups")),
+            ("{\"text\":42}", Err("voice recognizer failed")),
+            ("not JSON", Err("voice recognizer failed")),
+            ("{\"text\":\"�\"}", Err("voice recognizer returned invalid transcript text")),
+        ] {
+            fs::write(dir.0.join("response"), response).unwrap();
+            assert_eq!(super::transcribe(&v, b"fixture", Duration::from_secs(5)).as_deref().map_err(String::as_str), expected);
+        }
+        let args = fs::read_to_string(dir.0.join("args")).unwrap();
+        assert!(args.contains("--nemo-ctc-model="), "{args}");
+        for arg in ["--provider=cpu", "--num-threads=4", "--decoding-method=greedy_search", "--tokens="] { assert!(args.contains(arg), "{args}"); }
+        assert!(!args.contains("--encoder=") && !args.contains("--language"));
+        fs::write(dir.0.join("response"), [0xff]).unwrap();
+        assert_eq!(super::transcribe(&v,b"fixture",Duration::from_secs(5)).unwrap_err(), "voice recognizer failed");
+        assert!(crate::host::verify_ctc_assets(&dir.0).unwrap_err().contains("model verification failed"));
+        fs::remove_file(dir.0.join("model.int8.onnx")).unwrap();
+        // Removing an asset never changes the captured route or retries the legacy engine.
+        super::transcribe(&v,b"fixture",Duration::from_secs(5)).unwrap_err();
+        assert!(fs::read_to_string(dir.0.join("args")).unwrap().contains("--nemo-ctc-model="));
+        v.nemo_ctc = false;
+        fs::write(dir.0.join("response"), "{\"text\":\"legacy русский\"}").unwrap();
+        assert_eq!(super::transcribe(&v,b"fixture",Duration::from_secs(5)).unwrap(), "legacy русский");
+        let legacy = fs::read_to_string(dir.0.join("args")).unwrap();
+        assert!(legacy.contains("--model-type=nemo_transducer") && legacy.contains("--encoder="));
+        assert!(!legacy.contains("--nemo-ctc-model="));
+        fs::write(dir.0.join("model.int8.onnx"), b"invented model").unwrap();
+        v.nemo_ctc = true;
+        let n = wav.len(); wav[n-2] = 0;
+        fs::write(dir.0.join("fixture.wav"), wav).unwrap();
+        fs::write(dir.0.join("response"), "{\"text\":\"invented words\"}").unwrap();
+        assert_eq!(super::transcribe(&v,b"fixture",Duration::from_secs(5)).unwrap_err(), "voice had no recognized speech");
+    }
+
     // #259 A3 / §1: a 4:02 track never sends an oversized tensor to the recognizer.
     #[test]
     #[cfg(unix)]
@@ -163,7 +430,7 @@ mod tests {
         use std::{fs,os::unix::fs::PermissionsExt,time::Duration};
         let dir=std::env::temp_dir().join(format!("pilotq-long-audio-test-{}",std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        let pcm=vec![0u8;242*32000];
+        let pcm=vec![1u8;242*32000];
         let mut wav=b"RIFF".to_vec(); wav.extend_from_slice(&((pcm.len()+36) as u32).to_le_bytes());
         wav.extend_from_slice(b"WAVEfmt "); wav.extend_from_slice(&16u32.to_le_bytes());
         wav.extend_from_slice(&[1,0,1,0]); wav.extend_from_slice(&16000u32.to_le_bytes());
@@ -172,9 +439,9 @@ mod tests {
         fs::write(dir.join("fixture.wav"),wav).unwrap();
         let ffmpeg=dir.join("ffmpeg"); let recognizer=dir.join("recognizer");
         fs::write(&ffmpeg,format!("#!/bin/sh\nfor last; do :; done\ncp '{}' \"$last\"\n",dir.join("fixture.wav").display())).unwrap();
-        fs::write(&recognizer,"#!/bin/sh\nfor last; do :; done\n[ $(wc -c < \"$last\") -le 1000000 ] || exit 1\necho '{\"text\":\"segment\"}'\n").unwrap();
+        fs::write(&recognizer,"#!/bin/sh\nfor last; do :; done\n[ $(wc -c < \"$last\") -le 1000000 ] || exit 1\nwhile [ \"$1\" != --output-file ]; do shift; done\necho '{\"transcription\":[{\"text\":\"segment\"}]}' > \"$2.json\"\n").unwrap();
         for path in [&ffmpeg,&recognizer] {fs::set_permissions(path,fs::Permissions::from_mode(0o700)).unwrap();}
-        let v=super::Voice{ffmpeg:ffmpeg.display().to_string(),recognizer:recognizer.display().to_string(),model:dir.clone(),threads:1};
+        let v=super::Voice{ffmpeg:ffmpeg.display().to_string(),recognizer:recognizer.display().to_string(),model:dir.clone(),threads:1,whisper:true,nemo_ctc:false};
         let result=super::transcribe(&v,b"invented recording",Duration::from_secs(10));
         fs::remove_dir_all(dir).unwrap();
         let result=result.unwrap();
@@ -191,7 +458,7 @@ mod tests {
         let path = dir.join("v.mp4");
         let made = std::process::Command::new("ffmpeg").args(["-nostdin", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=duration=62:size=320x240:rate=5", "-pix_fmt", "yuv420p"]).arg(&path).status().unwrap();
         assert!(made.success());
-        let v = super::Voice { ffmpeg: "/usr/bin/ffmpeg".into(), recognizer: "none".into(), model: dir.clone(), threads: 1 };
+        let v = super::Voice { ffmpeg: "/usr/bin/ffmpeg".into(), recognizer: "none".into(), model: dir.clone(), threads: 1, whisper: true, nemo_ctc: false };
         let frames = super::frames(&v, &std::fs::read(&path).unwrap(), std::time::Duration::from_secs(30)).unwrap();
         assert_eq!(frames.len(), super::FRAMES);
         assert!(frames.iter().all(|f| f.starts_with(b"\xff\xd8\xff")));

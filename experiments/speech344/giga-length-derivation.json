@@ -1,0 +1,112 @@
+{
+  "source": "target/pm344-giga-static-supplement-v1/supplement.json",
+  "source_sha256": "3e34742ea05fddb049997dc8d794692b739d2e9d1c7a502638950f84c27c92c1",
+  "method": "manual symbolic derivation plus pure integer arithmetic; no graph operator or shape execution",
+  "domain": "positive feature lengths <=2499 (original25s segment); no claim for arbitrary INT64/oversize input",
+  "formula": "stage1=(L+1)//2; encoded=(stage1+1)//2=(L+3)//4",
+  "frontend_25s": {
+    "samples": 400000,
+    "window": 320,
+    "hop": 160,
+    "frames": 2499
+  },
+  "rows": [
+    {
+      "feature_frames": 1,
+      "stage1": 1,
+      "encoded_frames": 1,
+      "sherpa_floor_frames": 0
+    },
+    {
+      "feature_frames": 2,
+      "stage1": 1,
+      "encoded_frames": 1,
+      "sherpa_floor_frames": 0
+    },
+    {
+      "feature_frames": 3,
+      "stage1": 2,
+      "encoded_frames": 1,
+      "sherpa_floor_frames": 0
+    },
+    {
+      "feature_frames": 4,
+      "stage1": 2,
+      "encoded_frames": 1,
+      "sherpa_floor_frames": 1
+    },
+    {
+      "feature_frames": 5,
+      "stage1": 3,
+      "encoded_frames": 2,
+      "sherpa_floor_frames": 1
+    },
+    {
+      "feature_frames": 6,
+      "stage1": 3,
+      "encoded_frames": 2,
+      "sherpa_floor_frames": 1
+    },
+    {
+      "feature_frames": 7,
+      "stage1": 4,
+      "encoded_frames": 2,
+      "sherpa_floor_frames": 1
+    },
+    {
+      "feature_frames": 8,
+      "stage1": 4,
+      "encoded_frames": 2,
+      "sherpa_floor_frames": 2
+    },
+    {
+      "feature_frames": 9,
+      "stage1": 5,
+      "encoded_frames": 3,
+      "sherpa_floor_frames": 2
+    },
+    {
+      "feature_frames": 10,
+      "stage1": 5,
+      "encoded_frames": 3,
+      "sherpa_floor_frames": 2
+    },
+    {
+      "feature_frames": 11,
+      "stage1": 6,
+      "encoded_frames": 3,
+      "sherpa_floor_frames": 2
+    },
+    {
+      "feature_frames": 12,
+      "stage1": 6,
+      "encoded_frames": 3,
+      "sherpa_floor_frames": 3
+    },
+    {
+      "feature_frames": 99,
+      "stage1": 50,
+      "encoded_frames": 25,
+      "sherpa_floor_frames": 24
+    },
+    {
+      "feature_frames": 100,
+      "stage1": 50,
+      "encoded_frames": 25,
+      "sherpa_floor_frames": 25
+    },
+    {
+      "feature_frames": 101,
+      "stage1": 51,
+      "encoded_frames": 26,
+      "sherpa_floor_frames": 25
+    },
+    {
+      "feature_frames": 2499,
+      "stage1": 1250,
+      "encoded_frames": 625,
+      "sherpa_floor_frames": 624
+    }
+  ],
+  "model_executed": false
+}
