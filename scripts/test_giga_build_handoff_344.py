@@ -52,6 +52,13 @@ class SourceGuards(unittest.TestCase):
 # §1/§12: a future model result cannot become a fabricated transcript when its
 # UTF8/JSON/type is damaged; short mixed PCM must preserve bytes and the25s cap.
 class QualityPlanGuards(unittest.TestCase):
+    def test_openfst_override_follows_sherpa_not_transitive_pin(self):
+        cli=module('clipin344guard',REPO/'experiments/speech344/giga344-cli-episode.py')
+        owner='set(openfst_URL "https://example.invalid/owner.tar.gz")\nset(openfst_HASH "SHA256='+('a'*64)+'")'
+        with self.assertRaisesRegex(ValueError,'owning Sherpa'):
+            cli.validate_openfst_pin(owner,{'url':'https://example.invalid/transitive.tar.gz','sha256':'b'*64})
+        cli.validate_openfst_pin(owner,{'url':'https://example.invalid/owner.tar.gz','sha256':'a'*64})
+
     def test_cli_transcript_damage_is_refused(self):
         cli=module('cli344guard',REPO/'experiments/speech344/giga344-cli-episode.py')
         with tempfile.TemporaryDirectory(prefix='giga344-text-') as temp:

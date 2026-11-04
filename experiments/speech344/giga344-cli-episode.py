@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import resource
+import re
 import signal
 import shutil
 import subprocess
@@ -41,6 +42,13 @@ def build_commands(out):
            'KALDIFST':'kaldifst','EIGEN':'eigen','OPENFST':'openfst','SIMPLE-SENTENCEPIECE':'simple-sentencepiece','JSON':'json'}
     argv+=['-DFETCHCONTENT_SOURCE_DIR_'+key+'='+str(out/value) for key,value in names.items()]
     return [('configure',argv),('build',[str(cmake),'--build',str(build),'--target','sherpa-onnx-offline','--parallel','4'])]
+
+def validate_openfst_pin(source,entry):
+    url=re.search(r'set\(openfst_URL\s+"([^"\n]+)"\)',source)
+    digest=re.search(r'set\(openfst_HASH\s+"SHA256=([0-9a-f]{64})"\)',source)
+    if not url or not digest or entry['url']!=url[1] or entry['sha256']!=digest[1]:
+        raise ValueError('OpenFst override must match owning Sherpa declaration, not transitive kaldifst pin')
+
 
 def recognition_command(engine,assets,wav):
     return [str(engine),'--model-type=nemo_ctc','--nemo-ctc-model='+str(assets/'model.int8.onnx'),
@@ -132,6 +140,8 @@ def main():
             remaining()
         evidence['archives']=[]
         for entry in lock['archives']:
+            if entry['name']=='openfst':
+                validate_openfst_pin((out/'sherpa/cmake/openfst.cmake').read_text(),entry)
             p=archives/entry['filename']
             if p.is_symlink() or p.stat().st_size!=entry['bytes'] or sha(p)!=entry['sha256']:raise ValueError('archive identity')
             if 'select_prefixes' in entry:

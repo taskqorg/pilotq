@@ -150,12 +150,12 @@
     },
     {
       "name": "openfst",
-      "filename": "openfst.tar.gz",
+      "filename": "openfst-2026-07-09.tar.gz",
       "format": "tar.gz",
-      "prefix": "openfst-1.8.5-2026-04-10",
-      "url": "https://github.com/csukuangfj/openfst/archive/refs/tags/v1.8.5-2026-04-10.tar.gz",
-      "sha256": "c3549940384cbe4fa9f18c2bcfb1bfbd0a80492fd1b0bfa27433cee395a6a199",
-      "bytes": 1500835,
+      "prefix": "openfst-1.8.5-2026-07-09",
+      "url": "https://github.com/csukuangfj/openfst/archive/refs/tags/v1.8.5-2026-07-09.tar.gz",
+      "sha256": "2ff712a32952fcb01d351121a6bc8ccf4fdc6b2aa06ce8df2b3095dedd518c0e",
+      "bytes": 1501685,
       "license": "Apache-2.0",
       "licenses": {
         "COPYING": "4300529197035fd3452350718a0b8cee984e9412c9932d7f35fcde849fc97a4b"
@@ -193,7 +193,7 @@
     }
   ],
   "files": {
-    "experiments/speech344/giga344-cli-episode.py": "2660a4d4b9058fa40a59a3c5089dfd8fad41b7504bba845ad72ef7b3a80920a1",
+    "experiments/speech344/giga344-cli-episode.py": "53ce144a91bda368321413fd20ebbb122990b2f637de8c0b5942d4894bf0a808",
     "experiments/speech344/giga344-cli-commands.json": "9c5420f51f2a08691b09e0b59a0f1532f3ef9a1d732f87e5e625ecbfc1c3aa5f",
     "experiments/speech344/giga344-candidate.json": "d935d2de8c6308b2321b6d2ec460abdfbb2af35fc213b120d95ad9e4a0745184",
     "experiments/speech344/giga344-candidate.patch": "1fd40797067dee98386df7daca538a4440e96e6854de572b18bf921ee6b586bc",
