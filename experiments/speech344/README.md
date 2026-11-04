@@ -578,3 +578,7 @@ Note6566515450 authorizes the [guarded combined handoff](knf-accessor-plan.md#co
 ## Prepared GigaAM no-model build handoff
 
 [The build-only plan](giga344-build-plan.md) is the current exact dependency/command/PM-wrapper recipe under note6625480080. It supersedes missing-recipe status only; no compiler, linker, feature or model execution has occurred. Keep all original Russian assets/settings and prior failed evidence. PM reviews the final identities before one original-caps/shared600s episode (§9, R19).
+
+## Supported offline CLI preparation (note6626590400)
+
+[The exact CLI build/short-quality handoff](giga344-cli-plan.md) pins the full offline closure and original-caps/shared600s PM argv. Preparation only: no configure/build/model episode, selection or installed change. It supersedes missing supported-build recipe status; earlier numerical differences remain unqualified.

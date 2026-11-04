@@ -49,4 +49,35 @@ class SourceGuards(unittest.TestCase):
                 with self.assertRaises(TimeoutError):episode.unpack_source(archive,entry,root/'no',expired,helper)
                 self.assertFalse((root/'no').exists())
 
+# §1/§12: a future model result cannot become a fabricated transcript when its
+# UTF8/JSON/type is damaged; short mixed PCM must preserve bytes and the25s cap.
+class QualityPlanGuards(unittest.TestCase):
+    def test_cli_transcript_damage_is_refused(self):
+        cli=module('cli344guard',REPO/'experiments/speech344/giga344-cli-episode.py')
+        with tempfile.TemporaryDirectory(prefix='giga344-text-') as temp:
+            p=Path(temp)/'stdout'
+            for body in [b'{"text":"\xff"}',b'{"text":5}',b'{"text":"\xef\xbf\xbd"}',b'{"text":"one"}\n{"text":"two"}']:
+                p.write_bytes(body)
+                with self.assertRaises((ValueError,UnicodeError)):cli.read_text(p)
+            p.write_text('{"text":"Проверь задачи. Please show the table."}')
+            self.assertEqual(cli.read_text(p),'Проверь задачи. Please show the table.')
+    def test_readiness_readback_keeps_original_ten_seconds(self):
+        from unittest.mock import patch
+        cli=module('clideadline344guard',REPO/'experiments/speech344/giga344-cli-episode.py')
+        with tempfile.TemporaryDirectory(prefix='giga344-ready-') as temp:
+            p=Path(temp)/'stdout';p.write_text('{"text":""}')
+            with patch.object(cli.time,'monotonic',return_value=10.001):
+                with self.assertRaises(TimeoutError):cli.readiness_result(p,0,str.split)
+            with patch.object(cli.time,'monotonic',return_value=9.999):
+                self.assertEqual(cli.readiness_result(p,0,str.split),('',9.999))
+
+    def test_short_pcm_bytes_and_limit(self):
+        cli=module('clipcm344guard',REPO/'experiments/speech344/giga344-cli-episode.py')
+        with tempfile.TemporaryDirectory(prefix='giga344-pcm-') as temp:
+            p=Path(temp)/'mixed.wav';raw=b'\x01\x00'*320+b'\x02\x00'*480
+            cli.write_pcm(p,raw);self.assertEqual(cli.pcm(p),raw)
+            for bad in [b'',b'\x01',b'\x00\x00'*400001]:
+                with self.assertRaises(ValueError):cli.write_pcm(p,bad)
+            self.assertEqual(cli.pcm(p),raw,'refusal must not overwrite earlier PCM')
+
 if __name__=='__main__':unittest.main()
