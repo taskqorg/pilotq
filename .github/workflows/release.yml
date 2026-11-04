@@ -15,7 +15,8 @@ jobs:
     permissions:
       contents: read
       actions: read
-    runs-on: ubuntu-latest
+    # A release builds on our host; pull requests, forks included, and the merge queue stay on disposable GitHub runners.
+    runs-on: ${{ github.event_name == 'push' && fromJSON('["self-hosted", "Linux", "X64", "pilotq-wsl"]') || 'ubuntu-latest' }}
     env:
       PILOTQ_SELFTEST_OFFLINE: '1'
       TARGET: x86_64-unknown-linux-musl
@@ -46,7 +47,8 @@ jobs:
           if [ "$BEFORE" != 0000000000000000000000000000000000000000 ]; then
             git merge-base --is-ancestor "$BEFORE" "$GITHUB_SHA"
           fi
-      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - if: runner.environment == 'github-hosted'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
       - run: rustup update stable --no-self-update && rustup default stable && rustup target add "$TARGET"
       - name: Read release version
         run: |
@@ -58,7 +60,7 @@ jobs:
       - run: cargo build --locked --release --target "$TARGET"
       - name: Stage integrity metadata
         run: |
-          bin="target/$TARGET/release/pilotq"
+          bin="${CARGO_TARGET_DIR:-target}/$TARGET/release/pilotq"
           file "$bin" | grep -Eq 'static(ally|-pie) linked'
           mkdir dist
           cp "$bin" "dist/pilotq-$VER-linux-x86_64"
