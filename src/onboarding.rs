@@ -459,14 +459,21 @@ fn remedy_ru(check:&str,fix:&str)->String {
     let known=match check {
         "configuration"=>Some("Владелец: завершите защищённую настройку config.json и выполните pilotq doctor --json."),
         "telegram"=>Some("Владелец: проверьте защищённый токен бота и соединение с Telegram; выполните pilotq doctor --json."),
+        "runtime"=>Some("Владелец: восстановите изолированный вход по подписке для каждой настроенной среды выполнения PilotQ; выполните pilotq doctor --json."),
         "codex"=>Some("Владелец: восстановите изолированный вход Codex в ChatGPT для PilotQ; выполните pilotq doctor --json."),
         "taskq"=>Some("Владелец: проверьте исполняемый файл TaskQ, корень и доску; выполните pilotq doctor --json."),
         "voice"=>Some("Владелец: настройте voice.ffmpeg, voice.recognizer и файлы GigaAM по docs/tester-guide.md; выполните pilotq doctor --json."),
         "host"=>Some("Нет свежего сигнала от хоста TaskQ для этой доски; задачи некому выполнять. Владелец: восстановите сервис TaskQ проекта на хосте выполнения и повторите проверку."),
         "claim"=>Some("PM: завершите обязательную настройку create_claim_issue через TaskQ Add project с существующими учётными данными хоста; подтвердите результат через TaskQ и повторите проверку."),
+        "service" if fix=="PilotQ: waiting for TaskQ to observe the attached project; checks retry automatically."=>Some("PilotQ ожидает, когда TaskQ увидит подключённый проект; проверки повторяются автоматически."),
+        "board"=>Some("Владелец: проверьте соответствие taskq.json зарегистрированной доске и выполните указанную ниже команду."),
+        "service" if fix.starts_with("Owner:")=>Some("Владелец: проверьте и восстановите сервис TaskQ для зарегистрированного корня, затем повторите проверку."),
+        "admission"=>Some("Владелец: проверьте состояние сервиса TaskQ и устраните причину приостановки допуска, затем повторите проверку."),
+        "codex_grant"=>Some("PM: проверьте доступ Codex к рабочей области проекта; выполните указанную команду и повторите проверку. Требуется владелец или явное право shell."),
+        "codex_access"=>Some("Владелец: проверьте разрешения TaskQ и устраните отказ или неподдерживаемую изоляцию среды выполнения, затем повторите проверку."),
+        "issue_read_key"=>Some("Владелец: проверьте защищённый ключ чтения задач и его права для CLI и личного чата, затем повторите проверку."),
         "codex_capacity"=>Some("Владелец: задайте положительный лимит Codex в политике хоста TaskQ и повторите проверку."),
         "host_tools"|"doctor"=>Some("Владелец: выполните pilotq doctor --json, устраните указанные проблемы и повторите проверку."),
-        "service" if fix=="PilotQ: waiting for TaskQ to observe the attached project; checks retry automatically."=>Some("PilotQ ожидает, когда TaskQ увидит подключённый проект; проверки повторяются автоматически."),
         _=>None,
     };
     if let Some(text)=known {return format!("{text}\nИсходное указание: {fix}");}
@@ -486,7 +493,13 @@ fn text(project:&str,result:&Value,ru:bool)->String {
     for g in result["gaps"].as_array().into_iter().flatten() {
         let check=g["check"].as_str().unwrap_or("setup");
         let fix=g["fix"].as_str().unwrap_or("Owner: run pilotq doctor --json");
-        lines.push(if ru {format!("{check}: {}",remedy_ru(check,fix))}else{format!("{check}: {fix}")});
+        let label=match check {
+            "configuration"|"setup"=>"Настройка", "runtime"=>"Среда выполнения", "telegram"=>"Telegram", "codex"=>"Codex", "taskq"=>"TaskQ", "voice"=>"Распознавание речи",
+            "host"=>"Хост выполнения", "claim"=>"Создание задач", "board"=>"Доска", "service"=>"Сервис TaskQ", "admission"=>"Допуск",
+            "codex_grant"=>"Доступ проекта Codex", "codex_access"=>"Изоляция Codex", "codex_capacity"=>"Лимит Codex",
+            "issue_read_key"=>"Ключ чтения задач", "host_tools"=>"Инструменты хоста", "doctor"=>"Диагностика", _=>check,
+        };
+        lines.push(if ru {format!("{label}: {}",remedy_ru(check,fix))}else{format!("{check}: {fix}")});
     }
     if result["ready"]!=true {lines.push(if ru {"После исправления нажмите «Проверить снова»."} else {"After completing the listed steps, tap Recheck."}.into());}
     lines.join("\n")
@@ -565,7 +578,9 @@ pub fn control(t:&coreq::Tool,j:&Shared,r:&crate::builtins::Request)->Result<(),
     };
     {
         let j=j.lock().unwrap();
-        let tx=j.0.unchecked_transaction().map_err(err)?;
+        // §7: reserve the writer before reading the revision/grants. A deferred
+        // WAL read snapshot cannot upgrade after the service commits concurrently.
+        let tx=rusqlite::Transaction::new_unchecked(&j.0,rusqlite::TransactionBehavior::Immediate).map_err(err)?;
         if j.owner()?!=Some(r.sender) || !j.builtin_allowed(r)? {return Err("Only the configured owner can manage onboarding".into());}
         let (board,root)=binding(&j,&project)?;
         if action==Some("override") && cmd=="/onboard" {
@@ -771,6 +786,20 @@ mod tests {
         assert!(issue_key_step_for_board(&keys,"pah",7,&config).is_none());
         assert_eq!(before,keys.list().unwrap(),"readiness must not consume credentials or modify grants");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // §6 / #344: check identifiers are machine data, not Russian card headings.
+    // Preserve exact remediation commands/source findings while localizing owned labels.
+    #[test]
+    fn language_344_onboarding_findings() {
+        let cases=[("board","Доска"),("service","Сервис TaskQ"),("admission","Допуск"),
+            ("codex_grant","Доступ проекта Codex"),("codex_access","Изоляция Codex"),
+            ("issue_read_key","Ключ чтения задач"),("voice","Распознавание речи"),("runtime","Среда выполнения")];
+        let report=json!({"ready":false,"gaps":cases.iter().map(|(check,_)|json!({"check":check,"fix":"invented source: /exact/path/taskq --json", "owner_only":true})).collect::<Vec<_>>()});
+        let ru=text("sample",&report,true);
+        for (check,label) in cases {assert!(ru.contains(&format!("{label}:")),"missing {check}: {ru}");}
+        assert!(ru.contains("invented source: /exact/path/taskq --json"),"source command changed");
+        assert!(text("sample",&report,false).contains("board: invented source: /exact/path/taskq --json"));
     }
 
     // #256 A3/A4 / R11, §5: a typed /onboard always gets a reply at its own route; outside the owner DM the reply

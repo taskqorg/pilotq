@@ -742,7 +742,7 @@ fn dispatch_until(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Va
                         }
                         Err(e) => text += &format!("\nIssue state and closing evidence unavailable: {e}"),
                     }
-                    if let (true,Ok(issue))=(release_question,&issue) {let end=std::time::Instant::now()+Duration::from_secs(10);let (dev,delivery)=crate::release::task_observations(j,r.request,&project,issue,end);text += &format!("\nDEV health: {dev}\nDelivery: {}",crate::release::delivery_text(&delivery));}
+                    if let (true,Ok(issue))=(release_question,&issue) {let end=std::time::Instant::now()+Duration::from_secs(10);let (dev,delivery)=crate::release::task_observations(j,r.request,&project,issue,end);let ru=j.lock().unwrap().language(r.request)?.as_deref().unwrap_or("en").starts_with("ru");text += &format!("\n{}: {dev}\n{}: {}",if ru {"Проверка DEV (исходные данные)"}else{"DEV health"},if ru {"Доставка"}else{"Delivery"},crate::release::delivery_text_localized(&delivery,ru));}
                     text
                 }
                 None => {
@@ -754,7 +754,7 @@ fn dispatch_until(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Va
                         let end=std::time::Instant::now()+Duration::from_secs(10);
                         let (dev,delivery)=crate::release::task_observations(j,r.request,&project,&issue,end);
                         result["dev"]=dev;
-                        result["delivery"]=json!(crate::release::delivery_text(&delivery));
+                        result["delivery"]=json!(crate::release::delivery_text_localized(&delivery,j.lock().unwrap().language(r.request)?.as_deref().unwrap_or("en").starts_with("ru")));
                     }
                     result.to_string()
                 },

@@ -218,6 +218,67 @@ pub fn delivery_text(v:&Value)->String {
     text+=match v["live_includes"].as_bool() {Some(true)=>"\nLIVE contains the merge.",Some(false)=>"\nLIVE is behind the merge.",None=>"\nLIVE inclusion unknown."};
     if let Some(reason)=v["live_reason"].as_str() {text+=&format!(" {reason}");}text
 }
+pub fn delivery_text_localized(v:&Value, ru:bool)->String {
+    if !ru {return delivery_text(v);}
+    let stage=match v["stage"].as_str().unwrap_or("unknown") {
+        "open"=>"открыто", "closed"=>"закрыто", "merged"=>"слито", "on DEV"=>"на DEV", "DEV smoke"=>"проверка DEV", "on LIVE"=>"на LIVE", _=>"нет данных",
+    };
+    let state=|value:&Value| match value.as_str().unwrap_or("unknown") {
+        "success"=>"успешно", "failed"=>"ошибка", "pending"=>"ожидается", "running"=>"выполняется",
+        "canceled"|"cancelled"=>"отменено", "skipped"=>"пропущено", _=>"нет данных",
+    };
+    let mut text=format!("Этап доставки: {stage}.");
+    if let (Some(dev),Some(merge))=(v["dev_sha"].as_str(),v["merge"].as_str()) {
+        text+=&format!(" Отдельная проверка DEV: обслуживается {dev}, содержащий слияние {merge} (история Git).");
+    }
+    if let Some(reason)=v["reason"].as_str() {return format!("{text} Конвейер: нет данных. {}.",delivery_reason_ru(reason));}
+    text+=&format!("\nВремя слияния: {}.",v["merged_at"].as_str().unwrap_or("нет данных"));
+    let first=&v["first_main"];
+    text+=&format!("\nПервый конвейер main со слиянием: {} ({}).",state(&first["state"]),first["url"].as_str().unwrap_or(""));
+    text+=&format!("\nРазвёртывание DEV: {} ({}).",state(&first["deploy"]["state"]),first["deploy"]["url"].as_str().unwrap_or(""));
+    for (i,job) in first["smoke"].as_array().into_iter().flatten().enumerate() {
+        text+=&format!("\nПроверка DEV, попытка {}: {} ({})",i+1,state(&job["state"]),job["url"].as_str().unwrap_or(""));
+        if let Some(check)=job["first_failing_check"].as_str().filter(|_|job["state"]=="failed") {text+=&format!("; первая ошибка (исходная проверка): {check}");}
+        text.push('.');
+    }
+    let later=&v["later_main"];
+    if later.is_null() {text+="\nБолее поздний конвейер main со слиянием не наблюдался.";} else {
+        text+=&format!("\nБолее поздний конвейер main со слиянием: {} ({}).",state(&later["state"]),later["url"].as_str().unwrap_or(""));
+    }
+    text+=match v["live_includes"].as_bool() {Some(true)=>"\nLIVE содержит слияние.",Some(false)=>"\nLIVE отстаёт от слияния.",None=>"\nLIVE: включение слияния не подтверждено."};
+    if let Some(reason)=v["live_reason"].as_str() {text+=&format!(" {}.",delivery_reason_ru(reason));}
+    text
+}
+fn delivery_reason_ru(reason:&str)->String {
+    match reason {
+        "Delivery reader failed"=>"Чтение состояния доставки не удалось",
+        "Merge identity unavailable"=>"Идентификатор слияния недоступен",
+        "Project is not registered"=>"Проект не зарегистрирован",
+        "Release configuration missing"=>"Настройка выпуска отсутствует",
+        "Release registration changed"=>"Регистрация выпуска изменилась",
+        "Registered root unreadable"=>"Зарегистрированный корень недоступен для чтения",
+        "Registered root changed"=>"Зарегистрированный корень изменился",
+        "Git read failed; deployment state unknown"=>"Чтение Git не удалось; состояние развёртывания неизвестно",
+        "Git output unavailable"=>"Результат чтения Git недоступен",
+        "Commit identity unavailable"=>"Идентификатор коммита недоступен",
+        "Merged/deployed SHA unavailable"=>"SHA слияния или развёртывания недоступен",
+        "LIVE ref missing"=>"Ссылка LIVE не настроена",
+        "Delivery adapter failed; diagnostic audit unavailable"=>"Адаптер доставки не сработал; аудит диагностики недоступен",
+        "Delivery adapter failed; pipeline state unknown"=>"Адаптер доставки не сработал; состояние конвейера неизвестно",
+        "Delivery adapter JSON unreadable"=>"JSON адаптера доставки не читается",
+        "Delivery adapter job state missing or invalid"=>"Состояние задания адаптера доставки отсутствует или некорректно",
+        "Delivery adapter job link missing or invalid"|"Delivery adapter job link invalid"=>"Ссылка задания адаптера доставки отсутствует или некорректна",
+        "Delivery adapter merge identity/time missing or mismatched"=>"Идентификатор или время слияния в адаптере доставки отсутствуют или не совпадают",
+        "First main pipeline excludes merge"=>"Первый конвейер main не содержит слияние",
+        "Delivery adapter smoke attempts missing"=>"Адаптер доставки не сообщил попытки проверки DEV",
+        "Delivery adapter first failing check missing"=>"Адаптер доставки не сообщил первую ошибку проверки",
+        "Delivery adapter later main evidence missing"=>"Адаптер доставки не сообщил данные о более позднем конвейере main",
+        "Later main pipeline excludes merge"=>"Более поздний конвейер main не содержит слияние",
+        // These are already bounded/sanitized boundary errors, never adapter stderr.
+        // Preserve an unfamiliar source finding instead of guessing its meaning.
+        other=>return format!("Исходная причина: {other}"),
+    }.into()
+}
 fn project_numbers(j:&Journal,p:&str,tasks:&Value)->Result<std::collections::BTreeSet<i64>,String> {
     let mut numbers=std::collections::BTreeSet::new();for t in tasks.as_array().ok_or("Task list unavailable")? {if let Some(n)=t["n"].as_i64(){numbers.insert(n);}}
     let mut q=j.0.prepare("SELECT number FROM tasks WHERE project=?1 ORDER BY observed DESC LIMIT 12").map_err(err)?;
@@ -564,6 +625,30 @@ mod tests {
         assert_eq!(release_text("LIVE SHA: unknown",true),"LIVE SHA: нет данных");
         assert_eq!(release_text("LIVE SHA: abc123",true),"LIVE SHA: abc123");
         assert_eq!(crate::builtins::localized("Release started.",Some("ru"),false),"Выпуск начат.");
+    }
+    // §6 / #344: owned delivery prose must follow the request language while
+    // source check names, timestamps, hashes and pipeline links remain literal.
+    #[test]
+    fn language_344_delivery_paths() {
+        let v=json!({"stage":"DEV smoke","dev_sha":"abc123","merge":"def456","merged_at":"2026-11-04T10:00:00Z",
+            "first_main":{"state":"success","url":"https://example.invalid/p/1","deploy":{"state":"success","url":"https://example.invalid/j/2"},
+                "smoke":[{"state":"failed","url":"https://example.invalid/j/3","first_failing_check":"invented source check"}]},
+            "later_main":{"state":"running","url":"https://example.invalid/p/4"},"live_includes":false});
+        let ru=delivery_text_localized(&v,true);
+        for expected in ["Этап доставки: проверка DEV", "успешно", "ошибка", "выполняется", "LIVE отстаёт", "abc123", "def456", "2026-11-04T10:00:00Z", "https://example.invalid/j/3", "invented source check"] {
+            assert!(ru.contains(expected),"missing {expected}: {ru}");
+        }
+        assert_eq!(delivery_text_localized(&v,false),delivery_text(&v));
+        let canceled=delivery_text_localized(&json!({"stage":"open","first_main":{"state":"canceled"},"live_reason":"Git read failed; deployment state unknown"}),true);
+        assert!(canceled.contains("Этап доставки: открыто") && canceled.contains("отменено") && canceled.contains("Чтение Git не удалось"),"{canceled}");
+        let identity=delivery_text_localized(&json!({"stage":"closed","reason":"Merge identity unavailable"}),true);
+        assert!(identity.contains("Идентификатор слияния недоступен"),"{identity}");
+
+        let missing=delivery_text_localized(&json!({"reason":"Delivery reader failed"}),true);
+        assert!(missing.contains("нет данных") && missing.contains("Чтение состояния доставки не удалось"),"{missing}");
+        assert!(!missing.contains("Delivery reader failed"),"internal reason must stay in audit");
+        let unknown=delivery_text_localized(&json!({"stage":"foreign","first_main":{"state":"foreign"},"live_reason":"invented source reason"}),true);
+        assert!(unknown.contains("LIVE: включение слияния не подтверждено") && unknown.contains("Исходная причина: invented source reason") && !unknown.contains("foreign"),"{unknown}");
     }
     fn fixture(tag:&str)->Fixture {
         let dir=std::env::temp_dir().join(format!("pilotq-release-{tag}-{}",std::process::id()));let _=std::fs::remove_dir_all(&dir);std::fs::create_dir_all(&dir).unwrap();
