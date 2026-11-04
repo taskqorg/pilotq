@@ -582,3 +582,7 @@ Note6566515450 authorizes the [guarded combined handoff](knf-accessor-plan.md#co
 ## Supported offline CLI preparation (note6626590400)
 
 [The exact CLI build/short-quality handoff](giga344-cli-plan.md) pins the full offline closure and original-caps/shared600s PM argv. Preparation only: no configure/build/model episode, selection or installed change. It supersedes missing supported-build recipe status; earlier numerical differences remain unqualified.
+
+## Terminal CLI build result
+
+The corrected v2 episode timed out under the original600s/caps before a binary or model load. [Actual result and evidence](giga344-cli-plan.md#actual-v2-result-terminal-timeout) supersede the earlier runnable-handoff requests. Do not repeat either episode or propose another build under these caps; ASR remains unqualified (§9, R19).

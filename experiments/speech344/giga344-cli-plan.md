@@ -1,6 +1,6 @@
-# Prepared supported offline CLI / short-quality PM handoff
+# Terminal supported offline CLI build experiment
 
-Preparation authorized by note6626590400. **No configure, compile, link, model load or inference has run.** PM must separately approve and dispatch this one episode. Existing Russian executable, assets, settings and services remain untouched (R5, R19, §9).
+**Terminal: do not run this recipe again.** PM ran v1 once (API mismatch) and corrected v2 once (original600s timeout). No binary/model/quality result was obtained. The recipe below is retained historical evidence, not an execution request. Preparation was authorized by note6626590400. Existing Russian executable, assets, settings and services remain untouched (R5, R19, §9).
 
 ## Exact closure
 
@@ -64,3 +64,9 @@ PM ran v1 once at1bd9bbb: build failed after111s/exit1 before model load or reco
 The mistaken override followed transitive kaldifst1.8.0's April pin instead of the owning Sherpa `cmake/openfst.cmake` July9 pin. V2 uses that exact csukuangfj fork archive,1501685bytes, full digest in the table. Its COPYING digest is unchanged; actual `far.h` contains the stream declaration/implementation (SHA256 c6ad725b0819f3c8020e487dc24318996d1bb21acd7da5095485746f29f28b74). No target or validation was removed. The guard checks the override URL/digest against the extracted owning Sherpa declaration before OpenFst extraction. The old actual entry is rejected; the corrected actual entry passes. Six handoff guards and six unchanged KNF guards pass. This is static pin/guard evidence, not compiler red/green: no worker configure/build/model run is authorized. Only the separately approved PM v2 run can establish build outcome.
 
 All other archives, model/fixtures, commands, quality references, caps, readiness10s, shared600s and cleanup remain unchanged. Preserve the old April archive and failed v1 evidence. Stop on any v2 failure without retry/fallback, new dependencies or limit increases. Official equivalence, numerical qualification and ASR acceptance remain open (R5, §9, R19).
+
+## Actual v2 result: terminal timeout
+
+PM note6627942579 and retained runner/observations show timeout/exit124 at601.022s. Configure5.6766s, build586.4589s, last progress29%; no compile diagnostic beyond termination, no repeat of v1 FAR overload error. No binary/model load/recognition exists. The build did not fit this600s original-caps episode. Resource pressure: memory.high2051370 events, no OOM; PM reports1G peak and256M swap cap reached. Worker verified empty cases/no executable and recorded groups reaped/gone; PM independently verified host cleanup/services unchanged. [The report](../../docs/research/344.md#terminal-cli-v2-timeout-note6627942579) pins actual evidence hashes and remaining gaps.
+
+This supersedes all approval/dispatch requests above: no retry/fallback/limit increase or further build run under these caps. Preserve v1/v2 outputs and installed Russian bytes/settings. ASR and production qualification remain open (§9, R19).
