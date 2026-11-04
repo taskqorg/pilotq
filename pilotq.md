@@ -29,9 +29,9 @@ Owner and explicit shell-grant routes may run authorized conversational loops un
 ## 1. Scope and input boundaries
 
 **Proposed scope:** one Linux host, one Telegram bot, one manager runtime, existing TaskQ boards and explicitly registered project roots. The input choices below are mandatory within that scope.
-
 Accept text, replies, task links, inline decisions, photos and image documents with captions retained. Recognize Russian and English automatically, including both within one recording, across voice notes, audio files, audio documents and video speech. No language switch or per-recording retry selection; Hebrew is not required. Preserve existing Russian quality until qualified normal activation.
-Photos and arbitrary documents may be TaskQ reply attachments through answer, steer and owner requeue. Prefer one multilingual recognition path; a language label alone proves neither transcription nor mixed-speech quality.
+Photos and arbitrary documents may be TaskQ reply attachments through answer, steer and owner requeue. A language label alone proves neither transcription nor mixed-speech quality.
+Stock GigaAM-Multilingual large int8 uses one path; lowercase, no punctuation and some Cyrillic English transliteration are known limits. Text languages: ru/en/kk/ky/uz, not Hebrew. [Pinned assets and provisioning](docs/tester-guide.md#gigaam-multilingual-provisioning).
 Other documents up to 20 MiB reach the turn as readable original files with a PDF text, ZIP listing or plain-text preview, else the exact reason. The scoped `reads_document` tool pages current UTF-8 attachments beyond the preview without shell access; videos and video notes as frames plus recognized speech.
 An album is one durable request retaining every file and caption. Audio is recognized in bounded segments within the recording and turn limits. Larger files get one short file-limit line; other input one unsupported-input line, both in the chat's language.
 Recurring task execution stays with TaskQ or the existing scheduler. For the owner and explicit shell grantees, PilotQ also schedules route-local conversational loops and TaskQ board wakes under §2. Detailed media, retention and admission protections are in §§2, 5, 7 and 12.
@@ -68,7 +68,7 @@ Plain-language controls are primary. `/status`, `/stop` and `/new` remain availa
 
 ## 3. Architecture and authority
 
-**Mandatory:** one Rust binary on CoreQ; teloxide only for the Bot API; manager turns via pinned `agentq-runtime` runtime trait on Codex (app-server path) or Claude Code, per the installation `runtime` (default Codex) or a route override; SQLite journal; installed TaskQ CLI for execution; ffmpeg and static `sherpa-onnx-offline` with existing GigaAM v3 RNNT-punct int8 for local Russian recognition.
+**Mandatory:** one Rust binary on CoreQ; teloxide only for the Bot API; manager turns via pinned `agentq-runtime` runtime trait on Codex (app-server path) or Claude Code, per the installation `runtime` (default Codex) or a route override; SQLite journal; installed TaskQ CLI for execution; ffmpeg and stock static `sherpa-onnx-offline` NeMo CTC (§1); legacy transducer rollback.
 
 [Architecture detail](docs/runtime-contract.md#3-architecture-and-ownership) assigns journal, runtime, proposal, TaskQ and agentq authority. PilotQ owns durable input and delivery; TaskQ owns admitted execution. Registered roots and host policy own capacity. Never discover roots or silently enroll projects.
 

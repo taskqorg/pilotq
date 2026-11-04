@@ -1,4 +1,6 @@
-# Candidate-only GigaAM multilingual patch
+# Rejected GigaAM multilingual patch (historical)
+
+Owner note6630454809 rejects this patch after the PM build/comparison added word errors and failed30–35-second files with `giga344 invalid feature input`. Do not build further or install it. The selected route is stock Sherpa NeMo CTC; the text below records the earlier patch-only preparation, not current authority.
 
 This is an unbuilt draft authorized by TaskQ note6604186692. It changes no PilotQ runtime or installed asset. It is not production selection, a build recipe or permission to execute a model (§9, R19). The approved automatic Russian/English goal, no manual selector/retry UI and latest-direct-address reply language remain unchanged.
 

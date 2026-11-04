@@ -95,6 +95,25 @@ fn recorded_version(bin: &str) -> Option<String> {
     Some(receipt["version"].as_str()?.to_string())
 }
 
+/// §1/#344: pinned community export, not official checkpoint-equivalence attestation.
+/// Provisioning never downloads or rewrites an asset; doctor verifies bytes before loading it.
+pub const CTC_ORIGIN: &str = "https://huggingface.co/fussraider/GigaAM-Multilingual-sherpa-onnx-ctc/resolve/9f5a77e8975211abe8511693accd3a63ee1e9f43";
+pub const CTC_ASSETS: [(&str, u64, &str); 3] = [
+    ("model.int8.onnx", 591645642, "6b6f195026b0f90721cd4593c664becf009a71131550b664eec71446ec351c81"),
+    ("tokens.txt", 391, "9b5df7987cb4ca52c1a468649ce897fab1cd182067416e29fef49dfaa7a856c2"),
+    ("LICENSE", 1070, "f00de6715714c7a63d08639cdbfaa40224eefc407302614bd19f1a8b98c875aa"),
+];
+pub fn verify_ctc_assets(dir: &std::path::Path) -> Result<(), String> {
+    for (name, size, sha) in CTC_ASSETS {
+        let path = dir.join(name);
+        let fix = || format!("voice model verification failed: provision {name} from {CTC_ORIGIN}/{}; see docs/tester-guide.md", if name == "LICENSE" { name.to_string() } else { format!("large/{name}") });
+        if !std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() == size) { return Err(fix()); }
+        let bytes = std::fs::read(path).map_err(|_| fix())?;
+        coreq::update::verify(format!("{sha}  {name}").as_bytes(), name, &bytes).map_err(|_| fix())?;
+    }
+    Ok(())
+}
+
 pub fn report(c: Option<&crate::Config>) -> Value {
     let voice = c.and_then(|c|c.voice.as_ref());
     let mut checks = vec![
@@ -103,7 +122,7 @@ pub fn report(c: Option<&crate::Config>) -> Value {
         probe("ffmpeg",voice.map(|v|v.ffmpeg.as_str()),&["-version"],"6.1.0","ffmpeg version ","Install ffmpeg 6.1 or newer; set voice.ffmpeg"),
         if voice.is_some_and(|v| v.whisper) {
             probe("whisper-cli",voice.map(|v|v.recognizer.as_str()),&["--version"],"1.8.2","","Provision verified CPU whisper.cpp 1.8.2 or newer; set voice.recognizer and its verified .pilotq-version.json receipt (tester guide)")
-        } else { probe("sherpa-onnx-offline",voice.map(|v|v.recognizer.as_str()),&["--version"],"2.0.1","","Provision sherpa-onnx-offline 2.0.1 or newer; retain voice.recognizer and GigaAM model paths") },
+        } else { probe("sherpa-onnx-offline",voice.map(|v|v.recognizer.as_str()),&["--version"],"2.0.1","","Provision sherpa-onnx-offline 2.0.1 or newer; set voice.recognizer and the pinned GigaAM-Multilingual large model directory (docs/tester-guide.md); preserve legacy assets") },
         probe("curl",Some("curl"),&["--version"],"7.68.0","curl ","Install curl 7.68 or newer on the service PATH"),
     ];
     // #265/#359: each runtime the installation or a route runs the manager on; without config, the default runtime

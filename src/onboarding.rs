@@ -162,7 +162,7 @@ fn report(tq:&Taskq,board:&str,doctor:&Value,status:&Value,service:&Value,at:i64
         ("telegram","Owner: verify the protected bot token and Telegram connectivity; run pilotq doctor --json"),
         ("runtime","Owner: restore the isolated subscription login of each manager runtime configured for PilotQ; run pilotq doctor --json"),
         ("taskq","Owner: verify the configured TaskQ binary, root and board; run pilotq doctor --json"),
-        ("voice","Owner: configure voice.ffmpeg, voice.recognizer and GigaAM model files using docs/tester-guide.md; run pilotq doctor --json"),
+        ("voice","Owner: configure voice.ffmpeg, stock voice.recognizer and voice.model/model_type=nemo_ctc with pinned GigaAM-Multilingual large assets using docs/tester-guide.md; run pilotq doctor --json"),
     ] {
         if doctor["checks"][check]!="ok" { gap(&mut gaps,check,step); }
     }
@@ -462,7 +462,7 @@ fn remedy_ru(check:&str,fix:&str)->String {
         "runtime"=>Some("Владелец: восстановите изолированный вход по подписке для каждой настроенной среды выполнения PilotQ; выполните pilotq doctor --json."),
         "codex"=>Some("Владелец: восстановите изолированный вход Codex в ChatGPT для PilotQ; выполните pilotq doctor --json."),
         "taskq"=>Some("Владелец: проверьте исполняемый файл TaskQ, корень и доску; выполните pilotq doctor --json."),
-        "voice"=>Some("Владелец: настройте voice.ffmpeg, voice.recognizer и файлы GigaAM по docs/tester-guide.md; выполните pilotq doctor --json."),
+        "voice"=>Some("Владелец: настройте voice.ffmpeg, стандартный voice.recognizer и voice.model/model_type=nemo_ctc с проверенными файлами GigaAM-Multilingual large по docs/tester-guide.md; выполните pilotq doctor --json."),
         "host"=>Some("Нет свежего сигнала от хоста TaskQ для этой доски; задачи некому выполнять. Владелец: восстановите сервис TaskQ проекта на хосте выполнения и повторите проверку."),
         "claim"=>Some("PM: завершите обязательную настройку create_claim_issue через TaskQ Add project с существующими учётными данными хоста; подтвердите результат через TaskQ и повторите проверку."),
         "service" if fix=="PilotQ: waiting for TaskQ to observe the attached project; checks retry automatically."=>Some("PilotQ ожидает, когда TaskQ увидит подключённый проект; проверки повторяются автоматически."),

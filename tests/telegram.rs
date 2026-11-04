@@ -3449,14 +3449,73 @@ echo '{"transcription":[{"text":"New speech engine."}]}' > "$2.json""#);
     stop(c, d);
 }
 
+// §1/§9/#344: selected CTC route is captured until restart; rollback restores legacy.
+// Invalid route types and conflicting old overrides fail closed rather than silently selecting Russian.
+#[test]
+fn ctc_config_activation_344() {
+    let (d, st) = setup("ctc-activation344", vec![]);
+    use_codex(&d, &script(&d, "fake-codex", FAKE));
+    use_voice(&d);
+    let path = d.join("config.json");
+    let original = fs::read(&path).unwrap();
+    let mut staged: Value = serde_json::from_slice(&original).unwrap();
+    staged["voice"]["model_type"] = json!("nemo_ctc");
+    staged["voice"]["model"] = json!(d.join("ctc-model"));
+    let send = |id| push(&st,voice_update(id,OWNER,"voice",json!({"file_id":format!("invented-voice-ctc-{id}"),"file_unique_id":format!("invented-{id}"),"file_size":24,"duration":3,"mime_type":"audio/ogg"})));
+    let mut c = spawn(&d,None);
+    send(1);
+    wait("legacy answer",15,||try_query(&d,"SELECT count(*) FROM requests WHERE state='answered'")==Some(1));
+    fs::write(&path,staged.to_string()).unwrap();
+    send(2);
+    wait("captured legacy answer",15,||try_query(&d,"SELECT count(*) FROM requests WHERE state='answered'")==Some(2));
+    assert!(fs::read_to_string(d.join("recognizer.log")).unwrap().lines().all(|l|l.contains("--model-type=nemo_transducer")));
+    c.kill().unwrap(); c.wait().unwrap();
+    use std::os::unix::process::CommandExt;
+    for invalid in [json!(42),json!("unsupported"),Value::Null] {
+        let mut bad = staged.clone(); bad["voice"]["model_type"] = invalid;
+        fs::write(&path,bad.to_string()).unwrap();
+        let mut refused = Svc(service(&d,None).stderr(Stdio::piped()).process_group(0).spawn().unwrap());
+        wait("invalid route refused",5,||refused.try_wait().unwrap().is_some());
+        assert!(!refused.wait().unwrap().success());
+        let mut error=String::new(); refused.stderr.take().unwrap().read_to_string(&mut error).unwrap();
+        assert!(error.contains("voice.model_type"),"{error}");
+    }
+    let mut bad = staged.clone();
+    bad["voice"]["whisper_recognizer"] = json!("invented");
+    bad["voice"]["whisper_model"] = json!("invented");
+    fs::write(&path,bad.to_string()).unwrap();
+    let mut refused = Svc(service(&d,None).stderr(Stdio::piped()).process_group(0).spawn().unwrap());
+    wait("conflicting route refused",5,||refused.try_wait().unwrap().is_some());
+    assert!(!refused.wait().unwrap().success());
+    fs::write(&path,staged.to_string()).unwrap();
+    c = spawn(&d,None); send(3);
+    wait("CTC answer",15,||try_query(&d,"SELECT count(*) FROM requests WHERE state='answered'")==Some(3));
+    assert!(fs::read_to_string(d.join("recognizer.log")).unwrap().lines().last().unwrap().contains("--nemo-ctc-model="));
+    c.kill().unwrap(); c.wait().unwrap();
+    fs::write(&path,original).unwrap();
+    c = spawn(&d,None); send(4);
+    wait("legacy rollback answer",15,||try_query(&d,"SELECT count(*) FROM requests WHERE state='answered'")==Some(4));
+    assert!(fs::read_to_string(d.join("recognizer.log")).unwrap().lines().last().unwrap().contains("--model-type=nemo_transducer"));
+    stop(c,d);
+}
+
 // #104 A2/A3 / R13, R17: an OGG/Opus voice note, an audio file with a caption and an audio document reach the model as the
 // sender's marked transcript; the journal keeps file identity and transcript; no audio, URL or token reaches Codex.
 // Regression risk: voice falls back to the unsupported reply, or a transcript loses its caption, marker or audit record.
 #[test]
 fn telegram_voice_becomes_sender_text() {
-    let (d, st) = setup("voice", vec![]);
+    for ctc in [false, true] {
+    let (d, st) = setup(if ctc { "voice-ctc344" } else { "voice" }, vec![]);
     use_codex(&d, &script(&d, "fake-codex", FAKE));
     use_voice(&d);
+    if ctc {
+        fs::create_dir_all(d.join("model")).unwrap();
+        fs::write(d.join("model/model.int8.onnx"), b"invented CTC fixture").unwrap();
+        let path = d.join("config.json");
+        let mut config: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        config["voice"]["model_type"] = json!("nemo_ctc");
+        fs::write(path,config.to_string()).unwrap();
+    }
     let c = spawn(&d, None);
     let mut caption = voice_update(2, OWNER, "audio", json!({"file_id":"invented-voice-audio","file_unique_id":"invented-a","file_size":24,"duration":4,"mime_type":"audio/mpeg"}));
     caption["message"]["caption"] = json!("about the disk");
@@ -3492,11 +3551,18 @@ fn telegram_voice_becomes_sender_text() {
     let calls = fs::read_to_string(d.join("recognizer.log")).unwrap();
     assert_eq!(calls.lines().count(), 4);
     for l in calls.lines() {
-        assert!(l.contains("/model/encoder.int8.onnx") && l.contains("--model-type=nemo_transducer") && l.contains("--num-threads=2") && !l.contains("--language") && !l.contains("--translate"));
+        assert!(l.contains("--num-threads=2") && !l.contains("--language") && !l.contains("--translate"));
+        if ctc {
+            assert!(l.contains("--nemo-ctc-model=") && l.contains("/model/model.int8.onnx") && l.contains("--provider=cpu") && l.contains("--decoding-method=greedy_search"));
+            assert!(!l.contains("--encoder="));
+        } else {
+            assert!(l.contains("/model/encoder.int8.onnx") && l.contains("--model-type=nemo_transducer"));
+        }
         let wav = l.rsplit(' ').next().unwrap();
         assert!(!Path::new(wav).exists(), "temporary audio removed after recognition");
     }
     stop(c, d);
+    }
 }
 
 // #104 A2/A4 / R10, §12: undecodable, oversized, too long or unconfigured voice ends in one short line and no model turn;
