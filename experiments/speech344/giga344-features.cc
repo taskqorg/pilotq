@@ -27,12 +27,11 @@ int main(int argc, char **argv) {
   c.sampling_rate=16000;c.feature_dim=64;c.low_freq=0;c.high_freq=8000;
   c.remove_dc_offset=false;c.preemph_coeff=0;c.window_type="hann";
   c.round_to_power_of_two=false;c.dither=0;c.normalize_samples=true;
-  c.frame_length_ms=20;c.frame_shift_ms=10;c.snip_edges=true;c.is_librosa=true;
 #ifdef SHERPA_ONNX_EXPERIMENT_GIGA344
+  c.frame_length_ms=20;c.frame_shift_ms=10;c.snip_edges=true;c.is_librosa=true;
   c.is_giga344=true;
-#else
-#error candidate feature harness requires explicit experimental define
 #endif
+  // Disabled and pristine builds keep upstream GigaAM defaults (25ms, nonsnipped).
   sherpa_onnx::FeatureExtractor first(c),second(c);
   if (!pcm.empty()) first.AcceptWaveform(16000,pcm.data(),pcm.size());
   first.InputFinished();

@@ -573,3 +573,8 @@ PM note6565715149 requests [the pinned KNF feature-only accessor source/build-cl
 ## Combined KNF feature-only PM episode preparation
 
 Note6566515450 authorizes the [guarded combined handoff](knf-accessor-plan.md#combined-guarded-pm-handoff-note6566515450), not worker acquisition/build/execution. That section gives exact script/manifest hashes and inner PM argv, two full archive digests/license chain, original actual caps/shared600s, same55 PCM hashes, comparison/readback and process-group/independent cleanup boundaries. The new `knf-frontend-episode.py` is unexecuted; local synthetic guard/AST/help checks prove only preparation guards. No numerical tolerance or ASR/parity/activation claim.
+
+
+## Prepared GigaAM no-model build handoff
+
+[The build-only plan](giga344-build-plan.md) is the current exact dependency/command/PM-wrapper recipe under note6625480080. It supersedes missing-recipe status only; no compiler, linker, feature or model execution has occurred. Keep all original Russian assets/settings and prior failed evidence. PM reviews the final identities before one original-caps/shared600s episode (§9, R19).
