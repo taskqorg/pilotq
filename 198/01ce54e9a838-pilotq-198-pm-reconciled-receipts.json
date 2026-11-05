@@ -1,0 +1,1590 @@
+{
+  "schema": 2,
+  "task": "taskqorg/pilotq#198",
+  "observed_utc": "2026-11-05T00:33:55.511677+00:00",
+  "client": {
+    "app": "Telegram Web A",
+    "version": "12.0.48",
+    "route": "PilotQ TEST / PilotQ",
+    "os": "macOS 27.2 (26B123)",
+    "additional_native_client": "Telegram for macOS 13.1.0 (283357)",
+    "browser": "Chrome 156.0.8078.80"
+  },
+  "installed": {
+    "version": "0.2.40",
+    "source": "79e2c9aa335cdfbfd4061da261d40258aeb75088",
+    "pid": 3191988,
+    "binary_sha256": "c4f07ad7344e4ce86ff61b2508069691856277b514e932f0fa3df9ead023a6bd",
+    "taskq": "4.6.78",
+    "taskq_binary_sha256": "f0bc1ebd3043270ef50d047c1f054aa9c7157eb455d1fb4afab826789e685473"
+  },
+  "requests": [
+    {
+      "id": 474,
+      "message": 688,
+      "kind": "control",
+      "state": "answered",
+      "reply_chars": 13
+    },
+    {
+      "id": 475,
+      "message": 690,
+      "kind": "builtin",
+      "state": "answered",
+      "reply_chars": 772
+    },
+    {
+      "id": 476,
+      "message": 692,
+      "kind": "builtin",
+      "state": "answered",
+      "reply_chars": 7017
+    },
+    {
+      "id": 477,
+      "message": 694,
+      "kind": "control",
+      "state": "failed",
+      "reply_chars": 39
+    },
+    {
+      "id": 478,
+      "message": 696,
+      "kind": "document",
+      "state": "answered",
+      "reply_chars": 193
+    },
+    {
+      "id": 479,
+      "message": 700,
+      "kind": "image",
+      "state": "answered",
+      "reply_chars": 101
+    },
+    {
+      "id": 480,
+      "message": 702,
+      "kind": "document",
+      "state": "answered",
+      "reply_chars": 138
+    },
+    {
+      "id": 481,
+      "message": 704,
+      "kind": "file_limit",
+      "state": "failed",
+      "reply_chars": 64
+    },
+    {
+      "id": 482,
+      "message": 706,
+      "kind": "text",
+      "state": "answered",
+      "reply_chars": 7860
+    },
+    {
+      "id": 483,
+      "message": 709,
+      "kind": "text",
+      "state": "answered",
+      "reply_chars": 273
+    },
+    {
+      "id": 484,
+      "message": 710,
+      "kind": "choice",
+      "state": "answered",
+      "reply_chars": 29
+    },
+    {
+      "id": 485,
+      "message": 712,
+      "kind": "document",
+      "state": "answered",
+      "reply_chars": 186
+    },
+    {
+      "id": 486,
+      "message": 714,
+      "kind": "text",
+      "state": "cancelled",
+      "reply_chars": null
+    },
+    {
+      "id": 487,
+      "message": 715,
+      "kind": "control",
+      "state": "answered",
+      "reply_chars": 39
+    },
+    {
+      "id": 488,
+      "message": 717,
+      "kind": "document",
+      "state": "answered",
+      "reply_chars": 107
+    },
+    {
+      "id": 489,
+      "message": 719,
+      "kind": "text",
+      "state": "answered",
+      "reply_chars": 1556
+    },
+    {
+      "id": 490,
+      "message": 722,
+      "kind": "text",
+      "state": "answered",
+      "reply_chars": 252
+    },
+    {
+      "id": 491,
+      "message": 723,
+      "kind": "cancel",
+      "state": "answered",
+      "reply_chars": 13
+    },
+    {
+      "id": 492,
+      "message": 724,
+      "kind": "text",
+      "state": "answered",
+      "reply_chars": 973
+    },
+    {
+      "id": 493,
+      "message": 726,
+      "kind": "control",
+      "state": "answered",
+      "reply_chars": 146
+    },
+    {
+      "id": 494,
+      "message": 728,
+      "kind": "control",
+      "state": "answered",
+      "reply_chars": 63,
+      "reply_to": 3
+    },
+    {
+      "id": 495,
+      "message": 730,
+      "kind": "image",
+      "state": "answered",
+      "reply_chars": 105,
+      "reply_to": 3
+    },
+    {
+      "id": 496,
+      "message": 732,
+      "kind": "document",
+      "state": "answered",
+      "reply_chars": 230,
+      "reply_to": 3
+    },
+    {
+      "id": 497,
+      "message": 733,
+      "kind": "voice",
+      "state": "answered",
+      "reply_chars": 78,
+      "reply_to": 3
+    },
+    {
+      "id": 498,
+      "message": 736,
+      "kind": "control",
+      "state": "answered",
+      "reply_chars": 63,
+      "reply_to": 3
+    },
+    {
+      "id": 499,
+      "message": 738,
+      "kind": "image",
+      "state": "answered",
+      "reply_chars": 67,
+      "reply_to": 3
+    },
+    {
+      "id": 500,
+      "message": 740,
+      "kind": "voice",
+      "state": "answered",
+      "reply_chars": 116,
+      "reply_to": 3
+    },
+    {
+      "id": 501,
+      "message": 742,
+      "kind": "voice",
+      "state": "answered",
+      "reply_chars": 128,
+      "reply_to": 741
+    },
+    {
+      "id": 502,
+      "message": 745,
+      "kind": "document",
+      "state": "answered",
+      "reply_chars": 249,
+      "reply_to": 3
+    },
+    {
+      "id": 503,
+      "message": 746,
+      "kind": "text",
+      "state": "answered",
+      "reply_chars": 95,
+      "reply_to": 3
+    },
+    {
+      "id": 504,
+      "message": 749,
+      "kind": "builtin",
+      "state": "answered",
+      "reply_chars": 879,
+      "reply_to": 3
+    },
+    {
+      "id": 505,
+      "message": 751,
+      "kind": "text",
+      "state": "answered",
+      "reply_chars": 491,
+      "reply_to": 3
+    },
+    {
+      "id": 506,
+      "message": 753,
+      "kind": "text",
+      "state": "answered",
+      "reply_chars": 446,
+      "reply_to": 3
+    },
+    {
+      "id": 507,
+      "message": 755,
+      "kind": "text",
+      "state": "answered",
+      "reply_chars": 421,
+      "reply_to": 3
+    },
+    {
+      "id": 508,
+      "message": 757,
+      "kind": "text",
+      "state": "answered",
+      "reply_chars": 872
+    },
+    {
+      "id": 509,
+      "message": 758,
+      "kind": "image",
+      "state": "answered",
+      "reply_chars": 134
+    }
+  ],
+  "outbox": [
+    {
+      "request_id": 474,
+      "id": 6936,
+      "kind": "reply",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 689,
+      "error": null
+    },
+    {
+      "request_id": 475,
+      "id": 6937,
+      "kind": "reply",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 691,
+      "error": null
+    },
+    {
+      "request_id": 476,
+      "id": 6938,
+      "kind": "reply",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 693,
+      "error": null
+    },
+    {
+      "request_id": 477,
+      "id": 6939,
+      "kind": "reply",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 695,
+      "error": null
+    },
+    {
+      "request_id": 478,
+      "id": 6941,
+      "kind": "rich",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 699,
+      "error": null
+    },
+    {
+      "request_id": 479,
+      "id": 6944,
+      "kind": "rich",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 701,
+      "error": null
+    },
+    {
+      "request_id": 480,
+      "id": 6947,
+      "kind": "rich",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 703,
+      "error": null
+    },
+    {
+      "request_id": 481,
+      "id": 6949,
+      "kind": "reply",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 705,
+      "error": null
+    },
+    {
+      "request_id": 482,
+      "id": 6952,
+      "kind": "rich",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 708,
+      "error": null
+    },
+    {
+      "request_id": 482,
+      "id": 6955,
+      "kind": "turn_progress_closed",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 707,
+      "error": null
+    },
+    {
+      "request_id": 483,
+      "id": 6957,
+      "kind": "rich",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 710,
+      "error": null
+    },
+    {
+      "request_id": 483,
+      "id": 6959,
+      "kind": "choice_answered",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 710,
+      "error": null
+    },
+    {
+      "request_id": 484,
+      "id": 6961,
+      "kind": "rich",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 711,
+      "error": null
+    },
+    {
+      "request_id": 485,
+      "id": 6964,
+      "kind": "rich",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 713,
+      "error": null
+    },
+    {
+      "request_id": 487,
+      "id": 6967,
+      "kind": "reply",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 716,
+      "error": null
+    },
+    {
+      "request_id": 488,
+      "id": 6969,
+      "kind": "rich",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 718,
+      "error": null
+    },
+    {
+      "request_id": 489,
+      "id": 6973,
+      "kind": "rich",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 721,
+      "error": null
+    },
+    {
+      "request_id": 489,
+      "id": 6975,
+      "kind": "turn_progress_closed",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 720,
+      "error": null
+    },
+    {
+      "request_id": 490,
+      "id": 6978,
+      "kind": "rich",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 723,
+      "error": null
+    },
+    {
+      "request_id": 491,
+      "id": 6981,
+      "kind": "draft_closed",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 723,
+      "error": null
+    },
+    {
+      "request_id": 491,
+      "id": 6982,
+      "kind": "plan_answered",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 723,
+      "error": null
+    },
+    {
+      "request_id": 492,
+      "id": 6984,
+      "kind": "rich",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 725,
+      "error": null
+    },
+    {
+      "request_id": 493,
+      "id": 6986,
+      "kind": "reply",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 727,
+      "error": null
+    },
+    {
+      "request_id": 494,
+      "id": 6987,
+      "kind": "reply",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 729,
+      "error": null
+    },
+    {
+      "request_id": 495,
+      "id": 6988,
+      "kind": "reaction",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 730,
+      "error": null
+    },
+    {
+      "request_id": 495,
+      "id": 6989,
+      "kind": "rich",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 731,
+      "error": null
+    },
+    {
+      "request_id": 495,
+      "id": 6990,
+      "kind": "rich_part",
+      "state": "superseded",
+      "attempts": 0,
+      "possible_duplicate": 0,
+      "sent_message": null,
+      "error": null
+    },
+    {
+      "request_id": 496,
+      "id": 6991,
+      "kind": "reaction",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 732,
+      "error": null
+    },
+    {
+      "request_id": 497,
+      "id": 6992,
+      "kind": "reaction",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 733,
+      "error": null
+    },
+    {
+      "request_id": 496,
+      "id": 6993,
+      "kind": "rich",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 734,
+      "error": null
+    },
+    {
+      "request_id": 496,
+      "id": 6994,
+      "kind": "rich_part",
+      "state": "superseded",
+      "attempts": 0,
+      "possible_duplicate": 0,
+      "sent_message": null,
+      "error": null
+    },
+    {
+      "request_id": 497,
+      "id": 6995,
+      "kind": "rich",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 735,
+      "error": null
+    },
+    {
+      "request_id": 497,
+      "id": 6996,
+      "kind": "rich_part",
+      "state": "superseded",
+      "attempts": 0,
+      "possible_duplicate": 0,
+      "sent_message": null,
+      "error": null
+    },
+    {
+      "request_id": 498,
+      "id": 6997,
+      "kind": "reply",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 737,
+      "error": null
+    },
+    {
+      "request_id": 499,
+      "id": 6998,
+      "kind": "reaction",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 738,
+      "error": null
+    },
+    {
+      "request_id": 499,
+      "id": 6999,
+      "kind": "rich",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 739,
+      "error": null
+    },
+    {
+      "request_id": 499,
+      "id": 7000,
+      "kind": "rich_part",
+      "state": "superseded",
+      "attempts": 0,
+      "possible_duplicate": 0,
+      "sent_message": null,
+      "error": null
+    },
+    {
+      "request_id": 500,
+      "id": 7001,
+      "kind": "reaction",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 740,
+      "error": null
+    },
+    {
+      "request_id": 500,
+      "id": 7002,
+      "kind": "rich",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 741,
+      "error": null
+    },
+    {
+      "request_id": 500,
+      "id": 7003,
+      "kind": "rich_part",
+      "state": "superseded",
+      "attempts": 0,
+      "possible_duplicate": 0,
+      "sent_message": null,
+      "error": null
+    },
+    {
+      "request_id": 501,
+      "id": 7004,
+      "kind": "reaction",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 742,
+      "error": null
+    },
+    {
+      "request_id": 501,
+      "id": 7005,
+      "kind": "rich",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 743,
+      "error": null
+    },
+    {
+      "request_id": 501,
+      "id": 7006,
+      "kind": "rich_part",
+      "state": "superseded",
+      "attempts": 0,
+      "possible_duplicate": 0,
+      "sent_message": null,
+      "error": null
+    },
+    {
+      "request_id": 502,
+      "id": 7007,
+      "kind": "reaction",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 745,
+      "error": null
+    },
+    {
+      "request_id": 503,
+      "id": 7008,
+      "kind": "reaction",
+      "state": "delivered",
+      "attempts": 2,
+      "possible_duplicate": 1,
+      "sent_message": 746,
+      "error": "Bot API connection failed"
+    },
+    {
+      "request_id": 502,
+      "id": 7009,
+      "kind": "rich",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 747,
+      "error": null
+    },
+    {
+      "request_id": 502,
+      "id": 7010,
+      "kind": "rich_part",
+      "state": "superseded",
+      "attempts": 0,
+      "possible_duplicate": 0,
+      "sent_message": null,
+      "error": null
+    },
+    {
+      "request_id": 503,
+      "id": 7011,
+      "kind": "rich",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 748,
+      "error": null
+    },
+    {
+      "request_id": 503,
+      "id": 7012,
+      "kind": "rich_part",
+      "state": "superseded",
+      "attempts": 0,
+      "possible_duplicate": 0,
+      "sent_message": null,
+      "error": null
+    },
+    {
+      "request_id": 504,
+      "id": 7013,
+      "kind": "reply",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 750,
+      "error": null
+    },
+    {
+      "request_id": 505,
+      "id": 7014,
+      "kind": "reaction",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 751,
+      "error": null
+    },
+    {
+      "request_id": 505,
+      "id": 7015,
+      "kind": "rich",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 752,
+      "error": null
+    },
+    {
+      "request_id": 505,
+      "id": 7016,
+      "kind": "rich_part",
+      "state": "superseded",
+      "attempts": 0,
+      "possible_duplicate": 0,
+      "sent_message": null,
+      "error": null
+    },
+    {
+      "request_id": 506,
+      "id": 7017,
+      "kind": "reaction",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 753,
+      "error": null
+    },
+    {
+      "request_id": 506,
+      "id": 7018,
+      "kind": "rich",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 754,
+      "error": null
+    },
+    {
+      "request_id": 506,
+      "id": 7019,
+      "kind": "rich_part",
+      "state": "superseded",
+      "attempts": 0,
+      "possible_duplicate": 0,
+      "sent_message": null,
+      "error": null
+    },
+    {
+      "request_id": 507,
+      "id": 7020,
+      "kind": "reaction",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 755,
+      "error": null
+    },
+    {
+      "request_id": 507,
+      "id": 7021,
+      "kind": "rich",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 756,
+      "error": null
+    },
+    {
+      "request_id": 507,
+      "id": 7022,
+      "kind": "rich_part",
+      "state": "superseded",
+      "attempts": 0,
+      "possible_duplicate": 0,
+      "sent_message": null,
+      "error": null
+    },
+    {
+      "request_id": 508,
+      "id": 7023,
+      "kind": "reaction",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 757,
+      "error": null
+    },
+    {
+      "request_id": 509,
+      "id": 7024,
+      "kind": "reaction",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 758,
+      "error": null
+    },
+    {
+      "request_id": 508,
+      "id": 7025,
+      "kind": "rich",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 759,
+      "error": null
+    },
+    {
+      "request_id": 508,
+      "id": 7026,
+      "kind": "rich_part",
+      "state": "superseded",
+      "attempts": 0,
+      "possible_duplicate": 0,
+      "sent_message": null,
+      "error": null
+    },
+    {
+      "request_id": 509,
+      "id": 7027,
+      "kind": "rich",
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "sent_message": 760,
+      "error": null
+    },
+    {
+      "request_id": 509,
+      "id": 7028,
+      "kind": "rich_part",
+      "state": "superseded",
+      "attempts": 0,
+      "possible_duplicate": 0,
+      "sent_message": null,
+      "error": null
+    }
+  ],
+  "tests": [
+    {
+      "case": "version",
+      "requests": [
+        474
+      ],
+      "verdict": "PASS",
+      "observation": "UI and journal show installed PilotQ 0.2.40."
+    },
+    {
+      "case": "short_help",
+      "requests": [
+        475
+      ],
+      "verdict": "PASS",
+      "observation": "One Russian help message, 772 characters; no appended TaskQ catalog."
+    },
+    {
+      "case": "taskq_help_catalog",
+      "requests": [
+        476
+      ],
+      "verdict": "PASS_OBSERVED_DELIVERY",
+      "observation": "7017-character live-catalog reply displayed through the catalog tail.",
+      "limit": "Catalog entries were visually inspected; no new exact canonical comparison against help JSON was performed in this run."
+    },
+    {
+      "case": "unknown_control",
+      "requests": [
+        477
+      ],
+      "verdict": "PASS_EXPECTED_REFUSAL",
+      "observation": "Russian one-line /help remedy; request failed as expected and reply delivered once."
+    },
+    {
+      "case": "document_album",
+      "requests": [
+        478
+      ],
+      "verdict": "PASS",
+      "observation": "Two TXT first-line markers and one ZIP entry name/43-byte size matched fixtures in one durable request.",
+      "limit": "Manager reading only; no worker forwarding."
+    },
+    {
+      "case": "photo",
+      "requests": [
+        479
+      ],
+      "verdict": "FAIL_SEMANTIC",
+      "observation": "Fixture and visible Telegram photo have six bands: red, yellow, green, cyan, blue, magenta. Reply names seven bands, inserting orange.",
+      "limit": "Transport reached current image; root cause of the model's extra color was not established."
+    },
+    {
+      "case": "exact_20_MiB",
+      "requests": [
+        480
+      ],
+      "verdict": "PASS_MANAGER_READING",
+      "observation": "20971520-byte file's final nonempty line matched the fixture; audit records native Python reading the full original file.",
+      "limit": "Owner/native-shell path; does not qualify restricted reads_document paging or TaskQ worker delivery."
+    },
+    {
+      "case": "over_20_MiB",
+      "requests": [
+        481
+      ],
+      "verdict": "PASS_EXPECTED_REFUSAL",
+      "observation": "20971521-byte document rejected as file_limit with one Russian file-specific refusal."
+    },
+    {
+      "case": "long_rich_reply",
+      "requests": [
+        482
+      ],
+      "verdict": "PASS_OBSERVED_DELIVERY",
+      "observation": "7860 characters, exactly P198-001 through P198-080 in order, final marker present, 160 bold delimiter pairs in source; one delivered rich final message and progress cleanup."
+    },
+    {
+      "case": "discussion_choice",
+      "requests": [
+        483,
+        484
+      ],
+      "verdict": "PASS_NARROW",
+      "observation": "Real first button selected. Original message 710 edited to chosen actor and option; both buttons removed. Card 27 used_request=484.",
+      "limit": "Discussion choice only; not TaskQ ask, foreign actor, stale/repeated callback or answer-elsewhere proof."
+    },
+    {
+      "case": "video",
+      "requests": [
+        485
+      ],
+      "verdict": "PARTIAL",
+      "observation": "2-second H264 fixture has yellow frames and no audio stream; PilotQ described yellow but reported ambiguous no-speech/decode reason for audio.",
+      "limit": "No claim of human speech, voice note, video-note or full video/audio qualification."
+    },
+    {
+      "case": "stop",
+      "requests": [
+        486,
+        487
+      ],
+      "verdict": "PASS_CANCELLATION_FAIL_LOCALIZATION",
+      "observation": "Native Python PID 2097458 observed alive, then /stop fenced run 270 after 26 seconds and request 486 became cancelled. PID absent afterward.",
+      "limit": "Stop acknowledgement was English for the Russian test conversation. No service restart was performed."
+    },
+    {
+      "case": "pdf",
+      "requests": [
+        488
+      ],
+      "verdict": "PASS_TEXT_EXTRACTION",
+      "observation": "Both distinct page markers matched the invented two-page PDF.",
+      "limit": "This is text PDF coverage, not scanned PDF/OCR qualification."
+    },
+    {
+      "case": "board_and_delivery_before_cache_repair",
+      "requests": [
+        489
+      ],
+      "verdict": "PARTIAL_PIPELINE_FAILURE",
+      "observation": "Closed state and accepted report read correctly; pipeline result collapsed to Git-read failure due to missing later-main commit in registered checkout."
+    },
+    {
+      "case": "plan_cancel",
+      "requests": [
+        490,
+        491
+      ],
+      "verdict": "PASS_NARROW",
+      "observation": "One three-line plan with Launch/Cancel displayed. Cancel edited the same message 723 and removed buttons; card 28 used_request=491.",
+      "limit": "Launch was deliberately not pressed. No board creation/effects recorded."
+    },
+    {
+      "case": "delivery_after_cache_repair",
+      "requests": [
+        492
+      ],
+      "verdict": "PASS_DEV_PIPELINE_PARTIAL_LIVE",
+      "observation": "Reply now matches independent adapter: pipeline 10930 failed, deploy job 49890 success, smoke 49891 failed with first failing check, later pipeline 11522 success.",
+      "limit": "LIVE ref refs/heads/live is absent in registered cyprusbz-board; fresh remote LIVE read was 88fff628162113ff823f0cc456b38034606c692b. DEV health failed inside the tool; later independent HTTP read returned 200. Those paths remain unqualified."
+    },
+    {
+      "case": "conversation_status",
+      "requests": [
+        493
+      ],
+      "verdict": "PASS_NARROW",
+      "observation": "Russian status displayed no active request/queue and conversation observation age; no footer was added to ordinary model replies."
+    },
+    {
+      "case": "photo_large_reset",
+      "requests": [
+        494,
+        495
+      ],
+      "verdict": "PASS_ON_INSTALLED_SOURCE",
+      "observation": "600x300 six-band public synthetic fixture correctly identified as six bands after /new."
+    },
+    {
+      "case": "photo_identical_controlled_repeat",
+      "requests": [
+        498,
+        499
+      ],
+      "verdict": "PASS_REPEAT_ONLY",
+      "observation": "Exact same caption and identical 800-byte Telegram JPEG as failed479; reply names six colors. Original failure retained."
+    },
+    {
+      "case": "human_speech_voice_normalization",
+      "requests": [
+        497,
+        500,
+        501
+      ],
+      "verdict": "PASS_PARTIAL",
+      "observation": "Public FLEURS human Russian reference seven words correctly recognized. Web .ogg, native .ogg and web reply .oga normalized as voice; no audio-document claim from those IDs."
+    },
+    {
+      "case": "true_ogg_document_human_speech",
+      "requests": [
+        502
+      ],
+      "verdict": "PASS_ON_INSTALLED_SOURCE",
+      "observation": "Real owner's forwarded Telegram document preserved filename/audio metadata and exact fixture bytes; seven reference words recognized. Outbox7009/message747 delivered once."
+    },
+    {
+      "case": "separate_text_after_audio_document",
+      "requests": [
+        503
+      ],
+      "verdict": "NOT_QUALIFIED",
+      "observation": "Text comment became distinct request without attachment; model says no Ogg available."
+    },
+    {
+      "case": "projects_help",
+      "requests": [
+        504
+      ],
+      "verdict": "PASS_OBSERVED_DELIVERY",
+      "observation": "Russian help for project operations delivered, 879 characters."
+    },
+    {
+      "case": "multi_project_explicit_read",
+      "requests": [
+        505
+      ],
+      "verdict": "PARTIAL",
+      "observation": "project_list succeeds. Two project_status calls rejected with project_question [pilotq,tight] despite explicit multi-project wording; not a complete board-status PASS."
+    },
+    {
+      "case": "single_project_explicit_read",
+      "requests": [
+        506
+      ],
+      "verdict": "PASS",
+      "observation": "One project_status read gradus/tight; reply shows tight#20 held, no active attempt; timestamp 2026-11-04 23:22:00 UTC."
+    },
+    {
+      "case": "same_board_followup",
+      "requests": [
+        507
+      ],
+      "verdict": "PARTIAL_SCOPE",
+      "observation": "Reply preserved tight#20/no mutation; underlying project_status audited all six accessible boards rather than only tight; UI explicitly disclosed extra reads. Not full target-scope PASS."
+    },
+    {
+      "case": "foreign_actor_second_participant",
+      "requests": [],
+      "verdict": "OWNER_WAIVED_NOT_TESTED",
+      "observation": "Owner explicitly chose to skip this test. Not PASS; not a request for new access or another participant."
+    },
+    {
+      "case": "unnamed_all_board_list_250",
+      "requests": [
+        508
+      ],
+      "verdict": "PASS_ON_INSTALLED_SOURCE",
+      "observation": "Exact phrase сделай таскью-лист produced one answer listing all six accessible boards (four with open tasks, two empty), without clarification; project_status audit3014, one read per board3015-3020, outbox7025/message759 once.",
+      "limit": "Observed on .40 source79e2c9a; does not qualify later source changes or resolve partial505/507."
+    },
+    {
+      "case": "png_image_document_with_caption",
+      "requests": [
+        509
+      ],
+      "verdict": "PASS_ON_INSTALLED_SOURCE",
+      "observation": "Actual Telegram File chooser sent six-bars-large.png as document with caption; ingress normalized as image and retained reply_files image metadata. Correct six colors in order. outbox7027/message760 delivered once.",
+      "limit": "Manager image reading; no TaskQ worker handoff."
+    },
+    {
+      "case": "dm_real_worker_and_handoff_copy",
+      "requests": [
+        510,
+        511
+      ],
+      "verdict": "PASS_NARROW",
+      "observation": "Accepted real owner file requeue510 -> revision6645421360; worker attempt6645441163 reports reading its copy in ask6645450824, independently verified path/2224-byte SHA. Card outbox7041/message385 delivered once.",
+      "limit": "This handoff text is not the required live photo or 20MB document qualification."
+    },
+    {
+      "case": "real_photo_worker_handoff_524",
+      "requests": [
+        524
+      ],
+      "verdict": "PASS_ON_INSTALLED_SOURCE",
+      "observation": "Actual owner photo reply to card385 accepted once as boardanswer6645887335. Bot and actual worker copies independently byte-equal5185bytes/SHA10534056...; real worker decoded600x300 and correct six colors. Original card edited once in place by outbox7078; parent fresh client build12.0.48.",
+      "limit": "Does not prove stale/repeat or answer-elsewhere; new-source release gates remain open."
+    },
+    {
+      "case": "document_first_refusal_525",
+      "requests": [
+        525
+      ],
+      "verdict": "REFUSED_NOT_EXECUTED",
+      "observation": "Uploaded actual20MB file; TaskQ steer guard refused Ask. No task_effect. Not a successful handoff."
+    },
+    {
+      "case": "actual_document_steer_526",
+      "requests": [
+        526
+      ],
+      "verdict": "PASS_ON_INSTALLED_SOURCE",
+      "observation": "Actual accepted steer to same real attempt, note6646163795/execution6646165529; full bot copies and worker copy independently20,000,000bytes/SHA42e65a... and entire byte sequence, real worker readback confirms all bytes/tail.",
+      "limit": "Not full qualification, owner file requeue or replay/stale proof."
+    },
+    {
+      "case": "live_cli_answer_elsewhere",
+      "requests": [],
+      "verdict": "PASS_NARROW",
+      "observation": "Two accepted CLI answers6646006366/6646150572, corresponding original Telegram questions414/417 edited once each with delivered question_answered7082/7093.",
+      "limit": "No original option buttons; real stale/repeated tap NOT_RUN."
+    },
+    {
+      "case": "historical_five_minute_turn_451",
+      "requests": [
+        451
+      ],
+      "verdict": "HISTORICAL_NARROW",
+      "observation": "Retained answered run255 lasted306seconds; final5744/message340 delivered once; progress5746/message339 closed. Raw private text not read or copied.",
+      "limit": "Historical gpt-6-sol run, not a new test or final-source gate."
+    }
+  ],
+  "technical_cache_repair": {
+    "root": "/home/hermes/projects/gradus/cyprusbz-board",
+    "missing_commit": "34c048391f4d4417d8de1f5657f27ddf0a81880c",
+    "local_copy": "Failed because source partial clone lacked blobs; target object still absent afterward.",
+    "completed": "git fetch --filter=blob:none --no-tags --no-write-fetch-head origin 34c048391f4d4417d8de1f5657f27ddf0a81880c",
+    "head_before_and_after": "347cd4fe6059027a299a713ee5776322950d1697",
+    "limit": "Git object cache filled. No service/release configuration, source files, credentials or grants were edited; HEAD unchanged. No branch/ref/FETCH_HEAD update requested."
+  },
+  "owner_waivers": [
+    {
+      "case": "foreign_actor_second_participant",
+      "disposition": "OWNER_WAIVED_NOT_TESTED",
+      "instruction": "Пропустить тест foreign actor со вторым участником.",
+      "limit": "Not PASS; no new access, invitations, or second-actor request."
+    }
+  ],
+  "photo524_reconciliation": {
+    "observed_utc": "2026-11-05T00:19:36.436688+00:00",
+    "mode": "Read only; root thread owns UI and all further sends.",
+    "request": {
+      "id": 524,
+      "message": 412,
+      "kind": "answer",
+      "state": "answered",
+      "reply_to": 385,
+      "error": null
+    },
+    "retained_file_metadata": [
+      {
+        "name": "photo.jpg",
+        "media": "image"
+      }
+    ],
+    "bot_copy": {
+      "method": "Official getFile/download through retained identity; token/file ID never printed or saved in evidence. No payload persisted locally.",
+      "bytes": 5185,
+      "sha256": "105340562bb5430ad90bc7cab9805cdb93ff40913c073b6b4ad965af0e51b3ba",
+      "provider_reported_bytes": 5185
+    },
+    "worker_copy": {
+      "path": "/home/hermes/projects/taskqorg/pilotq/.taskq/reply-files/105340562bb5430ad90bc7cab9805cdb93ff40913c073b6b4ad965af0e51b3ba/photo.jpg",
+      "bytes": 5185,
+      "sha256": "105340562bb5430ad90bc7cab9805cdb93ff40913c073b6b4ad965af0e51b3ba",
+      "byte_for_byte_equal_to_downloaded_bot_copy": true
+    },
+    "effect": {
+      "op_id": "pilotq-3cb9674929ca8680-a524",
+      "outcome": "accepted",
+      "state": "doing",
+      "receipt_revision": 6645441163,
+      "count_for_request": 1
+    },
+    "board_answer": {
+      "id": 6645887335,
+      "actor": "alexkirs",
+      "question_revision": 6645450824,
+      "late": false,
+      "read": true
+    },
+    "card_and_delivery": {
+      "observed_utc": "2026-11-05T00:19:36.436688+00:00",
+      "effect_count": 1,
+      "question_answered_count": 1,
+      "original_card": [
+        {
+          "id": 7041,
+          "request_id": 511,
+          "kind": "question",
+          "revision": 6645450824,
+          "state": "delivered",
+          "attempts": 1,
+          "possible_duplicate": 0,
+          "sent_message": 385,
+          "error": null
+        }
+      ],
+      "card_edit": [
+        {
+          "id": 7078,
+          "request_id": 511,
+          "kind": "question_answered",
+          "revision": 6645450824,
+          "state": "delivered",
+          "attempts": 1,
+          "possible_duplicate": 0,
+          "sent_message": 385,
+          "error": null
+        }
+      ],
+      "reply": [
+        {
+          "id": 7079,
+          "request_id": 524,
+          "kind": "rich",
+          "revision": null,
+          "state": "delivered",
+          "attempts": 1,
+          "possible_duplicate": 0,
+          "sent_message": 413,
+          "error": null
+        }
+      ],
+      "next_question": [
+        {
+          "id": 7081,
+          "request_id": 511,
+          "kind": "question",
+          "revision": 6645902487,
+          "state": "delivered",
+          "attempts": 1,
+          "possible_duplicate": 0,
+          "sent_message": 414,
+          "error": null
+        }
+      ],
+      "card_edit_actor_confirmed": true
+    },
+    "worker_report": {
+      "source": "Fresh TaskQ inbox card for6645902487",
+      "decoded_dimensions": [
+        600,
+        300
+      ],
+      "bytes": 5185,
+      "sha256": "105340562bb5430ad90bc7cab9805cdb93ff40913c073b6b4ad965af0e51b3ba",
+      "colors": [
+        "red",
+        "yellow",
+        "green",
+        "cyan",
+        "blue",
+        "magenta"
+      ],
+      "actual_worker_decode_reported": true,
+      "independent_reconciliation_decode": "Not repeated; Pillow unavailable, no installation. Independent proof is byte equality; decoded result comes from real worker readback."
+    },
+    "client_identity": {
+      "source": "Parent thread fresh actual UI observation",
+      "Telegram_Web_A": "12.0.48",
+      "Chrome": "156.0.8078.80"
+    },
+    "next_ask": {
+      "revision": 6645902487,
+      "message": 414,
+      "state": "ask",
+      "worker_attempt": 6645441163
+    },
+    "limits": [
+      "No sends, task answers/writes or requeue performed by reconciliation agent.",
+      "Photo answer was actual parent-owned UI; this agent supplied independent read-only byte/card receipts.",
+      "Answer-elsewhere and real stale/repeat tap remain separate, unproven cases.",
+      "All facts belong to installed PilotQ0.2.40; no final-source full qualification asserted."
+    ]
+  },
+  "document525_526_reconciliation": {
+    "observed_utc": "2026-11-05T00:33:55.511677+00:00",
+    "scope": "Independent read-only reconciliation of actual owner UI sends525/526.",
+    "requests": [
+      {
+        "id": 525,
+        "message": 416,
+        "reply_to": 415,
+        "kind": "document",
+        "state": "answered",
+        "verdict": "REFUSED_NOT_EXECUTED",
+        "reason": "task_steer permitted only while Doing; task was Ask.",
+        "task_effect_count": 0,
+        "terminal_outbox": 7085,
+        "terminal_message": 418
+      },
+      {
+        "id": 526,
+        "message": 419,
+        "reply_to": 415,
+        "kind": "document",
+        "state": "answered",
+        "verdict": "ACCEPTED_STEER_WITH_WORKER_READBACK",
+        "task_effect_count": 1,
+        "terminal_outbox": 7095,
+        "terminal_message": 422
+      }
+    ],
+    "bot_copies": [
+      {
+        "request": 525,
+        "bytes": 20000000,
+        "sha256": "42e65a57483f7993819c73125f9f266dad8788c191a5df93455270767466f36c",
+        "provider_reported_bytes": 20000000,
+        "entire_sequence_matches_bytes_range256_times78125": true,
+        "last_256_is_00_through_ff": true,
+        "last_16_hex": "f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"
+      },
+      {
+        "request": 526,
+        "bytes": 20000000,
+        "sha256": "42e65a57483f7993819c73125f9f266dad8788c191a5df93455270767466f36c",
+        "provider_reported_bytes": 20000000,
+        "entire_sequence_matches_bytes_range256_times78125": true,
+        "last_256_is_00_through_ff": true,
+        "last_16_hex": "f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"
+      }
+    ],
+    "same_retained_file_identity": false,
+    "worker_copy": {
+      "path": "/home/hermes/projects/taskqorg/pilotq/.taskq/reply-files/42e65a57483f7993819c73125f9f266dad8788c191a5df93455270767466f36c/p198-dm-20MB.bin",
+      "bytes": 20000000,
+      "sha256": "42e65a57483f7993819c73125f9f266dad8788c191a5df93455270767466f36c",
+      "entire_sequence_matches_bytes_range256_times78125": true,
+      "last_256_is_00_through_ff": true,
+      "last_16_hex": "f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+      "byte_equal_to_bot526": true
+    },
+    "accepted_steer": {
+      "op_id": "pilotq-3cb9674929ca8680-r526-tq1",
+      "outcome": "accepted",
+      "state": "doing",
+      "revision": 6645441163,
+      "note": true,
+      "note_entry": 6646163795,
+      "note_created_utc": "2026-11-05T00:30:41Z",
+      "original_worker_attempt": 6645441163,
+      "execution_entry": 6646165529,
+      "execution_created_utc": "2026-11-05T00:30:47Z",
+      "execution_op_id": "execute-6645441163-6646163795-6646016213"
+    },
+    "worker_actual_readback": {
+      "source_ask": 6646178504,
+      "method": "Python Path.read_bytes() full file, hash and last256 bytes, reported by real worker in docs/research/198.md and TaskQ ask.",
+      "bytes": 20000000,
+      "sha256": "42e65a57483f7993819c73125f9f266dad8788c191a5df93455270767466f36c",
+      "tail": "00 through ff",
+      "inbox_steer_read": true
+    },
+    "manager_parser_limit": "Both525/526 file_read audits say arbitrary binary unsupported for manager document parsing. That did not prevent accepted arbitrary-file forwarding526. No parser success is claimed.",
+    "delivery": "525 outbox7085/message418 and526 outbox7095/message422 each delivered once, attempts1, possible_duplicate0. 526 progress7094/message421 closed by7097 once.",
+    "limits": [
+      "First525 is not PASS and had no effect; second526 is a distinct successful steer, not reconciliation of an uncertain prior write.",
+      "Decimal20MB, not20MiB transport boundary.",
+      "No callback injection or new access. Stale/repeat actual tap remains NOT_RUN."
+    ]
+  },
+  "answer_elsewhere_reconciliation": {
+    "first": {
+      "op_id": "night198-live-answer-elsewhere-20261105",
+      "board_answer": 6646006366,
+      "actor": "alexkirs",
+      "answered_revision": 6645902487,
+      "card_edit_outbox": 7082,
+      "same_original_message": 414,
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "read": true
+    },
+    "second": {
+      "op_id": "night198-bounded-steer-window-20261105",
+      "board_answer": 6646150572,
+      "actor": "alexkirs",
+      "answered_revision": 6646029326,
+      "card_edit_outbox": 7093,
+      "same_original_message": 417,
+      "state": "delivered",
+      "attempts": 1,
+      "possible_duplicate": 0,
+      "read": true
+    },
+    "limits": "Exact live answer-elsewhere and in-place delivery receipts; these free-text questions had no option buttons. No actual stale/repeat tap proof."
+  },
+  "historical_five_minute_metadata": {
+    "historic_five_minute_request": [
+      {
+        "id": 451,
+        "kind": "text",
+        "state": "answered",
+        "received_at": 1793716556,
+        "reply_chars": 945
+      }
+    ],
+    "historic_run": [
+      {
+        "id": 255,
+        "request_id": 451,
+        "state": "answered",
+        "started_at": 1793716556,
+        "ended_at": 1793716862,
+        "duration_seconds": 306,
+        "model": "gpt-6-sol"
+      }
+    ],
+    "historic_outbox": [
+      {
+        "id": 5744,
+        "request_id": 451,
+        "kind": "rich",
+        "state": "delivered",
+        "attempts": 1,
+        "possible_duplicate": 0,
+        "sent_message": 340,
+        "error": null
+      },
+      {
+        "id": 5746,
+        "request_id": 451,
+        "kind": "turn_progress_closed",
+        "state": "delivered",
+        "attempts": 1,
+        "possible_duplicate": 0,
+        "sent_message": 339,
+        "error": null
+      }
+    ],
+    "current_binaries": [
+      {
+        "service": "pilotq",
+        "pid": 3191988,
+        "exe": "/home/hermes/.local/share/pilotq/releases/0.2.40/pilotq",
+        "sha256": "c4f07ad7344e4ce86ff61b2508069691856277b514e932f0fa3df9ead023a6bd"
+      },
+      {
+        "service": "taskq",
+        "pid": 23349,
+        "exe": "/home/hermes/.local/share/taskq/releases/4.6.79/taskq",
+        "sha256": "c48adf699c7fa01196cc7bc1575e57b2d7979e4cfa77a448bb95f4881b953d1c"
+      }
+    ]
+  },
+  "taskq_479_binary_identity": {
+    "version": "4.6.79",
+    "source": "2480598aa90deeaca6df9690440a4293ac11b3ea",
+    "sha256": "c48adf699c7fa01196cc7bc1575e57b2d7979e4cfa77a448bb95f4881b953d1c",
+    "source_evidence": "Fresh TaskQ pds18 binary_ready receipt observed1793838704 plus independent /proc executable digest."
+  },
+  "remaining": [
+    "Launch/full lifecycle and onboarding changes were not performed.",
+    "Restart/update continuity and next separately owner-requested cs release were not performed.",
+    "New main dbcb88a245b1b73d2d74f2c31e07a17f776d8578 remains unreleased; final-source A40/cleanup/release/Chrome/output-compliance gates are not claimed passed.",
+    "Correct missing refs/heads/live / Git-root freshness design before claiming full LIVE status. No configuration or branch repair was attempted.",
+    "Human Russian voice and true Ogg document now tested; unreleased #344 RU/EN and final-source qualification remain open. Natural mixed RU/EN recording is expressly removed from gate by owner decision.",
+    "Project multi-target request505 and context followup507 are partial; exact single-target request506 passes. No duplicate issue or speculative fix created.",
+    "503 separate-comment audio continuity is not qualified. Reaction outbox7008 has a retry/possible_duplicate marker; terminal reply delivered once.",
+    "foreign_actor_second_participant is OWNER_WAIVED_NOT_TESTED, removed as a blocking test; never promoted to PASS.",
+    "Photo worker handoff and20MB mixed-text document steer now qualified narrowly on0.2.40; real stale/repeated Telegram tap remains NOT_RUN because no actual option buttons were available.",
+    "Answer-elsewhere receipt/edit path qualified narrowly; foreign actor remains OWNER_WAIVED_NOT_TESTED.",
+    "Current real ask6646178504 requests PM reconciliation, to be answered with exact receipts without full PASS or release."
+  ],
+  "provenance": "PM observed real UI in parent thread; scoped journal/provider/worker-copy reconciliation is independent read-only. Historical and installed-source partial cases retain limits. No private message bodies, opaque file identities or credentials."
+}
