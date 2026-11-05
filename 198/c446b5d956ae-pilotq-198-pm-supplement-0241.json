@@ -1,0 +1,394 @@
+{
+  "schema": "pilotq.198.pm-supplement/1",
+  "purpose": "Document reconciled PM receipts; partial qualification, no release/closure request",
+  "model_package": {
+    "observed_utc": "2026-11-05T03:13:20.688424+00:00",
+    "requests": [
+      {
+        "id": 529,
+        "message": 763,
+        "kind": "builtin",
+        "state": "answered",
+        "reply_to": 763,
+        "received_at": 1793847934,
+        "error": null,
+        "input": {
+          "type": "actual_model_callback",
+          "source_request": 528,
+          "choice_index": 4
+        },
+        "safe_reply": "Saved model: gpt-6-sol. Applies to the next run in this conversation; active runs and TaskQ workers keep their policy.",
+        "runs": [],
+        "outbox": [
+          {
+            "id": 7118,
+            "kind": "toast",
+            "state": "delivered",
+            "attempts": 1,
+            "possible_duplicate": 0,
+            "sent_message": 0,
+            "error": null
+          },
+          {
+            "id": 7119,
+            "kind": "reply",
+            "state": "delivered",
+            "attempts": 1,
+            "possible_duplicate": 0,
+            "sent_message": 764,
+            "error": null
+          },
+          {
+            "id": 7120,
+            "kind": "reply",
+            "state": "delivered",
+            "attempts": 1,
+            "possible_duplicate": 0,
+            "sent_message": 765,
+            "error": null
+          }
+        ],
+        "file_media": [],
+        "task_effect_count": 0
+      },
+      {
+        "id": 530,
+        "message": 766,
+        "kind": "text",
+        "state": "answered",
+        "reply_to": 3,
+        "received_at": 1793847986,
+        "error": null,
+        "input": "markerA",
+        "safe_reply": "P198-MODEL-A",
+        "runs": [
+          {
+            "id": 302,
+            "state": "answered",
+            "model": "gpt-6-sol",
+            "generation": 9,
+            "started_at": 1793847986,
+            "ended_at": 1793847991
+          }
+        ],
+        "outbox": [
+          {
+            "id": 7121,
+            "kind": "reaction",
+            "state": "delivered",
+            "attempts": 1,
+            "possible_duplicate": 0,
+            "sent_message": 766,
+            "error": null
+          },
+          {
+            "id": 7122,
+            "kind": "rich",
+            "state": "delivered",
+            "attempts": 1,
+            "possible_duplicate": 0,
+            "sent_message": 767,
+            "error": null
+          },
+          {
+            "id": 7123,
+            "kind": "rich_part",
+            "state": "superseded",
+            "attempts": 0,
+            "possible_duplicate": 0,
+            "sent_message": null,
+            "error": null
+          }
+        ],
+        "file_media": [],
+        "task_effect_count": 0
+      },
+      {
+        "id": 531,
+        "message": 768,
+        "kind": "control",
+        "state": "answered",
+        "reply_to": 3,
+        "received_at": 1793848022,
+        "error": null,
+        "input": "/new",
+        "safe_reply": "New conversation started. Model: gpt-6-sol.",
+        "runs": [],
+        "outbox": [
+          {
+            "id": 7124,
+            "kind": "reply",
+            "state": "delivered",
+            "attempts": 1,
+            "possible_duplicate": 0,
+            "sent_message": 769,
+            "error": null
+          }
+        ],
+        "file_media": [],
+        "task_effect_count": 0
+      },
+      {
+        "id": 532,
+        "message": 763,
+        "kind": "builtin",
+        "state": "failed",
+        "reply_to": 763,
+        "received_at": 1793848065,
+        "error": "This model selector is stale or belongs to another person; use /model.",
+        "input": {
+          "type": "actual_model_callback",
+          "source_request": 528,
+          "choice_index": 4
+        },
+        "safe_reply": "Эта кнопка устарела или принадлежит другому человеку; используйте /model.",
+        "runs": [],
+        "outbox": [
+          {
+            "id": 7125,
+            "kind": "toast",
+            "state": "delivered",
+            "attempts": 1,
+            "possible_duplicate": 0,
+            "sent_message": 0,
+            "error": null
+          },
+          {
+            "id": 7126,
+            "kind": "reply",
+            "state": "delivered",
+            "attempts": 1,
+            "possible_duplicate": 0,
+            "sent_message": 770,
+            "error": null
+          },
+          {
+            "id": 7127,
+            "kind": "reply",
+            "state": "delivered",
+            "attempts": 1,
+            "possible_duplicate": 0,
+            "sent_message": 771,
+            "error": null
+          }
+        ],
+        "file_media": [],
+        "task_effect_count": 0
+      },
+      {
+        "id": 533,
+        "message": 772,
+        "kind": "text",
+        "state": "answered",
+        "reply_to": 3,
+        "received_at": 1793848099,
+        "error": null,
+        "input": "markerB",
+        "safe_reply": "P198-MODEL-B",
+        "runs": [
+          {
+            "id": 303,
+            "state": "answered",
+            "model": "gpt-6-sol",
+            "generation": 10,
+            "started_at": 1793848100,
+            "ended_at": 1793848103
+          }
+        ],
+        "outbox": [
+          {
+            "id": 7128,
+            "kind": "reaction",
+            "state": "delivered",
+            "attempts": 1,
+            "possible_duplicate": 0,
+            "sent_message": 772,
+            "error": null
+          },
+          {
+            "id": 7129,
+            "kind": "rich",
+            "state": "delivered",
+            "attempts": 1,
+            "possible_duplicate": 0,
+            "sent_message": 773,
+            "error": null
+          },
+          {
+            "id": 7130,
+            "kind": "rich_part",
+            "state": "superseded",
+            "attempts": 0,
+            "possible_duplicate": 0,
+            "sent_message": null,
+            "error": null
+          }
+        ],
+        "file_media": [],
+        "task_effect_count": 0
+      },
+      {
+        "id": 534,
+        "message": 774,
+        "kind": "builtin",
+        "state": "answered",
+        "reply_to": 3,
+        "received_at": 1793848239,
+        "error": null,
+        "input": "/model default",
+        "safe_reply": "Saved model: default. Applies to the next run in this conversation; active runs and TaskQ workers keep their policy.",
+        "runs": [],
+        "outbox": [
+          {
+            "id": 7131,
+            "kind": "reply",
+            "state": "delivered",
+            "attempts": 1,
+            "possible_duplicate": 0,
+            "sent_message": 775,
+            "error": null
+          },
+          {
+            "id": 7132,
+            "kind": "reply",
+            "state": "delivered",
+            "attempts": 1,
+            "possible_duplicate": 0,
+            "sent_message": 776,
+            "error": null
+          }
+        ],
+        "file_media": [],
+        "task_effect_count": 0
+      }
+    ],
+    "model_audits": [
+      {
+        "id": 3134,
+        "request_id": 529,
+        "at": 1793847936,
+        "item": null,
+        "result": "gpt-6-sol"
+      },
+      {
+        "id": 3144,
+        "request_id": 534,
+        "at": 1793848239,
+        "item": "gpt-6-sol",
+        "result": "default"
+      }
+    ],
+    "route_models": [
+      {
+        "route": "TEST",
+        "saved_model": null,
+        "generation": 10
+      },
+      {
+        "route": "DM_ROOT",
+        "saved_model": "gpt-6.1-sol",
+        "generation": 5
+      }
+    ],
+    "unexpected_inputs": [],
+    "active_TEST": [],
+    "pilotq_sha256": "c4f07ad7344e4ce86ff61b2508069691856277b514e932f0fa3df9ead023a6bd"
+  },
+  "audio_incident_readback": {
+    "audio_ingress_count": 0,
+    "outgoing_voice": "Local recording cancelled before Send; no bot ingress"
+  },
+  "onboarding": {
+    "request": 535,
+    "message": 777,
+    "reply_message": 778,
+    "reply_outbox": 7140,
+    "delivery_attempts": 1,
+    "audio_ingress": 0,
+    "model_runs": 0,
+    "task_effects": 0,
+    "readiness": false,
+    "gap": "service: raw status.board.host github.com != omitted config.host null",
+    "source": "79e2c9aa335cdfbfd4061da261d40258aeb75088",
+    "registry_focus_grants_config_unchanged": true
+  },
+  "fix": {
+    "PR": "https://github.com/taskqorg/pilotq/pull/367",
+    "commit": "c833782f1e875c89635f4fe020142b96dce07016",
+    "accepted_merge": "0be207e4a983a9f33a0fd21eb798d24054d2c368",
+    "version": "0.2.41",
+    "regression": {
+      "command": "cargo test --locked --bin pilotq admin::tests::project_244_request_255_onboarding -- --exact --nocapture",
+      "environment": "canonical worktree-local TMPDIR on macOS",
+      "before": "FAIL github/default-host: ready false; same service-gap as request535",
+      "after": "PASS, including0.2.41; default host, explicit host, foreign host/repo/kind, incomplete readback, default GitHub board; unchanged registry/focus/key metadata"
+    },
+    "LinuxCI": "PASS tests41963449602/build41963449881",
+    "merge_result_CI": "PASS tests41964062950/release41964063236",
+    "candidate_doctor": "PASS with normal service-user PATH"
+  },
+  "A40": {
+    "observed_utc": "2026-11-05T04:10:53.070025+00:00",
+    "source": "0be207e4a983a9f33a0fd21eb798d24054d2c368",
+    "candidate_binary_sha256": "a9128cef3590e1cd9b72424cd8234161ccd5bcf778a2649f3e0ed9247833fdb1",
+    "raw_report_sha256": "3749cdaa7c69c3f4a6645a1b2ab4353df15b2dd501c5ddee9613cfff7a8689f6",
+    "raw_report_bytes": 87907,
+    "pass": true,
+    "cases": {
+      "admission": "pass",
+      "discussion": "pass",
+      "plan": "pass",
+      "create_start": "pass",
+      "status": "pass",
+      "steer": "pass",
+      "pause": "pass",
+      "park_requeue": "pass",
+      "restart": "pass",
+      "question_foreign": "pass",
+      "answer_stale": "pass",
+      "reviewer": "pass",
+      "audit_delivery": "pass",
+      "cleanup": "pass"
+    },
+    "fixture_host": "pilotq-e2e-a40-1793851224361565813",
+    "host_metadata": 368,
+    "host_closed": true,
+    "task_url": "https://github.com/taskqorg/pilotq/issues/369",
+    "cleanup_tasks": [
+      {
+        "task": 369,
+        "state": "closed"
+      }
+    ],
+    "fixture_attempt": 6649350426,
+    "codex_version": "codex-cli 0.162.0",
+    "TaskQ_version": "4.6.82",
+    "taskq_binary_sha256": "69616795cd7e801c3dd8b533fcdc82b0c074d1119475928aae14f2b0dadb1e97",
+    "report_literal_limitation": "unknown: CLI has no version command; exact binary hash recorded",
+    "copied_credentials_absent": true,
+    "source_clean": true
+  },
+  "A40_execution": {
+    "elapsed_seconds": 303.488,
+    "returncode": 0,
+    "original_credentials_unchanged": true,
+    "scope": "fake Bot API + existing subscription + real board with unserved reserved host and synthetic execution/reviewer. NOT actual owner Telegram foreign-actor proof."
+  },
+  "release_blocker": {
+    "action": "Private full live-journal pre-upgrade backup plus temporary migration/restore-proof copies on PDS18",
+    "automatic_review": "DENIED: broader private Telegram/request-data duplication not specifically authorized; operation did not run",
+    "required_owner_consent": "Authorize owner-only on-host full journal backup and disposable copy for rollback13→14 proof; no content export/config or credentials copying",
+    "live_source": "79e2c9aa335cdfbfd4061da261d40258aeb75088",
+    "installed": "0.2.40",
+    "live_journal_schema": 13,
+    "version0241_published": false,
+    "automatic_updates_restored": "enabled"
+  },
+  "retained_limits": [
+    "Real foreign actor OWNER_WAIVED_NOT_TESTED. Synthetic A40 foreign actor does not replace that verdict.",
+    "Model selector repeat/stale does not qualify actual TaskQ option-card taps.",
+    "Live onboarding readiness NOT PASS: fix merged but not installed.",
+    "479 and487 FAIL,525 REFUSED_NOT_EXECUTED retained.",
+    "Full198 A1/A2 remain partial; no false close or cs LIVE."
+  ]
+}
