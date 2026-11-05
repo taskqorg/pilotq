@@ -55,7 +55,7 @@ impl Footer {
         let quota = match self.quota.filter(|(_, reset, _)| *reset > at) {
             Some((p, reset, seen)) => {
                 let moon = match p { 0..=12 => "🌑", 13..=37 => "🌘", 38..=62 => "🌗", 63..=87 => "🌖", _ => "🌕" };
-                let countdown = crate::time::countdown(reset.saturating_sub(at));
+                let countdown = crate::time::countdown(reset.saturating_sub(at),false);
                 format!("{moon} {p}% ↻ {countdown} ({}){}", crate::time::exact(Some(reset)), stale(self.quota_stale, seen))
             }
             None => "? unavailable".into(),

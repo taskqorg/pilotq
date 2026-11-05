@@ -102,7 +102,7 @@ fn apply(c:&Connection,request:i64,name:&str,args:&Value,at:i64)->Result<String,
                 (true,Some(s))=>format!("каждые {}",crate::footer::russian_units(&crate::time::age(s))),(false,Some(s))=>format!("every {}",crate::time::age(s)),
                 (true,None)=>"динамический (резерв: 5 мин)".into(),(false,None)=>"dynamic (fallback: 5m)".into(),
             };
-            let delay=crate::time::countdown(l.next.saturating_sub(at));
+            let delay=crate::time::countdown(l.next.saturating_sub(at),ru);
             let exact=crate::time::exact(Some(l.next));
             if ru {format!("Цикл: {mode} · следующий запуск через {delay} ({exact}) · {}",l.prompt)}
             else {format!("Loop: {mode} · next run in {delay} ({exact}) · {}",l.prompt)}
@@ -118,7 +118,7 @@ fn apply(c:&Connection,request:i64,name:&str,args:&Value,at:i64)->Result<String,
             let seconds=args["seconds"].as_i64().filter(|s|(60..=3600).contains(s)).ok_or("Delay must be 60..3600 seconds.")?;
             l.next=at+seconds; save(c,&l)?;
             audit(c,request,at,"loop_next",&seconds.to_string())?;
-            Ok(if ru {format!("Следующий запуск цикла через {} ({}).",crate::time::countdown(seconds),crate::time::exact(Some(l.next)))}else{format!("Next loop tick in {} ({}).",crate::time::countdown(seconds),crate::time::exact(Some(l.next)))})
+            Ok(if ru {format!("Следующий запуск цикла через {} ({}).",crate::time::countdown(seconds,ru),crate::time::exact(Some(l.next)))}else{format!("Next loop tick in {} ({}).",crate::time::countdown(seconds,ru),crate::time::exact(Some(l.next)))})
         },
         "loop_start" => {
             if is_tick {return Err("A tick cannot start or replace a loop.".into());}
@@ -255,8 +255,8 @@ pub fn review_command(c:&Connection,request:i64,text:&str,at:i64)->Result<String
     let old=read(c,&format!("review:{user}"))?;
     match text.split_whitespace().nth(1).unwrap_or("") {
         ""=>Ok(match (old,ru) {
-            (Some(l),true)=>format!("PM-обзор включён · события доски или резервный запуск через {} ({}).",crate::time::countdown(l.next.saturating_sub(at)),crate::time::exact(Some(l.next))),
-            (Some(l),false)=>format!("PM review is on · board events or fallback run in {} ({}).",crate::time::countdown(l.next.saturating_sub(at)),crate::time::exact(Some(l.next))),
+            (Some(l),true)=>format!("PM-обзор включён · события доски или резервный запуск через {} ({}).",crate::time::countdown(l.next.saturating_sub(at),ru),crate::time::exact(Some(l.next))),
+            (Some(l),false)=>format!("PM review is on · board events or fallback run in {} ({}).",crate::time::countdown(l.next.saturating_sub(at),ru),crate::time::exact(Some(l.next))),
             (None,true)=>"PM-обзор выключен. Включить: /review on.".into(),(None,false)=>"PM review is off. Turn it on with /review on.".into(),
         }),
         "on"=>{
@@ -493,6 +493,9 @@ mod tests {
             let listing=apply(&j.0,id,"loop_status",&json!({}),0).unwrap();
             assert!(!listing.contains("Unix"),"{listing}");
             assert!(listing.contains(if lang=="ru" {"через"} else {"in "}),"{listing}");
+            let overdue=apply(&j.0,id,"loop_status",&json!({}),300).unwrap();
+            assert!(overdue.contains(if lang=="ru" {"через сейчас"} else {"in now"}),"{overdue}");
+
             drop(j);drop(mutex);std::fs::remove_dir_all(p).unwrap();
         }
     }
