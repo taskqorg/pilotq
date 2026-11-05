@@ -78,10 +78,7 @@ Admission means queued for a worker, never worker execution. Keep effects to one
 /// Only a TaskQ readback supplies a task URL; absence stays a plain label.
 pub(crate) fn task_link(board: &str, task: i64, title: Option<&str>, url: Option<&str>) -> String {
     let repo = board.rsplit('/').next().unwrap_or(board);
-    let title = title.and_then(|t| t.lines().next()).filter(|t| !t.is_empty()).map(|t| {
-        let words=t.split_whitespace().collect::<Vec<_>>();
-        if words.len()>8 {format!("{}…",words[..8].join(" "))} else {t.to_string()}
-    });
+    let title = title.filter(|t| !t.is_empty());
     let label = format!("{repo}#{task}{}", title.map(|t| format!(" — {t}")).unwrap_or_default());
     let label: String = label.chars().flat_map(|c| if "\\[]*_`".contains(c) { vec!['\\', c] } else { vec![c] }).collect();
     match url.filter(|u| valid_url(u)) {
@@ -95,7 +92,7 @@ pub(crate) fn valid_url(url: &str) -> bool {
 }
 
 /// Only TaskQ's trusted close verdict supplies completion detail; an absent verdict stays unknown.
-fn closing_detail(issue: &Value, task: i64) -> Option<String> {
+pub(crate) fn closing_detail(issue: &Value, task: i64) -> Option<String> {
     if issue["number"]!=task || issue["state"].as_str()?.to_lowercase()!="closed" {return None;}
     let body=issue["comments"].as_array()?.iter().rev().filter(|c|c["trusted"]==true && c["edited"]!=true)
         .filter_map(|c|c["body"].as_str()).find(|b|b.lines().next().is_some_and(|l|l.starts_with("taskq: close")))?;
@@ -138,8 +135,19 @@ fn published_detail(issue: &Value, closed: &Value, inbox: &Value, task: i64) -> 
     }
     // The canonical verdict proves accepted attempt/revision/order, including rejected entries.
     // Delivery may append a receipt; no other text substitution is accepted.
-    let accepted=row["conversation"]["verdict"].as_str()?;
-    if accepted!=text && !accepted.strip_prefix(text).is_some_and(|tail|tail.starts_with("\n\ndelivery ")) {return None;}
+    if let Some(accepted)=row["conversation"]["verdict"].as_str() {
+        if accepted!=text && !accepted.strip_prefix(text).is_some_and(|tail|tail.starts_with("\n\ndelivery ")) {return None;}
+    } else {
+        // Current TaskQ closed snapshots expose canonical history instead of conversation.verdict.
+        // Require the exact current close and its referenced publication in that history, not raw comment inference.
+        if row["revision"]!=inbox["revision"] {return None;}
+        let history=row["history"].as_array()?;
+        for (comment,kind) in [(close,"close"),(sources[0],"publish")] {
+            let entries=history.iter().map(|h|&h["answered"]).filter(|a|a["source"]["id"]==comment["id"]).collect::<Vec<_>>();
+            if entries.len()!=1 || entries[0]["source"]["kind"]!=kind || entries[0]["by"]!=comment["author"]
+                || entries[0]["text"]!=comment["body"] {return None;}
+        }
+    }
     let synthetic=json!({"number":task,"state":"closed","comments":[{"trusted":true,"body":format!("taskq: close\n{text}")}]});
     closing_detail(&synthetic,task)
 }
@@ -255,8 +263,8 @@ impl Taskq {
     fn snapshot(&self) -> Result<Value, String> {
         self.cli_checked(&["status".into(), "--json".into()], |out| {
         let s: Value = serde_json::from_str(out.trim()).map_err(|e| format!("taskq status returned no snapshot: invalid JSON: {e}"))?;
-        if s["complete"] != true {
-            return Err(format!("board snapshot incomplete: {}", s["reason"].as_str().unwrap_or("no reason given")));
+        if s["complete"] != true || !s["tasks"].is_array() {
+            return Err(format!("board snapshot incomplete; task state unknown: {}", s["reason"].as_str().unwrap_or("no reason given")));
         }
         let board = s["board"]["repo"].as_str().ok_or("snapshot names no board")?;
         self.check(board)?;
@@ -301,23 +309,31 @@ impl Taskq {
         })
     }
 
-    fn closed_detail(&self, task:i64) -> Option<String> {
+    /// Closure and accepted findings are separate claims (§5 / #385).
+    pub(crate) fn closed_observation(&self, task:i64) -> Option<(Value,Option<String>)> {
         let before=self.inbox(task).ok()?;
         let issue=self.issue(task).ok()?;
-        let closed:Value=serde_json::from_str(&self.cli(&["status".into(),"--closed".into(),"--task".into(),task.to_string(),"--json".into()]).ok()?).ok()?;
+        if !issue["state"].as_str()?.eq_ignore_ascii_case("closed") {return None;}
+        let closed=self.cli(&["status".into(),"--closed".into(),"--task".into(),task.to_string(),"--json".into()])
+            .ok().and_then(|text|serde_json::from_str::<Value>(&text).ok());
         let after=self.inbox(task).ok()?;
         if before!=after || issue!=self.issue(task).ok()? || after["state"]!="closed" || after["open"]!=false
             || issue["url"]!=after["url"] {return None;}
-        let close=issue["comments"].as_array()?.iter().find(|c|c["id"]==after["revision"])?;
-        if close["trusted"]!=true || close["edited"]!=false
-            || !close["body"].as_str()?.lines().next().is_some_and(|l|l.starts_with("taskq: close")) {return None;}
-        if close["body"].as_str()?.lines().any(|l|l.starts_with("Repeats:")) {
-            published_detail(&issue,&closed,&after,task)
-        } else {
-            let exact=json!({"number":task,"state":"closed","comments":[close]});
-            closing_detail(&exact,task)
-        }
+        let detail=(|| {
+            let close=issue["comments"].as_array()?.iter().find(|c|c["id"]==after["revision"])?;
+            if close["trusted"]!=true || close["edited"]!=false
+                || !close["body"].as_str()?.lines().next().is_some_and(|l|l.starts_with("taskq: close")) {return None;}
+            if close["body"].as_str()?.lines().any(|l|l.starts_with("Repeats:")) {
+                published_detail(&issue,closed.as_ref()?,&after,task)
+            } else {
+                closing_detail(&json!({"number":task,"state":"closed","comments":[close]}),task)
+            }
+        })();
+        Some((issue,detail))
     }
+
+    #[cfg(test)]
+    fn closed_detail(&self, task:i64) -> Option<String> {self.closed_observation(task)?.1}
 
     pub(crate) fn registered(&self, j: &Journal, project: &str) -> Result<(Self, String), String> {
         let (_, board, root, ..) = j.projects()?.into_iter().find(|p| p.0 == project).ok_or(format!("{project} is not a registered project; nothing was done"))?;
@@ -355,8 +371,18 @@ fn find(s: &Value, task: i64) -> Option<&Value> {
 }
 
 // Task messages render as Telegram HTML with a labeled link, never a bare URL (#82).
+pub(crate) fn state_icon(state:&str,closed:bool)->&'static str {
+    if closed {return "👁️"} // Closure alone proves no successful outcome or deployment.
+    match state {
+        "failed"|"ask"|"held"=>"🛑",
+        "waiting"|"later"=>"⚠️",
+        "doing"|"ready"|"review"=>"👁️",
+        _=>"❓",
+    }
+}
+
 fn status_text(board: &str, task: i64, state: &str, title: Option<&str>, url: Option<&str>) -> String {
-    format!("{}\n{}.", task_link(board, task, title, url), describe(state))
+    format!("{} {}\n{}.", state_icon(state,false),task_link(board, task, title, url), describe(state))
 }
 
 /// TaskQ #2010: a handed-in result reads the snapshot's typed verdict, never the result comment text.
@@ -381,8 +407,9 @@ pub(crate) fn question_body(q: &Value) -> String { question_body_language(q,None
 fn question_body_language(q: &Value, language: Option<&str>) -> String {
     if q["parsed"] != true { return q["text"].as_str().unwrap_or("").to_string(); }
     let mut lines = Vec::new();
-    if let Some(t) = q["done"].as_str() { lines.push(format!("✓ {t}")); }
-    if let Some(t) = q["problem"].as_str() { lines.push(format!("⚑ {t}")); }
+    let ru=language.unwrap_or("en").starts_with("ru");
+    if let Some(t) = q["done"].as_str() { lines.push(format!("{}: {t}",if ru {"Сделано"} else {"Done"})); }
+    if let Some(t) = q["problem"].as_str() { lines.push(format!("{}: {t}",if ru {"Нужно решить"} else {"Decision"})); }
     let evidence: Vec<String> = q["evidence"].as_array().into_iter().flatten()
         .filter_map(|e| Some(format!("[{}]({})", e["label"].as_str()?, e["url"].as_str()?))).collect();
     if !evidence.is_empty() { lines.push(format!("{}: {}", if language.unwrap_or("en").starts_with("ru") {"Подтверждение"} else {"Evidence"}, evidence.join(", "))); }
@@ -391,11 +418,14 @@ fn question_body_language(q: &Value, language: Option<&str>) -> String {
         // a detail that starts with `+` would render as a Markdown bullet
         if let Some(d) = c["detail"].as_str() { lines.push(d.strip_prefix('+').map_or_else(|| d.to_string(), |t| format!(r"\+{t}"))); }
     }
+    if choices(q).iter().any(|c|c["recommended"]==true) {
+        lines.push(if ru {"Основание рекомендации отдельно не подтверждено."} else {"Recommendation reason: not separately verified."}.into());
+    }
     lines.join("\n")
 }
 
 fn question_text(board: &str, task: i64, q: &Value, title: Option<&str>, url: Option<&str>, language: Option<&str>) -> String {
-    format!("? {}\n{}", task_link(board, task, title, url), question_body_language(q,language))
+    format!("🛑 {}\n{}", task_link(board, task, title, url), question_body_language(q,language))
 }
 
 fn now() -> i64 {
@@ -884,16 +914,23 @@ fn scan(tq: &Taskq, j: &Mutex<Journal>) -> bool {
         let s = match snapshot { Ok(s) => s, Err(e) => { failure = Some(e.clone()); continue; } };
         reconcile_questions(&bound,j,&project,&board,n);
         let closing=if find(s,n).is_none() {
-            bound.closed_detail(n)
+            bound.closed_observation(n)
         } else {None};
+        if find(s,n).is_none() && closing.is_none() {
+            failure=Some(format!("{project} #{n}: closure unconfirmed; subscription retained"));
+            continue;
+        }
         let j = j.lock().unwrap();
         let r = match find(s, n) {
             Some(t) => {
+                // §5 / F14: fence identity writes as well as state against older projections.
+                if j.task(&project,n).ok().flatten().is_some_and(|(_,revision,_)|t["revision"].as_i64().unwrap_or(0)<revision) {continue;}
                 let state = t["state"].as_str().unwrap_or("");
                 let question = t["question"].is_object().then(|| &t["question"]);
                 let saved = j.task_title(&project, n).ok().flatten();
                 let title = t["title"].as_str().or(saved.as_deref());
                 let _=j.remember_task_url(&project,n,t["url"].as_str(),now());
+                let _=j.remember_task_title(&project,n,t["title"].as_str(),now());
                 let language=j.task_language(&project,n).ok().flatten();
                 let task_url=j.task_url(&project,n).ok().flatten();
                 j.observe(&project, n, state, t["revision"].as_i64().unwrap_or(0), question.map(Value::to_string).as_deref(), &status_text(&board, n, state, title, task_url.as_deref()), question.map(|q| question_text(&board, n, q, title, task_url.as_deref(), language.as_deref())).as_deref(), now())
@@ -901,7 +938,10 @@ fn scan(tq: &Taskq, j: &Mutex<Journal>) -> bool {
             None => {
                 let language=j.task_language(&project,n).ok().flatten();
                 let unknown=if language.as_deref().unwrap_or("en").starts_with("ru") {"Результат и ограничения пока не подтверждены."} else {"Result and limitations are not confirmed yet."};
-                j.close_task(&project,n,&format!("{}\n{}",crate::conversation::task_state("",true,language.as_deref()),closing.as_deref().unwrap_or(unknown)),now())
+                let (issue,detail)=closing.as_ref().expect("explicit closed observation checked above");
+                j.remember_task_url(&project,n,issue["url"].as_str(),now()).ok();
+                j.remember_task_title(&project,n,issue["title"].as_str(),now()).ok();
+                j.close_task(&project,n,&format!("{}\n{}",crate::conversation::task_state("",true,language.as_deref()),detail.as_deref().unwrap_or(unknown)),now())
             },
         };
         match r {
@@ -968,6 +1008,48 @@ mod tests {
         assert_eq!(question_body_language(&raw,Some("ru")),raw["text"].as_str().unwrap());
     }
 
+    // #385 / R8,R13,§5: real source fixtures retain names, complete choices and revision-specific meaning.
+    // This is renderer/adapter evidence; it does not qualify a model's explanation or live Telegram.
+    #[test]
+    fn explanations_385_named_sources_and_option_two() {
+        let doctor:Value=serde_json::from_str(include_str!("../tests/fixtures/385/2450.json")).unwrap();
+        let h=&doctor["history"][0];let q=&h["question"];
+        assert_eq!(q["choices"].as_array().unwrap().len(),3);
+        assert_eq!(h["answered"]["text"],"2450.2");
+        assert_eq!(crate::telegram::options(q)[1].0,"answer:2");
+        assert!(q["choices"][1]["label"].as_str().unwrap().contains("unknown at close"));
+        for language in ["ru","en"] {
+            let rendered=question_text("taskqorg/taskq",2450,q,doctor["title"].as_str(),doctor["url"].as_str(),Some(language));
+            for c in choices(q) {assert!(rendered.contains(c["label"].as_str().unwrap()) && rendered.contains(c["detail"].as_str().unwrap()));}
+            assert!(rendered.contains("taskq#2450") && !rendered.contains("To answer:"));
+            let html=crate::telegram::html(&rendered);assert!(html.contains(doctor["url"].as_str().unwrap()));
+        }
+        let dash:Value=serde_json::from_str(include_str!("../tests/fixtures/385/267.json")).unwrap();
+        let old=&dash["history"][0];let new=&dash["history"][1];
+        assert_ne!(old["answered"]["source"]["question"],new["answered"]["source"]["question"]);
+        let privacy=question_body(&old["question"]);let cycle=question_body(&new["question"]);
+        assert!(privacy.contains("D28") && privacy.contains("inventory"));
+        assert!(cycle.contains("circular") && !cycle.contains("D28"));
+        assert_ne!(crate::telegram::options(&old["question"]),crate::telegram::options(&new["question"]));
+        let closed:Value=serde_json::from_str(include_str!("../tests/fixtures/385/2451.json")).unwrap();
+        let title=closed["title"].as_str().unwrap();
+        let link=task_link("taskqorg/taskq",2451,Some(title),closed["url"].as_str());
+        assert!(link.contains(title) && link.contains("taskq#2451"),"full verified title, no eight-word truncation");
+        let status:Value=serde_json::from_str(&task_issue_status(&closed["issue"],None,2451)).unwrap();
+        assert_eq!(status["state"],"closed");
+        let accepted=published_detail(&closed["issue"],&closed["closed_snapshot"],&closed["inbox"],2451).unwrap();
+        assert!(accepted.contains("PM-owned Mac qualification") && accepted.contains("Actual Mac fetch/qualification remains PM-owned"));
+        for field in ["by","text"] {
+            let mut bad=closed["closed_snapshot"].clone();bad["tasks"][0]["history"][0]["answered"][field]=json!("invented mismatch");
+            assert!(published_detail(&closed["issue"],&bad,&closed["inbox"],2451).is_none(),"unmatched canonical history {field}");
+        }
+        let mut wrong=closed["closed_snapshot"].clone();wrong["tasks"][0]["history"][0]["answered"]["source"]["kind"]=json!("result");
+        assert!(published_detail(&closed["issue"],&wrong,&closed["inbox"],2451).is_none());
+        let mut missing=closed["closed_snapshot"].clone();missing["tasks"][0]["history"].as_array_mut().unwrap().pop();
+        assert!(published_detail(&closed["issue"],&missing,&closed["inbox"],2451).is_none());
+        assert!(!link.contains("deployed"));
+    }
+
     // #97 / §12: preserve bilingual source trade-offs, while controls omit details and CLI boilerplate.
     #[test]
     fn ask_layout() {
@@ -981,7 +1063,7 @@ mod tests {
                 {"id":1,"label":label,"detail":format!("+ {gain}; - {cost}"),"recommended":true},
                 {"id":2,"label":other,"detail":format!("+ {cost}; - {gain}"),"recommended":false}]});
             let text = question_text("taskqorg/pilotq", 97, &q, Some("Ask layout"), Some("https://forge.invalid/task/97"),None);
-            assert_eq!(text, format!("? {}\n✓ {done}\n⚑ {problem}\n1. {label} ★\n\\+ {gain}; - {cost}\n2. {other}\n\\+ {cost}; - {gain}", task_link("taskqorg/pilotq", 97, Some("Ask layout"), Some("https://forge.invalid/task/97"))));
+            assert_eq!(text, format!("🛑 {}\nDone: {done}\nDecision: {problem}\n1. {label} ★\n\\+ {gain}; - {cost}\n2. {other}\n\\+ {cost}; - {gain}\nRecommendation reason: not separately verified.", task_link("taskqorg/pilotq", 97, Some("Ask layout"), Some("https://forge.invalid/task/97"))));
             assert!(!text.contains("unused card text"), "a parsed question renders from typed fields, never card text");
             assert_eq!(crate::telegram::options(&q), vec![("answer:1".into(), format!("1. {label} ★")), ("answer:2".into(), format!("2. {other}"))]);
         }
@@ -1025,7 +1107,7 @@ mod tests {
             }
             parsed += 1;
             assert!(q["problem"].as_str().is_some_and(|p| body.contains(p)), "problem: {body}");
-            if let Some(done) = q["done"].as_str() { assert!(body.contains(&format!("✓ {done}")), "{body}"); }
+            if let Some(done) = q["done"].as_str() { assert!(body.contains(&format!("Done: {done}")), "{body}"); }
             for e in q["evidence"].as_array().unwrap() {
                 assert!(e["label"].is_string(), "evidence label: {e}");
                 assert!(body.contains(&format!("]({})", e["url"].as_str().expect("evidence url"))), "evidence link: {body}");
@@ -1681,7 +1763,7 @@ print(json.dumps(dict(task=19,op_id=op,outcome='accepted',state='doing',revision
     #[test]
     fn a40_start_label_gap_keeps_subscription() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("pilotq-start-gap-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pilotq-start-gap-{}-{}", std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("taskq.json"), r#"{"repo":"taskqorg/pilotq","create_claim_issue":1}"#).unwrap();
         let bin = dir.join("taskq");
@@ -1705,16 +1787,41 @@ print(json.dumps(dict(task=19,op_id=op,outcome='accepted',state='doing',revision
         assert!(!scan(&tq, &j), "an in-flight start must not emit a closing outcome");
         j.lock().unwrap().started(&run, 1, 19, "ready", 4).unwrap();
         j.lock().unwrap().run_outcome(&run, "started", None, None, 0, 4).unwrap();
-        snapshot(json!([{"n":19,"state":"doing","revision":12}]));
+        snapshot(json!([{"n":19,"state":"doing","revision":12,"title":"Current task title"}]));
         assert!(scan(&tq, &j));
         assert_eq!(j.lock().unwrap().task("pilotq", 19).unwrap().unwrap().0, "doing");
         // Retain F14 stale protection and normal closure after submission is settled.
-        snapshot(json!([{"n":19,"state":"ready","revision":11}]));
+        snapshot(json!([{"n":19,"state":"ready","revision":11,"title":"Stale title"}]));
         assert!(!scan(&tq, &j));
         assert_eq!(j.lock().unwrap().task("pilotq", 19).unwrap().unwrap().0, "doing");
+        assert_eq!(j.lock().unwrap().task_title("pilotq",19).unwrap().as_deref(),Some("Current task title"),"stale revisions must not overwrite task identity");
         snapshot(json!([]));
-        assert!(scan(&tq, &j));
+        // #385 A5 / §5: absence is not a closing receipt, even after submission settles.
+        assert!(!scan(&tq, &j), "missing closed evidence must keep the subscription");
+        assert_eq!(j.lock().unwrap().subscriptions().unwrap().len(),1);
+        assert_eq!(j.lock().unwrap().task("pilotq",19).unwrap().unwrap().0,"doing");
+        std::fs::write(&tq.bin,"#!/bin/sh\ncase \"$1\" in\nstatus) cat snapshot.json;;\nissue) cat issue.json;;\ninbox) cat inbox.json;;\nesac\n").unwrap();
+        let url="https://github.com/taskqorg/pilotq/issues/19";
+        let mut issue=json!({"number":19,"state":"open","title":"Verified full closing title with more than eight meaningful words","url":url,"comments":[]});
+        let inbox=json!({"schema":1,"task":19,"state":"closed","open":false,"url":url,"revision":20,"answers":[]});
+        std::fs::write(dir.join("inbox.json"),inbox.to_string()).unwrap();
+        std::fs::write(dir.join("issue.json"),issue.to_string()).unwrap();
+        assert!(!scan(&tq,&j),"an open issue cannot close despite an inbox close");
+        issue["state"]=json!("closed");issue["number"]=json!(20);
+        std::fs::write(dir.join("issue.json"),issue.to_string()).unwrap();
+        assert!(!scan(&tq,&j),"foreign task closure cannot close this task");
+        issue["number"]=json!(19);
+        std::fs::write(dir.join("issue.json"),issue.to_string()).unwrap();
+        std::fs::write(dir.join("snapshot.json"),json!({"complete":false,"board":{"repo":BOARD},"tasks":[]}).to_string()).unwrap();
+        assert!(!scan(&tq,&j),"partial snapshots cannot close even with closed readbacks");
+        snapshot(json!([]));
+        assert!(scan(&tq,&j),"explicit same-task issue/inbox closure can finish the subscription");
         assert!(j.lock().unwrap().subscriptions().unwrap().is_empty());
+        assert_eq!(j.lock().unwrap().task_title("pilotq",19).unwrap().as_deref(),issue["title"].as_str());
+        assert_eq!(j.lock().unwrap().task_url("pilotq",19).unwrap().as_deref(),Some(url));
+        let status:String=j.lock().unwrap().0.query_row("SELECT text FROM outbox WHERE kind='status' AND task=19 ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).unwrap();
+        assert!(status.contains("👁️") && !status.contains("✅") && status.contains("eight meaningful words") && status.contains("not confirmed"),"{status}");
+        assert!(!status.contains("deployed"),"closed is not deployed");
         drop(j);
         std::fs::remove_dir_all(dir).unwrap();
     }

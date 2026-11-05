@@ -1,0 +1,121 @@
+{
+  "n": 267,
+  "title": "One table of all servers: status, resources, forecast",
+  "url": "https://github.com/taskqorg/dashq/issues/267",
+  "state": "doing",
+  "revision": 6670473058,
+  "question": null,
+  "history": [
+    {
+      "question": {
+        "parsed": true,
+        "text": "Done: Checked A1-A6, D28, its guard test and #269 scope; no code changed.\nProblem: A3 needs folder identities in browser data; D28 forbids inventory in /data/report. #269 allowed ingestion/export, not UI. Which boundary should apply?\nEvidence: [#269](https://github.com/taskqorg/dashq/issues/269), [link](https://github.com/taskqorg/dashq/blob/596cd2ad0de258fe9ddd90fd774e643cb51b8f19/dashq.md)\n1. Scoped typed inventory - + meets A2-A4 through /data/report; - authorized viewers see host, project and folder identities ★\n2. Keep D28 exclusion - + keeps the current privacy boundary; - A2-A4 need owner/PM revision before implementation\nTo answer: `taskq answer 267.K` or comment `K` or the option text.",
+        "done": "Checked A1-A6, D28, its guard test and #269 scope; no code changed.",
+        "problem": "A3 needs folder identities in browser data; D28 forbids inventory in /data/report. #269 allowed ingestion/export, not UI. Which boundary should apply?",
+        "evidence": [
+          {
+            "label": "#269",
+            "url": "https://github.com/taskqorg/dashq/issues/269",
+            "image": false
+          },
+          {
+            "label": "link",
+            "url": "https://github.com/taskqorg/dashq/blob/596cd2ad0de258fe9ddd90fd774e643cb51b8f19/dashq.md",
+            "image": false
+          }
+        ],
+        "choices": [
+          {
+            "id": 1,
+            "text": "Scoped typed inventory - + meets A2-A4 through /data/report; - authorized viewers see host, project and folder identities",
+            "label": "Scoped typed inventory",
+            "detail": "+ meets A2-A4 through /data/report; - authorized viewers see host, project and folder identities",
+            "recommended": true,
+            "consequential": false
+          },
+          {
+            "id": 2,
+            "text": "Keep D28 exclusion - + keeps the current privacy boundary; - A2-A4 need owner/PM revision before implementation",
+            "label": "Keep D28 exclusion",
+            "detail": "+ keeps the current privacy boundary; - A2-A4 need owner/PM revision before implementation",
+            "recommended": false,
+            "consequential": false
+          }
+        ],
+        "limits": {
+          "chars": 240
+        }
+      },
+      "answered": {
+        "by": "alexkirs",
+        "text": "267.1",
+        "at": 1793912460,
+        "read": true,
+        "source": {
+          "id": 6669376090,
+          "question": 6669105697,
+          "asked_at": 1793911909,
+          "attempt": 6669058014,
+          "session": "codex:- mac",
+          "role": "worker"
+        }
+      }
+    },
+    {
+      "question": {
+        "parsed": true,
+        "text": "Done: Accepted 267.1; checked PilotQ contract, link handler and #375 dependency; no code changed.\nProblem: A5 needs selected-server chat, but PilotQ /start ignores link payloads (builtins.rs:65-67). PilotQ #375 adds this flow and depends on #267, so live A5 is circular.\nEvidence: [#375](https://github.com/taskqorg/pilotq/issues/375), [link](https://github.com/taskqorg/pilotq/blob/main/src/builtins.rs#L65)\n1. Table first - + unblocks inventory and defines the link contract; - live A5 chat selection moves to PilotQ #375 ★\n2. Keep A5 end-to-end - + proves selected-server chat here; - PM must resolve the #267/#375 dependency cycle before work\nTo answer: `taskq answer 267.K` or comment `K` or the option text.",
+        "done": "Accepted 267.1; checked PilotQ contract, link handler and #375 dependency; no code changed.",
+        "problem": "A5 needs selected-server chat, but PilotQ /start ignores link payloads (builtins.rs:65-67). PilotQ #375 adds this flow and depends on #267, so live A5 is circular.",
+        "evidence": [
+          {
+            "label": "#375",
+            "url": "https://github.com/taskqorg/pilotq/issues/375",
+            "image": false
+          },
+          {
+            "label": "link",
+            "url": "https://github.com/taskqorg/pilotq/blob/main/src/builtins.rs#L65",
+            "image": false
+          }
+        ],
+        "choices": [
+          {
+            "id": 1,
+            "text": "Table first - + unblocks inventory and defines the link contract; - live A5 chat selection moves to PilotQ #375",
+            "label": "Table first",
+            "detail": "+ unblocks inventory and defines the link contract; - live A5 chat selection moves to PilotQ #375",
+            "recommended": true,
+            "consequential": false
+          },
+          {
+            "id": 2,
+            "text": "Keep A5 end-to-end - + proves selected-server chat here; - PM must resolve the #267/#375 dependency cycle before work",
+            "label": "Keep A5 end-to-end",
+            "detail": "+ proves selected-server chat here; - PM must resolve the #267/#375 dependency cycle before work",
+            "recommended": false,
+            "consequential": false
+          }
+        ],
+        "limits": {
+          "chars": 240
+        }
+      },
+      "answered": {
+        "by": "alexkirs",
+        "text": "1",
+        "at": 1793912851,
+        "read": true,
+        "source": {
+          "id": 6669582313,
+          "question": 6669509383,
+          "asked_at": 1793912705,
+          "attempt": 6669058014,
+          "session": "codex:- mac",
+          "role": "worker"
+        }
+      }
+    }
+  ],
+  "verdict": null
+}

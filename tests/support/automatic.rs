@@ -81,7 +81,7 @@ pub(super) fn current_question(d: &Path, messages: &[Value], task: i64) -> Optio
     let id = try_query(d, &format!("SELECT sent_message FROM outbox WHERE project='pilotq' AND task={task} AND revision={revision} AND kind='question' AND state='delivered' AND chat={CHAT} AND topic=5 ORDER BY id DESC LIMIT 1"))?;
     let message = messages.iter().rev().find(|m| m["id"] == id)?;
     (message["chat_id"] == CHAT && message["message_thread_id"] == 5
-        && message["text"].as_str()?.starts_with("? "))
+        && message["text"].as_str()?.starts_with("🛑 "))
         .then_some((id, revision))
 }
 
@@ -96,7 +96,7 @@ fn a40_current_question_delivery() {
         CREATE TABLE outbox(project TEXT, task INTEGER, revision INTEGER, kind TEXT, state TEXT, chat INTEGER, topic INTEGER, id INTEGER, sent_message INTEGER);
         INSERT INTO tasks VALUES('pilotq',19,'ask',0,42);
         INSERT INTO outbox VALUES('pilotq',19,42,'question','delivered',-100,5,1,77);").unwrap();
-    let mut messages = vec![json!({"id":77,"chat_id":CHAT,"message_thread_id":5,"text":"? <a href=\"https://github.com/taskqorg/pilotq/issues/19\">pilotq#19 — Docs</a>\n✓ drafted\n⚑ choose\n1. short ★\n2. long"})];
+    let mut messages = vec![json!({"id":77,"chat_id":CHAT,"message_thread_id":5,"text":"🛑 <a href=\"https://github.com/taskqorg/pilotq/issues/19\">pilotq#19 — Docs</a>\nDone: drafted\nDecision: choose\n1. short ★\n2. long"})];
     assert_eq!(current_question(&d, &messages, 19), Some((77,42)), "current canonical card must be reachable");
     for sql in ["UPDATE outbox SET state='pending'", "UPDATE outbox SET revision=41", "UPDATE outbox SET task=20", "UPDATE outbox SET project='other'", "UPDATE outbox SET kind='status'", "UPDATE outbox SET topic=6", "UPDATE tasks SET state='doing'", "UPDATE tasks SET closed=1"] {
         c.execute_batch(sql).unwrap();
