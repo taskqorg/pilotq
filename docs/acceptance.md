@@ -764,7 +764,7 @@ Retained risk: FLEURS is read speech; spontaneous, noisy Telegram voice notes fr
 
 ### Existing-model speech scope, task #344
 
-Owner note6564613656 supersedes the selector/retry proposals: automatic Russian/English recognition must handle Russian then English within one recording, without a user language choice. Hebrew remains removed. Replies and every user-visible table follow the latest own user address by actor+chat, preserving topic sharing. Notes6564700192/6564705751 approve explicit reply-language request first, otherwise the last substantive direct clause; quotes/code/names/borrowed words do not switch. Ambiguous/wordless turns retain last resolved language, else bounded default. Existing installed Russian assets/settings stay intact until a qualified normal activation; Russian quality must not regress. The exact owner instruction and source/interface assessment are recorded in [the current research report](research/344.md#automatic-russianenglish-owner-scope).
+Owner note6564613656 supersedes the selector/retry proposals: automatic Russian/English recognition must handle Russian then English within one recording, without a user language choice. Hebrew remains removed. Replies and every user-visible table follow the latest own user address by actor+chat, preserving topic sharing. Notes6564700192/6564705751 approve explicit reply-language request first, otherwise the last substantive direct clause; quotes/code/names/borrowed words do not switch. Ambiguous/wordless turns retain last resolved language, else bounded default. Existing installed Russian assets/settings stay intact until a qualified normal activation; Russian quality must not regress. The exact owner instruction and source/interface assessment are recorded in [the current research report](research/344.md#findings-and-limits).
 
 | Case | Required boundary and evidence |
 |---|---|
@@ -783,7 +783,7 @@ Note6566515450 preparation: combined KNF feature-only script/manifest/inner argv
 
 Earlier fixed-English CPP short0/24/private0/15 and long427.877s throughput are limited observations, not automatic mixed-speech or full-quality acceptance. Retained long output contains concrete name errors/omissions separate from tail ambiguity. No production engine/source activation is selected. Independent review, merge-result CI/MQ, PM final-source A40/cleanup and release/install/live acceptance remain required (§9, R19). Existing branch Whisper replacement remains an unaccepted earlier candidate requiring reconciliation, not the selected Russian path.
 
-Owner note6630454809 selects stock Sherpa NeMo CTC with the pinned GigaAM-Multilingual large export, rejects the experimental engine patch and supersedes its build-only isolation stop. [Current route evidence](research/344.md#selected-stock-route-owner-note6630454809) records contract-first source/provisioning, CTC/transducer regression and shared ingress, verified large assets, real Ogg/Opus/MP3/MP4 Russian and English observations. English includes a name error and joined words. Artificial RU→EN/EN→RU joins lose/corrupt English; repeated35-second English differs between full and25+10-second recognition. These are concrete fidelity failures, not full-quality PASS. No chunking change is claimed. Lowercase/no punctuation, possible Cyrillic English transliteration and text languages ru/en/kk/ky/uz (no Hebrew) are owner-accepted route limits. PM synthetic macOS say 35-second Russian success stays separate from repeated stress and is not human evidence. No installed activation; Current-01..04 comprehensive quality/output/live and §9 gates remain unqualified.
+Owner note6630454809 selects stock Sherpa NeMo CTC with the pinned GigaAM-Multilingual large export, rejects the experimental engine patch and supersedes its build-only isolation stop. [Current route evidence](research/344.md#findings-and-limits) records contract-first source/provisioning, CTC/transducer regression and shared ingress, verified large assets, real Ogg/Opus/MP3/MP4 Russian and English observations. English includes a name error and joined words. Artificial RU→EN/EN→RU joins lose/corrupt English; repeated35-second English differs between full and25+10-second recognition. These are concrete fidelity failures, not full-quality PASS. No chunking change is claimed. Lowercase/no punctuation, possible Cyrillic English transliteration and text languages ru/en/kk/ky/uz (no Hebrew) are owner-accepted route limits. PM synthetic macOS say 35-second Russian success stays separate from repeated stress and is not human evidence. No installed activation; Current-01..04 comprehensive quality/output/live and §9 gates remain unqualified.
 
 #### Historical superseded ru/en/he candidate cases
 
@@ -893,7 +893,7 @@ Retained checks:
 - `u165_status_observations_without_reply_footer`: no footer through rich, HTML
   and plain delivery in each route; measured or unavailable observations appear only in `/status`.
 
-A8 remains a post-release live FRA check. In the owner DM/topic, ask “What is
+A8 remains a post-release live pds18 check. In the owner DM/topic, ask “What is
 the task status for Pilot Q?”, then “Make a task so this works”; verify fresh
 board status and a local `pilotq` draft without another project question. Check
 an ambiguous two-project request asks for the project and writes nothing.
@@ -1384,6 +1384,6 @@ post-release evidence; production cutover remains unauthorized (R19, §9).
 
 ### Speech344 final owner disposition
 
-Owner note 6631669730 closes A3 on the recorded route limit without a natural mixed RU/EN recording: mixed natural human speech is unqualified; separate-clip and synthetic-join omissions remain known limits. No further recording request is pending. Root §1 and [the final report](research/344.md#final-owner-disposition-and-russian-parity-note-6631669730) record the decision.
+Owner note 6631669730 closes A3 on the recorded route limit without a natural mixed RU/EN recording: mixed natural human speech is unqualified; separate-clip and synthetic-join omissions remain known limits. No further recording request is pending. Root §1 and [the final report](research/344.md#findings-and-limits) record the decision.
 
 A4 Russian parity uses the PM same-audio comparison, whose SHA256 and all three normalized word equalities were verified on worker readback: human FLEURS 7/7, legacy example 26/26, and synthetic macOS say 35-second speech 81/81. The earlier “natural35-second Russian” label above is incorrect: that recording is synthetic, not human evidence. Stock is about 2–3 times slower, without punctuation/capitals. No human Russian longer than approximately 11 seconds was compared; long human parity remains unproved. These observations do not qualify arbitrary mixed speech or live intake. Normal CI/MQ and PM final-source A40/cleanup/release/Chrome gates remain separate (§9, R19).

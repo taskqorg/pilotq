@@ -18,6 +18,14 @@ pub fn age(seconds: i64) -> String {
     }
 }
 
+pub fn interval(seconds: i64, ru: bool) -> String {
+    let (value,en,local)=if seconds % 86400 == 0 {(seconds/86400,"d","д")}
+        else if seconds % 3600 == 0 {(seconds/3600,"h","ч")}
+        else if seconds % 60 == 0 {(seconds/60,"m","мин")}
+        else {(seconds,"s","с")};
+    if ru {format!("{value} {local}")} else {format!("{value}{en}")}
+}
+
 pub fn exact(at: Option<i64>) -> String {
     at.and_then(|at| chrono::DateTime::from_timestamp(at, 0))
         .map(|at| at.format("%Y-%m-%d %H:%M UTC").to_string()).unwrap_or_else(|| "? unavailable".into())
@@ -50,6 +58,11 @@ mod tests {
         }
         for (seconds, expected) in [(-1,"<1m"),(0,"<1m"),(59,"<1m"),(60,"1m"),(3599,"59m"),
             (3600,"1h"),(86399,"23h"),(86400,"1d")] { assert_eq!(age(seconds),expected); }
+        for (seconds,en,ru) in [(60,"1m","1 мин"),(3600,"1h","1 ч"),(3601,"3601s","3601 с"),
+            (5400,"90m","90 мин"),(86400,"1d","1 д")] {
+            assert_eq!(interval(seconds,false),en);
+            assert_eq!(interval(seconds,true),ru);
+        }
         assert_eq!(source(Some("2026-11-05T14:30:01+02:00"),1793885401), "1h ago (2026-11-05 12:30 UTC)");
         for raw in [None,Some("unknown"),Some("2026-11-05 14:30 UTC")] { assert_eq!(source(raw,0),"? unavailable"); }
         assert_eq!(moment(Some(i64::MAX),0),"? unavailable");

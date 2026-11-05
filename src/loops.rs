@@ -99,7 +99,7 @@ fn apply(c:&Connection,request:i64,name:&str,args:&Value,at:i64)->Result<String,
     match name {
         "loop_status" => Ok(old.map(|l| {
             let mode=match (ru,l.interval) {
-                (true,Some(s))=>format!("каждые {}",crate::footer::russian_units(&crate::time::age(s))),(false,Some(s))=>format!("every {}",crate::time::age(s)),
+                (true,Some(s))=>format!("каждые {}",crate::time::interval(s,ru)),(false,Some(s))=>format!("every {}",crate::time::interval(s,ru)),
                 (true,None)=>"динамический (резерв: 5 мин)".into(),(false,None)=>"dynamic (fallback: 5m)".into(),
             };
             let delay=crate::time::countdown(l.next.saturating_sub(at),ru);
@@ -139,7 +139,7 @@ fn apply(c:&Connection,request:i64,name:&str,args:&Value,at:i64)->Result<String,
             save(c,&l)?;
             c.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?1,?2)",params![fence_key,request]).map_err(err)?;
             let mode=match (ru,interval) {
-                (true,Some(s))=>format!("каждые {}",crate::footer::russian_units(&crate::time::age(s))),(false,Some(s))=>format!("every {}",crate::time::age(s)),
+                (true,Some(s))=>format!("каждые {}",crate::time::interval(s,ru)),(false,Some(s))=>format!("every {}",crate::time::interval(s,ru)),
                 (true,None)=>"динамический; резервный интервал 300 с, пока модель не выберет 60–3600 с".into(),
                 (false,None)=>"dynamic; 300 s fallback until the model sets 60–3600 s".into(),
             };
@@ -497,6 +497,24 @@ mod tests {
             assert!(overdue.contains(if lang=="ru" {"через сейчас"} else {"in now"}),"{overdue}");
 
             drop(j);drop(mutex);std::fs::remove_dir_all(p).unwrap();
+        }
+    }
+    // #373 A5/A6/R11: a saved interval is exact, unlike a rounded age or countdown.
+    #[test]
+    fn loop_373_interval_accuracy() {
+        for (lang,prefix) in [("en","every"),("ru","каждые")] {
+            let (mut j,p)=journal(lang);
+            let id=admitted(&mut j,1,1,7,"/loop 90m inspect",0);
+            j.0.execute("UPDATE requests SET language=?2 WHERE id=?1",params![id,lang]).unwrap();
+            for (input,seconds,en,ru) in [("90m",5400,"90m","90 мин"),("23h",82800,"23h","23 ч"),("1440m",86400,"1d","1 д")] {
+                let expected=format!("{prefix} {}",if lang=="ru" {ru} else {en});
+                let reply=command(&j.0,id,&format!("/loop {input} inspect"),0).unwrap();
+                assert!(reply.contains(&expected),"{reply}");
+                let listing=command(&j.0,id,"/loop",0).unwrap();
+                assert!(listing.contains(&expected),"{listing}");
+                assert_eq!(read(&j.0,&key("telegram",-100,Some(1))).unwrap().unwrap().interval,Some(seconds));
+            }
+            drop(j);std::fs::remove_dir_all(p).unwrap();
         }
     }
     // #229 A4/R5: actual first status timeout must retain the watch, retry with backoff and later wake.
