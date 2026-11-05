@@ -36,7 +36,7 @@ They use the same admission and audit boundary as other requests (R10, R13, R17)
   The owner-installed PM pack is a route binding, loaded automatically rather than invoked as a native skill;
   `/help operations` shows its binding. Other native skills remain unapproved. The PM pack and durable notes
   follow [the root contract](../pilotq.md#9-cli-releases-and-service-operations); operator setup and the separate
-  PM shadow stage are in [the qualification checklist](pm-221-live.md).
+  PM shadow stage are in [the qualification checklist](https://github.com/taskqorg/pilotq/issues/221).
 - The operator can send the same controls through `pilotq ask '/model MODEL'` (R13). Service restart
   and setup checks keep their own bounded control worker, independent of chat generation.
 
@@ -192,20 +192,11 @@ activation exits the service with code 75; the coreq Linux unit restarts it thro
 `pilotq update --pause` and `--resume` persist and read back automatic-update admission; pausing
 does not stop health or conversations. Manual updates remain available.
 
-This release uses coreq `v0.19.1` (locked in `Cargo.lock`) and journal schema 14. It opens
-existing schemas 0–14 through the current migrations and refuses newer schemas; rollback to a binary
-that cannot read the resulting schema is unsafe. Schema 14 (#359) adds the runtime columns;
-builds before it read at most schema 13, so rollback across it uses the pre-upgrade journal snapshot. The installation owner runs the user service and
-owns its protected configuration. See the [tester guide](tester-guide.md) for installation,
-checks and current limitations. The prior shipped 0.2.37 source
-`3a581fff3e3336fa1bc60bf7178629598c52052e` already supports schema 13, as does
-`1a87c6fc86ab8b979435d1c6b5cf9f9b37129144`: `src/journal.rs` declares `SCHEMA = 13`,
-migrates older journals by adding `outbox.question` when absent, and refuses `user_version > 13`
-before schema writes. This source evidence establishes compatibility, not a restore or live qualification.
-Existing protection includes `schema_1_journal_upgrades`, `schema_9_existing_image_columns_preserve_rows`,
-`u93_schema_10_keeps_work_and_refreshes_tools` and `newer_schema_and_corrupt_journal_are_refused`
-in `src/journal.rs`; `schema_14_runtime_column_359` guards the schema 14 runtime columns. A published release and successful selftest do not qualify
-production cutover or the open decisions in section 11.
+This release uses CoreQ `v0.19.2` and agentq-runtime pinned in `Cargo.lock`, with journal schema 14. New journals are created directly at schema 14; schema 13 upgrades preserve native sessions, requests and receipts. Older and newer journals are refused before schema writes. An older journal must first be upgraded by a compatible earlier build; it is never replaced or reset.
+
+The PM's accepted [#373 readback](https://github.com/taskqorg/pilotq/issues/373) found only pds18 serving PilotQ, with schema 14. The unserved Mac schema-7 journal is outside the supported upgrade range and remains untouched. Rollback requires a binary supporting the resulting schema, or a separately verified pre-upgrade snapshot. The installation owner retains configuration and service ownership.
+
+`retired_schemas_373_are_refused_without_writes`, `newer_schema_and_corrupt_journal_are_refused`, `schema_14_runtime_column_359` and `question_334_preupgrade_recovery` in `src/journal/tests.rs` protect refusal, schema-13 continuity and saved question recovery. A release or selftest does not qualify production cutover or section 11's open decisions.
 
 ### Development
 
@@ -230,4 +221,4 @@ not release evidence.
 
 ### Loop controls
 
-`/loop`, including Telegram bot suffixes and CLI `ask`, uses the deterministic admission/audit path under [the route-loop protocol](conversation-contract.md#route-loops-and-board-wakes) (R13). The capability catalog owns help and manager-tool descriptions. The protected owner and shell grantees may use loop controls; other admitted callers receive a scoped refusal. `/new` stops the destination's loop. Restart and update drain retain armed and pending loops without replaying interrupted native effects. [PM TEST qualification](loop-220-live.md) remains separate from local/CI checks and installation authority (§9).
+`/loop`, including Telegram bot suffixes and CLI `ask`, uses the deterministic admission/audit path under [the route-loop protocol](conversation-contract.md#route-loops-and-board-wakes) (R13). The capability catalog owns help and manager-tool descriptions. The protected owner and shell grantees may use loop controls; other admitted callers receive a scoped refusal. `/new` stops the destination's loop. Restart and update drain retain armed and pending loops without replaying interrupted native effects. [PM TEST qualification](https://github.com/taskqorg/pilotq/issues/220) remains separate from local/CI checks and installation authority (§9).

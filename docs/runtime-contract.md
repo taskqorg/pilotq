@@ -340,8 +340,8 @@ Local correlated events cover update → request → model turn → tool operati
 Telegram delivery. The runtime adapter reports actual completion/error events.
 Model/provider/version and agentq mode accompany evaluation evidence.
 
-Use the existing Langfuse installation for optional, bounded telemetry export after capture scope is
-approved. Content capture is opt-in and redacted; operational metadata is enough for delivery and
+Optional, bounded Langfuse telemetry export requires an explicitly approved destination and capture
+scope; no existing installation or active export is assumed. Content capture is opt-in and redacted; operational metadata is enough for delivery and
 intervention metrics. Langfuse failure must not block conversations or become the only copy of a
 task outcome. The proposed metric set lives in [acceptance](acceptance.md#metrics).
 

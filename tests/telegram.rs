@@ -3084,10 +3084,10 @@ fn u95_cases(live: bool) {
 #[test]
 fn u95_scripted_reply_task_question_status() { u95_cases(false); }
 
-// Run on FRA with the subscription login. Fake Telegram/TaskQ avoid live board mutations.
+// Run on the supported Linux test host with the subscription login. Fake Telegram/TaskQ avoid live board mutations.
 // PILOTQ_A8_CODEX_HOME=<subscription home> cargo test --locked --test telegram u95_live -- --ignored --nocapture
 #[test]
-#[ignore = "uses the real Codex subscription on FRA"]
+#[ignore = "uses the real Codex subscription on a Linux test host"]
 fn u95_live_reply_task_question_status() { u95_cases(true); }
 // #94 / §5 / R11: a trusted board answer closes only its original question; stale taps show the receipt without writes.
 #[test]

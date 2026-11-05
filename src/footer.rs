@@ -44,7 +44,7 @@ impl Footer {
             Some(m) => m.rsplit('/').next().unwrap_or(m).to_string(),
             None => requested.filter(safe).map(|m| format!("{m} (requested)")).unwrap_or_else(|| "? model unavailable".into()),
         };
-        let stale = |yes, seen| if yes { format!(" · stale {}m", at.saturating_sub(seen).max(0) / 60) } else { String::new() };
+        let stale = |yes, seen| if yes { format!(" · stale {} ({})", crate::time::age(at.saturating_sub(seen)), crate::time::exact(Some(seen))) } else { String::new() };
         let context = match self.context {
             Some((p, seen)) => {
                 let face = match p { 0..=39 => "🙂", 40..=69 => "😐", 70..=79 => "😕", 80..=89 => "😣", _ => "🥵" };
@@ -55,10 +55,8 @@ impl Footer {
         let quota = match self.quota.filter(|(_, reset, _)| *reset > at) {
             Some((p, reset, seen)) => {
                 let moon = match p { 0..=12 => "🌑", 13..=37 => "🌘", 38..=62 => "🌗", 63..=87 => "🌖", _ => "🌕" };
-                let seconds = reset.saturating_sub(at) as u64;
-                let reset = if seconds >= 86400 { format!("{}d", seconds.div_ceil(86400)) }
-                    else if seconds >= 3600 { format!("{}h", seconds.div_ceil(3600)) } else { "<1h".into() };
-                format!("{moon} {p}% ↻ {reset}{}", stale(self.quota_stale, seen))
+                let countdown = crate::time::countdown(reset.saturating_sub(at));
+                format!("{moon} {p}% ↻ {countdown} ({}){}", crate::time::exact(Some(reset)), stale(self.quota_stale, seen))
             }
             None => "? unavailable".into(),
         };
@@ -95,7 +93,7 @@ mod tests {
             assert!(f.render(Some("provider/model"), None, 0).starts_with(&format!("model · {face} {p}%")));
         }
         for (p, moon) in [(0,"🌑"),(12,"🌑"),(13,"🌘"),(37,"🌘"),(38,"🌗"),(62,"🌗"),(63,"🌖"),(87,"🌖"),(88,"🌕"),(100,"🌕")] {
-            for (reset,label) in [(3599,"<1h"),(3600,"1h"),(3601,"2h"),(86399,"24h"),(86400,"1d"),(86401,"2d")] {
+            for (reset,label) in [(1,"0:01"),(3599,"1:00"),(3600,"1:00"),(3601,"1:01"),(17999,"5:00"),(18000,"5h"),(18001,"6h"),(86399,"24h"),(86400,"1d"),(86401,"2d")] {
                 f.quota(&json!({"limitId":"codex","primary":{"usedPercent":100-p,"windowDurationMins":10080,"resetsAt":reset}}), 0);
                 assert!(f.render(Some("model"),None,0).contains(&format!("{moon} {p}% ↻ {label}")));
             }

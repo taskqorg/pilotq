@@ -19,6 +19,7 @@ mod slots;
 mod loops;
 mod pm;
 mod footer;
+mod time;
 mod conversation;
 mod reply_language;
 mod taskq;
@@ -278,7 +279,6 @@ fn initial_project(j: &journal::Journal, c: &Config) -> Result<(), String> {
             if !j.projects()?.iter().any(|p| p.0 == "pilotq") && !j.project_disconnected("pilotq")? {
                 j.add_project(c.owner, "pilotq", taskq::BOARD, &tq.root.to_string_lossy(), now() as i64)?;
             }
-            j.pin_legacy_taskq(&tq.root.to_string_lossy())?;
         }
     }
     Ok(())
@@ -736,7 +736,8 @@ fn main() {
         }
         ["service", "install"] => {
             host::gate(&t).unwrap_or_else(|e|t.die(&e));
-            let r = coreq::update::install_self(&t).and_then(|_| coreq::service::run_all(&unit().unload, true)).and_then(|_| coreq::service::host_unit(&t));
+            let r = std::env::current_exe().map_err(|e| e.to_string()).and_then(|p| std::fs::read(p).map_err(|e| e.to_string()))
+                .and_then(|bytes| coreq::update::prepare_install(&t, &bytes)).and_then(|_| coreq::update::activate_install(&t)).and_then(|_| coreq::service::run_all(&unit().unload, true)).and_then(|_| coreq::service::host_unit(&t));
             let u = r.unwrap_or_else(|e| t.die(&e));
             println!("service install: ok ({})", u.path.display());
         }
