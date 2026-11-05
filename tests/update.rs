@@ -262,6 +262,27 @@ fn installed_service_updates_on_schedule() {
     fs::remove_dir_all(d).unwrap();
 }
 
+// #374 A2 / specq Telemetry by design: every CLI exit path leaves one terminal record with a stable
+// error class, so a failed command never reads as a start with no outcome. Arguments stay out.
+#[test]
+fn command_exits_374_leave_terminal_observations() {
+    let d = scratch("command-terminal");
+    let run = |args: &[&str]| Command::new(env!("CARGO_BIN_EXE_pilotq")).env("PILOTQ_INSTALL", &d).args(args).output().unwrap();
+    assert!(!run(&["invented-command"]).status.success());
+    assert!(!run(&["users", "grant", "invented-not-an-id", "chat"]).status.success());
+    assert!(run(&["version"]).status.success());
+    let rows = coreq::telemetry::Reader::open(&d.join("telemetry.sqlite")).unwrap().export(0, 0, 1024).unwrap();
+    let events: Vec<&Value> = rows["events"].as_array().unwrap().iter().map(|r| &r["observation"]).collect();
+    for (operation, outcome, error) in [("command.unknown", "failed", "usage"), ("command.users", "failed", "command-failed"), ("command.version", "ok", "none")] {
+        let found: Vec<_> = events.iter().filter(|e| e["kind"] == "operation" && e["operation"] == operation).collect();
+        assert_eq!(found.len(), 1, "{operation}: {rows}");
+        assert_eq!((found[0]["outcome"].as_str(), found[0]["error"].as_str()), (Some(outcome), Some(error)), "{operation}");
+        assert!(found[0]["duration_us"].is_u64(), "{operation}");
+    }
+    assert!(!rows.to_string().contains("invented-"), "command arguments stay out of telemetry");
+    fs::remove_dir_all(d).unwrap();
+}
+
 // §9: absent setup must fail explicitly, without claiming healthy dependencies or writing state.
 #[test]
 fn doctor_missing_configuration_is_not_healthy() {

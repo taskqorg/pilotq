@@ -1,5 +1,6 @@
 //! R17 / §8: semantic metadata through CoreQ's existing writer; no content capture or storage.
 use serde_json::{Value, json};
+use std::cell::RefCell;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub struct Observation { value: Value, start: Instant }
@@ -42,6 +43,34 @@ impl Drop for Observation {
         if let Err(error) = coreq::telemetry::capture::observe_linked(self.value.clone()) {
             if error != "telemetry collector unavailable" { eprintln!("Telemetry: unknown ({error})"); }
         }
+    }
+}
+
+/// One CLI command's terminal record. Process exit skips Drop, so every failing exit closes it here first.
+pub struct Command(RefCell<Option<(Observation, tracing::span::EnteredSpan)>>);
+
+impl Command {
+    pub fn start(operation: &'static str) -> Self {
+        let span = tracing::info_span!("command", coreq_operation=operation, coreq_result="unclassified", coreq_error=tracing::field::Empty).entered();
+        Self(RefCell::new(Some((Observation::start("operation", operation), span))))
+    }
+
+    pub fn finish(&self, outcome: &'static str, error: &'static str) {
+        if let Some((mut observation, span)) = self.0.borrow_mut().take() {
+            observation.outcome(outcome, error);
+            if error != "none" { span.record("coreq_error", error); }
+            span.record("coreq_result", "classified");
+        }
+    }
+
+    pub fn die(&self, t: &coreq::Tool, message: &str) -> ! {
+        self.finish("failed", if message.contains(crate::USAGE) {"usage"} else {"command-failed"});
+        t.die(message)
+    }
+
+    pub fn exit(&self, code: i32, error: &'static str) -> ! {
+        self.finish("failed", error);
+        coreq::telemetry::capture::exit(code)
     }
 }
 

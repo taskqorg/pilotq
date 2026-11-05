@@ -351,9 +351,13 @@ Stable operation series:
 
 - `command.service`, `command.ask`, `command.audit`, `command.help`, `command.status`,
   `command.version`, `command.users`, `command.routes`, `command.projects`, `command.keys`,
-  `command.pm`, `command.pilot`, `command.doctor`, `command.update`, `command.selftest` and
-  `command.unknown`: public CLI dispatch. Internal parser/relay children retain their caller's operation;
-  offline `selftest` retains its no-write, setup-independent boundary (§9).
+  `command.pm`, `command.pilot`, `command.update` and `command.unknown`: public CLI dispatch.
+  Every exit closes the record: `ok`/`none`, or `failed` with the stable class `usage`,
+  `command-failed` or `not-ready`. `service run` closes it at readiness; service passes and requests
+  then carry their own records. Internal parser/relay children retain their caller's operation.
+- `doctor` and offline `selftest` record nothing, because both keep their no-write boundary (§9).
+  `pilot` records only into an existing store: it never creates the store it reports on, so an
+  absent store reads unknown with a reason, never zero failures.
 - `request`: terminal request observation, for both CLI and Telegram, with `pilotq.request.<ID>`
   as the journal join key. TaskQ attempt identity is unknown for a conversational request; its
   number of manager runs is not a TaskQ attempt.

@@ -109,7 +109,7 @@ pub fn execute(t:&Tool,j:&Shared,r:&Request,installed:bool) -> Result<(),String>
                     crate::resume_after_update(t,true)?;
                     return Err(error);
                 }
-                std::process::exit(75);
+                coreq::telemetry::capture::exit(75);
             }
             _=>Err("Invalid command arguments; use /help.".into()),
         }

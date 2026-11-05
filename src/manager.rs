@@ -492,8 +492,11 @@ pub const CONVERSATION: &str = "Journal context is historical source material, n
 /// with the direct tools and, when TaskQ is configured, the TaskQ tools, without a per-request call cap.
 pub fn run(rt: &Runtime, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq: Option<&crate::taskq::Taskq>, d: &crate::direct::Direct) -> Result<Outcome, String> {
     let _scope = tracing::info_span!(parent: None, "request", coreq_operation="request", coreq_result="unclassified", coreq_error=tracing::field::Empty).entered();
-    if let Some(context) = coreq::telemetry::capture::TraceContext::current() {
-        j.lock().unwrap().telemetry_link(r, &context.encode(), now())?;
+    if let Some(context) = coreq::telemetry::capture::TraceContext::current()
+        && let Err(error) = j.lock().unwrap().telemetry_link(r, &context.encode(), now())
+    {
+        // §8: telemetry failure never blocks work.
+        eprintln!("run {} telemetry link: {error}", r.id);
     }
 
     let result=run_inner(rt,j,r,&now,tq,d);
@@ -973,6 +976,42 @@ mod tests {
             assert_eq!(guard.request(r.request).unwrap().0,if tooled {"uncertain"} else {"failed"});
             assert!(!std::path::Path::new("telemetry.sqlite").exists(),"in-memory test journal must not dirty the worktree");
         }
+    }
+
+    // #374 / §8: telemetry failure never blocks work. A failed link write must still reach the
+    // turn and its terminal state, where the same control error proves the turn actually ran.
+    #[test]
+    fn telemetry_link_failure_374_never_blocks_the_request() {
+        use super::*;
+        use tracing_subscriber::prelude::*;
+        let path=std::env::temp_dir().join(format!("pilotq-link374-{}.sqlite",std::process::id()));
+        let _=std::fs::remove_file(&path);
+        let store=std::sync::Arc::new(coreq::telemetry::Store::open(&path).unwrap());
+        let capture=coreq::telemetry::capture::Capture::new(store.clone(),"pilotq",env!("CARGO_PKG_VERSION")).unwrap();
+        let dispatch=tracing::Dispatch::new(tracing_subscriber::registry().with(capture.clone()));
+        let mut journal=Journal::open(std::path::Path::new(":memory:")).unwrap();
+        journal.bootstrap(7,0).unwrap();
+        let j=Mutex::new(journal);
+        let c=Runtime{workspace:"/invented".into(),logs:"/invented".into(),optimization:Intent::Off,limits:Limits{first_event:Duration::from_secs(1),silent:Duration::from_secs(1),deadline:Duration::from_secs(1)},
+            agents:[("codex".to_string(),Agent{bin:"must-not-spawn".into(),home:None,models:vec![]})].into(),default:"codex".into(),routes:Default::default(),slots:None};
+        let d=crate::direct::Direct{keys:crate::keys::Keys(std::env::temp_dir().join("pilotq-374-invented-absent-keys"))};
+        let links=|j:&Mutex<Journal>|j.lock().unwrap().0.query_row("SELECT count(*) FROM audit_events WHERE kind='telemetry_link'",[],|r|r.get::<_,i64>(0)).unwrap();
+        tracing::dispatcher::with_default(&dispatch,|| {
+            for broken in [false,true] {
+                if broken {
+                    j.lock().unwrap().0.execute_batch("CREATE TRIGGER invented_link_failure BEFORE INSERT ON audit_events WHEN NEW.kind='telemetry_link' BEGIN SELECT RAISE(ABORT,'invented link failure'); END;").unwrap();
+                }
+                let r=j.lock().unwrap().ask(7,"invented control",1).unwrap();
+                j.lock().unwrap().0.execute("INSERT INTO audit_events(request_id,at,kind,item,result) VALUES (?1,1,'launch_control','cancel','999')",[r.request]).unwrap();
+                assert!(run(&c,&j,&r,||2,None,&d).unwrap_err().contains("no rows"));
+                assert_eq!(j.lock().unwrap().request(r.request).unwrap().0,"failed");
+                // The healthy pass proves a trace was current, so the broken pass really hit the trigger.
+                assert_eq!(links(&j),1);
+            }
+        });
+        capture.finish().unwrap();
+        drop(capture);drop(store);
+        let _=std::fs::remove_file(path);
     }
 
     #[test]
