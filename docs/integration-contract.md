@@ -8,8 +8,10 @@ clauses remain unqualified design targets, not shipped guarantees or deployment 
 PilotQ reads and manages boards only through the installed TaskQ CLI (R13). A registered project is
 the local root where TaskQ runs; TaskQ owns forge, host, authentication and board access. The
 registry binds that root to the board identity read back by `taskq status --json`, without a forge
-adapter or credential configuration in PilotQ. Use task URLs returned by TaskQ, never construct or
-interpret forge-specific issue URLs. Read task progress with `status --task` and accepted answers
+adapter or credential configuration in PilotQ. Match TaskQ's effective configuration: an omitted
+board means GitHub, and an omitted host means `github.com` or `gitlab.com` for that board. An explicit
+different host, board kind or repository still blocks onboarding. Use task URLs returned by TaskQ,
+never construct or interpret forge-specific issue URLs. Read task progress with `status --task` and accepted answers
 with `inbox --json` (actor, time and original question revision); writes use the supported `answer`
 and operation-receipt path. An unreadable response stays unknown. Missing TaskQ capabilities become
 TaskQ findings, never a PilotQ forge integration. Existing direct issue tools remain refused when
