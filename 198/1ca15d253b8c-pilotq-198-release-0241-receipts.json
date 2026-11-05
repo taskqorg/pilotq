@@ -1,0 +1,137 @@
+{
+  "schema": "pilotq.198.pm-release-0241/1",
+  "purpose": "Docs-only release/continuity reconciliation; no full acceptance/close or cs deployment",
+  "release": {
+    "phase": "INSTALLED_VERIFIED_LIVE_UI_RECHECK_PENDING",
+    "source": "0be207e4a983a9f33a0fd21eb798d24054d2c368",
+    "previous_live": "79e2c9aa335cdfbfd4061da261d40258aeb75088",
+    "version": "0.2.41",
+    "automatic_updates": "enabled; original state restored",
+    "release_authorization": "User explicitly authorized immediate publication during development and completing queue without repeated consent; parent reconfirmed scope. cs LIVE excluded.",
+    "gates": {
+      "PR367": "MERGED",
+      "MQtests41964062950": "SUCCESS",
+      "MQrelease41964063236": "SUCCESS",
+      "A40": "PASS14/14+cleanup on exact source; do not repeat",
+      "candidate_doctor": "PASS with normal service-user PATH",
+      "private_backup_restore": "PASS owner-authorized13→14→13, temporary copy removed"
+    },
+    "snapshot": "/home/hermes/.local/share/pilotq/backups/pre-0.2.41-0be207e4-20261105T043202Z/journal.sqlite",
+    "installed_version_before": "0.2.40",
+    "journal_schema_before": 13,
+    "continuity_before": {
+      "requests": 536,
+      "outbox": 7148,
+      "task_effects": 18,
+      "active_requests": 0
+    },
+    "manual_install": "COMPLETED_ONCE normal protected-owner pilotq update; no service install/extra restart",
+    "cs_live": "NOT_TOUCHED",
+    "release_url": "https://github.com/taskqorg/pilotq/releases/tag/v0.2.41",
+    "workflow_id": 41968764233,
+    "workflow_conclusion": "SUCCESS",
+    "published_utc": "2026-11-05T04:38:35Z",
+    "published_binary_bytes": 18939800,
+    "published_binary_sha256": "83b79d3fc76738625c8207064fe2d57f3c72c38428b9ad10f517439929ca90f5",
+    "manifest_sha256": "f95bdc4449d4cf3bcbfae662684f47873d2e58359d515e4f750ae8404dcdb04e",
+    "manifest_checksum_verified": true,
+    "installer_unit": "pilotq-update-0241-0be207e4.service",
+    "installer_invocation": "81be1aa3e91748d0bd5205bcdd0edeff",
+    "installer_wall_seconds": 3.343,
+    "installer_log": [
+      "update:0.2.41",
+      "drain:ok",
+      "service restart:ok"
+    ],
+    "installed_version": "0.2.41",
+    "live_pid": 4052917,
+    "installed_sha256": "83b79d3fc76738625c8207064fe2d57f3c72c38428b9ad10f517439929ca90f5",
+    "journal_schema_after": 14,
+    "drain_file_exists": false,
+    "journal_draining": 0,
+    "selftest": "PASS",
+    "doctor": {
+      "observed_utc": "2026-11-05T04:44:05.606431+00:00",
+      "ok": true,
+      "returncode": 0,
+      "configuration": "ok",
+      "telegram": "ok",
+      "taskq": "ok",
+      "voice": "ok",
+      "host_tools": "ok",
+      "runtime": "ok"
+    },
+    "continuity": {
+      "requests": {
+        "before": 536,
+        "after": 536,
+        "same_preexisting_payloads": true
+      },
+      "outbox": {
+        "before": 7148,
+        "after": 7148,
+        "same_preexisting_payloads": true
+      },
+      "task_effects": {
+        "before": 18,
+        "after": 18,
+        "same_preexisting_payloads": true
+      },
+      "integrity": "ok",
+      "request_states_before_and_after": {
+        "answered": 498,
+        "cancelled": 2,
+        "failed": 35,
+        "uncertain": 1
+      },
+      "outbox_states_before_and_after": {
+        "delivered": 6856,
+        "exhausted": 2,
+        "failed": 5,
+        "superseded": 285
+      },
+      "TEST_saved_model_before_after": null,
+      "TEST_generation": 10,
+      "DM_saved_model_before_after": "gpt-6.1-sol",
+      "DM_generation": 5
+    },
+    "health_readback": {
+      "observed_utc": "2026-11-05T04:46:50.720961+00:00",
+      "status_age_seconds": 4,
+      "poll": "ok fresh",
+      "storage": "ok fresh",
+      "taskq": "ok age51s",
+      "pending": 0,
+      "undelivered": 7,
+      "uncertain": 1,
+      "limitation": "Model/delivery health samples retain pre-upgrade successful events; not proof of a new post-upgrade model/Telegram turn. Existing7 terminal delivery failures and1 uncertain request are unchanged, not cleared/replayed."
+    },
+    "deployment_ledger": {
+      "status": "NOT_WRITTEN",
+      "command": "taskq deployed --version0.2.41 --env test-pilot --host pds18.ufobe.com --range79e2c9a..0be207e4 --json",
+      "error": "taskq.json has no deploy environments",
+      "boundary": "No config/environment/permissions workaround or retry; actual installation independently verified."
+    }
+  },
+  "rollback_proof": {
+    "status": "PASS",
+    "snapshot_id": "pre-0.2.41-0be207e4-20261105T043202Z",
+    "snapshot_bytes": 13291520,
+    "uid": 1001,
+    "file_mode": "0600",
+    "directory_mode": "0700",
+    "migration13_to14": "PASS",
+    "old_refuses14": "PASS exit1",
+    "restore13": "PASS exit0 plus logical digest and state counters equal",
+    "temporary_copy_deleted": true,
+    "content_exported": false,
+    "owner_consent": "Explicitly reaffirmed in response to exact on-host backup/temp-copy question; single retry accepted"
+  },
+  "limitations": [
+    "Installed onboarding fix not yet actual Telegram Recheck-qualified.",
+    "No new post-upgrade owner model turn; inherited successful health sample is not that proof.",
+    "Real foreign actor remains OWNER_WAIVED_NOT_TESTED; synthetic A40 does not replace it.",
+    "Model-picker repeat/stale is not actual TaskQ option-card tap.",
+    "Existing479/487FAIL and525REFUSED retained;198A1/A2 partial."
+  ]
+}
