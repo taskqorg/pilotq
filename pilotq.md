@@ -64,6 +64,8 @@ This authorizes route-local loops only for the configured owner and explicit she
 Loops remain a manual tool, not the base board mechanism: one observer watches every registered board, task events become cards without a model turn, and `/review on` gives its owner or shell-grant caller one PM review of all their projects in that route ([board events](docs/conversation-contract.md#board-events-cards-and-pm-review)).
 [Loop protocol](docs/conversation-contract.md#route-loops-and-board-wakes) defines durable ticks, dynamic delay, scoped board observation and recovery. CLI and Telegram share this boundary (R13, R18).
 
+Manager mode is TaskQ-owned: an explicit request runs `taskq pm` (or `taskq pm stop`) and follows its printed steps exactly; PilotQ holds no second copy of them. A loop tick that answers exactly `NO_CHANGE` stays in the journal and sends nothing ([loop protocol](docs/conversation-contract.md#route-loops-and-board-wakes)).
+
 Plain-language controls are primary. `/status`, `/stop` and `/new` remain available outside the model backlog. Reset fences old runs without erasing task links, subscriptions, grants or receipts. Resolve stop scope explicitly; a manager stop, task park and queue pause differ.
 
 ## 3. Architecture and authority

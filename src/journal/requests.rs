@@ -449,6 +449,8 @@ impl Journal {
             let receipt:Option<String>=tx.query_row("SELECT receipt FROM admin_ops WHERE request=?1 AND tool='loop_start'",[r.request],|x|x.get(0)).optional().map_err(e)?;
             if let Some(receipt)=receipt {if !text.contains(&receipt) {text.push_str(&format!("\n\n{receipt}"));}}
         }
+        // A loop tick with nothing new stays in the journal only.
+        let quiet=state=="answered" && text.trim()==crate::loops::NO_CHANGE && tx.query_row("SELECT EXISTS(SELECT 1 FROM audit_events WHERE request_id=?1 AND kind='loop_tick')",[r.request],|x|x.get::<_,bool>(0)).map_err(e)?;
         let shown=crate::conversation::reply(&text,language.as_deref());
         if shown!=text {
             tx.execute("INSERT INTO audit_events(request_id,run_id,at,kind,result) VALUES (?1,?2,?3,'reply_diagnostic',?4)",params![r.request,r.id,at,text]).map_err(e)?;
@@ -465,7 +467,7 @@ impl Journal {
         }
         let dest: (String, i64, Option<i64>, i64) =
             tx.query_row("SELECT front, chat, topic, message FROM requests WHERE id=?1", [r.request], |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?, x.get(3)?))).map_err(e)?;
-        if dest.0 == "telegram" && !plan_receipt(&tx,r.request,&text,at)? {
+        if dest.0 == "telegram" && !quiet && !plan_receipt(&tx,r.request,&text,at)? {
             let callback:Option<Vec<u8>>=tx.query_row("SELECT CAST(m.value AS BLOB) FROM meta m JOIN requests q ON q.id=?1 WHERE m.key='callback:' || q.id AND q.kind IN ('launch','cancel','launch_control') AND q.state='failed'",[r.request],|x|x.get(0)).optional().map_err(e)?;
             if let Some(callback)=callback.and_then(|b|String::from_utf8(b).ok()) {
                 outbox(&tx,r.request,dest.1,dest.2,None,None,&text,at)?;
