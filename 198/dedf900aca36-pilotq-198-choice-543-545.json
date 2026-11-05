@@ -1,0 +1,518 @@
+{
+  "schema": "pilotq.198.pm-taskq-option/1",
+  "source": "0be207e4a983a9f33a0fd21eb798d24054d2c368",
+  "installed": "0.2.41",
+  "TaskQ": "4.6.83",
+  "question": 6651686767,
+  "original_card": 430,
+  "original_UI_message": 1070160,
+  "choice": 1,
+  "actor_label": "Alex K",
+  "actual_UI_action": "One actual browser dblclick on observed button 1. Accept narrow receipts ★; no synthetic callback",
+  "verdict": "PASS_NARROW_ACTUAL_REPEAT: 544 and545 each admitted actual Telegram answer callback; one task_effect and task audit command for544;545 exact saved receipt without another board call. Actor preserved and original controls removed.",
+  "timing_limit": "Callbacks arrived one second apart before first board answer completed; this proves rapid repeated current-question replay. A later superseded-question rejection and foreign actor are not tested.",
+  "UI_incident": "dblclick also opened local Reply context for the original card. Cancel removed it; screenshot confirms original synthetic20MB draft text preserved and unsent. No new text/file/audio ingress.",
+  "foreign_actor": "OWNER_WAIVED_NOT_TESTED",
+  "new_status543": "PASS_OBSERVED_CURRENT_SOURCE: closed540 accepted research/report docs/research/540.md, linked541 observed closed not stale historical in-work; no invented closure time/cause.",
+  "receipts": {
+    "at": "2026-11-05T06:50:27.232575+00:00",
+    "requests": [
+      {
+        "id": 543,
+        "kind": "text",
+        "state": "answered",
+        "message": 793,
+        "reply": "[cyprusbz#540 — Diagnose the delayed account avatar in the site header](https://gitlab.ufobe.com/gradus/cyprusbz/-/issues/540) **закрыта**; доверенный итог TaskQ подтверждает принятие исследования. Точное время закрытия в readback отсутствует.\n\n- **Принятый итог:** диагноз задержки аватара и предложенное решение записаны в `docs/research/540.md`. Конкретная формулировка причины в readback отсутствует. Код и тесты в #540 не менялись.\n- **Ограничения:** тайминги реальной авторизованной сессии и задержка на физическом телефоне не проверены; выигрыш от решения не измерен.\n- **Связанное исправление:** [cyprusbz#541 — Show the signed-in header account control without waiting for the admin check](https://gitlab.ufobe.com/gradus/cyprusbz/-/issues/541) прямо ссылается на вариант 1 отчёта #540. Сейчас **закрыта**, слита через !1199. Принятый результат: известный пользователь видит управление аккаунтом во время загрузки ролей; при неизвестной сессии остаётся skeleton. Проверки использовали имитацию сессии; реальные сетевые тайминги не измерены.",
+        "received_at": 1793861217,
+        "error": null,
+        "reply_to": 3
+      },
+      {
+        "id": 544,
+        "kind": "answer",
+        "state": "answered",
+        "message": 430,
+        "reply": "Ответил Alex K: 1. Accept narrow receipts\nTaskQ: Исполнитель работает. [pilotq#198](https://github.com/taskqorg/pilotq/issues/198)",
+        "received_at": 1793861366,
+        "error": null,
+        "reply_to": 430
+      },
+      {
+        "id": 545,
+        "kind": "answer",
+        "state": "answered",
+        "message": 430,
+        "reply": "Ответил Alex K: 1. Accept narrow receipts",
+        "received_at": 1793861367,
+        "error": null,
+        "reply_to": 430
+      }
+    ],
+    "outbox": [
+      {
+        "id": 7192,
+        "request_id": 511,
+        "kind": "question_answered",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 429,
+        "possible_duplicate": 0,
+        "question": null,
+        "revision": 6651232419,
+        "text": "Answered by alexkirs: PM technical receipts on installed PilotQ0.2.41/source0be207e4, TaskQ4.6.83. Real TEST539/run305 shell+310s PASS, ten progress edits to message784, one final785; journalctl actually read20lines but raw private log content stayed local\n(count/hash only). Actual TEST540/541 native cancellation and Russian ack PASS on current source; previous487 localization FAIL remains historical. TEST542 DEV/delivery is PARTIAL with explicit LIVE Git-read failure, no deploy/write. Fresh\nTelegramWebA12.0.48 and local screenshots recorded; Chrome exact version blocked by browser URL policy, no workaround. Independently verify this safe attachment and reconcile only these narrow results; no full A1/A2 PASS or closure. Next\nremaining protocol test may use one REAL disposable PM evidence-review question: after verifying the packet, ask whether these verified receipts should be accepted as PARTIAL into docs/research/198.md, option1 accept verified narrow\nreceipts and continue remaining qualification (recommended), option2 reject with specific evidence defect. This is a technical PM review decision, not full acceptance, a product/artistic choice or an invented callback. Do not run live UI,\nnew installs, releases, security/grant/config changes, or new parallel workers. Keep foreign actor OWNER_WAIVED_NOT_TESTED and mixed-human-speech waiver. Preserve all remaining gates in report.\n\n\n[pilotq-198-runtime-ui-539.json](https://github.com/taskqorg/pilotq/raw/aec97f96c98a2b16efc6e0549e75eb644b643280/198/e9c8f2fbe9fb-pilotq-198-runtime-ui-539.json)\n<!-- taskq-files [{\"id\":\"e9c8f2fbe9fb72d6f6ebba158635772ac77d960df6c59824fb0afaf33eb7c589\",\"name\":\"pilotq-198-runtime-ui-539.json\",\"mime\":\"application/octet-stream\",\"hash\":\"e9c8f2fbe9fb72d6f6ebba158635772ac77d960df6c59824fb0afaf33eb7c589\",\"bytes\":29106,\"url\":\"https://github.com/taskqorg/pilotq/raw/aec97f96c98a2b16efc6e0549e75eb644b643280/198/e9c8f2fbe9fb-pilotq-198-runtime-ui-539.json\"}] -->"
+      },
+      {
+        "id": 7193,
+        "request_id": 543,
+        "kind": "reaction",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 793,
+        "possible_duplicate": 0,
+        "question": null,
+        "revision": null,
+        "text": "Received."
+      },
+      {
+        "id": 7194,
+        "request_id": 543,
+        "kind": "turn_progress",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 794,
+        "possible_duplicate": 0,
+        "question": null,
+        "revision": null,
+        "text": "Работаю · 30 s"
+      },
+      {
+        "id": 7195,
+        "request_id": 543,
+        "kind": "rich",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 795,
+        "possible_duplicate": 0,
+        "question": null,
+        "revision": null,
+        "text": "[cyprusbz#540 — Diagnose the delayed account avatar in the site header](https://gitlab.ufobe.com/gradus/cyprusbz/-/issues/540) **закрыта**; доверенный итог TaskQ подтверждает принятие исследования. Точное время закрытия в readback отсутствует.\n\n- **Принятый итог:** диагноз задержки аватара и предложенное решение записаны в `docs/research/540.md`. Конкретная формулировка причины в readback отсутствует. Код и тесты в #540 не менялись.\n- **Ограничения:** тайминги реальной авторизованной сессии и задержка на физическом телефоне не проверены; выигрыш от решения не измерен.\n- **Связанное исправление:** [cyprusbz#541 — Show the signed-in header account control without waiting for the admin check](https://gitlab.ufobe.com/gradus/cyprusbz/-/issues/541) прямо ссылается на вариант 1 отчёта #540. Сейчас **закрыта**, слита через !1199. Принятый результат: известный пользователь видит управление аккаунтом во время загрузки ролей; при неизвестной сессии остаётся skeleton. Проверки использовали имитацию сессии; реальные сетевые тайминги не измерены."
+      },
+      {
+        "id": 7196,
+        "request_id": 543,
+        "kind": "rich_part",
+        "state": "superseded",
+        "attempts": 0,
+        "sent_message": null,
+        "possible_duplicate": 0,
+        "question": null,
+        "revision": null,
+        "text": "[cyprusbz#540 — Diagnose the delayed account avatar in the site header](https://gitlab.ufobe.com/gradus/cyprusbz/-/issues/540) **закрыта**; доверенный итог TaskQ подтверждает принятие исследования. Точное время закрытия в readback отсутствует.\n\n- **Принятый итог:** диагноз задержки аватара и предложенное решение записаны в `docs/research/540.md`. Конкретная формулировка причины в readback отсутствует. Код и тесты в #540 не менялись.\n- **Ограничения:** тайминги реальной авторизованной сессии и задержка на физическом телефоне не проверены; выигрыш от решения не измерен.\n- **Связанное исправление:** [cyprusbz#541 — Show the signed-in header account control without waiting for the admin check](https://gitlab.ufobe.com/gradus/cyprusbz/-/issues/541) прямо ссылается на вариант 1 отчёта #540. Сейчас **закрыта**, слита через !1199. Принятый результат: известный пользователь видит управление аккаунтом во время загрузки ролей; при неизвестной сессии остаётся skeleton. Проверки использовали имитацию сессии; реальные сетевые тайминги не измерены."
+      },
+      {
+        "id": 7197,
+        "request_id": 543,
+        "kind": "turn_progress_closed",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 794,
+        "possible_duplicate": 0,
+        "question": null,
+        "revision": null,
+        "text": ""
+      },
+      {
+        "id": 7198,
+        "request_id": 511,
+        "kind": "question",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 430,
+        "possible_duplicate": 0,
+        "question": "{\"parsed\":true,\"text\":\"Done: Verified 29106-byte packet SHA256, ten progress receipts and 21-source report. 539/540/541 narrow PASS; 542 PARTIAL; earlier FAILs retained.\\nProblem: PM evidence-review protocol (§9): accept these verified narrow receipts as PARTIAL in docs/research/198.md, or reject for a specific evidence defect?\\nRecommend acceptance: exact receipts support these scopes; full A1/A2, stale/repeat proof and remaining gates stay open (R19).\\n1. Accept narrow receipts - + retain checked partial evidence and continue qualification; - remaining live gates stay open ★\\n2. Reject with evidence defect - + identify a concrete proof error; - reconciliation waits for corrected evidence\\nTo answer: `taskq answer 198.K` or comment `K` or the option text.\",\"done\":\"Verified 29106-byte packet SHA256, ten progress receipts and 21-source report. 539/540/541 narrow PASS; 542 PARTIAL; earlier FAILs retained.\",\"problem\":\"PM evidence-review protocol (§9): accept these verified narrow receipts as PARTIAL in docs/research/198.md, or reject for a specific evidence defect? Recommend acceptance: exact receipts support these scopes; full A1/A2, stale/repeat proof and remaining gates stay open (R19).\",\"evidence\":[],\"choices\":[{\"id\":1,\"text\":\"Accept narrow receipts - + retain checked partial evidence and continue qualification; - remaining live gates stay open\",\"label\":\"Accept narrow receipts\",\"detail\":\"+ retain checked partial evidence and continue qualification; - remaining live gates stay open\",\"recommended\":true,\"consequential\":false},{\"id\":2,\"text\":\"Reject with evidence defect - + identify a concrete proof error; - reconciliation waits for corrected evidence\",\"label\":\"Reject with evidence defect\",\"detail\":\"+ identify a concrete proof error; - reconciliation waits for corrected evidence\",\"recommended\":false,\"consequential\":false}],\"limits\":{\"chars\":240}}",
+        "revision": 6651686767,
+        "text": "? [pilotq#198 — Qualify outstanding owner scenarios on the merged pilot…](https://github.com/taskqorg/pilotq/issues/198)\n✓ Verified 29106-byte packet SHA256, ten progress receipts and 21-source report. 539/540/541 narrow PASS; 542 PARTIAL; earlier FAILs retained.\n⚑ PM evidence-review protocol (§9): accept these verified narrow receipts as PARTIAL in docs/research/198.md, or reject for a specific evidence defect? Recommend acceptance: exact receipts support these scopes; full A1/A2, stale/repeat proof and remaining gates stay open (R19).\n1. Accept narrow receipts ★\n\\+ retain checked partial evidence and continue qualification; - remaining live gates stay open\n2. Reject with evidence defect\n\\+ identify a concrete proof error; - reconciliation waits for corrected evidence"
+      },
+      {
+        "id": 7199,
+        "request_id": 544,
+        "kind": "reaction",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 430,
+        "possible_duplicate": 0,
+        "question": null,
+        "revision": null,
+        "text": "Received."
+      },
+      {
+        "id": 7200,
+        "request_id": 545,
+        "kind": "reaction",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 430,
+        "possible_duplicate": 0,
+        "question": null,
+        "revision": null,
+        "text": "Received."
+      },
+      {
+        "id": 7201,
+        "request_id": 511,
+        "kind": "question_answered",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 430,
+        "possible_duplicate": 0,
+        "question": null,
+        "revision": 6651686767,
+        "text": "Ответил Alex K: 1. Accept narrow receipts"
+      },
+      {
+        "id": 7202,
+        "request_id": 544,
+        "kind": "toast:576138701348258435",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 0,
+        "possible_duplicate": 0,
+        "question": null,
+        "revision": null,
+        "text": "Ответил Alex K: 1. Accept narrow receipts\nTaskQ: Исполнитель работает. [pilotq#198](https://github.com/taskqorg/pilotq/issues/198)"
+      },
+      {
+        "id": 7203,
+        "request_id": 544,
+        "kind": "answer_confirmation",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 431,
+        "possible_duplicate": 0,
+        "question": null,
+        "revision": null,
+        "text": "Ответил Alex K: 1. Accept narrow receipts\nTaskQ: Исполнитель работает. [pilotq#198](https://github.com/taskqorg/pilotq/issues/198)"
+      },
+      {
+        "id": 7204,
+        "request_id": 545,
+        "kind": "toast:576138702681707665",
+        "state": "failed",
+        "attempts": 1,
+        "sent_message": null,
+        "possible_duplicate": 0,
+        "question": null,
+        "revision": null,
+        "text": "Ответил Alex K: 1. Accept narrow receipts"
+      },
+      {
+        "id": 7205,
+        "request_id": 545,
+        "kind": "answer_confirmation",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 432,
+        "possible_duplicate": 0,
+        "question": null,
+        "revision": null,
+        "text": "Ответил Alex K: 1. Accept narrow receipts"
+      }
+    ],
+    "audit": [
+      {
+        "id": 3206,
+        "request_id": 543,
+        "at": 1793861217,
+        "kind": "reply_language",
+        "target": null,
+        "item": null,
+        "result": "{\"language\":\"ru\",\"reason\":\"last_direct_clause\",\"order\":7,\"revision\":1,\"origin_update\":349804534,\"request\":543,\"source\":\"admitted_input\"}"
+      },
+      {
+        "id": 3208,
+        "request_id": 543,
+        "at": 1793861218,
+        "kind": "optimization",
+        "target": null,
+        "item": null,
+        "result": "{\"intent\":\"inherit\",\"effective\":\"off\",\"reason\":\"not_attached\"}"
+      },
+      {
+        "id": 3209,
+        "request_id": 543,
+        "at": 1793861223,
+        "kind": "tool",
+        "target": "dynamicToolCall",
+        "item": "exec-25555050-2abd-4626-8a1d-12fc154a807f",
+        "result": "completed"
+      },
+      {
+        "id": 3210,
+        "request_id": 543,
+        "at": 1793861223,
+        "kind": "call",
+        "target": "task_status",
+        "item": null,
+        "result": null
+      },
+      {
+        "id": 3211,
+        "request_id": 543,
+        "at": 1793861233,
+        "kind": "task",
+        "target": "gradus/cyprusbz status #540",
+        "item": null,
+        "result": "read"
+      },
+      {
+        "id": 3212,
+        "request_id": 543,
+        "at": 1793861233,
+        "kind": "tool",
+        "target": "dynamicToolCall",
+        "item": "exec-ade11962-09c3-4642-82f4-a20767fdf5a0",
+        "result": "completed"
+      },
+      {
+        "id": 3213,
+        "request_id": 543,
+        "at": 1793861233,
+        "kind": "call",
+        "target": "task_status",
+        "item": null,
+        "result": null
+      },
+      {
+        "id": 3214,
+        "request_id": 543,
+        "at": 1793861243,
+        "kind": "task",
+        "target": "gradus/cyprusbz status #541",
+        "item": null,
+        "result": "read"
+      },
+      {
+        "id": 3215,
+        "request_id": 543,
+        "at": 1793861251,
+        "kind": "runtime_status",
+        "target": null,
+        "item": "2",
+        "result": "gpt-6.1-sol · 🙂 12% · 🌗 56% ↻ 7d"
+      },
+      {
+        "id": 3217,
+        "request_id": 544,
+        "at": 1793861366,
+        "kind": "reply_language",
+        "target": null,
+        "item": null,
+        "result": "{\"language\":\"ru\",\"reason\":\"initial_default\",\"order\":8,\"revision\":1,\"origin_update\":349804535,\"request\":544,\"source\":\"admitted_input\"}"
+      },
+      {
+        "id": 3218,
+        "request_id": 545,
+        "at": 1793861367,
+        "kind": "reply_language",
+        "target": null,
+        "item": null,
+        "result": "{\"language\":\"ru\",\"reason\":\"retained\",\"order\":9,\"revision\":1,\"origin_update\":349804536,\"request\":545,\"source\":\"admitted_input\"}"
+      },
+      {
+        "id": 3219,
+        "request_id": 544,
+        "at": 1793861378,
+        "kind": "task",
+        "target": "taskqorg/pilotq [\"answer\",\"198.1\",\"--revision\",\"6651686767\"]",
+        "item": "pilotq-3cb9674929ca8680-a544",
+        "result": "{\"task\":198,\"op_id\":\"pilotq-3cb9674929ca8680-a544\",\"outcome\":\"accepted\",\"state\":\"doing\",\"revision\":6651217750,\"reason\":\"\",\"next\":\"\"}"
+      },
+      {
+        "id": 3220,
+        "request_id": 544,
+        "at": 1793861367,
+        "kind": "answer_receipt",
+        "target": "pilotq#198 revision 6651686767",
+        "item": null,
+        "result": "Ответил Alex K: 1. Accept narrow receipts\nTaskQ: Исполнитель работает. [pilotq#198](https://github.com/taskqorg/pilotq/issues/198)"
+      },
+      {
+        "id": 3221,
+        "request_id": 544,
+        "at": 1793861367,
+        "kind": "task",
+        "target": "pilotq answer #198",
+        "item": "revision 6651686767",
+        "result": "answered"
+      },
+      {
+        "id": 3222,
+        "request_id": 545,
+        "at": 1793861379,
+        "kind": "answer_receipt",
+        "target": "pilotq#198 revision 6651686767",
+        "item": null,
+        "result": "Ответил Alex K: 1. Accept narrow receipts"
+      }
+    ],
+    "tables": [
+      {
+        "name": "effects"
+      },
+      {
+        "name": "task_effects"
+      }
+    ]
+  },
+  "effects_and_TaskQ_readback": {
+    "at": "2026-11-05T06:51:25.574099+00:00",
+    "effects_columns": [
+      "id",
+      "request_id",
+      "op_id",
+      "tool",
+      "repo",
+      "issue",
+      "value",
+      "key",
+      "state",
+      "receipt",
+      "at"
+    ],
+    "effects": [],
+    "task_effects_columns": [
+      "op",
+      "request_id",
+      "project",
+      "board",
+      "root",
+      "args",
+      "receipt",
+      "at"
+    ],
+    "task_effects": [
+      {
+        "op": "pilotq-3cb9674929ca8680-a544",
+        "request_id": 544,
+        "project": "pilotq",
+        "board": "taskqorg/pilotq",
+        "root": "/home/hermes/projects/taskqorg/pilotq",
+        "args": "[\"answer\",\"198.1\",\"--revision\",\"6651686767\"]",
+        "receipt": "{\"task\":198,\"op_id\":\"pilotq-3cb9674929ca8680-a544\",\"outcome\":\"accepted\",\"state\":\"doing\",\"revision\":6651217750,\"reason\":\"\",\"next\":\"\"}",
+        "at": 1793861371
+      }
+    ],
+    "task": {
+      "state": "ask",
+      "revision": 6651727002,
+      "attempt": 6651217750,
+      "heartbeat": {
+        "host": "pds18.ufobe.com",
+        "attempt": 6651217750,
+        "source": "board host heartbeat",
+        "observed": 1793861430,
+        "age_s": 56,
+        "freshness": "not applicable",
+        "reason": "no live attempt",
+        "ttl_s": 300,
+        "progress": {
+          "source": "not applicable",
+          "status": "not applicable",
+          "reason": "no live attempt"
+        },
+        "as_of": 1793861486,
+        "warning": null,
+        "input_pending": false,
+        "executor": {
+          "state": "not applicable",
+          "reason": "no live attempt",
+          "observed": null,
+          "source": "board task projection"
+        }
+      },
+      "question": {
+        "parsed": true,
+        "text": "Done: Recorded accepted option1 answer6651715039 for revision6651686767 in docs/research/198.md; binding/coverage checks pass. A1/A2 partial.\nProblem: PM §9: supply original-card receipts for question6651686767: actor label, button removal, actual stale/repeat result and no extra board call/write, plus screenshots.\nReuse accepted narrow evidence; no new choice or live action by worker. Other gates remain in report (R19).\nTo answer: `taskq answer 198 --text <done>`.",
+        "done": "Recorded accepted option1 answer6651715039 for revision6651686767 in docs/research/198.md; binding/coverage checks pass. A1/A2 partial.",
+        "problem": "PM §9: supply original-card receipts for question6651686767: actor label, button removal, actual stale/repeat result and no extra board call/write, plus screenshots. Reuse accepted narrow evidence; no new choice or live action by worker. Other gates remain in report (R19).",
+        "evidence": [],
+        "choices": [],
+        "limits": {
+          "chars": 240
+        }
+      }
+    },
+    "history_for_choice": [
+      {
+        "question": {
+          "parsed": true,
+          "text": "Done: Verified 29106-byte packet SHA256, ten progress receipts and 21-source report. 539/540/541 narrow PASS; 542 PARTIAL; earlier FAILs retained.\nProblem: PM evidence-review protocol (§9): accept these verified narrow receipts as PARTIAL in docs/research/198.md, or reject for a specific evidence defect?\nRecommend acceptance: exact receipts support these scopes; full A1/A2, stale/repeat proof and remaining gates stay open (R19).\n1. Accept narrow receipts - + retain checked partial evidence and continue qualification; - remaining live gates stay open ★\n2. Reject with evidence defect - + identify a concrete proof error; - reconciliation waits for corrected evidence\nTo answer: `taskq answer 198.K` or comment `K` or the option text.",
+          "done": "Verified 29106-byte packet SHA256, ten progress receipts and 21-source report. 539/540/541 narrow PASS; 542 PARTIAL; earlier FAILs retained.",
+          "problem": "PM evidence-review protocol (§9): accept these verified narrow receipts as PARTIAL in docs/research/198.md, or reject for a specific evidence defect? Recommend acceptance: exact receipts support these scopes; full A1/A2, stale/repeat proof and remaining gates stay open (R19).",
+          "evidence": [],
+          "choices": [
+            {
+              "id": 1,
+              "text": "Accept narrow receipts - + retain checked partial evidence and continue qualification; - remaining live gates stay open",
+              "label": "Accept narrow receipts",
+              "detail": "+ retain checked partial evidence and continue qualification; - remaining live gates stay open",
+              "recommended": true,
+              "consequential": false
+            },
+            {
+              "id": 2,
+              "text": "Reject with evidence defect - + identify a concrete proof error; - reconciliation waits for corrected evidence",
+              "label": "Reject with evidence defect",
+              "detail": "+ identify a concrete proof error; - reconciliation waits for corrected evidence",
+              "recommended": false,
+              "consequential": false
+            }
+          ],
+          "limits": {
+            "chars": 240
+          }
+        },
+        "answered": {
+          "by": "alexkirs",
+          "text": "Accept narrow receipts - + retain checked partial evidence and continue qualification; - remaining live gates stay open",
+          "at": 1793861373,
+          "read": true,
+          "source": {
+            "id": 6651715039,
+            "question": 6651686767,
+            "asked_at": 1793861264,
+            "attempt": 6651217750,
+            "session": "codex:- pds18.ufobe.com",
+            "role": "worker"
+          }
+        }
+      }
+    ],
+    "worker_report": {
+      "bytes": 71106,
+      "sha256": "8f6aac37fd488280a70aeb987f594297566986d1388ac565a83bdde1dd27c360"
+    }
+  },
+  "screenshots": [
+    {
+      "path": "p198-choice-click.jpg",
+      "scope": "Actual question and both option buttons during pending answer; full local image retained, not attached publicly due surrounding UI",
+      "bytes": 188191,
+      "sha256": "bcac98d93b5484fbf3edd041d2722c3108e4a323334aaecf665fb138d074d779"
+    },
+    {
+      "path": "p198-choice-receipt-crop.jpg",
+      "scope": "Actual PilotQ DM bot header, original edited card actor/option1 and adjacent confirmation; no composer or unrelated chats",
+      "attached": true,
+      "bytes": 93021,
+      "sha256": "b2afb7604368a98b0e6f77acbe71a96744bb06f199037cc8408fc81e7a99aabd"
+    },
+    {
+      "path": "p198-status540-543.jpg",
+      "scope": "Actual TEST closed540 result and report/followup readback; local screenshot",
+      "bytes": 193178,
+      "sha256": "7a81cfd8851bf4ede18f92e724be9c45a4ffd2ede377da3c71ccb366946c85ee"
+    }
+  ],
+  "remaining": "No full A1/A2 acceptance. Original-card rapid repeat narrow PASS only. New onboarding, real full plan/lifecycle, active restart, LIVE/Git freshness, target-scope/audio continuity, remaining model/client/media/output gaps stay open."
+}
