@@ -386,6 +386,7 @@ fn collect(bound:Result<(crate::taskq::Taskq,String),String>,j:&std::sync::Mutex
                     closed["state"]=json!("closed");closed["question"]=Value::Null;closed["options"]=Value::Null;closed["title"]=issue["title"].clone();closed["url"]=issue["url"].clone();
                     // Retain literal trusted closing findings as context; the PM must reread current state.
                     let number=n.parse().map_err(|_|"invalid observed task number")?;
+                    closed["goal"]=json!(crate::taskq::task_goal(issue["body"].as_str()));
                     closed["closing_result"]=json!(if crate::taskq::repeats_publication(&issue) {
                         // A failed read returns the error: the cursor stays and the next pass retries (§2 / #387).
                         let inbox=bound.loop_read(&["inbox",n,"--json"],end)?;
@@ -949,7 +950,12 @@ mod tests {
             j.0.execute("INSERT INTO projects(name,repo,root,by,at) VALUES ('taskq',?1,?2,7,0)",params![BOARD,p.to_str().unwrap()]).unwrap();
             let mut said=input(1,7,address);said.language=None;
             j.admit(&[(1,Some(said))],1).unwrap();
-            if review {admitted(&mut j,2,1,7,"/review on",2);}
+            if review {
+                admitted(&mut j,2,1,7,"/review on",2);
+                // Grants: a shell holder with no access to this project reviews nothing of it.
+                j.grant(7,8,&["chat".into(),"shell".into()],2).unwrap();
+                admitted(&mut j,3,2,8,"/review on",2);
+            }
             let w=Watch{project:"taskq".into(),board:BOARD.into(),root:p.to_string_lossy().to_string()};
             let tq=crate::taskq::Taskq{bot:None,bin,root:p.clone(),poll:std::time::Duration::from_secs(5)};
             let mutex=std::sync::Mutex::new(j);
@@ -963,11 +969,14 @@ mod tests {
             collect_now().unwrap();
             let j=mutex.into_inner().unwrap();
             assert_eq!(j.subscriptions().unwrap().len(),1,"the closure becomes one model-free card subscription");
+            let mutex=std::sync::Mutex::new(j);
+            let bound=tq.registered(&mutex.lock().unwrap(),"taskq");collect(bound,&mutex,&w).unwrap();
+            let j=mutex.into_inner().unwrap();
             let text=ticks(&j);
             if !review {assert!(text.is_empty(),"PM off: no model request");}
             else {
-                assert_eq!(text.len(),1);
-                for fact in FACTS.iter().chain(&[TITLE,URL]) {assert!(text[0].contains(fact),"missing {fact}: {}",text[0]);}
+                assert_eq!(text.len(),1,"one tick, for the person with access, despite a repeated observation");
+                for fact in FACTS.iter().chain(&[TITLE,URL,ESSENCE]) {assert!(text[0].contains(fact),"missing {fact}: {}",text[0]);}
                 assert!(text[0].contains("\"state\":\"closed\"") && text[0].contains("\"closing_result\":\"Changed: R5"),"{}",text[0]);
                 assert!(text[0].contains("never inventing, dropping or softening"),"{}",text[0]);
                 let tick:Option<String>=j.0.query_row("SELECT language FROM requests WHERE id IN (SELECT request_id FROM audit_events WHERE kind='loop_tick')",[],|r|r.get(0)).unwrap();

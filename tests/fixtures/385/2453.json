@@ -42,7 +42,8 @@
         "trusted": true,
         "body": "taskq: close\nRepeats: publish 6670835977\n\ndelivery auto-merge r0: d8bbcfb05774f1a5ed666338b9767cce95496c82 already on main"
       }
-    ]
+    ],
+    "body": "## Goal\nSupply the PM-owned Mac evidence required by #2427 A7, using its retained candidate without losing or recreating the refactor.\n\n## Acceptance\nA1. Verify the #2451 archive: SHA256 a1e098f17514cf3e7a092ee3d6285a7204a36e35f23c37de52e0f85d3734bfc6; bundle fetch preserves tip 0af92c03ef58b69b3f0971369517f4f6376eb5e7 and original commit identities.\nA2. For Claude, Codex, codex-app and Antigravity on Mac, prove native start/resume, same session, exact-input acceptance, confirmed completion/exit and native/TaskQ transcript parity. Reuse valid PM receipts first.\nA3. For each Mac runtime, verify native observation through TaskQ service status and heartbeat readback. Record client/OS/source/artifact identity and fixture boundaries; fixtures alone never qualify native behavior (R12).\nA4. Read operator authority at each launch (R9); #2427 paid approval stands. Bound each turn and preserve unrelated sessions. Missing grants/login are owner actions; never grant access, change policy or replay uncertain input.\nA5. Attach sanitized evidence outside Git via result --file; name every gap. Preserve #2427 source, branch and receipts; no Windows probe replay, production service change, rebase, push or PR.\n\n## Scope\n- R2 permits this different-host prerequisite; #2427 retains all A7 acceptance and subsequent A8. PM Mac ownership and paid approval are recorded in #2427 note 6664768263.\n- The verified archive is linked by #2451; inspect receipts first. Qualify missing Mac evidence; do not recreate completed paid turns.\n- Source changes belong to #2427. Name native-service limits explicitly; no installed-service claim without observation.\n\nRules: R2, R5, R9, R12\n"
   },
   "closed_snapshot": {
     "schema": 1,
@@ -179,7 +180,8 @@
               }
             }
           }
-        ]
+        ],
+        "brief": "## Goal\nSupply the PM-owned Mac evidence required by #2427 A7, using its retained candidate without losing or recreating the refactor.\n\n## Acceptance\nA1. Verify the #2451 archive: SHA256 a1e098f17514cf3e7a092ee3d6285a7204a36e35f23c37de52e0f85d3734bfc6; bundle fetch preserves tip 0af92c03ef58b69b3f0971369517f4f6376eb5e7 and original commit identities.\nA2. For Claude, Codex, codex-app and Antigravity on Mac, prove native start/resume, same session, exact-input acceptance, confirmed completion/exit and native/TaskQ transcript parity. Reuse valid PM receipts first.\nA3. For each Mac runtime, verify native observation through TaskQ service status and heartbeat readback. Record client/OS/source/artifact identity and fixture boundaries; fixtures alone never qualify native behavior (R12).\nA4. Read operator authority at each launch (R9); #2427 paid approval stands. Bound each turn and preserve unrelated sessions. Missing grants/login are owner actions; never grant access, change policy or replay uncertain input.\nA5. Attach sanitized evidence outside Git via result --file; name every gap. Preserve #2427 source, branch and receipts; no Windows probe replay, production service change, rebase, push or PR.\n\n## Scope\n- R2 permits this different-host prerequisite; #2427 retains all A7 acceptance and subsequent A8. PM Mac ownership and paid approval are recorded in #2427 note 6664768263.\n- The verified archive is linked by #2451; inspect receipts first. Qualify missing Mac evidence; do not recreate completed paid turns.\n- Source changes belong to #2427. Name native-service limits explicitly; no installed-service claim without observation.\n\nRules: R2, R5, R9, R12\n"
       }
     ]
   },

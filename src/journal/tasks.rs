@@ -527,6 +527,21 @@ impl Journal {
             params![project,task,at,format!("{project}#{task}"),title]).map(drop).map_err(|e|e.to_string())
     }
 
+    /// The task's filed essence for its cards (§2 / #387), kept like its title.
+    pub fn remember_task_goal(&self, project:&str, task:i64, goal:Option<&str>, at:i64)->Result<(),String> {
+        let Some(goal)=goal.filter(|g|!g.is_empty()) else {return Ok(())};
+        if self.task_goal(project,task)?.as_deref()==Some(goal) {return Ok(())}
+        self.0.execute("INSERT INTO audit_events(request_id,at,kind,target,item,result)
+            SELECT request_id,?3,'task_goal',?4,root,?5 FROM tasks WHERE project=?1 AND number=?2",
+            params![project,task,at,format!("{project}#{task}"),goal]).map(drop).map_err(|e|e.to_string())
+    }
+
+    pub fn task_goal(&self, project:&str, task:i64)->Result<Option<String>,String> {
+        self.0.query_row("SELECT a.result FROM audit_events a JOIN tasks t ON a.request_id=t.request_id AND a.item=t.root
+            WHERE a.kind='task_goal' AND a.target=?1 AND t.project=?2 AND t.number=?3 ORDER BY a.id DESC LIMIT 1",
+            params![format!("{project}#{task}"),project,task],|r|r.get(0)).optional().map_err(|e|e.to_string())
+    }
+
     /// Saved title for a subscribed task, including after it leaves the open snapshot (§12).
     pub fn task_title(&self, project: &str, task: i64) -> Result<Option<String>, String> {
         let observed:Option<String>=self.0.query_row("SELECT a.result FROM audit_events a JOIN tasks t ON a.request_id=t.request_id AND a.item=t.root
@@ -648,11 +663,12 @@ impl Journal {
             let status=crate::conversation::task_state(&state,closed,language.as_deref());
             let age=if closed {String::new()} else {if ru {format!(" · подтверждено {}",crate::footer::russian_units(&crate::time::moment(Some(observed),at)).replace(" ago", " назад"))} else {format!(" · confirmed {}",crate::time::moment(Some(observed),at))}};
             lines.push(format!("{} {status}{age} · {}",crate::taskq::state_icon(&state,closed),crate::taskq::task_link(&board,n,self.task_title(&project,n)?.as_deref(),self.task_url(&project,n)?.as_deref())));
+            if let Some(goal)=self.task_goal(&project,n)? {if let Some(card)=lines.last_mut() {*card=format!("{card}\n{}",crate::taskq::goal_line(&goal,language.as_deref()));}}
             if closed {
                 let result:Option<String>=self.0.query_row("SELECT result FROM audit_events WHERE request_id=?1 AND kind='task_result' AND target=?2 ORDER BY id DESC LIMIT 1",params![request,format!("{project}#{n}")],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
                 if let Some(result)=result {
                     let detail=result.lines().skip(1).collect::<Vec<_>>().join("\n");
-                    if !detail.is_empty() {lines.push(crate::conversation::reply(&detail,language.as_deref()));}
+                    if !detail.is_empty() {lines.push(detail);} // Trusted source, not diagnostics: every limit stays literal (§2 / #387).
                 }
             }
         }

@@ -1715,6 +1715,20 @@ fn input(chat: i64, topic: Option<i64>, sender: Option<i64>, name: &str, kind: &
     Some(Input { files: vec![], callback: None, media_group: None, quote: None, image: None, voice: None, language: None, chat, topic, sender, name: Some(name.into()), message: 1, kind, text: text.map(str::to_string), reply_to: None })
 }
 
+// #387 / §2: trusted closing limits are source, not diagnostics. Defect: the reply filter dropped or cut such lines.
+// Risk kept: a material limit disappearing from a closing card.
+#[test]
+fn explanations_387_closing_limits_stay_literal() {
+    let (mut j,p)=journal("explanations-387-limits");
+    j.admit(&[(1,input(7,None,Some(7),"Owner","text",Some("Please show current tasks")))],1).unwrap();
+    assert!(board_card(&j.0,"pilotq","invented/pilotq","/invented/pilotq",387,2).unwrap());
+    let limits="Open: Error: exact tip fails to build\nThe op-id gate stays open (revision 9) until the rerun.";
+    assert!(j.close_task("pilotq",387,&format!("Task closed; see the result\nChanged: Evidence accepted.\n{limits}"),3).unwrap());
+    let text:String=j.0.query_row("SELECT text FROM outbox WHERE kind='status' ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).unwrap();
+    assert!(text.contains(limits),"{text}");
+    drop(j);let _=std::fs::remove_dir_all(p);
+}
+
 // #344 / §§4,6: event cards and answer errors localize owned prose,
 // preserve source questions and routes, and freeze already queued payloads.
 #[test]
