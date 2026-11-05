@@ -70,7 +70,7 @@ Plain-language controls are primary. `/status`, `/stop` and `/new` remain availa
 
 ## 3. Architecture and authority
 
-**Mandatory:** one Rust binary on CoreQ; teloxide only for the Bot API; manager turns via pinned `agentq-runtime` runtime trait on Codex (app-server path) or Claude Code, per the installation `runtime` (default Codex) or a route override; SQLite journal; installed TaskQ CLI for execution; ffmpeg and stock static `sherpa-onnx-offline` NeMo CTC (§1); legacy transducer rollback.
+**Mandatory:** one Rust binary on CoreQ; teloxide only for the Bot API; manager turns via pinned `agentq-runtime` runtime trait on Codex or Claude Code, per the installation `runtime` (default Codex) or a route override; SQLite journal; installed TaskQ CLI for execution; ffmpeg and stock static `sherpa-onnx-offline` NeMo CTC (§1); legacy transducer rollback.
 
 [Architecture detail](docs/runtime-contract.md#3-architecture-and-ownership) assigns journal, runtime, proposal, TaskQ and agentq authority. PilotQ owns durable input and delivery; TaskQ owns admitted execution. Registered roots and host policy own capacity. Never discover roots or silently enroll projects.
 

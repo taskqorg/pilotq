@@ -12,7 +12,7 @@ PilotQ is one small Rust service in the TaskQ tool family.
 | Language and packaging | Rust single binary on [coreq](https://github.com/taskqorg/coreq) | Same release, update, service, status, selftest and incident path as taskq, agentq and dashq (R14) |
 | Telegram | [teloxide](https://github.com/teloxide/teloxide) for the Bot API only | Maintained Rust library; PilotQ keeps its own durable ingress and outbox (section 4) |
 | Telegram behavior | Patterns adapted from the Hermes gateway: update intake, delivery retry, stall watch, topic routing | Already exercised on our server (R12); read as reference, no change to Hermes |
-| Manager runtime | AgentQ runtime trait: Codex over its app-server path or Claude Code CLI turns, each under its subscription login ([manager runtimes](#manager-runtimes)) | R9; [core options](core-options.md) |
+| Manager runtime | AgentQ runtime trait: Codex or Claude Code turns on one `Launch` path, each under its subscription login ([manager runtimes](#manager-runtimes)) | R9; [core options](core-options.md) |
 | Journal | SQLite (section 7 settings) | One local file, supported snapshot backup |
 | Work execution | Existing TaskQ CLI | Section 5 |
 | Voice recognition | ffmpeg and stock `sherpa-onnx-offline` with GigaAM-Multilingual large NeMo CTC int8, local CPU subprocesses; legacy v3 transducer retained | Automatic RU/EN under root §1; keeps the static PilotQ build free of onnxruntime |
@@ -36,18 +36,20 @@ drafts, model choice, inactivity watches and recovery rules.
   trait types (isolated, subscription login, built-in tools, write scope and approval) and picks
   runtimes by capability; flags, home variable, labels, models, refusal causes, login check and
   host minimum come from the adapter (`descriptor()`, `launch_refusal()`, `ready()`).
-- Codex runs as a trait app-server session (`Mode::AppServer`) with PilotQ's isolated `CODEX_HOME`,
-  the forced ChatGPT login and its dynamic tools; the owner and shell grantees get
-  `danger-full-access`, others `read-only`, both without approval prompts.
-- Claude runs as one trait CLI turn (`claude -p`, stream-json input and output, partial messages for
-  drafts). Restricted principals get no built-in tools (`--tools ""`); the owner and shell grantees
-  run with `bypassPermissions`. `/model` offers configured `models` (Claude default `opus`, `sonnet`,
-  `haiku`; Codex reads its app-server catalogue).
+- Every manager turn is one trait `Launch` with ordered parts, the MCP relay config, instructions
+  and live text requested. The adapter chooses the native transport. PilotQ names no transport,
+  parses no native record and answers no native protocol request; it reads only `progress` events.
+- Codex uses PilotQ's isolated `CODEX_HOME` and the forced ChatGPT login. The owner and shell
+  grantees get unrestricted policy, others read-only, both without approval prompts. Restricted
+  principals get no built-in tools on any runtime.
+- `/model` offers the trait `catalogue` when the runtime has one, else configured `models`.
 - The trait's process setup keeps only runtime necessities and the adapter's launch variables in the
   child environment, so no API key reaches it and no paid API fallback exists (R9).
-- Claude reaches PilotQ's own tools through a per-turn stdio MCP relay, `pilotq --mcp-bridge
+- Every runtime reaches PilotQ's own tools through a per-turn stdio MCP relay, `pilotq --mcp-bridge
   SOCKET`. The relay forwards each list or call over an owner-only Unix socket with a per-turn token
-  to the same tool boundary Codex dynamic tools use. It holds no grant, state or decision.
+  to the one tool boundary. It holds no grant, state or decision.
+- `Text` events feed answer drafts, `Message` the final text, `ToolStart` and `ToolEnd` the audit and
+  uncertain-effect record, `Quota` and `Context` the `/status` observation.
 - The journal stores the runtime owning a conversation's native session in `conversations.runtime`
   and each run's runtime in `runs.runtime` (schema 14). A turn resumes the session only when its
   route runtime owns it; a session of another runtime, or a missing native session, is rebuilt once
@@ -72,7 +74,7 @@ drafts, model choice, inactivity watches and recovery rules.
   prevail. No client configuration or original replay bytes are edited; an optimizer is optional.
   Claude excludes user settings, so its launch requests compression off rather than claiming those
   excluded hooks are active.
-  Tool-result compression still needs section 11's dynamic-tool qualification, separate from runtime adoption.
+  Tool-result compression still needs section 11's tool qualification, separate from runtime adoption.
 - CoreQ is v0.19.1 for installation, process and telemetry primitives. Schema 14 converts legacy
   `RUNTIME:ID` sessions into the runtime column on first open. A build reading at most schema 13
   refuses the migrated journal, so rollback across this upgrade needs a build that reads schema 14 or
