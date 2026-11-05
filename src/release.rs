@@ -124,7 +124,25 @@ fn git_until(c:&Value,args:&[&str],end:Instant)->Result<String,String> {
     if out["status"]!="success" {return Err("Git read failed; deployment state unknown".into());} Ok(out["stdout"].as_str().ok_or("Git output unavailable")?.trim().into())
 }
 fn resolve(c:&Value,reference:&str)->Result<String,String> {resolve_until(c,reference,Instant::now()+Duration::from_secs(5))}
-fn resolve_until(c:&Value,reference:&str,end:Instant)->Result<String,String> {let s=git_until(c,&["rev-parse","--verify",&format!("{reference}^{{commit}}")],end)?;if !sha(&s) {return Err("Commit identity unavailable".into());}Ok(s)}
+fn resolve_until(c:&Value,reference:&str,end:Instant)->Result<String,String> {
+    if [c["main_ref"].as_str(),c["live_ref"].as_str()].contains(&Some(reference)) {
+        let remote=reference.strip_prefix("refs/remotes/origin/").map(|s|format!("refs/heads/{s}")).unwrap_or_else(||reference.into());
+        let failure=||format!("Remote ref freshness unavailable: {reference}");
+        // Pin the advertised identity; fetch its objects without moving local refs or relying on FETCH_HEAD.
+        let read=|args:&[&str]| -> Result<Value,String> {
+            let command=crate::commands::command(c["git"].as_str().ok_or_else(failure)?,c["root"].as_str().ok_or_else(failure)?,args);
+            let out=crate::commands::execute_bounded_private(command,end,||true,65536);
+            if out["status"]!="success" {return Err(failure());} Ok(out)
+        };
+        let out=read(&["ls-remote","--exit-code","--refs","origin",&remote])?;
+        let line=out["stdout"].as_str().ok_or_else(failure)?.trim();
+        let (identity,_)=line.split_once('\t').filter(|(s,r)|sha(s) && *r==remote).ok_or_else(failure)?;
+        read(&["fetch","--no-tags","--no-recurse-submodules","origin",identity])?;
+        return resolve_until(c,identity,end).map_err(|_|failure());
+    }
+    let s=git_until(c,&["rev-parse","--verify",&format!("{reference}^{{commit}}")],end)?;
+    if !sha(&s) {return Err("Commit identity unavailable".into());}Ok(s)
+}
 #[cfg(test)]
 fn ancestor(c:&Value,a:&str,b:&str)->Result<bool,String> {ancestor_until(c,a,b,Instant::now()+Duration::from_secs(5))}
 fn ancestor_until(c:&Value,a:&str,b:&str,end:Instant)->Result<bool,String> {
@@ -250,6 +268,7 @@ pub fn delivery_text_localized(v:&Value, ru:bool)->String {
     text
 }
 fn delivery_reason_ru(reason:&str)->String {
+    if let Some(reference)=reason.strip_prefix("Remote ref freshness unavailable: ") {return format!("Свежесть удалённой ссылки не подтверждена: {reference}");}
     match reason {
         "Delivery reader failed"=>"Чтение состояния доставки не удалось",
         "Merge identity unavailable"=>"Идентификатор слияния недоступен",
@@ -653,7 +672,7 @@ mod tests {
     fn fixture(tag:&str)->Fixture {
         let dir=std::env::temp_dir().join(format!("pilotq-release-{tag}-{}",std::process::id()));let _=std::fs::remove_dir_all(&dir);std::fs::create_dir_all(&dir).unwrap();
         let cmd=|args:&[&str]| {let o=std::process::Command::new("/usr/bin/git").current_dir(&dir).args(args).output().unwrap();assert!(o.status.success(),"{:?}: {}",args,String::from_utf8_lossy(&o.stderr));String::from_utf8_lossy(&o.stdout).trim().to_string()};
-        cmd(&["init","-q"]);cmd(&["config","user.name","Invented tester"]);cmd(&["config","user.email","invented@example.invalid"]);cmd(&["remote","add","origin","https://example.invalid/project.git"]);
+        cmd(&["init","-q"]);cmd(&["config","user.name","Invented tester"]);cmd(&["config","user.email","invented@example.invalid"]);cmd(&["remote","add","origin","."]);
         std::fs::write(dir.join("a"),"a").unwrap();cmd(&["add","a"]);cmd(&["commit","-qm","initial"]);let a=cmd(&["rev-parse","HEAD"]);cmd(&["update-ref","refs/heads/live",&a]);
         std::fs::write(dir.join("a"),"b").unwrap();cmd(&["commit","-qam","next"]);let b=cmd(&["rev-parse","HEAD"]);cmd(&["update-ref","refs/heads/main",&b]);
         std::fs::write(dir.join("taskq.json"),r#"{"repo":"invented/project"}"#).unwrap();
@@ -666,6 +685,53 @@ mod tests {
         let c=configure(&j,7,"sample",c).unwrap();
         let tq=Taskq{bot:None,bin:probe,root:dir.clone(),poll:Duration::from_secs(1)};
         Fixture{dir,j:Arc::new(Mutex::new(j)),tq,c,a,b,r}
+    }
+    // #370 A1–A2 / §5: stale/missing local refs cannot report LIVE or authorize a changed release.
+    #[test]
+    fn remote_refs_370() {
+        let f=fixture("remote370");
+        git(&f.c,&["clone","-q","--bare",".","remote.git"]).unwrap();
+        git(&f.c,&["remote","set-url","origin","remote.git"]).unwrap();
+        git(&f.c,&["--git-dir=remote.git","update-ref","refs/heads/live",&f.b]).unwrap();
+        git(&f.c,&["update-ref","refs/heads/main",&f.a]).unwrap();
+        git(&f.c,&["update-ref","refs/remotes/origin/live",&f.a]).unwrap();
+        let end=||Instant::now()+Duration::from_secs(10);
+        assert_eq!(resolve_until(&f.c,"refs/heads/live",end()).unwrap(),f.b,"stale local LIVE");
+        assert_eq!(resolve_until(&f.c,"refs/heads/main",end()).unwrap(),f.b,"stale local main");
+        git(&f.c,&["update-ref","-d","refs/heads/live"]).unwrap();
+        assert_eq!(resolve_until(&f.c,"refs/heads/live",end()).unwrap(),f.b,"missing local LIVE");
+        let mut tracking=f.c.clone();tracking["live_ref"]=json!("refs/remotes/origin/live");
+        assert_eq!(resolve_until(&tracking,"refs/remotes/origin/live",end()).unwrap(),f.b);
+        assert_eq!(git(&f.c,&["rev-parse","refs/heads/main"]).unwrap(),f.a,"read moved a local branch");
+        assert_eq!(git(&f.c,&["rev-parse","refs/remotes/origin/live"]).unwrap(),f.a,"read moved a tracking ref");
+        // The new commit exists only at origin; ancestry needs its fetched object.
+        let new=git(&f.c,&["--git-dir=remote.git","-c","user.name=Invented tester","-c","user.email=invented@example.invalid","commit-tree",&format!("{}^{{tree}}",f.b),"-p",&f.b,"-m","remote only"]).unwrap();
+        for reference in ["refs/heads/main","refs/heads/live"] {
+            git(&f.c,&["--git-dir=remote.git","update-ref",reference,&new]).unwrap();
+            assert_eq!(resolve_until(&f.c,reference,end()).unwrap(),new);
+        }
+        assert!(ancestor_until(&f.c,&f.b,&new,end()).unwrap());
+        let job=json!({"state":"success","url":"https://example.invalid/job"});
+        let report=json!({"sha":f.b,"merged_at":"2026-11-05T00:00:00Z","first_main":{"sha":f.b,"state":"success","url":"https://example.invalid/pipeline","deploy":job,"smoke":[job]},"later_main":null});
+        let status=delivery_report(&f.c,&f.b,report.clone(),end()).unwrap();
+        assert_eq!(status["live_sha"],new);assert_eq!(status["live_includes"],true);
+        let id=save_preview(&f);f.j.lock().unwrap().grant(7,7,&["release:sample".into()],0).unwrap();
+        assert!(confirm(&f.tq,&f.j,&request(&f,7),id).unwrap_err().contains("LIVE changed"));
+        assert!(!f.dir.join("calls").exists(),"changed LIVE dispatched a mutation");
+        git(&f.c,&["--git-dir=remote.git","update-ref","-d","refs/heads/live"]).unwrap();
+        let missing=resolve_until(&f.c,"refs/heads/live",end()).unwrap_err();
+        assert!(missing.contains("freshness") && missing.contains("refs/heads/live"),"{missing}");
+        let status=delivery_report(&f.c,&f.b,report,end()).unwrap();
+        assert!(status["live_sha"].is_null() && status["live_includes"].is_null());
+        assert_eq!(status["live_reason"],missing);
+        assert_eq!(delivery_reason_ru(&missing),"Свежесть удалённой ссылки не подтверждена: refs/heads/live");
+        // A failed refresh must not return the cached tracking SHA or start a dry run.
+        assert!(resolve_until(&tracking,"refs/remotes/origin/live",end()).is_err());
+        {let j=f.j.lock().unwrap();j.0.execute("DELETE FROM meta WHERE key=?1",[format!("release-preview:{id}")]).unwrap();}
+        assert!(preview_for(&f.tq,&f.j,id,&f.r.session,f.r.generation,7,"sample",end(),||true).unwrap_err().contains("freshness"));
+        assert!(!f.dir.join("calls").exists());
+        git(&f.c,&["remote","set-url","origin","missing-remote.git"]).unwrap();
+        assert!(resolve_until(&f.c,"refs/heads/main",end()).unwrap_err().contains("freshness"));
     }
     // #202 A5 / R16–R17: transport URLs and adapter stderr stay out of replies;
     // scrubbed diagnostics remain available in audit.
@@ -726,7 +792,7 @@ mod tests {
         let mut missing_live=f.c.clone();missing_live["live_ref"]=json!("refs/heads/missing");
         let partial=delivery_report(&missing_live,&f.b,report.clone(),Instant::now()+Duration::from_secs(10)).unwrap();
         assert_eq!(partial["first_main"],report["first_main"]);assert!(partial["live_includes"].is_null());
-        assert!(partial["live_reason"].as_str().unwrap().contains("Git read failed"));
+        assert!(partial["live_reason"].as_str().unwrap().contains("Remote ref freshness unavailable"));
         let mut green=report.clone();green["first_main"]["smoke"][1]["state"]=json!("success");
         crate::test_support::write_script(&script,format!("#!/bin/sh\ncat <<'JSON'\n{green}\nJSON\n")).unwrap();
         assert_eq!(delivery_config(config(&j,"sample"),&issue,Instant::now()+Duration::from_secs(10))["stage"],"DEV smoke");
@@ -903,7 +969,7 @@ mod tests {
     fn release_running_checkout_blocker_174() {
         let f=fixture("blocker");let other=f.dir.join("other");std::fs::create_dir(&other).unwrap();
         let mut c=f.c.clone();c["root"]=json!(other);std::fs::write(other.join("taskq.json"),r#"{"repo":"invented/tight"}"#).unwrap();
-        let status=std::process::Command::new("/usr/bin/git").current_dir(&other).args(["init","-q"]).status().unwrap();assert!(status.success());git(&c,&["remote","add","origin","https://example.invalid/project.git"]).unwrap();
+        let status=std::process::Command::new("/usr/bin/git").current_dir(&other).args(["init","-q"]).status().unwrap();assert!(status.success());git(&c,&["remote","add","origin","."]).unwrap();
         std::fs::write(other.join("snapshot.json"),r#"{"complete":true,"board":{"repo":"invented/tight"},"tasks":[{"n":42,"executions":[{"attempt":123,"state":"running"}]}]}"#).unwrap();
         f.j.lock().unwrap().add_project(7,"tight","invented/tight",other.to_str().unwrap(),0).unwrap();f.j.lock().unwrap().grant(7,7,&["release:sample".into()],0).unwrap();let id=save_preview(&f);
         let error=confirm(&f.tq,&f.j,&request(&f,7),id).unwrap_err();assert!(error.contains("tight task #42 attempt 123"),"{error}");assert!(!f.dir.join("calls").exists());
