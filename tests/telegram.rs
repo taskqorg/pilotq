@@ -65,7 +65,8 @@ fn respond(s: &mut impl Write, code: u16, body: &str) {
 fn handle(stream: std::net::TcpStream, st: &State) {
     let mut r = BufReader::new(stream.try_clone().unwrap());
     let (mut line, mut len) = (String::new(), 0);
-    r.read_line(&mut line).unwrap();
+    // A restarted client can close a pooled connection before sending any request.
+    if r.read_line(&mut line).unwrap() == 0 { return; }
     let method = line.split_whitespace().nth(1).unwrap_or("").rsplit('/').next().unwrap().to_lowercase();
     loop {
         let mut h = String::new();
@@ -219,6 +220,20 @@ fn handle(stream: std::net::TcpStream, st: &State) {
             respond(&mut out, 200, &ok.to_string());
         }
     }
+}
+
+// §4 / A40: a connection closed before an HTTP request is not a delivered message.
+#[test]
+fn a40_empty_connection_has_no_delivery() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    client.shutdown(std::net::Shutdown::Write).unwrap();
+    let (stream, _) = listener.accept().unwrap();
+    let st: State = Arc::new(Mutex::new(Fake::default()));
+    handle(stream, &st);
+    let f = st.lock().unwrap();
+    assert!(f.sent.is_empty(), "an empty connection must not invent a delivery: {:?}", f.sent);
+    assert!(f.api.is_empty(), "no API request was received");
 }
 
 // §4 / A40: deletes retain target identity/API evidence without inventing a send.
