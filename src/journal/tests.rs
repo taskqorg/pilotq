@@ -45,6 +45,18 @@ fn turn_progress_190() {
     drop(j);std::fs::remove_dir_all(p).unwrap();
 }
 
+// A loop tick runs unattended: it never posts a progress message.
+#[test]
+fn turn_progress_skips_loop_ticks() {
+    let (mut j,p)=journal("progress-tick");
+    j.admit(&[(1,msg(-5,7,1))],0).unwrap();
+    let run=j.claim_next(4,0).unwrap().remove(0);
+    j.0.execute("INSERT INTO audit_events(request_id,kind,at) VALUES (?1,'loop_tick',0)",[run.request]).unwrap();
+    j.turn_progress(60).unwrap();
+    assert_eq!(count(&j,"SELECT count(*) FROM outbox WHERE kind='turn_progress'"),0);
+    drop(j);std::fs::remove_dir_all(p).unwrap();
+}
+
 // #256 A6 / R11: the "Working · N s" message is removed after the final reply, once, and never before it.
 #[test]
 fn turn_progress_256_removed_after_final_reply() {
