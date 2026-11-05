@@ -628,7 +628,11 @@ pub fn startup(j:&Journal)->Result<(),String> {
 /// Scan just registered roots. Service generation changes detect installs/restarts; diagnostics never enter Telegram.
 pub fn serve(t:coreq::Tool,j:Shared) {
     loop {
-        if let Err(e)=scan(&t,&j) {eprintln!("onboarding: {e}");}
+        let mut pass=crate::telemetry::Observation::start("service.pass", "service.onboarding");
+        let result=crate::telemetry::steady(||scan(&t,&j));
+        pass.result(&result);
+        if let Err(e)=result {eprintln!("onboarding: {e}");}
+        drop(pass);
         std::thread::sleep(Duration::from_secs(60));
     }
 }

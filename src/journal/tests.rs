@@ -1654,6 +1654,32 @@ fn u23_audit_records_and_readers() {
     let _ = std::fs::remove_dir_all(p);
 }
 
+// #374 A4 / R17: pruning could hide a failed request, so the report counted a low `failed` instead of unknown.
+#[test]
+fn pilot_report_374_reads_unknown_when_rows_were_pruned_in_its_window() {
+    let day = 86_400_000;
+    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+    let fixture = |tag: &str, ages: &[i64]| {
+        let (j, p) = journal(tag);
+        let times: Vec<i64> = ages.iter().map(|age| at - age * day).collect();
+        let events: Vec<_> = times.iter().enumerate().map(|(n, started)| coreq::telemetry::Event::identified("pilotq.request", &n.to_string(), json!({"product":"pilotq","version":"invented",
+            "operation":"request","kind":"pilotq.request","trace":"invented","span":"invented","started_ms":started,"outcome":"failed","error":"invented"})).unwrap()).collect();
+        // CoreQ applies its 30-day retention as this history arrives.
+        coreq::telemetry::Store::open(&p.join("telemetry.sqlite")).unwrap().import_history("fixture", None, "position.1", &events, &times).unwrap();
+        (j, p)
+    };
+    let report = |j: &Journal, days: i64| j.pilot_report(Some((at - days * day) / 1000)).unwrap();
+    let (whole, whole_path) = fixture("pilot-whole", &[10, 1]);
+    assert_eq!(report(&whole, 90)["failed"], 2, "a store with nothing pruned counts every row");
+    let (pruned, pruned_path) = fixture("pilot-pruned", &[60, 10, 1]);
+    assert_eq!(report(&pruned, 5)["failed"], 1, "rows pruned before the window leave its count exact");
+    let unknown = report(&pruned, 90);
+    assert!(unknown["failed"].is_null(), "{unknown}");
+    assert_eq!(unknown["failed_reason"], "telemetry pruned rows inside the reported window");
+    drop((whole, pruned));
+    for path in [whole_path, pruned_path] { let _ = std::fs::remove_dir_all(path); }
+}
+
 // #373 A3, §9: retired journals refuse before schema writes and preserve their data, including unstamped old databases.
 #[test]
 fn retired_schemas_373_are_refused_without_writes() {
@@ -2487,6 +2513,29 @@ fn telemetry_failure_does_not_block() {
     assert_eq!(count(&j, "SELECT count(*) FROM outbox WHERE kind='rich' AND state='pending'"), 1, "telemetry failure cannot lose the final delivery");
     drop(j);
     let _ = std::fs::remove_dir_all(p);
+}
+
+// #374 A2,A4 / R17: CLI and Telegram completion have a shared observation joined to audit
+// by request ID, while the old request event/report remains available during parity.
+#[test]
+fn observations_374_request_and_legacy() {
+    let (mut j, p) = journal("observations374");
+    j.bootstrap(7, 0).unwrap();
+    let r = j.ask(7, "invented private request", 1).unwrap();
+    j.finish(&r, None, None, &crate::manager::Outcome::Answered("invented private reply".into()), 2).unwrap();
+    j.admit(&[(1,msg(7,7,1))],3).unwrap();
+    let telegram=j.claim_next(4,3).unwrap().remove(0);
+    j.finish(&telegram,None,None,&crate::manager::Outcome::Answered("invented private reply".into()),4).unwrap();
+    let rows = coreq::telemetry::Reader::open(&p.join("telemetry.sqlite")).unwrap().export(0, 0, 100).unwrap();
+    let events: Vec<_> = rows["events"].as_array().unwrap().iter().map(|r| &r["observation"]).collect();
+    let event = events.iter().find(|e|e["kind"]=="operation" && e["operation"]=="request").expect("CoreQ request observation");
+    assert!(events.iter().any(|e|e["kind"]=="operation" && e["source"]=="telegram" && e["trace"]==trace_id(telegram.request)));
+    assert_eq!(event["schema"], 1);
+    assert_eq!(event["trace"], trace_id(r.request));
+    assert!(events.iter().any(|e|e["kind"]=="pilotq.request"));
+    let audit = j.audit(7, &Filter { request: Some(r.request), ..Default::default() }, 3).unwrap();
+    assert!(!audit.is_empty());
+    assert!(!rows.to_string().contains("invented private"));
 }
 
 fn service_texts(j: &Journal) -> Vec<String> {

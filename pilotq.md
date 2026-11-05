@@ -196,8 +196,10 @@ Roles (§2) imply grants: `admin` implies every named grant except `release:NAME
 Store named keys once in owner-only `keys.json` (0600 or Windows equivalent), with purpose, tool/holder scopes and last use. Inject at dispatch; never expose values through model, journal, telemetry, logs, replies or task bodies. CLI list shows metadata only; CLI add/grant/revoke are the sole key-entry path.
 
 Audit each admitted CLI/Telegram request in the input transaction, retaining actor/grants, route/project, request edits/cancellation, times, model/version/agentq, tools, effects, task references, outcome and delivery. Join CoreQ and TaskQ by request ID; tell the person the retention at admission. Audit reads are themselves recorded.
+Telemetry follows [specq telemetry](https://github.com/taskqorg/specq/blob/main/engineering/profiling.md#telemetry-contract): metadata-only PilotQ operations and service passes use the installation's CoreQ store; request audit joins by ID at read time.
+AgentQ runtime alone supplies `agent.turn` and `agent.call`; PilotQ adds no agent capture. Keep the old PilotQ store/path until a later task proves same-window parity. [Operations and compatibility](docs/runtime-contract.md#telemetry-observations) define the series.
 
-Owner and `audit` administrators read via CLI; people read their own `/audit` only in DM without the model. Group/topic audit shows nothing. Analysis exports omit message text unless specifically approved. Optional Langfuse capture needs approved scope, redaction and bounded export; failure never blocks work or owns the only outcome copy.
+Owner and `audit` administrators read via CLI; people read their own `/audit` only in DM without the model. Group/topic audit shows nothing. Analysis exports omit message text unless specifically approved. Telemetry failure never blocks work or owns the only outcome copy; no Langfuse capture is added.
 
 ## 9. CLI, releases and service operations
 
@@ -222,11 +224,9 @@ arguments in one request are refused. CLI project operations can also use `pilot
 Only the protected owner restarts the installed service; acknowledge, drain and report completion after healthy restart. Source runs refuse. Only the owner-installed PM pack described below is approved; other native manager skills need a contract decision. CLI asks use the same controls. Every writing command prints readback, supports JSON and fails nonzero on failure.
 
 **Owner decision, [task #221](https://github.com/taskqorg/pilotq/issues/221):** “a PilotQ loop must own the same context and tools as the PM Claude session and do the same PM work.”
-The protected owner may install a named, bounded PM runbook and bind it to an explicit CLI or Telegram route,
-optionally narrowed to a registered project. Only currently admitted owner or shell-grant turns load that binding,
+The protected owner may install a named, bounded PM runbook and bind it to an explicit CLI or Telegram route, optionally narrowed to a registered project. Only currently admitted owner or shell-grant turns load that binding,
 including human turns and loop ticks; a pack grants no new authority. `/help operations` shows the current binding.
-The runbook covers installed TaskQ board status, `taskq profile` telemetry, asks, steer, starting held work, close,
-release prerequisites and reports. Board state comes only from installed TaskQ commands (§5); PM tick reports include
+The runbook covers installed TaskQ board status, `taskq profile` telemetry, asks, steer, starting held work, close, release prerequisites and reports. Board state comes only from installed TaskQ commands (§5); PM tick reports include
 an observed board link and a workers table with verified links instead of bare task IDs. Missing evidence stays unknown.
 Each bound turn receives a durable PM note index and scoped note read/write/forget tools. Each note contains one fact
 and a required why line; notes are context, never authority or fresh board state. Notes belong to the exact route and,
@@ -245,7 +245,7 @@ Supported managed host: Linux x86_64. Minimums: Codex 0.162.0 and Claude Code 2.
 
 Use executable `--version`; only tools without that command use owner-provisioned version/SHA256 receipts. Verify recognizer bytes before trusting its receipt. Missing/unparseable/old tools refuse installed startup, install and update; report an exact operator remedy. Never provision tools, elevate privileges or change logins automatically.
 
-Retain CoreQ v0.19.2 and journal schema 14; create new journals at schema 14, migrate schema 13, refuse older or newer journals and refuse unsafe downgrade. The installation owner owns the user service/configuration. Releases use CoreQ versioned directories, checksum verification, selftest and rollback after three unhealthy starts.
+Use CoreQ v0.21.0 and journal schema 14; create new journals at schema 14, migrate schema 13, refuse older or newer journals and refuse unsafe downgrade. The installation owner owns the user service/configuration. Releases use CoreQ versioned directories, checksum verification, selftest and rollback after three unhealthy starts.
 
 Publish only by fast-forwarding `live` to a merge-queue-accepted main commit. That workflow builds/verifies static linux-x86_64 and publishes tag, binary, SHA256SUMS and latest.json. Tags alone do not publish. The PM updates the test pilot and records source/binary identity, status, selftest, doctor and request/journal continuity; production cutover is not authorized.
 

@@ -61,6 +61,16 @@ pub(crate) fn valid_grant(g: &str) -> bool {
     GRANTS.contains(&g) || ["release:", "project:", "owner:"].iter().any(|k| g.strip_prefix(k).is_some_and(name))
 }
 
+/// R17: rows are pruned oldest first and their times are gone, so a window is complete only if the
+/// oldest row above the pruned range predates it. Any other pruned window can hide a failure.
+fn complete_window(r: &coreq::telemetry::Reader, page: &Value, since_ms: i64) -> Result<(), String> {
+    let through = page["pruned_through"].as_i64().ok_or("telemetry export has no pruned range")?;
+    if page["pruned_count"].as_i64().unwrap_or(1) == 0 { return Ok(()); }
+    let oldest = r.export(0, through, 1)?["events"][0]["received_ms"].as_i64();
+    if oldest.is_some_and(|at| at < since_ms) { return Ok(()); }
+    Err("telemetry pruned rows inside the reported window".into())
+}
+
 fn held(c: &Connection, user: i64, grant: &str) -> Result<bool, String> {
     c.query_row("SELECT 1 FROM grants WHERE user=?1 AND name=?2", params![user, grant], |_| Ok(())).optional().map(|r| r.is_some()).map_err(|e| e.to_string())
 }
@@ -1019,6 +1029,7 @@ fn records(c: &Connection, reader: i64, front: &str, f: &Filter, at: i64) -> Res
         })?
         .into();
         let event = |r: &rusqlite::Row| Ok(json!({"at": r.get::<_, i64>(0)?, "target": r.get::<_, Option<String>>(1)?, "item": r.get::<_, Option<String>>(2)?, "result": r.get::<_, Option<String>>(3)?}));
+        v["telemetry_links"] = list("SELECT at,NULL,NULL,result FROM audit_events WHERE request_id=?1 AND kind='telemetry_link' ORDER BY id", &event)?.into();
         v["revisions"] = list("SELECT at,NULL,item,NULL FROM audit_events WHERE request_id=?1 AND kind='input_revision' ORDER BY id", &event)?.into();
         v["tools"] = list("SELECT at, target, item, result FROM audit_events WHERE request_id=?1 AND kind='tool' ORDER BY id", &event)?.into();
         v["tasks"] = list("SELECT at, target, item, result FROM audit_events WHERE request_id=?1 AND kind='task' ORDER BY id", &event)?.into();
@@ -1236,6 +1247,7 @@ impl Journal {
                 count += page["events"].as_array().into_iter().flatten().filter(|v| v.to_string().contains("\"outcome\":\"failed\"")).count() as i64;
                 after = page["next"].as_i64().unwrap_or(after);
                 if page["more"] != true {
+                    complete_window(&r, &page, since * 1000)?;
                     return Ok(count);
                 }
             }
@@ -1354,7 +1366,7 @@ impl Journal {
     /// Appends the ended request's CoreQ event, keyed by request ID. Metadata only: no request or reply text, so no key value
     /// can reach telemetry (§ 8). A telemetry failure is reported and never blocks the request.
     pub(crate) fn trace(&self, request: i64, at: i64) {
-        let event = || -> Result<Option<Event>, String> {
+        let event = || -> Result<Option<Vec<Event>>, String> {
             let (front, state, received, runs, model, runtime): (String, String, i64, i64, Option<String>, Option<String>) = self
                 .0
                 .query_row(
@@ -1376,17 +1388,22 @@ impl Journal {
             };
             // ponytail: CoreQ codes allow only [A-Za-z0-9._:-]; a model name outside that is left out, not rewritten
             let model = model.filter(|m| !m.is_empty() && m.len() <= 128 && m.bytes().all(|c| c.is_ascii_alphanumeric() || b"._:-".contains(&c)));
-            Event::identified(
-                "pilotq.request",
-                &request.to_string(),
-                json!({"product": "pilotq", "version": env!("CARGO_PKG_VERSION"), "operation": "request", "kind": "pilotq.request",
-                    "trace": trace_id(request), "span": "request", "started_ms": received.max(0) * 1000, "duration_us": (at - received).max(0) * 1_000_000,
-                    "outcome": outcome, "error": if outcome == "ok" { "none" } else { state.as_str() }, "source": front, "attempt": runs,
-                    "runtime": runtime.filter(|_| runs > 0), "model": model}),
-            ).map(Some)
+            let value = json!({"product": "pilotq", "version": env!("CARGO_PKG_VERSION"), "operation": "request", "kind": "pilotq.request",
+                "trace": trace_id(request), "span": "request", "started_ms": received.max(0) * 1000, "duration_us": (at - received).max(0) * 1_000_000,
+                "outcome": outcome, "error": if outcome == "ok" { "none" } else { state.as_str() }, "source": front, "attempt": runs,
+                "runtime": runtime.filter(|_| runs > 0), "model": model});
+            let legacy = Event::identified("pilotq.request", &request.to_string(), value.clone())?;
+            let mut observation = value;
+            observation["kind"] = json!("operation");
+            // A request's run count is not a TaskQ attempt identity.
+            observation["attempt"] = Value::Null;
+            observation["unknown"] = json!({"attempt":"no-task"});
+            let instance = meta(&self.0,"instance")?.ok_or("journal instance unavailable")?;
+            let observation = Event::identified("pilotq.observation", &format!("{instance}:{request}"), coreq::telemetry::shared(&observation))?;
+            Ok(Some(vec![legacy, observation]))
         };
         let r = event().and_then(|ev| match ev {
-            Some(ev) => self.2.get_or_init(|| Store::open(&self.1)).as_ref().map_err(String::clone)?.append(&[ev]).map(drop),
+            Some(ev) => self.2.get_or_init(|| Store::open(&self.1)).as_ref().map_err(String::clone)?.append(&ev).map(drop),
             None => Ok(()),
         });
         if let Err(e) = r {

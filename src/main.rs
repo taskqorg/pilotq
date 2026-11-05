@@ -26,6 +26,7 @@ mod taskq;
 mod telegram;
 mod voice;
 mod host;
+mod telemetry;
 #[cfg(all(test, unix))]
 mod test_support;
 
@@ -360,33 +361,33 @@ fn doctor(t: &Tool) -> Value {
     json!({"ok": host_ok && telegram && login && board.is_some() && voice.is_ok(), "requirements":requirements, "checks": checks})
 }
 
-fn service_run(t: &Tool) -> ! {
+fn service_run(t: &Tool, command: &telemetry::Command) -> ! {
     let started = std::time::Instant::now();
     let release = t.release_exe(t.version);
     let installed = std::env::current_exe().and_then(std::fs::canonicalize).ok().is_some_and(|e| Some(e) == release.canonicalize().ok());
     // §9 / #135: installed starts validate tools before touching accepted work.
-    if installed { host::gate(t).unwrap_or_else(|e| t.die(&e)); }
+    if installed { host::gate(t).unwrap_or_else(|e| command.die(t,&e)); }
     // readiness order (§ 12): config and storage, then the poll lock, then polling
-    let cfg = config(t).unwrap_or_else(|e| t.die(&e));
-    std::fs::create_dir_all(&t.install).unwrap_or_else(|e| t.die(&e.to_string()));
-    let mut journal = journal::Journal::open(&t.install.join("journal.sqlite")).unwrap_or_else(|e| t.die(&e));
+    let cfg = config(t).unwrap_or_else(|e| command.die(t,&e));
+    std::fs::create_dir_all(&t.install).unwrap_or_else(|e| command.die(t,&e.to_string()));
+    let mut journal = journal::Journal::open(&t.install.join("journal.sqlite")).unwrap_or_else(|e| command.die(t,&e));
     // §4 / F02: a duplicate process must not bootstrap or reconcile the active service's journal.
     let _lock = cfg.as_ref().map(|_| {
         coreq::file_lock::try_lock(&t.install.join("poll.lock")).unwrap_or_else(|e| match e {
-            std::fs::TryLockError::WouldBlock => t.die("poll lock held: another pilotq service polls this bot"),
-            std::fs::TryLockError::Error(e) => t.die(&format!("poll lock: {e}")),
+            std::fs::TryLockError::WouldBlock => command.die(t,"poll lock held: another pilotq service polls this bot"),
+            std::fs::TryLockError::Error(e) => command.die(t,&format!("poll lock: {e}")),
         })
     });
     if let Some(c) = &cfg {
-        journal.bootstrap(c.owner, now() as i64).unwrap_or_else(|e| t.die(&e));
-        initial_project(&journal, c).unwrap_or_else(|e| t.die(&e));
+        journal.bootstrap(c.owner, now() as i64).unwrap_or_else(|e| command.die(t,&e));
+        initial_project(&journal, c).unwrap_or_else(|e| command.die(t,&e));
     }
     // § 12: reconcile runs a dead process left behind before anything new starts
-    journal.reconcile(now() as i64).unwrap_or_else(|e| t.die(&e));
-    admin::recover(&mut journal, now() as i64).unwrap_or_else(|e| t.die(&e));
-    journal.builtin_recover(now() as i64).unwrap_or_else(|e| t.die(&e));
+    journal.reconcile(now() as i64).unwrap_or_else(|e| command.die(t,&e));
+    admin::recover(&mut journal, now() as i64).unwrap_or_else(|e| command.die(t,&e));
+    journal.builtin_recover(now() as i64).unwrap_or_else(|e| command.die(t,&e));
     // #81 U1: read the previous stop before this process clears the drain or records itself alive
-    journal.service_started(now() as i64).unwrap_or_else(|e| t.die(&e));
+    journal.service_started(now() as i64).unwrap_or_else(|e| command.die(t,&e));
     // F04: an effect written without a receipt is read back, never repeated
     if let Some(c) = &cfg
         && let Err(e) = direct::reconcile(&c.direct, c.taskq.as_ref(), &journal)
@@ -394,9 +395,9 @@ fn service_run(t: &Tool) -> ! {
         eprintln!("effects: {e}");
     }
     // a drain left by an update applies to the process it restarted, not to this one
-    release::recover(&journal).unwrap_or_else(|e| t.die(&e));
-    onboarding::startup(&journal).unwrap_or_else(|e| t.die(&e));
-    journal.draining(false).unwrap_or_else(|e| t.die(&e));
+    release::recover(&journal).unwrap_or_else(|e| command.die(t,&e));
+    onboarding::startup(&journal).unwrap_or_else(|e| command.die(t,&e));
+    journal.draining(false).unwrap_or_else(|e| command.die(t,&e));
     let _ = std::fs::remove_file(t.install.join(DRAIN));
     let j: telegram::Shared = Arc::new(Mutex::new(journal));
     let owner = cfg.as_ref().map(|c| c.owner);
@@ -435,10 +436,15 @@ fn service_run(t: &Tool) -> ! {
     if installed && cfg!(target_os = "linux") {
         let maintenance = tool();
         std::thread::spawn(move || loop {
-            match scheduled_update(&maintenance, now()) {
+            let mut pass=telemetry::Observation::start("service.pass", "service.update");
+            let result=scheduled_update(&maintenance, now());
+            pass.result(&result);
+            if matches!(result,Ok(Some(_))) {pass.handled(1);}
+            drop(pass);
+            match result {
                 Ok(Some(v)) => {
                     eprintln!("update: {v}; restarting through the launcher");
-                    std::process::exit(75);
+                    coreq::telemetry::capture::exit(75);
                 }
                 Ok(None) => {}
                 Err(e) => eprintln!("scheduled update: {e}"),
@@ -446,18 +452,24 @@ fn service_run(t: &Tool) -> ! {
             std::thread::sleep(PASS);
         });
     }
+    // The command ends at readiness; from here each service pass and request has its own record.
+    command.finish("ok","none");
     eprintln!("pilotq {} service running", t.version);
     loop {
-        let mut s = status_doc(t, now());
+        let mut pass=telemetry::Observation::start("service.pass", "service.status");
+        let mut s = telemetry::steady(|| status_doc(t, now()));
         {
             let mut j = j.lock().unwrap();
-            if let Err(e) = j.status(&mut s, now() as i64) {
+            let result=j.status(&mut s, now() as i64);
+            pass.result(&result);
+            if let Err(e) = result {
                 s["health"]["storage"] = json!({"at": null, "age": null, "state": "unknown", "reason": e});
             }
             if let Err(e) = j.alive(now() as i64) { eprintln!("alive: {e}"); }
             if let Some(owner) = owner && let Err(e) = j.incidents(owner, now() as i64) { eprintln!("incidents: {e}"); }
         }
         let r = coreq::status::write(t, &t.install, &s);
+        pass.result(&r);
         if let Err(e) = &r {
             eprintln!("status: {e}");
         }
@@ -465,6 +477,7 @@ fn service_run(t: &Tool) -> ! {
         if installed && r.is_ok()
             && let Err(e) = healthy_start(t, &mut j.lock().unwrap(), owner, started.elapsed(), now() as i64)
         { eprintln!("healthy start: {e}"); }
+        drop(pass);
         std::thread::sleep(PASS);
     }
 }
@@ -725,30 +738,50 @@ fn main() {
     if std::env::current_exe().ok() == Some(t.install.join(t.exe_name())) && args.first().map(String::as_str) != Some("update") {
         coreq::launcher::launch(&t, &args);
     }
+    // §9: selftest and doctor write nothing. R17: pilot never creates the store it reports on, so an absent store stays unknown.
+    let store = t.install.join("telemetry.sqlite");
+    let capture = match args.first().map(String::as_str) {
+        Some("selftest" | "doctor") => false,
+        Some("pilot") => store.exists(),
+        _ => true,
+    };
+    let _telemetry = if capture {match coreq::telemetry::capture::Runtime::install(&store, "pilotq", t.version) {
+        Ok(runtime) => Some(runtime),
+        Err(error) => { eprintln!("Telemetry: unknown ({error})"); None }
+    }} else {None};
     let unit = || coreq::service::unit(&t, &t.install, "");
     let a: Vec<&str> = args.iter().map(String::as_str).collect();
+    let operation=match a.first().copied() {
+        Some("service")=>"command.service", Some("ask")=>"command.ask", Some("audit")=>"command.audit",
+        Some("help"|"--help"|"-h")=>"command.help", Some("status")=>"command.status", Some("version")=>"command.version",
+        Some("users")=>"command.users", Some("routes")=>"command.routes", Some("projects")=>"command.projects",
+        Some("keys")=>"command.keys", Some("pm")=>"command.pm", Some("pilot")=>"command.pilot",
+        Some("update")=>"command.update",
+        _=>"command.unknown",
+    };
+    let command=telemetry::Command::start(operation);
     match a.as_slice() {
-        ["service", "run"] => service_run(&t),
+        ["service", "run"] => service_run(&t, &command),
         ["help" | "--help" | "-h", rest @ ..] if rest.len()<=1 => {
             let text=format!("/help{}",rest.first().map(|a|format!(" {a}")).unwrap_or_default());
-            let v=ask(&t,&text).unwrap_or_else(|(_,e)|t.die(&e));
+            let v=ask(&t,&text).unwrap_or_else(|(_,e)|command.die(&t,&e));
             println!("{}",v["reply"].as_str().unwrap_or(""));
         }
         ["service", "install"] => {
-            host::gate(&t).unwrap_or_else(|e|t.die(&e));
+            host::gate(&t).unwrap_or_else(|e|command.die(&t,&e));
             let r = std::env::current_exe().map_err(|e| e.to_string()).and_then(|p| std::fs::read(p).map_err(|e| e.to_string()))
                 .and_then(|bytes| coreq::update::prepare_install(&t, &bytes)).and_then(|_| coreq::update::activate_install(&t)).and_then(|_| coreq::service::run_all(&unit().unload, true)).and_then(|_| coreq::service::host_unit(&t));
-            let u = r.unwrap_or_else(|e| t.die(&e));
+            let u = r.unwrap_or_else(|e| command.die(&t,&e));
             println!("service install: ok ({})", u.path.display());
         }
         ["service", "stop"] => {
             // #81: a requested stop is planned and stays silent on the next start
             let path = t.install.join("journal.sqlite");
-            let j = path.exists().then(|| journal::Journal::open(&path)).transpose().unwrap_or_else(|e| t.die(&e));
-            if let Some(j) = &j { j.planned_stop(true, now() as i64).unwrap_or_else(|e| t.die(&e)); }
+            let j = path.exists().then(|| journal::Journal::open(&path)).transpose().unwrap_or_else(|e| command.die(&t,&e));
+            if let Some(j) = &j { j.planned_stop(true, now() as i64).unwrap_or_else(|e| command.die(&t,&e)); }
             if let Err(e) = coreq::service::run_all(&unit().stop, false) {
                 if let Some(j) = &j { let _ = j.planned_stop(false, 0); }
-                t.die(&e);
+                command.die(&t,&e);
             }
             println!("service stop: ok");
         }
@@ -772,7 +805,7 @@ fn main() {
         ["update", rest @ ..] if rest.iter().all(|x| *x == "--check") => {
             let check = !rest.is_empty();
             let u = unit();
-            let (version, drained) = update(&t, check).unwrap_or_else(|e| t.die(&e));
+            let (version, drained) = update(&t, check).unwrap_or_else(|e| command.die(&t,&e));
             match version {
                 Some(v) if check => println!("update: {v} available"),
                 Some(v) => {
@@ -780,23 +813,23 @@ fn main() {
                     if let Some(d) = drained { println!("{d}"); }
                     if u.path.exists() {
                         coreq::service::run_all(&u.unload, true).and_then(|_| coreq::service::run_all(&u.load, false))
-                            .unwrap_or_else(|e| t.die(&format!("restart: {e}")));
+                            .unwrap_or_else(|e| command.die(&t,&format!("restart: {e}")));
                         println!("service restart: ok");
                     }
-                    resume_after_update(&t, false).unwrap_or_else(|e| t.die(&e));
+                    resume_after_update(&t, false).unwrap_or_else(|e| command.die(&t,&e));
                 }
                 None => println!("update: up to date"),
             }
         }
         ["update", action @ ("--pause" | "--resume"), rest @ ..] if rest.iter().all(|x| *x == "--json") => {
-            std::fs::create_dir_all(&t.install).unwrap_or_else(|e| t.die(&e.to_string()));
+            std::fs::create_dir_all(&t.install).unwrap_or_else(|e| command.die(&t,&e.to_string()));
             let p = t.install.join("update-paused");
             if *action == "--pause" {
-                coreq::write_atomic(&p, "paused").unwrap_or_else(|e| t.die(&e));
+                coreq::write_atomic(&p, "paused").unwrap_or_else(|e| command.die(&t,&e));
             } else if let Err(e) = std::fs::remove_file(&p) {
-                if e.kind() != std::io::ErrorKind::NotFound { t.die(&e.to_string()); }
+                if e.kind() != std::io::ErrorKind::NotFound { command.die(&t,&e.to_string()); }
             }
-            let paused = p.try_exists().unwrap_or_else(|e| t.die(&e.to_string()));
+            let paused = p.try_exists().unwrap_or_else(|e| command.die(&t,&e.to_string()));
             if rest.is_empty() { println!("automatic updates: {}", if paused { "paused" } else { "enabled" }); }
             else { println!("{}", json!({"automatic_updates": if paused { "paused" } else { "enabled" }})); }
         }
@@ -804,19 +837,19 @@ fn main() {
         ["projects", action @ ("current"|"switch"|"status"|"connect"|"disconnect"), rest @ ..] => {
             let json=rest.contains(&"--json");
             let args:Vec<_>=rest.iter().copied().filter(|s|*s!="--json").collect();
-            let v=project_command(&t,action,&args).unwrap_or_else(|e|t.die(&e));
+            let v=project_command(&t,action,&args).unwrap_or_else(|e|command.die(&t,&e));
             if json {println!("{v}");} else {println!("{}",v["reply"].as_str().unwrap_or(""));}
         }
         [cmd @ ("users" | "routes" | "projects" | "keys" | "pm"), ..] => {
             let json = a.contains(&"--json");
             let rest: Vec<&str> = a.iter().copied().filter(|x| *x != "--json").collect();
-            let v = if *cmd == "keys" { keys(&t, &rest) } else { admin(&t, &rest) }.unwrap_or_else(|e| t.die(&format!("{cmd}: {e}")));
+            let v = if *cmd == "keys" { keys(&t, &rest) } else { admin(&t, &rest) }.unwrap_or_else(|e| command.die(&t,&format!("{cmd}: {e}")));
             if json { println!("{v}") } else { show(&v) }
-            if v.get("onboarding").is_some_and(|r|r["ready"]!=true) { std::process::exit(1); }
+            if v.get("onboarding").is_some_and(|r|r["ready"]!=true) { command.exit(1, "not-ready"); }
         }
         ["pilot", "report", rest @ ..] => {
             let args: Vec<&str> = rest.iter().copied().filter(|x| *x != "--json").collect();
-            let v = pilot_report(&t, &args).unwrap_or_else(|e| t.die(&format!("pilot report: {e}")));
+            let v = pilot_report(&t, &args).unwrap_or_else(|e| command.die(&t,&format!("pilot report: {e}")));
             if rest.contains(&"--json") { println!("{v}"); } else {
                 println!("Pilot gate counts since {} (pilot start: {})", v["since"], v["pilot_start"]);
                 for key in ["accepted", "simple", "users", "routes", "projects", "tasks", "interventions", "outages"] {
@@ -836,7 +869,7 @@ fn main() {
         ["audit", ..] => {
             let json = a.contains(&"--json");
             let rest: Vec<&str> = a[1..].iter().copied().filter(|x| *x != "--json").collect();
-            let v = audit(&t, &rest).unwrap_or_else(|e| t.die(&format!("audit: {e}")));
+            let v = audit(&t, &rest).unwrap_or_else(|e| command.die(&t,&format!("audit: {e}")));
             if json {
                 println!("{v}");
             }
@@ -859,7 +892,7 @@ fn main() {
         ["pilot", ..] => {
             let json = a.contains(&"--json");
             let rest: Vec<&str> = a.iter().copied().filter(|x| *x != "--json").collect();
-            let v = pilot(&t, &rest).unwrap_or_else(|e| t.die(&format!("pilot: {e}")));
+            let v = pilot(&t, &rest).unwrap_or_else(|e| command.die(&t,&format!("pilot: {e}")));
             if json {
                 println!("{v}");
             } else if let Some(m) = v.as_object() {
@@ -872,7 +905,7 @@ fn main() {
             let json = rest.contains(&"--json");
             let text = rest.iter().copied().filter(|x| *x != "--json").collect::<Vec<_>>().join(" ");
             if text.trim().is_empty() {
-                t.die(USAGE);
+                command.die(&t,USAGE);
             }
             match ask(&t, &text) {
                 Ok(v) if json => println!("{v}"),
@@ -881,7 +914,7 @@ fn main() {
                     if json && !v.is_null() {
                         println!("{v}");
                     }
-                    t.die(&format!("ask: {e}"));
+                    command.die(&t,&format!("ask: {e}"));
                 }
             }
         }
@@ -895,12 +928,13 @@ fn main() {
                         r["found"].as_str().unwrap_or("unavailable"),r["minimum"].as_str().unwrap_or("undeclared"),r["fix"].as_str().unwrap());
                 }
             }
-            if report["ok"] != true { std::process::exit(1); }
+            if report["ok"] != true { command.exit(1, "not-ready"); }
         }
-        ["selftest"] => selftest(&t).unwrap_or_else(|e| t.die(&e)),
+        ["selftest"] => selftest(&t).unwrap_or_else(|e| command.die(&t,&e)),
         ["version"] => println!("pilotq {}", t.version),
-        _ => t.die(USAGE),
+        _ => command.die(&t,USAGE),
     }
+    command.finish("ok","none");
 }
 
 #[cfg(test)]

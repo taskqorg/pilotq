@@ -6,8 +6,9 @@ publish = false
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-coreq = { git = "https://github.com/taskqorg/coreq", tag = "v0.19.2" }
-agentq-runtime = { git = "https://github.com/taskqorg/agentq", rev = "33cef656ba86536e4e7f970ed5fc637b81622b06" }
+coreq = { git = "https://github.com/taskqorg/coreq", tag = "v0.21.0" }
+agentq-runtime = { git = "https://github.com/taskqorg/agentq", rev = "c80675a557417532393e143ca2783c0f4c83b8d9" }
+tracing = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
 serde_json = { version = "1", features = ["preserve_order"] }
@@ -17,3 +18,6 @@ url = "2"
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls"] }
 lopdf = { version = "0.46.0", default-features = false }
 crc32fast = "1"
+
+[dev-dependencies]
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }

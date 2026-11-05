@@ -45,13 +45,16 @@ pub(crate) fn kill_group(pid: u32) -> Result<(), String> {
     if pid == 0 || pid > i32::MAX as u32 { return Err("invalid process group".into()); }
     let mut command = Command::new("/bin/kill");
     command.args(crate::manager::group_kill_args(pid)).env("LC_ALL", "C").stdin(Stdio::null());
-    let result = coreq::process::output("pilotq.cleanup", &mut command, Duration::from_secs(3));
-    match result {
-        Ok(_) => Ok(()),
+    // ponytail: kill signals and exits, so it needs no deadline. coreq::process::output would record
+    // the routine exited group as a failed operation on every bounded command.
+    let result = coreq::telemetry::capture::operation("pilotq.cleanup", || {
+        let o = command.output().map_err(|e| e.to_string())?;
+        let stderr = String::from_utf8_lossy(&o.stderr);
         // procps/BSD kill renders ESRCH in the fixed C locale. Do not suppress other failures.
-        Err(coreq::process::Failure::Exit(o)) if String::from_utf8_lossy(&o.stderr).trim_end().ends_with(": No such process") => Ok(()),
-        Err(e) => { let error=e.to_string(); log("process-group cleanup", &error); Err(error) }
-    }
+        if o.status.success() || stderr.trim_end().ends_with(": No such process") { Ok(()) } else { Err(format!("{}: {stderr}", o.status)) }
+    }, |_| "cleanup-failed");
+    if let Err(error) = &result { log("process-group cleanup", error); }
+    result
 }
 
 pub(crate) fn version(raw: &str) -> Option<Vec<u64>> {

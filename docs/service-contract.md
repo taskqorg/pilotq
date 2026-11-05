@@ -192,7 +192,7 @@ activation exits the service with code 75; the coreq Linux unit restarts it thro
 `pilotq update --pause` and `--resume` persist and read back automatic-update admission; pausing
 does not stop health or conversations. Manual updates remain available.
 
-This release uses CoreQ `v0.19.2` and agentq-runtime pinned in `Cargo.lock`, with journal schema 14. New journals are created directly at schema 14; schema 13 upgrades preserve native sessions, requests and receipts. Older and newer journals are refused before schema writes. An older journal must first be upgraded by a compatible earlier build; it is never replaced or reset.
+This release uses CoreQ `v0.21.0` and agentq-runtime pinned in `Cargo.lock`, with journal schema 14. New journals are created directly at schema 14; schema 13 upgrades preserve native sessions, requests and receipts. Older and newer journals are refused before schema writes. An older journal must first be upgraded by a compatible earlier build; it is never replaced or reset.
 
 The PM's accepted [#373 readback](https://github.com/taskqorg/pilotq/issues/373) found only pds18 serving PilotQ, with schema 14. The unserved Mac schema-7 journal is outside the supported upgrade range and remains untouched. Rollback requires a binary supporting the resulting schema, or a separately verified pre-upgrade snapshot. The installation owner retains configuration and service ownership.
 
