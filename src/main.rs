@@ -26,6 +26,7 @@ mod taskq;
 mod telegram;
 mod voice;
 mod host;
+mod telemetry;
 #[cfg(all(test, unix))]
 mod test_support;
 
@@ -435,10 +436,14 @@ fn service_run(t: &Tool) -> ! {
     if installed && cfg!(target_os = "linux") {
         let maintenance = tool();
         std::thread::spawn(move || loop {
-            match scheduled_update(&maintenance, now()) {
+            let mut pass=telemetry::Observation::start("service.pass", "service.update");
+            let result=scheduled_update(&maintenance, now());
+            pass.result(&result);
+            drop(pass);
+            match result {
                 Ok(Some(v)) => {
                     eprintln!("update: {v}; restarting through the launcher");
-                    std::process::exit(75);
+                    coreq::telemetry::capture::exit(75);
                 }
                 Ok(None) => {}
                 Err(e) => eprintln!("scheduled update: {e}"),
@@ -448,16 +453,20 @@ fn service_run(t: &Tool) -> ! {
     }
     eprintln!("pilotq {} service running", t.version);
     loop {
+        let mut pass=telemetry::Observation::start("service.pass", "service.status");
         let mut s = status_doc(t, now());
         {
             let mut j = j.lock().unwrap();
-            if let Err(e) = j.status(&mut s, now() as i64) {
+            let result=j.status(&mut s, now() as i64);
+            pass.result(&result);
+            if let Err(e) = result {
                 s["health"]["storage"] = json!({"at": null, "age": null, "state": "unknown", "reason": e});
             }
             if let Err(e) = j.alive(now() as i64) { eprintln!("alive: {e}"); }
             if let Some(owner) = owner && let Err(e) = j.incidents(owner, now() as i64) { eprintln!("incidents: {e}"); }
         }
         let r = coreq::status::write(t, &t.install, &s);
+        pass.result(&r);
         if let Err(e) = &r {
             eprintln!("status: {e}");
         }
@@ -465,6 +474,7 @@ fn service_run(t: &Tool) -> ! {
         if installed && r.is_ok()
             && let Err(e) = healthy_start(t, &mut j.lock().unwrap(), owner, started.elapsed(), now() as i64)
         { eprintln!("healthy start: {e}"); }
+        drop(pass);
         std::thread::sleep(PASS);
     }
 }
@@ -725,8 +735,23 @@ fn main() {
     if std::env::current_exe().ok() == Some(t.install.join(t.exe_name())) && args.first().map(String::as_str) != Some("update") {
         coreq::launcher::launch(&t, &args);
     }
+    // §9: offline selftest remains setup-independent and writes nothing.
+    let _telemetry = if args.first().is_some_and(|arg|arg=="selftest") {None} else {match coreq::telemetry::capture::Runtime::install(&t.install.join("telemetry.sqlite"), "pilotq", t.version) {
+        Ok(runtime) => Some(runtime),
+        Err(error) => { eprintln!("Telemetry: unknown ({error})"); None }
+    }};
     let unit = || coreq::service::unit(&t, &t.install, "");
     let a: Vec<&str> = args.iter().map(String::as_str).collect();
+    let operation=match a.first().copied() {
+        Some("service")=>"command.service", Some("ask")=>"command.ask", Some("audit")=>"command.audit",
+        Some("help"|"--help"|"-h")=>"command.help", Some("status")=>"command.status", Some("version")=>"command.version",
+        Some("users")=>"command.users", Some("routes")=>"command.routes", Some("projects")=>"command.projects",
+        Some("keys")=>"command.keys", Some("pm")=>"command.pm", Some("pilot")=>"command.pilot",
+        Some("doctor")=>"command.doctor", Some("update")=>"command.update", Some("selftest")=>"command.selftest",
+        _=>"command.unknown",
+    };
+    let _command = tracing::info_span!("command", coreq_operation=operation, coreq_result="unclassified").entered();
+    let mut command=telemetry::Observation::start("operation", operation);
     match a.as_slice() {
         ["service", "run"] => service_run(&t),
         ["help" | "--help" | "-h", rest @ ..] if rest.len()<=1 => {
@@ -812,7 +837,7 @@ fn main() {
             let rest: Vec<&str> = a.iter().copied().filter(|x| *x != "--json").collect();
             let v = if *cmd == "keys" { keys(&t, &rest) } else { admin(&t, &rest) }.unwrap_or_else(|e| t.die(&format!("{cmd}: {e}")));
             if json { println!("{v}") } else { show(&v) }
-            if v.get("onboarding").is_some_and(|r|r["ready"]!=true) { std::process::exit(1); }
+            if v.get("onboarding").is_some_and(|r|r["ready"]!=true) { coreq::telemetry::capture::exit(1); }
         }
         ["pilot", "report", rest @ ..] => {
             let args: Vec<&str> = rest.iter().copied().filter(|x| *x != "--json").collect();
@@ -895,12 +920,14 @@ fn main() {
                         r["found"].as_str().unwrap_or("unavailable"),r["minimum"].as_str().unwrap_or("undeclared"),r["fix"].as_str().unwrap());
                 }
             }
-            if report["ok"] != true { std::process::exit(1); }
+            if report["ok"] != true { coreq::telemetry::capture::exit(1); }
         }
         ["selftest"] => selftest(&t).unwrap_or_else(|e| t.die(&e)),
         ["version"] => println!("pilotq {}", t.version),
         _ => t.die(USAGE),
     }
+    _command.record("coreq_result","classified");
+    command.outcome("ok","none");
 }
 
 #[cfg(test)]

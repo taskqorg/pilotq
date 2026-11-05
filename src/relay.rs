@@ -173,12 +173,13 @@ print(json.dumps({'type':'result','subtype':'success','is_error':False,'result':
             limits: Limits { first_event: Duration::from_secs(10), silent: Duration::from_secs(10), deadline: Duration::from_secs(1) },
             agents: [("claude".to_string(), Agent { bin: bin.to_str().unwrap().into(), home: Some(dir.join("home")), models: vec![] })].into(),
             default: "claude".into(), routes: Default::default(), slots: None };
+        let store=coreq::telemetry::Store::open(&dir.join("telemetry.sqlite")).unwrap();
         let tools = json!([{"type": "function", "name": "project_list", "description": "invented", "inputSchema": {"type": "object"}}]);
         let run = |native: bool, session: Option<&str>| {
             let (mut drafts, mut seen, mut stored, mut context) = (vec![], vec![], 0, Value::Null);
             let out = c.turn("claude", native, session, None, &json!([{"type": "text", "text": "hello"}]), (&tools, "invented instructions"),
                 || true, |_, id, status| seen.push((id.to_string(), status.map(str::to_string))), |name, _, _| (name == "project_list", "granted result".into()),
-                || Ok(json!({"history": "invented"})), |d| drafts.push(d.to_string()), |k, v| if k == "context" { context = v.clone(); }, |_| stored += 1, "cli");
+                || Ok(json!({"history": "invented"})), |d| drafts.push(d.to_string()), |k, v| if k == "context" { context = v.clone(); }, |record| { record(&store).unwrap(); stored += 1; }, "cli");
             (out, drafts, seen, stored, context)
         };
         let ((session, model, outcome), drafts, seen, stored, context) = run(false, None);
@@ -187,6 +188,17 @@ print(json.dumps({'type':'result','subtype':'success','is_error':False,'result':
         assert_eq!(drafts, ["draft"]);
         assert_eq!(seen, [("t1".to_string(), None), ("t1".to_string(), Some("completed".to_string()))]);
         assert_eq!(stored, 1, "one usage observation per turn");
+        // #374 A3: the real runtime record boundary supplies both kinds; PilotQ never parses calls.
+        let rows=store.export(0,0,100).unwrap();
+        let events=rows["events"].as_array().unwrap();
+        assert_eq!(events.iter().filter(|e|e["observation"]["kind"]=="agent.turn").count(),1);
+        let turn=events.iter().find(|e|e["observation"]["kind"]=="agent.turn").unwrap();
+        assert_eq!(turn["observation"]["outcome"],"ok","cleanup must not relabel a completed turn as cancelled");
+        let calls:Vec<_>=events.iter().filter(|e|e["observation"]["kind"]=="agent.call").collect();
+        assert_eq!(calls.len(),1);
+        assert_eq!(calls[0]["observation"]["input_tokens"],10);
+        assert!(calls[0]["observation"]["reasoning_tokens"].is_null());
+        assert!(calls[0]["observation"]["unknown"]["reasoning_tokens"].is_string());
         assert_eq!(context, json!({"last": {"inputTokens": 10}, "modelContextWindow": 100}));
         let session = session.unwrap();
         let ((again, _, outcome), ..) = run(true, Some(&session));

@@ -21,8 +21,8 @@ dependencies = [
 
 [[package]]
 name = "agentq-runtime"
-version = "0.4.1"
-source = "git+https://github.com/taskqorg/agentq?rev=33cef656ba86536e4e7f970ed5fc637b81622b06#33cef656ba86536e4e7f970ed5fc637b81622b06"
+version = "0.6.0"
+source = "git+https://github.com/taskqorg/agentq?rev=c80675a557417532393e143ca2783c0f4c83b8d9#c80675a557417532393e143ca2783c0f4c83b8d9"
 dependencies = [
  "coreq",
  "libc",
@@ -261,8 +261,8 @@ checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
 
 [[package]]
 name = "coreq"
-version = "0.19.2"
-source = "git+https://github.com/taskqorg/coreq?tag=v0.19.2#b78ca64cac615500b57b4a04983e79333035dd65"
+version = "0.21.0"
+source = "git+https://github.com/taskqorg/coreq?tag=v0.21.0#18b177c445e92c5df58bd1dea1b473776dd0c6ae"
 dependencies = [
  "coreq-instrument",
  "flate2",
@@ -277,7 +277,7 @@ dependencies = [
 [[package]]
 name = "coreq-instrument"
 version = "0.1.0"
-source = "git+https://github.com/taskqorg/coreq?tag=v0.19.2#b78ca64cac615500b57b4a04983e79333035dd65"
+source = "git+https://github.com/taskqorg/coreq?tag=v0.21.0#18b177c445e92c5df58bd1dea1b473776dd0c6ae"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1250,6 +1250,8 @@ dependencies = [
  "serde_json",
  "teloxide",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "url",
 ]
 

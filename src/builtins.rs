@@ -123,7 +123,11 @@ pub fn execute(t:&Tool,j:&Shared,r:&Request,installed:bool) -> Result<(),String>
 
 pub fn serve(t:Tool,j:Shared,installed:bool) {
     loop {
+        let mut pass=crate::telemetry::Observation::start("service.pass", "service.controls");
         let request=j.lock().unwrap().builtin_next();
+        pass.result(&request);
+        if let Ok(request)=&request {pass.handled(usize::from(request.is_some()));}
+        drop(pass);
         match request {
             Ok(Some(r)) if matches!(r.text.split_whitespace().next().unwrap_or("").split('@').next(),Some("/restart"|"/release-confirm"))=> {
                 // The drain may wait for an active chat; other controls must remain available.

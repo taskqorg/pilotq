@@ -73,7 +73,7 @@ drafts, model choice, inactivity watches and recovery rules.
   Claude excludes user settings, so its launch requests compression off rather than claiming those
   excluded hooks are active.
   Tool-result compression still needs section 11's dynamic-tool qualification, separate from runtime adoption.
-- CoreQ is v0.19.1 for installation, process and telemetry primitives. Schema 14 converts legacy
+- CoreQ is v0.21.0 for installation, process and telemetry primitives. Schema 14 converts legacy
   `RUNTIME:ID` sessions into the runtime column on first open. A build reading at most schema 13
   refuses the migrated journal, so rollback across this upgrade needs a build that reads schema 14 or
   the pre-upgrade snapshot; never replay interrupted effects or erase pending delivery to downgrade.
@@ -340,10 +340,55 @@ Local correlated events cover update → request → model turn → tool operati
 Telegram delivery. The runtime adapter reports actual completion/error events.
 Model/provider/version and agentq mode accompany evaluation evidence.
 
-Optional, bounded Langfuse telemetry export requires an explicitly approved destination and capture
-scope; no existing installation or active export is assumed. Content capture is opt-in and redacted; operational metadata is enough for delivery and
-intervention metrics. Langfuse failure must not block conversations or become the only copy of a
-task outcome. The proposed metric set lives in [acceptance](acceptance.md#metrics).
+### Telemetry observations
+
+R17 and [pilotq.md §8](../pilotq.md#8-access-credentials-and-audit) apply the shared
+[telemetry contract](https://github.com/taskqorg/specq/blob/main/engineering/profiling.md#telemetry-contract).
+The installation uses one CoreQ local store at `<install>/telemetry.sqlite`. CoreQ owns its schema,
+writer, shipper and durable cursors. PilotQ neither exports to Langfuse nor adds another collector.
+
+Stable operation series:
+
+- `command.service`, `command.ask`, `command.audit`, `command.help`, `command.status`,
+  `command.version`, `command.users`, `command.routes`, `command.projects`, `command.keys`,
+  `command.pm`, `command.pilot`, `command.doctor`, `command.update`, `command.selftest` and
+  `command.unknown`: public CLI dispatch. Internal parser/relay children retain their caller's operation;
+  offline `selftest` retains its no-write, setup-independent boundary (§9).
+- `request`: terminal request observation, for both CLI and Telegram, with `pilotq.request.<ID>`
+  as the journal join key. TaskQ attempt identity is unknown for a conversational request; its
+  number of manager runs is not a TaskQ attempt.
+- Code-owned manager capability names from `src/catalog.rs`: one tool invocation per observation;
+  an unrecognized name uses `manager.tool.unknown`, never the supplied string.
+- `taskq.cli` and `taskq.read`: installed TaskQ calls and bounded observer reads.
+- `telegram.delivery`: one outbox delivery attempt, with retries, formatting fallbacks and held
+  destinations kept distinct. Content remains in the journal, never the observation.
+- `service.status`, `service.update`, `service.manager`, `service.controls`, `service.taskq`,
+  `service.boards`, `service.board`, `service.onboarding`, `service.poll`, `service.typing`,
+  `service.drafts` and `service.delivery`: service passes with duration, outcome/error class and
+  the observed item count when collected. Waiting between passes is excluded where separated
+  from work; a dropped unfinished pass reads unknown. Cosmetic typing failures do not change a
+  request outcome.
+
+Nested synchronous work inherits CoreQ trace context; the runtime launch carries that context
+across its thread boundary. The request journal stores only the execution link in `telemetry_link`
+audit events. `pilotq audit` returns these as `telemetry_links` alongside the existing request ID
+and trace; investigators join metadata at read time, without copying request content or board
+lifecycle into observations. A tool interface that only returns success/failure without an error
+class reports an unsuccessful result as unknown (`tool-outcome-unclassified`); it never guesses
+that it was an operational failure or a deliberate refusal. Admission refusals are explicit.
+
+AgentQ runtime supplies `agent.turn` and `agent.call` through `Run::record`; PilotQ does not parse
+model calls, tokens or process measurements for telemetry. Recording is attempted after every
+launched turn ends, including cancellation; runtime refusal to produce a record stays unavailable.
+The runtime's own missing-field reasons remain authoritative. The route is retained; missing
+runtime correlation or provider measurements remain unknown rather than inferred from audit.
+
+The existing journal, `pilotq.request` events and `pilot report` remain active. The new terminal
+request observation and its legacy event are appended together with immutable identities. A later
+task may delete the PilotQ store/path only after same-window parity is established. Runtime usage
+and model-call totals are alternative views of the same tokens and must not be summed together.
+No deployment or parity qualification is claimed by local checks.
+
 
 
 ## 12. Proposed lifecycle and feedback protocol

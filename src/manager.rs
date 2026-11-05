@@ -7,7 +7,6 @@ use crate::journal::{Journal, Run, RebuildReason};
 use agentq_runtime::agent::{self, Approval, Builtin, Cause, Context, Launch, Mode, Part, Policy, Process, Scope, State};
 use agentq_runtime::optimization::Intent;
 use serde_json::{Value, json};
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -115,7 +114,7 @@ impl Runtime {
         let mut l = self.launch(a, agent, false, None, None, None)?;
         l.mode = Mode::AppServer { initialize: json!({"clientInfo": {"name": "pilotq", "version": env!("CARGO_PKG_VERSION")}}), thread: json!({"cwd": self.workspace}) };
         let run = { let _start = START.lock().unwrap_or_else(|e| e.into_inner()); a.launch(&l).map_err(|_| unavailable())? };
-        let mut owned = Owned { a, run };
+        let mut owned = Owned { a, run, finished: false };
         let run = &mut owned.run;
         let end = Instant::now() + Duration::from_secs(10);
         let mut models = vec![];
@@ -190,9 +189,11 @@ pub(crate) fn group_kill_args(pid: u32) -> [String; 3] {
 
 /// A launched run. Its process group ends with the turn, whatever the runtime left running (a server or tool relay children),
 /// and the runtime reaps its child, so no zombie outlives the turn.
-struct Owned { a: &'static dyn agent::Runtime, run: agent::Run }
-impl Drop for Owned {
-    fn drop(&mut self) {
+struct Owned { a: &'static dyn agent::Runtime, run: agent::Run, finished: bool }
+impl Owned {
+    fn finish(&mut self) {
+        if self.finished { return; }
+        self.finished = true;
         // ponytail: `kill` on the process group; a pidfd/cgroup supervisor if children escape the group
         #[cfg(unix)]
         if let Some(pid) = self.run.id() { let _ = crate::host::kill_group(pid); }
@@ -203,6 +204,8 @@ impl Drop for Owned {
         }
     }
 }
+
+impl Drop for Owned { fn drop(&mut self) { self.finish(); } }
 
 /// Unguessable per-turn identity: relay token, file names and slot operation IDs.
 pub(crate) fn token() -> String {
@@ -314,12 +317,12 @@ impl Runtime {
         let spawned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let observed = spawned.clone();
         l.process.spawned = Some(std::sync::Arc::new(move |_| { observed.store(true, std::sync::atomic::Ordering::Release); Ok(()) }));
-        std::thread::spawn(move || {
+        std::thread::spawn(coreq::telemetry::capture::bind(move || {
             let _start = app_server.then(|| START.lock().unwrap_or_else(|e| e.into_inner()));
-            let launched = match &session { Some(s) => a.resume(s, &l), None => a.launch(&l) }.map(|run| Owned { a, run })
+            let launched = match &session { Some(s) => a.resume(s, &l), None => a.launch(&l) }.map(|run| Owned { a, run, finished: false })
                 .map_err(|e| if spawned.load(std::sync::atomic::Ordering::Acquire) { LaunchFailure::Exited(e) } else { LaunchFailure::NotStarted(e) });
             let _ = tx.send(launched);
-        });
+        }));
         let launched = loop {
             match rx.recv_timeout(Duration::from_millis(200)) {
                 Ok(r) => break r,
@@ -338,143 +341,147 @@ impl Runtime {
                 return failed(match e { LaunchFailure::NotStarted(_) => format!("{label} did not start; check login and runtime health."), LaunchFailure::Exited(_) => format!("{label} exited without a terminal event") });
             }
         };
-        let run = &mut owned.run;
-        observation("spawned", &json!(run.id()));
-        observation("optimization", &run.optimization().json());
-        if app_server && let Err(e) = a.input(run, &parts(input)) { return failed(format!("{label} refused the input: {e}")); }
-        let (mut first, mut last, mut tooled, mut answer, mut error) = (false, start, false, None::<String>, None::<String>);
-        let (mut draft_item, mut draft, mut used, mut window) = (String::new(), String::new(), None::<u64>, None::<u64>);
-        let mut model = None::<String>;
-        let mut items = std::collections::HashMap::new();
-        let mut version = name.to_string();
-        let fail = |tooled: bool, why: String| if tooled { Outcome::Uncertain(why) } else { Outcome::Failed(why) };
-        let stop = |run: &mut agent::Run| {
-            let _ = a.cancel(run);
-            let end = Instant::now() + GRACE;
-            while Instant::now() < end && matches!(a.poll(run), Ok(State::Running)) { std::thread::sleep(Duration::from_millis(50)); }
-        };
-        let session = |run: &agent::Run| a.session_id(run).or_else(|| resume.map(str::to_string));
-        loop {
-            if !alive() { stop(run); return Ok((session(run), model, Outcome::Fenced)); }
-            let mut progressed = relay.serve(&mut *call, &version);
-            let state = a.poll(run);
-            for m in a.progress(run).unwrap_or_default() {
-                progressed = true;
-                let method = m["method"].as_str().unwrap_or("");
-                if m.get("id").is_some() && !method.is_empty() {
-                    // a complete call of PilotQ's own tool: the boundary checks grants and the fence and answers (§ 5, § 12);
-                    // other server requests need an interactive protocol, so no approval is ever inferred
-                    let reply = if method == "item/tool/call" {
-                        let (ok, out) = call(m["params"]["tool"].as_str().unwrap_or(""), &m["params"]["arguments"], &version);
-                        json!({"id": m["id"], "result": {"contentItems": [{"type": "inputText", "text": out}], "success": ok}})
-                    } else { json!({"id": m["id"], "error": {"code": -32601, "message": "PilotQ does not grant this request"}}) };
-                    if let Err(e) = a.send(run, &reply) { eprintln!("{name}: {e}"); }
-                    continue;
-                }
-                if m.get("id").is_some() {
-                    if let Some(e) = m.get("error") {
-                        stop(run);
-                        return Ok((session(run), model, fail(tooled, format!("{label} refused {}: {}", m["id"], e["message"].as_str().unwrap_or("error")))));
+        let result = (|| {
+            let run = &mut owned.run;
+            observation("spawned", &json!(run.id()));
+            observation("optimization", &run.optimization().json());
+            if app_server && let Err(e) = a.input(run, &parts(input)) { return failed(format!("{label} refused the input: {e}")); }
+            let (mut first, mut last, mut tooled, mut answer, mut error) = (false, start, false, None::<String>, None::<String>);
+            let (mut draft_item, mut draft, mut used, mut window) = (String::new(), String::new(), None::<u64>, None::<u64>);
+            let mut model = None::<String>;
+            let mut items = std::collections::HashMap::new();
+            let mut version = name.to_string();
+            let fail = |tooled: bool, why: String| if tooled { Outcome::Uncertain(why) } else { Outcome::Failed(why) };
+            let stop = |run: &mut agent::Run| {
+                let _ = a.cancel(run);
+                let end = Instant::now() + GRACE;
+                while Instant::now() < end && matches!(a.poll(run), Ok(State::Running)) { std::thread::sleep(Duration::from_millis(50)); }
+            };
+            let session = |run: &agent::Run| a.session_id(run).or_else(|| resume.map(str::to_string));
+            loop {
+                if !alive() { stop(run); return Ok((session(run), model, Outcome::Fenced)); }
+                let mut progressed = relay.serve(&mut *call, &version);
+                let state = a.poll(run);
+                for m in a.progress(run).unwrap_or_default() {
+                    progressed = true;
+                    let method = m["method"].as_str().unwrap_or("");
+                    if m.get("id").is_some() && !method.is_empty() {
+                        // a complete call of PilotQ's own tool: the boundary checks grants and the fence and answers (§ 5, § 12);
+                        // other server requests need an interactive protocol, so no approval is ever inferred
+                        let reply = if method == "item/tool/call" {
+                            let (ok, out) = call(m["params"]["tool"].as_str().unwrap_or(""), &m["params"]["arguments"], &version);
+                            json!({"id": m["id"], "result": {"contentItems": [{"type": "inputText", "text": out}], "success": ok}})
+                        } else { json!({"id": m["id"], "error": {"code": -32601, "message": "PilotQ does not grant this request"}}) };
+                        if let Err(e) = a.send(run, &reply) { eprintln!("{name}: {e}"); }
+                        continue;
                     }
-                    if let Some(v) = m["result"]["userAgent"].as_str() { version = v.to_string(); }
-                    if let Some(v) = m["result"]["model"].as_str() { model = Some(v.to_string()); }
-                    continue;
-                }
-                let item = &m["params"]["item"];
-                match (method, m["type"].as_str()) {
-                    ("item/started" | "item/completed", _) if TOOLS.contains(&item["type"].as_str().unwrap_or("")) => {
-                        tooled = true;
-                        let status = (method == "item/completed").then(|| item["status"].as_str().unwrap_or("completed"));
-                        tool(item["type"].as_str().unwrap_or(""), item["id"].as_str().unwrap_or(""), status);
-                        observation(if status.is_some() {"native_completed"} else {"native_started"}, item);
+                    if m.get("id").is_some() {
+                        if let Some(e) = m.get("error") {
+                            stop(run);
+                            return Ok((session(run), model, fail(tooled, format!("{label} refused {}: {}", m["id"], e["message"].as_str().unwrap_or("error")))));
+                        }
+                        if let Some(v) = m["result"]["userAgent"].as_str() { version = v.to_string(); }
+                        if let Some(v) = m["result"]["model"].as_str() { model = Some(v.to_string()); }
+                        continue;
                     }
-                    ("item/agentMessage/delta", _) => {
-                        let id = m["params"]["itemId"].as_str().unwrap_or("");
-                        if id != draft_item { draft.clear(); draft_item = id.to_string(); }
-                        draft.push_str(m["params"]["delta"].as_str().unwrap_or(""));
-                        preview(&draft);
-                    }
-                    ("item/completed", _) if item["type"] == "agentMessage" => answer = item["text"].as_str().map(str::to_string),
-                    ("error", _) => error = m["params"]["error"]["message"].as_str().map(str::to_string),
-                    // the native terminal reason, kept over AgentQ's outcome code
-                    ("turn/completed", _) => error = m["params"]["turn"]["error"]["message"].as_str().map(str::to_string).or(error),
-                    ("account/rateLimits/updated", _) => observation("quota", &m["params"]["rateLimits"]),
-                    ("thread/tokenUsage/updated", _) if m["params"]["threadId"].as_str().is_some() && m["params"]["threadId"].as_str() == a.session_id(run).as_deref() =>
-                        observation("context", &m["params"]["tokenUsage"]),
-                    (_, Some("stream_event")) => match m["event"]["type"].as_str() {
-                        Some("message_start") => draft.clear(),
-                        Some("content_block_delta") if m["event"]["delta"]["type"] == "text_delta" => {
-                            draft.push_str(m["event"]["delta"]["text"].as_str().unwrap_or(""));
+                    let item = &m["params"]["item"];
+                    match (method, m["type"].as_str()) {
+                        ("item/started" | "item/completed", _) if TOOLS.contains(&item["type"].as_str().unwrap_or("")) => {
+                            tooled = true;
+                            let status = (method == "item/completed").then(|| item["status"].as_str().unwrap_or("completed"));
+                            tool(item["type"].as_str().unwrap_or(""), item["id"].as_str().unwrap_or(""), status);
+                            observation(if status.is_some() {"native_completed"} else {"native_started"}, item);
+                        }
+                        ("item/agentMessage/delta", _) => {
+                            let id = m["params"]["itemId"].as_str().unwrap_or("");
+                            if id != draft_item { draft.clear(); draft_item = id.to_string(); }
+                            draft.push_str(m["params"]["delta"].as_str().unwrap_or(""));
                             preview(&draft);
                         }
-                        _ => {}
-                    },
-                    (_, Some("assistant")) => {
-                        let u = &m["message"]["usage"];
-                        used = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"].iter().map(|k| u[k].as_u64()).sum::<Option<u64>>().or(used);
-                        for b in m["message"]["content"].as_array().into_iter().flatten().filter(|b| b["type"] == "tool_use") {
-                            tooled = true;
-                            let it = crate::relay::item(b);
-                            tool(it["type"].as_str().unwrap_or(""), it["id"].as_str().unwrap_or(""), None);
-                            observation("native_started", &it);
-                            items.insert(it["id"].as_str().unwrap_or("").to_string(), it);
+                        ("item/completed", _) if item["type"] == "agentMessage" => answer = item["text"].as_str().map(str::to_string),
+                        ("error", _) => error = m["params"]["error"]["message"].as_str().map(str::to_string),
+                        // the native terminal reason, kept over AgentQ's outcome code
+                        ("turn/completed", _) => error = m["params"]["turn"]["error"]["message"].as_str().map(str::to_string).or(error),
+                        ("account/rateLimits/updated", _) => observation("quota", &m["params"]["rateLimits"]),
+                        ("thread/tokenUsage/updated", _) if m["params"]["threadId"].as_str().is_some() && m["params"]["threadId"].as_str() == a.session_id(run).as_deref() =>
+                            observation("context", &m["params"]["tokenUsage"]),
+                        (_, Some("stream_event")) => match m["event"]["type"].as_str() {
+                            Some("message_start") => draft.clear(),
+                            Some("content_block_delta") if m["event"]["delta"]["type"] == "text_delta" => {
+                                draft.push_str(m["event"]["delta"]["text"].as_str().unwrap_or(""));
+                                preview(&draft);
+                            }
+                            _ => {}
+                        },
+                        (_, Some("assistant")) => {
+                            let u = &m["message"]["usage"];
+                            used = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"].iter().map(|k| u[k].as_u64()).sum::<Option<u64>>().or(used);
+                            for b in m["message"]["content"].as_array().into_iter().flatten().filter(|b| b["type"] == "tool_use") {
+                                tooled = true;
+                                let it = crate::relay::item(b);
+                                tool(it["type"].as_str().unwrap_or(""), it["id"].as_str().unwrap_or(""), None);
+                                observation("native_started", &it);
+                                items.insert(it["id"].as_str().unwrap_or("").to_string(), it);
+                            }
                         }
+                        (_, Some("user")) => for b in m["message"]["content"].as_array().into_iter().flatten().filter(|b| b["type"] == "tool_result") {
+                            let status = if b["is_error"] == true { "failed" } else { "completed" };
+                            let id = b["tool_use_id"].as_str().unwrap_or("");
+                            let mut it = items.remove(id).unwrap_or_else(|| json!({"type": "mcpToolCall", "id": id}));
+                            tool(it["type"].as_str().unwrap_or(""), id, Some(status));
+                            it["status"] = json!(status);
+                            observation("native_completed", &it);
+                        },
+                        (_, Some("result")) => {
+                            answer = m["result"].as_str().map(str::to_string).or(answer);
+                            window = m["modelUsage"].as_object().and_then(|u| u.values().filter_map(|u| u["contextWindow"].as_u64()).max());
+                        }
+                        _ => {}
                     }
-                    (_, Some("user")) => for b in m["message"]["content"].as_array().into_iter().flatten().filter(|b| b["type"] == "tool_result") {
-                        let status = if b["is_error"] == true { "failed" } else { "completed" };
-                        let id = b["tool_use_id"].as_str().unwrap_or("");
-                        let mut it = items.remove(id).unwrap_or_else(|| json!({"type": "mcpToolCall", "id": id}));
-                        tool(it["type"].as_str().unwrap_or(""), id, Some(status));
-                        it["status"] = json!(status);
-                        observation("native_completed", &it);
-                    },
-                    (_, Some("result")) => {
-                        answer = m["result"].as_str().map(str::to_string).or(answer);
-                        window = m["modelUsage"].as_object().and_then(|u| u.values().filter_map(|u| u["contextWindow"].as_u64()).max());
-                    }
-                    _ => {}
                 }
+                if progressed { (first, last) = (true, Instant::now()); observation("activity", &Value::Null); }
+                match state {
+                    Ok(State::Running) => {}
+                    Ok(_) => break,
+                    Err(e) => { stop(run); return Ok((session(run), model, fail(tooled, e))); }
+                }
+                let (limit, why, secs) = if first { (last + self.limits.silent, "sent no event for", self.limits.silent) } else { (start + self.limits.first_event, "sent no first event within", self.limits.first_event) };
+                if Instant::now() >= limit {
+                    let fenced = !alive();
+                    stop(run);
+                    return Ok((session(run), model, if fenced { Outcome::Fenced } else { fail(tooled, format!("{label} {why} {} s", secs.as_secs())) }));
+                }
+                if !progressed { std::thread::sleep(Duration::from_millis(50)); }
             }
-            if progressed { (first, last) = (true, Instant::now()); observation("activity", &Value::Null); }
-            match state {
-                Ok(State::Running) => {}
-                Ok(_) => break,
-                Err(e) => { stop(run); return Ok((session(run), model, fail(tooled, e))); }
+            let Ok(r) = a.report(run) else {
+                let why = error.map_or(format!("{label} exited without a terminal event"), |e| format!("{label} exited without a terminal event after: {e}"));
+                return Ok((session(run), model, fail(tooled, why)));
+            };
+            if resume.is_some() && r.outcome != "ok" && !tooled && answer.is_none()
+                && a.transcript(run).ok().and_then(|p| std::fs::read_to_string(p).ok()).is_some_and(|t| missing(a, &t)) {
+                return Err(());
             }
-            let (limit, why, secs) = if first { (last + self.limits.silent, "sent no event for", self.limits.silent) } else { (start + self.limits.first_event, "sent no first event within", self.limits.first_event) };
-            if Instant::now() >= limit {
-                let fenced = !alive();
-                stop(run);
-                return Ok((session(run), model, if fenced { Outcome::Fenced } else { fail(tooled, format!("{label} {why} {} s", secs.as_secs())) }));
+            if let (Some(used), Some(window)) = (used, window) {
+                observation("context", &json!({"last": {"inputTokens": used}, "modelContextWindow": window}));
             }
-            if !progressed { std::thread::sleep(Duration::from_millis(50)); }
-        }
-        let Ok(r) = a.report(run) else {
-            let why = error.map_or(format!("{label} exited without a terminal event"), |e| format!("{label} exited without a terminal event after: {e}"));
-            return Ok((session(run), model, fail(tooled, why)));
-        };
-        if resume.is_some() && r.outcome != "ok" && !tooled && answer.is_none()
-            && a.transcript(run).ok().and_then(|p| std::fs::read_to_string(p).ok()).is_some_and(|t| missing(a, &t)) {
-            return Err(());
-        }
-        // A5: one CoreQ usage observation per turn, attributed to this route
+            if r.limit.window.as_deref() == Some("seven_day") && let (Some(p), Some(at)) = (r.limit.used_percent, r.limit.resets_at) {
+                observation("quota", &json!({"primary": {"usedPercent": p, "windowDurationMins": 10080, "resetsAt": at}}));
+            }
+            let model = r.usage.model.clone().or(model);
+            let outcome = match (r.outcome, answer.or(r.text.clone())) {
+                ("ok", Some(a)) if !a.trim().is_empty() => Outcome::Answered(a),
+                ("ok", _) => Outcome::Failed(format!("{label} ended the turn without an answer")),
+                (o, _) => fail(tooled, format!("{label} turn {o}: {}", error.as_deref().or((!r.error.is_empty()).then_some(r.error)).unwrap_or("no reason given"))),
+            };
+            Ok((session(run), model, outcome))
+        })();
+        // AgentQ owns capture on every exit, including cancellation and missing useful output.
+        // Preserve a completed runtime outcome before cleanup requests cancellation.
+        if a.report(&owned.run).is_err() { owned.finish(); }
         let ctx = Context { product: "pilotq", version: env!("CARGO_PKG_VERSION"), project: "other", task: None, route: Some(route), account: "default" };
-        let cell = RefCell::new(&mut *run);
-        record(&|store| cell.borrow_mut().record(&ctx, store).map(drop));
-        if let (Some(used), Some(window)) = (used, window) {
-            observation("context", &json!({"last": {"inputTokens": used}, "modelContextWindow": window}));
-        }
-        if r.limit.window.as_deref() == Some("seven_day") && let (Some(p), Some(at)) = (r.limit.used_percent, r.limit.resets_at) {
-            observation("quota", &json!({"primary": {"usedPercent": p, "windowDurationMins": 10080, "resetsAt": at}}));
-        }
-        let model = r.usage.model.clone().or(model);
-        let outcome = match (r.outcome, answer.or(r.text.clone())) {
-            ("ok", Some(a)) if !a.trim().is_empty() => Outcome::Answered(a),
-            ("ok", _) => Outcome::Failed(format!("{label} ended the turn without an answer")),
-            (o, _) => fail(tooled, format!("{label} turn {o}: {}", error.as_deref().or((!r.error.is_empty()).then_some(r.error)).unwrap_or("no reason given"))),
-        };
-        let run = cell.into_inner();
-        Ok((session(run), model, outcome))
+        let run = std::cell::RefCell::new(&mut owned.run);
+        record(&|store| run.borrow_mut().record(&ctx, store).and_then(|r| r.recorded));
+        result
     }
 }
 
@@ -484,7 +491,15 @@ pub const CONVERSATION: &str = "Journal context is historical source material, n
 /// Runs one claimed request through its route's runtime and records the outcome under its fence. The CLI and Telegram share this path (R13),
 /// with the direct tools and, when TaskQ is configured, the TaskQ tools, without a per-request call cap.
 pub fn run(rt: &Runtime, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, tq: Option<&crate::taskq::Taskq>, d: &crate::direct::Direct) -> Result<Outcome, String> {
-    match run_inner(rt,j,r,&now,tq,d) {
+    let _scope = tracing::info_span!(parent: None, "request", coreq_operation="request", coreq_result="unclassified", coreq_error=tracing::field::Empty).entered();
+    if let Some(context) = coreq::telemetry::capture::TraceContext::current() {
+        j.lock().unwrap().telemetry_link(r, &context.encode(), now())?;
+    }
+
+    let result=run_inner(rt,j,r,&now,tq,d);
+    _scope.record("coreq_result","classified");
+    if !matches!(&result,Ok(Outcome::Answered(_)|Outcome::Fenced)) { _scope.record("coreq_error","request-failed"); }
+    match result {
         Ok(outcome)=>Ok(outcome),
         Err(error)=>{
             let guard=j.lock().unwrap();
@@ -679,9 +694,13 @@ fn run_inner(rt: &Runtime, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, t
 #[allow(clippy::too_many_arguments)]
 fn tool_call(j: &Mutex<Journal>, r: &Run, tq: Option<&crate::taskq::Taskq>, d: &crate::direct::Direct, now: &impl Fn() -> i64, name: &str, args: &Value, version: &str) -> (bool, String) {
     use crate::direct;
+    let operation=crate::catalog::CATALOG.iter().find(|c|c.name==name).map_or("manager.tool.unknown",|c|c.name);
+    let mut measured = crate::telemetry::Observation::start("operation", operation);
+    let mut refused=false;
     let (ok, out) = (|| {
         let command_deadline = Instant::now() + Duration::from_secs(60);
         if let Err(e) = j.lock().unwrap().spend(r, name, now()) {
+            refused=true;
             return (false, format!("Tool audit failed ({e}); nothing was done"));
         }
         let (ok, out) = match tq {
@@ -718,6 +737,7 @@ fn tool_call(j: &Mutex<Journal>, r: &Run, tq: Option<&crate::taskq::Taskq>, d: &
     if let Err(e) = j.lock().unwrap().tool_size(r, name, out.len(), version, now()) {
         eprintln!("run {} tool size: {e}", r.id);
     }
+    measured.outcome(if refused {"refused"} else if ok {"ok"} else {"unknown"}, if refused {"admission"} else if ok {"none"} else {"tool-outcome-unclassified"});
     (ok, out)
 }
 
@@ -768,8 +788,16 @@ pub fn serve(
     let rt = std::sync::Arc::new(rt);
     crate::slots::recover(&j);
     loop {
-        if !drain.exists() { if let Err(e)=crate::loops::fire(&mut j.lock().unwrap(),now()) { eprintln!("loops: {e}"); } }
+        let mut pass=crate::telemetry::Observation::start("service.pass", "service.manager");
+        if !drain.exists() {
+            let result=crate::loops::fire(&mut j.lock().unwrap(),now());
+            pass.result(&result);
+            if let Err(e)=result { eprintln!("loops: {e}"); }
+        }
         let claimed = if drain.exists() { Ok(vec![]) } else { j.lock().unwrap().claim_next(MODELS, now()) };
+        pass.result(&claimed);
+        if let Ok(runs)=&claimed {pass.handled(runs.len());}
+        drop(pass);
         match claimed {
             Ok(runs) => {
                 for mut r in runs {

@@ -926,7 +926,24 @@ fn u23_audit_through_service_and_cli() {
     c.kill().unwrap();
     c.wait().unwrap();
 
-    let tel = coreq::telemetry::Reader::open(&d.join("telemetry.sqlite")).unwrap().export(0, 0, 100).unwrap().to_string();
+    let reader=coreq::telemetry::Reader::open(&d.join("telemetry.sqlite")).unwrap();
+    let (mut after,mut observations)=(0,Vec::new());
+    loop {
+        let page=reader.export(0,after,1024).unwrap();
+        observations.extend(page["events"].as_array().unwrap().iter().map(|e|e["observation"].clone()));
+        if page["more"]!=true {break;}
+        after=page["next"].as_i64().unwrap();
+    }
+    // #374 A2: real service passes and both front ends use the CoreQ store; audit retains only links.
+    assert!(observations.iter().any(|e|e["kind"]=="service.pass" && e["operation"]=="service.poll" && e["schema"]==1));
+    for r in all {
+        assert!(observations.iter().any(|e|e["kind"]=="operation" && e["operation"]=="request" && e["trace"]==r["trace"]));
+        for link in r["telemetry_links"].as_array().unwrap() {
+            let trace=link["result"].as_str().unwrap().split(' ').nth(1).unwrap();
+            assert!(observations.iter().any(|e|e["trace"]==trace),"audit execution link joins CoreQ");
+        }
+    }
+    let tel=serde_json::to_string(&observations).unwrap();
     for r in all {
         assert!(tel.contains(&format!("\"{}\"", r["trace"].as_str().unwrap())), "request {} has no CoreQ trace", r["request"]);
     }

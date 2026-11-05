@@ -2489,6 +2489,29 @@ fn telemetry_failure_does_not_block() {
     let _ = std::fs::remove_dir_all(p);
 }
 
+// #374 A2,A4 / R17: CLI and Telegram completion have a shared observation joined to audit
+// by request ID, while the old request event/report remains available during parity.
+#[test]
+fn observations_374_request_and_legacy() {
+    let (mut j, p) = journal("observations374");
+    j.bootstrap(7, 0).unwrap();
+    let r = j.ask(7, "invented private request", 1).unwrap();
+    j.finish(&r, None, None, &crate::manager::Outcome::Answered("invented private reply".into()), 2).unwrap();
+    j.admit(&[(1,msg(7,7,1))],3).unwrap();
+    let telegram=j.claim_next(4,3).unwrap().remove(0);
+    j.finish(&telegram,None,None,&crate::manager::Outcome::Answered("invented private reply".into()),4).unwrap();
+    let rows = coreq::telemetry::Reader::open(&p.join("telemetry.sqlite")).unwrap().export(0, 0, 100).unwrap();
+    let events: Vec<_> = rows["events"].as_array().unwrap().iter().map(|r| &r["observation"]).collect();
+    let event = events.iter().find(|e|e["kind"]=="operation" && e["operation"]=="request").expect("CoreQ request observation");
+    assert!(events.iter().any(|e|e["kind"]=="operation" && e["source"]=="telegram" && e["trace"]==trace_id(telegram.request)));
+    assert_eq!(event["schema"], 1);
+    assert_eq!(event["trace"], trace_id(r.request));
+    assert!(events.iter().any(|e|e["kind"]=="pilotq.request"));
+    let audit = j.audit(7, &Filter { request: Some(r.request), ..Default::default() }, 3).unwrap();
+    assert!(!audit.is_empty());
+    assert!(!rows.to_string().contains("invented private"));
+}
+
 fn service_texts(j: &Journal) -> Vec<String> {
     let mut q = j.0.prepare("SELECT o.text FROM outbox o JOIN requests r ON r.id=o.request_id WHERE r.front='service' AND o.chat=7 ORDER BY o.id").unwrap();
     q.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()

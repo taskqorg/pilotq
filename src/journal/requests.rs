@@ -256,6 +256,12 @@ impl Journal {
         f(self.2.get_or_init(|| Store::open(&self.1)).as_ref().map_err(String::clone)?)
     }
 
+    /// R17 / #374: link CoreQ execution identity to request audit; never copy audit content to telemetry.
+    pub fn telemetry_link(&self, r: &Run, context: &str, at: i64) -> Result<(), String> {
+        self.0.execute("INSERT INTO audit_events(request_id,run_id,at,kind,result) VALUES (?1,?2,?3,'telemetry_link',?4)",
+            params![r.request,r.id,at,context]).map(drop).map_err(|e|e.to_string())
+    }
+
     /// True when a stop or a later claim has retired this run's fence.
     pub fn fenced(&self, r: &Run) -> Result<bool, String> {
         self.0.query_row("SELECT fence<>?2 OR (generation<>?4 AND EXISTS(SELECT 1 FROM audit_events WHERE request_id=?3 AND kind='loop_tick')) OR NOT EXISTS(SELECT 1 FROM requests q JOIN grants g ON g.user=q.sender AND g.name='chat' WHERE q.id=?3 AND q.state='running')

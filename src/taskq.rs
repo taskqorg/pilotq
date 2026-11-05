@@ -200,6 +200,10 @@ impl Taskq {
     }
 
     pub(crate) fn cli_checked<T>(&self, args: &[String], validate: impl FnOnce(&str) -> Result<T, String>) -> Result<T, String> {
+        coreq::telemetry::capture::operation("taskq.cli", || self.cli_checked_inner(args, validate), |_| "taskq-failed")
+    }
+
+    fn cli_checked_inner<T>(&self, args: &[String], validate: impl FnOnce(&str) -> Result<T, String>) -> Result<T, String> {
         let o = Command::new(&self.bin)
             .args(args)
             .env("TASKQ_ROOT", &self.root)
@@ -224,6 +228,10 @@ impl Taskq {
 
     /// #220: board collectors share one ten-second pass deadline and refuse partial/oversized output.
     pub(crate) fn loop_read(&self,args:&[&str],end:std::time::Instant)->Result<Value,String> {
+        coreq::telemetry::capture::operation("taskq.read", || self.loop_read_inner(args,end), |_| "taskq-failed")
+    }
+
+    fn loop_read_inner(&self,args:&[&str],end:std::time::Instant)->Result<Value,String> {
         let mut command=Command::new(&self.bin);
         command.args(args).current_dir(&self.root).env("TASKQ_ROOT",&self.root)
             .env_remove("TASKQ_ATTEMPT").env_remove("TASKQ_TASK").env_remove("TASKQ_ROLE")
@@ -920,22 +928,28 @@ pub fn watch(tq: std::sync::Arc<Taskq>, j: crate::telegram::Shared, wake: std::s
     // an answer is written once per process; a failed end leaves it `running` to resume after a restart, never every pass
     let mut tried = std::collections::HashSet::new();
     loop {
+        let mut pass=crate::telemetry::Observation::start("service.pass", "service.taskq");
         let mut work = last.elapsed() >= tq.poll && recover_effects(&tq, &j);
+        let mut handled=0;
         let runs = j.lock().unwrap().due_runs(now(), LEASE);
+        pass.result(&runs);
         for id in runs.unwrap_or_else(|e| {
             eprintln!("taskq: {e}");
             vec![]
         }) {
             submit(&tq, &j, id, true);
+            handled+=1;
             work = true;
         }
         let answers = j.lock().unwrap().answers();
+        pass.result(&answers);
         for (a, resumed) in answers.unwrap_or_else(|e| {
             eprintln!("taskq: {e}");
             vec![]
         }) {
             if !tried.insert(a.request) { continue; }
             answer(&tq, &j, &a, resumed);
+            handled+=1;
             work = true;
         }
         if work || last.elapsed() >= tq.poll {
@@ -945,6 +959,8 @@ pub fn watch(tq: std::sync::Arc<Taskq>, j: crate::telegram::Shared, wake: std::s
         if work {
             wake.notify_one();
         }
+        pass.handled(handled);
+        drop(pass);
         std::thread::sleep(Duration::from_millis(500));
     }
 }

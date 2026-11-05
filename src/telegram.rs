@@ -235,7 +235,9 @@ fn health(j: &Shared, source: &str, state: &str, reason: Option<&str>) {
 /// Polls until a Telegram conflict shows another consumer of this token; that is an incident, not a retry loop (§ 4 Ingress).
 pub async fn poll(bot: Bot, j: Shared, wake: Arc<Notify>) {
     loop {
+        let mut pass=crate::telemetry::Observation::start("service.pass", "service.poll");
         let cursor = j.lock().unwrap().cursor();
+        pass.result(&cursor);
         let offset = match cursor {
             Ok(c) => c,
             Err(e) => {
@@ -246,10 +248,12 @@ pub async fn poll(bot: Bot, j: Shared, wake: Arc<Notify>) {
         };
         match bot.get_updates().offset(offset as i32).allowed_updates(vec![teloxide::types::AllowedUpdate::Message,teloxide::types::AllowedUpdate::EditedMessage,teloxide::types::AllowedUpdate::CallbackQuery,teloxide::types::AllowedUpdate::MyChatMember]).timeout(POLL).await {
             Ok(updates) => {
+                pass.handled(updates.len());
                 fault("after-fetch");
                 let batch: Vec<(i64, Option<Input>)> = updates.iter().map(|u| (u.id.0 as i64, input(&u.kind))).collect();
                 // the cursor commits with the dispositions; on failure the next call repeats the same offset
                 let r = j.lock().unwrap().admit(&batch, now());
+                pass.result(&r);
                 match r {
                     Ok(n) => {
                         health(&j, "poll", "ok", None);
@@ -266,11 +270,13 @@ pub async fn poll(bot: Bot, j: Shared, wake: Arc<Notify>) {
                 }
             }
             Err(RequestError::Api(ApiError::TerminatedByOtherGetUpdates)) => {
+                pass.outcome("failed","poll-conflict");
                 eprintln!("poll: another consumer uses this bot token; polling stopped");
                 health(&j, "poll", "conflict", Some("another consumer uses this bot token; polling stopped"));
                 return;
             }
             Err(e) => {
+                pass.outcome("failed","telegram-fetch");
                 health(&j, "poll", "failed", Some(&e.to_string()));
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
@@ -361,6 +367,20 @@ async fn raw(bot: &Bot, j: &Shared, method: &str, body: Value) -> Result<Value, 
 }
 
 pub(crate) async fn send(bot: &Bot, j: &Shared, d: &Delivery) -> Sent {
+    let mut measured=crate::telemetry::Observation::start("operation", "telegram.delivery");
+    let result=send_inner(bot,j,d).await;
+    measured.handled(1);
+    match &result {
+        Sent::Ok(_) => measured.outcome("ok","none"),
+        Sent::Plain | Sent::RichFallback | Sent::Receipt => measured.outcome("retried","format-fallback"),
+        Sent::Retry {..} => measured.outcome("retried","telegram-retry"),
+        Sent::Held(_) => measured.outcome("refused","route-held"),
+        Sent::Failed(_) => measured.outcome("failed","telegram-failed"),
+    }
+    result
+}
+
+async fn send_inner(bot: &Bot, j: &Shared, d: &Delivery) -> Sent {
     if j.lock().unwrap().route_held(d.chat,d.topic).unwrap_or(true) {
         return Sent::Held("Telegram route held; administrator revalidation required".into());
     }
@@ -468,8 +488,12 @@ pub async fn typing(bot: Bot, j: Shared, _deadline: Duration) {
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tick.tick().await;
+        let mut pass=crate::telemetry::Observation::start("service.pass", "service.typing");
         let mut sends = tokio::task::JoinSet::new();
-        let routes = j.lock().unwrap().typing(now(), i64::MAX).unwrap_or_default();
+        let routes = j.lock().unwrap().typing(now(), i64::MAX);
+        pass.result(&routes);
+        if let Ok(routes)=&routes {pass.handled(routes.len());}
+        let routes=routes.unwrap_or_default();
         for (chat, topic) in routes {
             if j.lock().unwrap().route_held(chat,topic).unwrap_or(true) { continue; }
             if j.lock().unwrap().telegram_cooldown(chat).unwrap_or(i64::MAX) > now() { continue; }
@@ -492,7 +516,11 @@ pub async fn typing(bot: Bot, j: Shared, _deadline: Duration) {
 pub async fn drafts(bot: Bot, j: Shared) {
     let mut shown = std::collections::HashMap::<i64, (String, bool)>::new();
     loop {
-        let previews = j.lock().unwrap().previews().unwrap_or_default();
+        let mut pass=crate::telemetry::Observation::start("service.pass", "service.drafts");
+        let previews = j.lock().unwrap().previews();
+        pass.result(&previews);
+        if let Ok(previews)=&previews {pass.handled(previews.len());}
+        let previews=previews.unwrap_or_default();
         shown.retain(|run, _| previews.iter().any(|p| p.0 == *run));
         for (run, chat, topic, text) in previews {
             if j.lock().unwrap().route_held(chat,topic).unwrap_or(true) { continue; }
@@ -514,6 +542,7 @@ pub async fn drafts(bot: Bot, j: Shared) {
                 body["parse_mode"] = json!("HTML");
                 raw(&bot,&j,"sendMessageDraft",body).await
             };
+            pass.result(&result);
             // Fallback starts on the next tick, so even rejected rich drafts never exceed one update per second.
             match result {
                 Err(Sent::Retry { .. }) => {} // Rate limits and temporary losses never trigger another method.
@@ -521,6 +550,7 @@ pub async fn drafts(bot: Bot, j: Shared) {
                 _ => entry.0=text,
             }
         }
+        drop(pass);
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
@@ -528,7 +558,10 @@ pub async fn drafts(bot: Bot, j: Shared) {
 /// Sends due outbox rows one at a time. A lost response is retried and marked as a possible duplicate; execution is never rerun.
 pub async fn deliver(bot: Bot, j: Shared, wake: Arc<Notify>) {
     loop {
+        let mut pass=crate::telemetry::Observation::start("service.pass", "service.delivery");
         let due = j.lock().unwrap().due(now());
+        pass.result(&due);
+        if let Ok((row,_))=&due {pass.handled(usize::from(row.is_some()));}
         match due {
             Ok((Some(d), _)) => {
                 // A stop receipt cannot overtake an already dispatched preview in this route.
@@ -538,17 +571,25 @@ pub async fn deliver(bot: Bot, j: Shared, wake: Arc<Notify>) {
                 if !j.lock().unwrap().due(now()).ok().and_then(|(row,_)|row).is_some_and(|row|row.id==d.id) { continue; }
                 let sent = send(&bot, &j, &d).await;
                 match &sent {
+                    Sent::Retry {..}=>pass.outcome("retried","telegram-retry"),
+                    Sent::Held(_)=>pass.outcome("refused","route-held"),
+                    Sent::Failed(_)=>pass.outcome("failed","telegram-failed"),
+                    _=>{},
+                }
+                match &sent {
                     Sent::Ok(_) => health(&j, "delivery", "ok", None),
                     Sent::Plain | Sent::RichFallback | Sent::Receipt => {}
                     Sent::Retry { error, .. } | Sent::Held(error) | Sent::Failed(error) => health(&j, "delivery", "failed", Some(error)),
                 }
                 let r = j.lock().unwrap().record(d.id, &sent, now());
+                if r.is_err() {pass.result(&r);}
                 if let Err(e) = r {
                     health(&j, "storage", "failed", Some(&e));
                     tokio::time::sleep(Duration::from_secs(5)).await;
                 }
             }
             Ok((None, _)) => {
+                drop(pass);
                 tokio::select! {
                     _ = wake.notified() => {}
                     _ = tokio::time::sleep(Duration::from_secs(1)) => {}
