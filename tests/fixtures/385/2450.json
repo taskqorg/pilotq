@@ -1,0 +1,63 @@
+{
+  "n": 2450,
+  "title": "doctor --hosts answers at once and stays cheap",
+  "url": "https://github.com/taskqorg/taskq/issues/2450",
+  "state": "doing",
+  "revision": 6670518613,
+  "question": null,
+  "history": [
+    {
+      "question": {
+        "parsed": true,
+        "text": "Done: Read doctor code and spec, ran the rule gate; no code yet. Plan: default run reads published results, `--fresh` asks the hosts.\nProblem: Default `doctor --hosts` will stop asking hosts, so its line under `§6 Shared project bootstrap` must change; the issue names no rule ID, so the rule gate refuses. Approve that edit?\nA4 needs the merged fix running on pds18; a worker here cannot reach pds18 before merge, so a task pinned to pds18 could show the Mac row after release.\n1. Approve §6, A4 in pinned task - + a worker on pds18 proves A4 after release; - A4 leaves this task, which closes first ★\n2. Approve §6, A4 unknown at close - + one task only; - close reads 1 item unverified and nothing tracks the pds18 check\n3. Approve §6, grant pds18 access - + A4 shown on a candidate before hand-in; - new grant for this worker, unreleased binary on pds18\nTo answer: `taskq answer 2450.K` or comment `K` or the option text.",
+        "done": "Read doctor code and spec, ran the rule gate; no code yet. Plan: default run reads published results, `--fresh` asks the hosts.",
+        "problem": "Default `doctor --hosts` will stop asking hosts, so its line under `§6 Shared project bootstrap` must change; the issue names no rule ID, so the rule gate refuses. Approve that edit? A4 needs the merged fix running on pds18; a worker here cannot reach pds18 before merge, so a task pinned to pds18 could show the Mac row after release.",
+        "evidence": [],
+        "choices": [
+          {
+            "id": 1,
+            "text": "Approve §6, A4 in pinned task - + a worker on pds18 proves A4 after release; - A4 leaves this task, which closes first",
+            "label": "Approve §6, A4 in pinned task",
+            "detail": "+ a worker on pds18 proves A4 after release; - A4 leaves this task, which closes first",
+            "recommended": true,
+            "consequential": false
+          },
+          {
+            "id": 2,
+            "text": "Approve §6, A4 unknown at close - + one task only; - close reads 1 item unverified and nothing tracks the pds18 check",
+            "label": "Approve §6, A4 unknown at close",
+            "detail": "+ one task only; - close reads 1 item unverified and nothing tracks the pds18 check",
+            "recommended": false,
+            "consequential": false
+          },
+          {
+            "id": 3,
+            "text": "Approve §6, grant pds18 access - + A4 shown on a candidate before hand-in; - new grant for this worker, unreleased binary on pds18",
+            "label": "Approve §6, grant pds18 access",
+            "detail": "+ A4 shown on a candidate before hand-in; - new grant for this worker, unreleased binary on pds18",
+            "recommended": false,
+            "consequential": false
+          }
+        ],
+        "limits": {
+          "chars": 240
+        }
+      },
+      "answered": {
+        "by": "alexkirs",
+        "text": "2450.2",
+        "at": 1793912470,
+        "read": true,
+        "source": {
+          "id": 6669381464,
+          "question": 6669211425,
+          "asked_at": 1793912137,
+          "attempt": 6669133132,
+          "session": "claude:683bfe7d-091b-4906-a6ca-df13fd21bde7 win",
+          "role": "worker"
+        }
+      }
+    }
+  ],
+  "verdict": null
+}

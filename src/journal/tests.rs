@@ -2401,7 +2401,7 @@ fn plans_and_task_projections() {
     assert!(j.observe("pilotq", 19, "ask", 14, Some(typed), "ask", Some("Task #19 asks:\nQ?"), 8).unwrap());
     let (d, _) = j.due(9).unwrap();
     assert_eq!(d.as_ref().unwrap().edit,Some(status),"the launch status message is edited in place");
-    assert!(d.as_ref().unwrap().text.contains("Waiting for your answer"));
+    assert!(d.as_ref().unwrap().text.contains("Waiting for an authorized answer"));
     j.record(d.unwrap().id, &Sent::Ok(status), 8).unwrap();
     let q = j.due(9).unwrap().0.unwrap();
     assert!(q.edit.is_none() && q.text.starts_with("Task #19 asks:"), "the question is its own message");

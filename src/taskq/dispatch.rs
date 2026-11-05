@@ -268,6 +268,14 @@ fn dispatch_target(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &V
                     j.lock().unwrap().remember_task_url(project,n,issue["url"].as_str(),now())?;
                     let open = tq.snapshot_for(board);
                     let mut result:Value=serde_json::from_str(&task_issue_status(&issue, open.as_ref().ok(), n)).map_err(|_|"Task state unreadable")?;
+                    if issue["state"].as_str().is_some_and(|s|s.eq_ignore_ascii_case("closed")) {
+                        if let Some((confirmed,detail))=tq.closed_observation(n) {
+                            if confirmed==issue {
+                                result["closing_result"]=json!(detail);
+                                result["verdict_missing"]=if detail.is_some() {Value::Null} else {json!("Trusted closing verdict unavailable")};
+                            }
+                        }
+                    }
                     if release_question {
                         let end=std::time::Instant::now()+Duration::from_secs(10);
                         let (dev,delivery)=crate::release::task_observations(j,r.request,project,&issue,end);

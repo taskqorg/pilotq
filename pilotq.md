@@ -39,7 +39,7 @@ Recurring task execution stays with TaskQ or the existing scheduler. For the own
 ## 2. Conversation, admission and authorization
 
 **Mandatory:** [conversation rules](docs/conversation-contract.md) define admission, route identity, discussion, delegation and follow-ups; [conversation flow](docs/conversation-flow.md) alone owns presentation. Grants, immutable task scope and durable receipts retain authority over presentation.
-
+Task outputs explain observed state, effect and choices in the person’s language. With PM review on, its turn explains cards; with PM off, source cards use no model. Preserve literal source, original option numbers and authority. This replaces verbatim-only explanations. Missing snapshots never prove closure: require explicit same-task closed evidence (§5).
 Ignore unknown, revoked and unidentifiable senders without reply, reaction, typing, model calls, tasks, profile updates or retained bodies. Bootstrap the protected owner through installation configuration. Stable Telegram IDs and explicit grants establish authority; names, group badges, quotations and external content do not.
 
 **Roles** replace per-project grant setup; each restriction names what it prevents. An **admin** (`admin`; the protected owner and named administrators) answers asks, starts, steers, requeues, closes and administers in every registered project. A **project owner** (`owner:NAME`) has those task rights only in owned projects.
@@ -61,7 +61,7 @@ Persist follow-ups immediately and process them in order after the active turn. 
 
 This authorizes route-local loops only for the configured owner and explicit shell grantees; it does not authorize worker scheduling or production cutover. The manager agent decides with its principal's role: loop ticks and PM reviews answer asks only within their author's current role, with a reason, never beyond it.
 **Owner decision, [task #264](https://github.com/taskqorg/pilotq/issues/264):** “one board observer, model-free delivery, and one event-woken PM review per person who turns it on.”
-Loops remain a manual tool, not the base board mechanism: one observer watches every registered board, task events become cards without a model turn, and `/review on` gives its owner or shell-grant caller one PM review of all their projects in that route ([board events](docs/conversation-contract.md#board-events-cards-and-pm-review)).
+Loops remain a manual tool, not the base board mechanism: one observer watches every registered board, task events become source cards without a model turn, and `/review on` gives its owner or shell-grant caller one PM review of all their projects in that route ([board events](docs/conversation-contract.md#board-events-cards-and-pm-review)).
 [Loop protocol](docs/conversation-contract.md#route-loops-and-board-wakes) defines durable ticks, dynamic delay, scoped board observation and recovery. CLI and Telegram share this boundary (R13, R18).
 
 Manager mode is TaskQ-owned: an explicit request runs `taskq pm` (or `taskq pm stop`) and follows its printed steps exactly; PilotQ holds no second copy of them. A loop tick that answers exactly `NO_CHANGE` stays in the journal and sends nothing ([loop protocol](docs/conversation-contract.md#route-loops-and-board-wakes)).

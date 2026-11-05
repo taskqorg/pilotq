@@ -1,0 +1,89 @@
+{
+  "n": 2451,
+  "title": "Transfer A7 candidate for PM-owned Mac qualification",
+  "url": "https://github.com/taskqorg/taskq/issues/2451",
+  "state": "closed",
+  "revision": 6669956736,
+  "conversation": null,
+  "issue": {
+    "number": 2451,
+    "url": "https://github.com/taskqorg/taskq/issues/2451",
+    "title": "Transfer A7 candidate for PM-owned Mac qualification",
+    "state": "closed",
+    "comments": [
+      {
+        "id": 6669912018,
+        "author": "alexkirs",
+        "created": "2026-11-05T21:23:30Z",
+        "edited": false,
+        "trusted": true,
+        "body": "taskq: publish attempt 6669839112\nChanged: R5: verified the attached immutable A7 source and qualification summary for PM-owned Mac qualification; no source changes.\nChecks: Task fit: A1 ok, A2 ok, A3 ok (R2/R12); no acceptance or contract gaps.\nChecks: R2 A1: clean taskq-2427 at 0af92c03ef58b69b3f0971369517f4f6376eb5e7; branch, index and 680 file hashes match export and review snapshots.\nChecks: R12 A2: published ZIP read back; CRC passed; 1031183 bytes; SHA256 a1e098f17514cf3e7a092ee3d6285a7204a36e35f23c37de52e0f85d3734bfc6; exact preserved bytes.\nChecks: R12 A2: only taskq-2427.bundle and qualification-summary.json; bundle SHA256 da3c1fabddcbcc8316b1ccbf9b24c91806943fc6895b5e45fbc7513fa6eb5fbe.\nChecks: R12 A3: bundle verify, isolated fetch from base 96064118e637ea8d7347edc4ca50c5c5da186757 and git fsck --full --no-reflogs passed; all 16 original SHAs match.\nChecks: R2 A3: receiving Mac untouched; no remote Mac operation, rebase, runtime launch, policy change or implementation branch publication.\nChecks: Merge-result CI not applicable: section 7 no-commit route; result d8bbcfb05774f1a5ed666338b9767cce95496c82 already on origin/main.\nChecks: Implementation quality: no binding gaps or advisories; qualification summary keeps native and fixture limits explicit (R12).\nOpen: Actual Mac fetch/qualification remains PM-owned; #2427 A7/A8 remain open. Application tests and CI not run for artifact-only transport."
+      },
+      {
+        "id": 6669956736,
+        "author": "alexkirs",
+        "created": "2026-11-05T21:25:43Z",
+        "edited": false,
+        "trusted": true,
+        "body": "taskq: close\nRepeats: publish 6669912018\n\ndelivery auto-merge r0: d8bbcfb05774f1a5ed666338b9767cce95496c82 already on main"
+      }
+    ]
+  },
+  "closed_snapshot": {
+    "schema": 1,
+    "source": "board",
+    "tasks": [
+      {
+        "n": 2451,
+        "url": "https://github.com/taskqorg/taskq/issues/2451",
+        "state": "closed",
+        "revision": 6669956736,
+        "history": [
+          {
+            "question": null,
+            "answered": {
+              "by": "alexkirs",
+              "text": "taskq: publish attempt 6669839112\nChanged: R5: verified the attached immutable A7 source and qualification summary for PM-owned Mac qualification; no source changes.\nChecks: Task fit: A1 ok, A2 ok, A3 ok (R2/R12); no acceptance or contract gaps.\nChecks: R2 A1: clean taskq-2427 at 0af92c03ef58b69b3f0971369517f4f6376eb5e7; branch, index and 680 file hashes match export and review snapshots.\nChecks: R12 A2: published ZIP read back; CRC passed; 1031183 bytes; SHA256 a1e098f17514cf3e7a092ee3d6285a7204a36e35f23c37de52e0f85d3734bfc6; exact preserved bytes.\nChecks: R12 A2: only taskq-2427.bundle and qualification-summary.json; bundle SHA256 da3c1fabddcbcc8316b1ccbf9b24c91806943fc6895b5e45fbc7513fa6eb5fbe.\nChecks: R12 A3: bundle verify, isolated fetch from base 96064118e637ea8d7347edc4ca50c5c5da186757 and git fsck --full --no-reflogs passed; all 16 original SHAs match.\nChecks: R2 A3: receiving Mac untouched; no remote Mac operation, rebase, runtime launch, policy change or implementation branch publication.\nChecks: Merge-result CI not applicable: section 7 no-commit route; result d8bbcfb05774f1a5ed666338b9767cce95496c82 already on origin/main.\nChecks: Implementation quality: no binding gaps or advisories; qualification summary keeps native and fixture limits explicit (R12).\nOpen: Actual Mac fetch/qualification remains PM-owned; #2427 A7/A8 remain open. Application tests and CI not run for artifact-only transport.",
+              "at": 1793913810,
+              "source": {
+                "id": 6669912018,
+                "kind": "publish",
+                "question": null,
+                "asked_at": 1793913810,
+                "attempt": 6669839112,
+                "session": "codex:- win",
+                "role": "reviewer"
+              }
+            }
+          },
+          {
+            "question": null,
+            "answered": {
+              "by": "alexkirs",
+              "text": "taskq: close\nRepeats: publish 6669912018\n\ndelivery auto-merge r0: d8bbcfb05774f1a5ed666338b9767cce95496c82 already on main",
+              "at": 1793913943,
+              "source": {
+                "id": 6669956736,
+                "kind": "close",
+                "question": null,
+                "asked_at": 1793913943,
+                "attempt": null,
+                "session": null,
+                "role": null
+              }
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "inbox": {
+    "schema": 1,
+    "task": 2451,
+    "url": "https://github.com/taskqorg/taskq/issues/2451",
+    "state": "closed",
+    "open": false,
+    "revision": 6669956736,
+    "answers": []
+  }
+}

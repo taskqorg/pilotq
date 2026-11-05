@@ -518,8 +518,22 @@ impl Journal {
         match matches.len() {0=>Ok(None),1=>Ok(matches.pop()),_=>Err("task URL matches multiple registrations; clarify the project".into())}
     }
 
+    /// Verified readback titles survive disappearance from the open board (#385 / R8).
+    pub fn remember_task_title(&self, project:&str, task:i64, title:Option<&str>, at:i64)->Result<(),String> {
+        let Some(title)=title.filter(|t|!t.is_empty()) else {return Ok(())};
+        if self.task_title(project,task)?.as_deref()==Some(title) {return Ok(())}
+        self.0.execute("INSERT INTO audit_events(request_id,at,kind,target,item,result)
+            SELECT request_id,?3,'task_title',?4,root,?5 FROM tasks WHERE project=?1 AND number=?2",
+            params![project,task,at,format!("{project}#{task}"),title]).map(drop).map_err(|e|e.to_string())
+    }
+
     /// Saved title for a subscribed task, including after it leaves the open snapshot (§12).
     pub fn task_title(&self, project: &str, task: i64) -> Result<Option<String>, String> {
+        let observed:Option<String>=self.0.query_row("SELECT a.result FROM audit_events a JOIN tasks t ON a.request_id=t.request_id AND a.item=t.root
+            JOIN projects p ON p.name=t.project AND p.root=t.root AND p.repo=t.board
+            WHERE a.kind='task_title' AND a.target=?1 AND t.project=?2 AND t.number=?3 ORDER BY a.id DESC LIMIT 1",
+            params![format!("{project}#{task}"),project,task],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
+        if observed.is_some() {return Ok(observed)}
         let row: Option<(String, i64)> = self.0.query_row(
             "SELECT p.tickets, k.idx FROM tickets k JOIN plan_runs r ON r.id=k.run_id JOIN plans p ON p.id=r.plan_id WHERE p.project=?1 AND k.task=?2 ORDER BY r.id DESC LIMIT 1",
             params![project, task], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(|e| e.to_string())?;
@@ -633,7 +647,7 @@ impl Journal {
         for (project,board,n,state,closed,observed) in rows {
             let status=crate::conversation::task_state(&state,closed,language.as_deref());
             let age=if closed {String::new()} else {if ru {format!(" · подтверждено {}",crate::footer::russian_units(&crate::time::moment(Some(observed),at)).replace(" ago", " назад"))} else {format!(" · confirmed {}",crate::time::moment(Some(observed),at))}};
-            lines.push(format!("{status}{age} · {}",crate::taskq::task_link(&board,n,self.task_title(&project,n)?.as_deref(),self.task_url(&project,n)?.as_deref())));
+            lines.push(format!("{} {status}{age} · {}",crate::taskq::state_icon(&state,closed),crate::taskq::task_link(&board,n,self.task_title(&project,n)?.as_deref(),self.task_url(&project,n)?.as_deref())));
             if closed {
                 let result:Option<String>=self.0.query_row("SELECT result FROM audit_events WHERE request_id=?1 AND kind='task_result' AND target=?2 ORDER BY id DESC LIMIT 1",params![request,format!("{project}#{n}")],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
                 if let Some(result)=result {
