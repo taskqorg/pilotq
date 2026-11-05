@@ -62,6 +62,9 @@ pub fn execute(t:&Tool,j:&Shared,r:&Request,installed:bool) -> Result<(),String>
                 crate::onboarding::control(t,j,r)?;
                 return Ok(None);
             }
+            "/start" if r.text.split_whitespace().nth(1).is_some_and(|p|p.starts_with(crate::servers::PREFIX))=> {
+                return Ok(Some(crate::servers::select(&t.install.join("keys.json"),j,r)?));
+            }
             "/help"|"/start"=> {
                 // #360: a /start deep-link payload is not a help area; /start always shows top-level help.
                 let words:Vec<_>=if cmd=="/start" { vec![cmd] } else { r.text.split_whitespace().collect() };

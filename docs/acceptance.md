@@ -1387,3 +1387,19 @@ post-release evidence; production cutover remains unauthorized (R19, §9).
 Owner note 6631669730 closes A3 on the recorded route limit without a natural mixed RU/EN recording: mixed natural human speech is unqualified; separate-clip and synthetic-join omissions remain known limits. No further recording request is pending. Root §1 and [the final report](research/344.md#findings-and-limits) record the decision.
 
 A4 Russian parity uses the PM same-audio comparison, whose SHA256 and all three normalized word equalities were verified on worker readback: human FLEURS 7/7, legacy example 26/26, and synthetic macOS say 35-second speech 81/81. The earlier “natural35-second Russian” label above is incorrect: that recording is synthetic, not human evidence. Stock is about 2–3 times slower, without punctuation/capitals. No human Russian longer than approximately 11 seconds was compared; long human parity remains unproved. These observations do not qualify arbitrary mixed speech or live intake. Normal CI/MQ and PM final-source A40/cleanup/release/Chrome gates remain separate (§9, R19).
+
+### A375 — Discuss servers in chat
+
+Worker evidence is local and CI: `cargo test --locked servers::` and `cargo test --locked start_375`.
+
+- Inventory answers carry data age, largest consumers and explicit unknowns.
+- A person without a server grant is refused before the source runs. A narrow grant never reads another server by name, `all` or selection, and revocation refuses the next read.
+- Source diagnostics stay private. A missing, writable or table-less source reads unavailable.
+- The link digest selects only a readable server. A forged or foreign digest selects nothing.
+
+PM live check after release, with ServerQ inventory and DashQ's server table deployed on PDS 18:
+
+1. Open a DashQ row link and confirm the chat replies with that server selected and its data age.
+2. Ask "what takes the most space on pds18" and compare the answer with `dashq report`.
+3. Ask for a cleanup and confirm that a draft appears, nothing runs on the server and a task exists only after Launch.
+4. Ask as a person without a server grant and confirm the one-line refusal.

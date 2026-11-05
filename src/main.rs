@@ -7,6 +7,7 @@ mod catalog;
 mod builtins;
 mod direct;
 mod asana;
+mod servers;
 mod commands;
 mod journal;
 mod files;

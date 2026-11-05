@@ -274,6 +274,48 @@ JSON `{ "sha": "<pinned SHA>", "live_sha": "<SHA>", "stages": { "release":
 project's existing command. This does not implement a forge adapter in PilotQ. PM qualifies the next
 owner-requested cs release on PDS 18 after release; worker evidence is local/CI only.
 
+### Server discussion
+
+An authorized person discusses one or all servers with the existing manager agent: what takes
+space, how to organize a server and when resources run out. PilotQ adds one read tool and one link
+entry; it adds no second agent, collector or server command.
+
+**Source.** `server_inventory` runs the program named by an owner-only `servers.json` beside
+`keys.json`: `{"executable":"/absolute/dashq","args":["report"]}`. It parses the `servers` projection
+that DashQ D30 defines. The file holds no credentials, and neither chat nor model output can edit it.
+The program's stderr never reaches the person or the model. A missing file, a writable file, a failed
+run or a report without a server table reads unavailable, never as an empty fleet.
+
+**Access.** The caller needs `chat` plus `servers`, or `server:WORKSPACE/HOST` for one row, in
+lowercase, with `-` for a legacy row without a workspace. `admin` implies both; a project owner or
+member gets neither by role. A person with no server grant is refused before the program starts.
+Rows are filtered after the read with current grants. A refused and an unknown server give the same
+reply, so a refusal does not reveal which servers exist.
+
+**Answer.** The tool returns each server's state, reason, observation time and `data_age_seconds`,
+with host, mount and largest-consumer entities and DashQ's trends. It bounds output at 128 KiB and
+counts `omitted_entities`. Manager instructions require citing these values and stating the data age.
+A missing value or forecast reads unknown with its reason. This is a model instruction, not a
+transport guarantee; the live check qualifies it.
+
+**Selected server.** A DashQ row links to `https://t.me/BOT?start=server-DIGEST`, where `DIGEST` is the
+16-hex-digit FNV-1a 64-bit hash of the row's exact `pilotq_selector`. Telegram accepts only 64
+URL-safe characters in this parameter, so the selector travels as a fixed-length digest. For the
+invented selector `["example","invented-fresh/native"]` the payload is `server-0ad79b58009edbd1`.
+PilotQ's `/start server-DIGEST` control resolves the digest only among rows that person may read,
+stores the selector for that conversation and states the data age. It grants nothing, and each later
+read rechecks grants. A read with no `server` argument uses the selection; `all` reads every accessible
+server. DashQ's current `?server=` form cannot open this chat because Telegram ignores other
+parameters, so DashQ must emit this link before the link is live.
+
+**Changes.** Proposed changes use the existing `task_plan` draft and launch path with its project
+resolution, readiness and grants. The discussion runs no command on a server. Other turns keep §5's
+native authority, so for an owner or shell grantee this boundary is a manager instruction rather
+than a disabled tool.
+
+**Qualification.** The PM runs the live check on PDS 18 after release, once ServerQ inventory and
+DashQ's server table are deployed there. Workers verify locally and in CI only.
+
 ### Installed read commands
 
 Add one common executor for operator-approved installed read commands, alongside the existing tools.
