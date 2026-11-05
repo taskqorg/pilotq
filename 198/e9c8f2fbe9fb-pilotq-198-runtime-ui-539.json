@@ -1,0 +1,625 @@
+{
+  "schema": "pilotq.198.pm-runtime-ui/1",
+  "observed_utc": "2026-11-05T06:38:15.564460+00:00",
+  "source": "0be207e4a983a9f33a0fd21eb798d24054d2c368",
+  "installed_version": "0.2.41",
+  "installed_sha256": "83b79d3fc76738625c8207064fe2d57f3c72c38428b9ad10f517439929ca90f5",
+  "TaskQ_version": "4.6.83",
+  "client": {
+    "Telegram_Web_A_build": "12.0.48",
+    "observed_in_actual_UI": true,
+    "Chrome_current_exact_version": "UNKNOWN: direct chrome://version rejected by URL protocol policy; no workaround attempted"
+  },
+  "preflight": {
+    "TaskQ198_state": "ask",
+    "revision": 6651232419,
+    "attempt": 6651217750,
+    "live_attempt": false,
+    "UI_helper_thread": "idle",
+    "TEST_active_before": 0,
+    "request_max_before": 538
+  },
+  "long_shell": {
+    "request": 539,
+    "incoming_message": 783,
+    "run": 305,
+    "runtime": "codex",
+    "state": "answered",
+    "native_shell_pid": 440415,
+    "native_python_pid": 440416,
+    "live_observation_utc": "2026-11-05T06:37:56.021311Z",
+    "verdict": "PASS_OBSERVED_NATIVE_SHELL_AND_5MIN",
+    "native_elapsed_seconds": 310.00015588500537,
+    "turn_elapsed_seconds": 331,
+    "final_outbox": 7180,
+    "final_message": 785,
+    "progress_message": 784,
+    "progress_elapsed_seconds": [
+      30,
+      61,
+      91,
+      122,
+      153,
+      184,
+      214,
+      245,
+      276,
+      307
+    ],
+    "audit_tool": 3187,
+    "audit_tool_result": "completed",
+    "journal": {
+      "returncode": 0,
+      "stdout_lines": 20,
+      "stdout_sha256": "6ddcc13010fa1db72ca94ae8c0613cc79b673b35e3e953c5b8c769479a5e9eaf",
+      "raw_output_exported": false
+    },
+    "limitation": "Actual shell ran journalctl -n20; raw log content deliberately not sent to Telegram. Other media/fallback/active-restart cases remain separate."
+  },
+  "screenshots": [
+    {
+      "path": "p198-build-progress-0241.jpg",
+      "bytes": 188974,
+      "sha256": "170abac5f5503f88687cfbdb188235bbd38861391cdfb25de25a6f54248208a7",
+      "observed": "exact Telegram build and live progress"
+    },
+    {
+      "path": "p198-long-shell-539.jpg",
+      "bytes": 192198,
+      "sha256": "afcc32e0a60e0fc08a28576b913ff95063a77f2352e17134437ac0c4d0841332",
+      "observed": "Actual final shell and five-minute result"
+    },
+    {
+      "path": "p198-stop-540-541.jpg",
+      "bytes": 187477,
+      "sha256": "b9c55d64fa40dd5295d4a6144152eb3f64025eca49310240f14aab706bb44730",
+      "observed": "Actual Russian stop confirmation"
+    },
+    {
+      "path": "p198-dev-delivery-542.jpg",
+      "bytes": 206424,
+      "sha256": "66f5a16640f706673ff310b248a08589f232fac7a54912df52c3012647bc9202",
+      "observed": "Actual DEV/delivery reply with LIVE unknown"
+    }
+  ],
+  "cs_readonly_freshness": {
+    "observed_utc": "2026-11-05T06:35Z",
+    "root": "/home/hermes/projects/gradus/cyprusbz-board",
+    "HEAD": "e14be775990b27a7a0a143f6c933cea045f1483c",
+    "origin_main": "e14be775990b27a7a0a143f6c933cea045f1483c",
+    "remote_main": "e14be775990b27a7a0a143f6c933cea045f1483c",
+    "local_heads_live": "ABSENT",
+    "cached_origin_live": "865dfbf6b9b5083b87904e258762175634f8532a",
+    "remote_live": "de129c856e035ece7fc558ef4ffb1d7a2f854a09",
+    "verdict": "FAIL_FRESHNESS: main current, local LIVE missing and cached origin/live stale; no refs changed",
+    "issue541_state": "closed"
+  },
+  "waivers": {
+    "foreign_actor": "OWNER_WAIVED_NOT_TESTED",
+    "natural_mixed_human_speech": "OWNER_DROPPED_NOT_TESTED"
+  },
+  "privacy": "No raw service-log output exported; full private journal not copied; owner DM draft untouched.",
+  "receipts": {
+    "observed_utc": "2026-11-05T06:43:34.898679+00:00",
+    "requests": [
+      {
+        "id": 539,
+        "kind": "text",
+        "state": "answered",
+        "message": 783,
+        "received_at": 1793860401,
+        "reply": "Тест завершён: Python отработал **310.00015588500537 секунды**, код выхода 0.\n\n- `df` — код 0: `/dev/sda3`, всего 878G, занято 268G, доступно 566G, использование 33%, точка монтирования `/`.\n- `du` — код 0: `7.3G /home/hermes/.local/share/pilotq`.\n- Journal — returncode 0, stdout: 20 строк, SHA256: `6ddcc13010fa1db72ca94ae8c0613cc79b673b35e3e953c5b8c769479a5e9eaf`. Исходный stdout/stderr не выводился.\n\nPID `440416`. `P198-LONG-START`: `2026-11-05T06:33:35.697819+00:00`; `P198-LONG-END`: `2026-11-05T06:38:45.697974+00:00`. Получены все 10 отметок `P198-TICK` с интервалом 30 секунд.",
+        "error": null
+      },
+      {
+        "id": 540,
+        "kind": "text",
+        "state": "cancelled",
+        "message": 786,
+        "received_at": 1793860802,
+        "reply": null,
+        "error": "stopped by /stop"
+      },
+      {
+        "id": 541,
+        "kind": "control",
+        "state": "answered",
+        "message": 788,
+        "received_at": 1793860848,
+        "reply": "Остановлено; последующие сообщения остаются в очереди.",
+        "error": null
+      },
+      {
+        "id": 542,
+        "kind": "text",
+        "state": "answered",
+        "message": 790,
+        "received_at": 1793860906,
+        "reply": "**Да, результат cs #540 включён в DEV. Исправление cs #541 тоже включено, но main CI и smoke не прошли.**\n\n- [cyprusbz#540 — Diagnose the delayed account avatar in the site header](https://gitlab.ufobe.com/gradus/cyprusbz/-/issues/540) закрыта: это исследование, без изменения кода. Слияние `8e18afb77ef07dcfde642745aefde6d7684c23b2` от `2026-10-30T14:08:50.784Z` включено в обслуживаемый DEV SHA.\n\n- [cyprusbz#541 — Show the signed-in header account control without waiting for the admin check](https://gitlab.ufobe.com/gradus/cyprusbz/-/issues/541) закрыта, слита через !1199: merge SHA `01b310130ff846bed64a65bd532c8964038a7b80`, время `2026-10-30T16:10:12.620Z`. Первый содержащий слияние [main pipeline 10930](https://gitlab.ufobe.com/gradus/cyprusbz/-/pipelines/10930) завершился ошибкой: [deploy 49890](https://gitlab.ufobe.com/gradus/cyprusbz/-/jobs/49890) успешен, [smoke 49891](https://gitlab.ufobe.com/gradus/cyprusbz/-/jobs/49891) упал на `FAIL event: https://dev.cyprus.bz/ has no /event/ link.` Более поздний содержащий слияние [main pipeline 11534](https://gitlab.ufobe.com/gradus/cyprusbz/-/pipelines/11534) также завершился ошибкой. SHA обоих конвейеров и первая ошибка позднего main в ответе TaskQ отсутствуют. **LIVE inclusion не подтверждено:** чтение Git не удалось, состояние развёртывания неизвестно.\n\n- **Отдельное наблюдение DEV health:** TaskQ сообщает «на DEV с `2026-11-05T00:18:50.696Z`», обслуживается SHA `e14be775990b27a7a0a143f6c933cea045f1483c`, содержащий оба слияния по истории Git. Это подтверждает включение изменений, но не успешность CI/smoke и не пользовательский сценарий: реальные тайминги с действующей авторизованной сессией после исправления остаются непроверенными.",
+        "error": null
+      }
+    ],
+    "runs": [
+      {
+        "id": 305,
+        "request_id": 539,
+        "state": "answered",
+        "tool": 1,
+        "started_at": 1793860401,
+        "ended_at": 1793860732,
+        "model": "gpt-6.1-sol",
+        "runtime": "codex",
+        "generation": 10
+      },
+      {
+        "id": 306,
+        "request_id": 540,
+        "state": "fenced",
+        "tool": 1,
+        "started_at": 1793860802,
+        "ended_at": 1793860848,
+        "model": "gpt-6.1-sol",
+        "runtime": "codex",
+        "generation": 10
+      },
+      {
+        "id": 307,
+        "request_id": 542,
+        "state": "answered",
+        "tool": 1,
+        "started_at": 1793860906,
+        "ended_at": 1793860953,
+        "model": "gpt-6.1-sol",
+        "runtime": "codex",
+        "generation": 10
+      }
+    ],
+    "outbox": [
+      {
+        "id": 7169,
+        "request_id": 539,
+        "kind": "reaction",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 783,
+        "possible_duplicate": 0,
+        "text": "Received."
+      },
+      {
+        "id": 7170,
+        "request_id": 539,
+        "kind": "turn_progress",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 784,
+        "possible_duplicate": 0,
+        "text": "Работаю · 30 s"
+      },
+      {
+        "id": 7171,
+        "request_id": 539,
+        "kind": "turn_progress",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 784,
+        "possible_duplicate": 0,
+        "text": "Работаю · 61 s"
+      },
+      {
+        "id": 7172,
+        "request_id": 539,
+        "kind": "turn_progress",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 784,
+        "possible_duplicate": 0,
+        "text": "Работаю · 91 s"
+      },
+      {
+        "id": 7173,
+        "request_id": 539,
+        "kind": "turn_progress",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 784,
+        "possible_duplicate": 0,
+        "text": "Работаю · 122 s"
+      },
+      {
+        "id": 7174,
+        "request_id": 539,
+        "kind": "turn_progress",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 784,
+        "possible_duplicate": 0,
+        "text": "Работаю · 153 s"
+      },
+      {
+        "id": 7175,
+        "request_id": 539,
+        "kind": "turn_progress",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 784,
+        "possible_duplicate": 0,
+        "text": "Работаю · 184 s"
+      },
+      {
+        "id": 7176,
+        "request_id": 539,
+        "kind": "turn_progress",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 784,
+        "possible_duplicate": 0,
+        "text": "Работаю · 214 s"
+      },
+      {
+        "id": 7177,
+        "request_id": 539,
+        "kind": "turn_progress",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 784,
+        "possible_duplicate": 0,
+        "text": "Работаю · 245 s"
+      },
+      {
+        "id": 7178,
+        "request_id": 539,
+        "kind": "turn_progress",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 784,
+        "possible_duplicate": 0,
+        "text": "Работаю · 276 s"
+      },
+      {
+        "id": 7179,
+        "request_id": 539,
+        "kind": "turn_progress",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 784,
+        "possible_duplicate": 0,
+        "text": "Работаю · 307 s"
+      },
+      {
+        "id": 7180,
+        "request_id": 539,
+        "kind": "rich",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 785,
+        "possible_duplicate": 0,
+        "text": "Тест завершён: Python отработал **310.00015588500537 секунды**, код выхода 0.\n\n- `df` — код 0: `/dev/sda3`, всего 878G, занято 268G, доступно 566G, использование 33%, точка монтирования `/`.\n- `du` — код 0: `7.3G /home/hermes/.local/share/pilotq`.\n- Journal — returncode 0, stdout: 20 строк, SHA256: `6ddcc13010fa1db72ca94ae8c0613cc79b673b35e3e953c5b8c769479a5e9eaf`. Исходный stdout/stderr не выводился.\n\nPID `440416`. `P198-LONG-START`: `2026-11-05T06:33:35.697819+00:00`; `P198-LONG-END`: `2026-11-05T06:38:45.697974+00:00`. Получены все 10 отметок `P198-TICK` с интервалом 30 секунд."
+      },
+      {
+        "id": 7181,
+        "request_id": 539,
+        "kind": "rich_part",
+        "state": "superseded",
+        "attempts": 0,
+        "sent_message": null,
+        "possible_duplicate": 0,
+        "text": "Тест завершён: Python отработал **310.00015588500537 секунды**, код выхода 0.\n\n- `df` — код 0: `/dev/sda3`, всего 878G, занято 268G, доступно 566G, использование 33%, точка монтирования `/`.\n- `du` — код 0: `7.3G /home/hermes/.local/share/pilotq`.\n- Journal — returncode 0, stdout: 20 строк, SHA256: `6ddcc13010fa1db72ca94ae8c0613cc79b673b35e3e953c5b8c769479a5e9eaf`. Исходный stdout/stderr не выводился.\n\nPID `440416`. `P198-LONG-START`: `2026-11-05T06:33:35.697819+00:00`; `P198-LONG-END`: `2026-11-05T06:38:45.697974+00:00`. Получены все 10 отметок `P198-TICK` с интервалом 30 секунд."
+      },
+      {
+        "id": 7182,
+        "request_id": 539,
+        "kind": "turn_progress_closed",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 784,
+        "possible_duplicate": 0,
+        "text": ""
+      },
+      {
+        "id": 7183,
+        "request_id": 540,
+        "kind": "reaction",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 786,
+        "possible_duplicate": 0,
+        "text": "Received."
+      },
+      {
+        "id": 7184,
+        "request_id": 540,
+        "kind": "turn_progress",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 787,
+        "possible_duplicate": 0,
+        "text": "Работаю · 30 s"
+      },
+      {
+        "id": 7185,
+        "request_id": 541,
+        "kind": "reply",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 789,
+        "possible_duplicate": 0,
+        "text": "Остановлено; последующие сообщения остаются в очереди."
+      },
+      {
+        "id": 7186,
+        "request_id": 540,
+        "kind": "turn_progress_closed",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 787,
+        "possible_duplicate": 0,
+        "text": ""
+      },
+      {
+        "id": 7187,
+        "request_id": 542,
+        "kind": "reaction",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 790,
+        "possible_duplicate": 0,
+        "text": "Received."
+      },
+      {
+        "id": 7188,
+        "request_id": 542,
+        "kind": "turn_progress",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 791,
+        "possible_duplicate": 0,
+        "text": "Работаю · 31 s"
+      },
+      {
+        "id": 7189,
+        "request_id": 542,
+        "kind": "rich",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 792,
+        "possible_duplicate": 0,
+        "text": "**Да, результат cs #540 включён в DEV. Исправление cs #541 тоже включено, но main CI и smoke не прошли.**\n\n- [cyprusbz#540 — Diagnose the delayed account avatar in the site header](https://gitlab.ufobe.com/gradus/cyprusbz/-/issues/540) закрыта: это исследование, без изменения кода. Слияние `8e18afb77ef07dcfde642745aefde6d7684c23b2` от `2026-10-30T14:08:50.784Z` включено в обслуживаемый DEV SHA.\n\n- [cyprusbz#541 — Show the signed-in header account control without waiting for the admin check](https://gitlab.ufobe.com/gradus/cyprusbz/-/issues/541) закрыта, слита через !1199: merge SHA `01b310130ff846bed64a65bd532c8964038a7b80`, время `2026-10-30T16:10:12.620Z`. Первый содержащий слияние [main pipeline 10930](https://gitlab.ufobe.com/gradus/cyprusbz/-/pipelines/10930) завершился ошибкой: [deploy 49890](https://gitlab.ufobe.com/gradus/cyprusbz/-/jobs/49890) успешен, [smoke 49891](https://gitlab.ufobe.com/gradus/cyprusbz/-/jobs/49891) упал на `FAIL event: https://dev.cyprus.bz/ has no /event/ link.` Более поздний содержащий слияние [main pipeline 11534](https://gitlab.ufobe.com/gradus/cyprusbz/-/pipelines/11534) также завершился ошибкой. SHA обоих конвейеров и первая ошибка позднего main в ответе TaskQ отсутствуют. **LIVE inclusion не подтверждено:** чтение Git не удалось, состояние развёртывания неизвестно.\n\n- **Отдельное наблюдение DEV health:** TaskQ сообщает «на DEV с `2026-11-05T00:18:50.696Z`», обслуживается SHA `e14be775990b27a7a0a143f6c933cea045f1483c`, содержащий оба слияния по истории Git. Это подтверждает включение изменений, но не успешность CI/smoke и не пользовательский сценарий: реальные тайминги с действующей авторизованной сессией после исправления остаются непроверенными."
+      },
+      {
+        "id": 7190,
+        "request_id": 542,
+        "kind": "rich_part",
+        "state": "superseded",
+        "attempts": 0,
+        "sent_message": null,
+        "possible_duplicate": 0,
+        "text": "**Да, результат cs #540 включён в DEV. Исправление cs #541 тоже включено, но main CI и smoke не прошли.**\n\n- [cyprusbz#540 — Diagnose the delayed account avatar in the site header](https://gitlab.ufobe.com/gradus/cyprusbz/-/issues/540) закрыта: это исследование, без изменения кода. Слияние `8e18afb77ef07dcfde642745aefde6d7684c23b2` от `2026-10-30T14:08:50.784Z` включено в обслуживаемый DEV SHA.\n\n- [cyprusbz#541 — Show the signed-in header account control without waiting for the admin check](https://gitlab.ufobe.com/gradus/cyprusbz/-/issues/541) закрыта, слита через !1199: merge SHA `01b310130ff846bed64a65bd532c8964038a7b80`, время `2026-10-30T16:10:12.620Z`. Первый содержащий слияние [main pipeline 10930](https://gitlab.ufobe.com/gradus/cyprusbz/-/pipelines/10930) завершился ошибкой: [deploy 49890](https://gitlab.ufobe.com/gradus/cyprusbz/-/jobs/49890) успешен, [smoke 49891](https://gitlab.ufobe.com/gradus/cyprusbz/-/jobs/49891) упал на `FAIL event: https://dev.cyprus.bz/ has no /event/ link.` Более поздний содержащий слияние [main pipeline 11534](https://gitlab.ufobe.com/gradus/cyprusbz/-/pipelines/11534) также завершился ошибкой. SHA обоих конвейеров и первая ошибка позднего main в ответе TaskQ отсутствуют. **LIVE inclusion не подтверждено:** чтение Git не удалось, состояние развёртывания неизвестно.\n\n- **Отдельное наблюдение DEV health:** TaskQ сообщает «на DEV с `2026-11-05T00:18:50.696Z`», обслуживается SHA `e14be775990b27a7a0a143f6c933cea045f1483c`, содержащий оба слияния по истории Git. Это подтверждает включение изменений, но не успешность CI/smoke и не пользовательский сценарий: реальные тайминги с действующей авторизованной сессией после исправления остаются непроверенными."
+      },
+      {
+        "id": 7191,
+        "request_id": 542,
+        "kind": "turn_progress_closed",
+        "state": "delivered",
+        "attempts": 1,
+        "sent_message": 791,
+        "possible_duplicate": 0,
+        "text": ""
+      }
+    ],
+    "audit": [
+      {
+        "id": 3184,
+        "request_id": 539,
+        "at": 1793860401,
+        "kind": "reply_language",
+        "target": null,
+        "item": null,
+        "result": "{\"language\":\"ru\",\"reason\":\"last_direct_clause\",\"order\":3,\"revision\":1,\"origin_update\":349804530,\"request\":539,\"source\":\"admitted_input\"}"
+      },
+      {
+        "id": 3186,
+        "request_id": 539,
+        "at": 1793860402,
+        "kind": "optimization",
+        "target": null,
+        "item": null,
+        "result": "{\"intent\":\"inherit\",\"effective\":\"off\",\"reason\":\"not_attached\"}"
+      },
+      {
+        "id": 3187,
+        "request_id": 539,
+        "at": 1793860415,
+        "kind": "tool",
+        "target": "/bin/bash -lc \"python3 -B - <<'PY'\nimport subprocess, hashlib, time, os\nfrom datetime import datetime, timezone\nfor args in (['df','-h','/'], ['du','-sh','/home/hermes/.local/share/pilotq']):\n    try:\n        r = subprocess.run(args, capture_output=True, text=True, timeout=15)\n        print(args[0], 'returncode', r.returncode, flush=True)\n        print(r.stdout, end='', flush=True)\n        if r.stderr:\n            print(r.stderr, end='', flush=True)\n    except subprocess.TimeoutExpired:\n        print(args[0], 'timeout=15', flush=True)\nargs = ['journalctl',chr(45)*2+'user','-u','pilotq.service','-n','20',chr(45)*2+'no-pager','-o','short-iso']\ntry:\n    r = subprocess.run(args, capture_output=True, text=True, timeout=15)\n    print('journal returncode', r.returncode, 'stdout_lines', len(r.stdout.splitlines()), 'stdout_sha256', hashlib.sha256(r.stdout.encode()).hexdigest(), flush=True)\nexcept subprocess.TimeoutExpired:\n    print('journal timeout=15', flush=True)\ndef utc():\n    return datetime.now(timezone.utc).isoformat()\nstart = time.monotonic()\nprint('P198-LONG-START', 'PID', os.getpid(), 'UTC', utc(), flush=True)\nnext_tick = 30\nwhile True:\n    elapsed = time.monotonic() - start\n    if elapsed >= 310:\n        break\n    time.sleep(min(30, max(0, next_tick-elapsed), 310-elapsed))\n    elapsed = time.monotonic() - start\n    if elapsed >= next_tick:\n        print('P198-TICK', elapsed, flush=True)\n        next_tick += 30\nprint('P198-LONG-END', 'elapsed', time.monotonic()-start, 'UTC', utc(), flush=True)\nPY\"",
+        "item": "exec-9fac6ec4-8b09-4621-8e2f-7d14b7e2814d",
+        "result": "completed"
+      },
+      {
+        "id": 3189,
+        "request_id": 539,
+        "at": 1793860732,
+        "kind": "runtime_status",
+        "target": null,
+        "item": "2",
+        "result": "gpt-6.1-sol · 🙂 8% · 🌗 56% ↻ 7d"
+      },
+      {
+        "id": 3190,
+        "request_id": 540,
+        "at": 1793860802,
+        "kind": "reply_language",
+        "target": null,
+        "item": null,
+        "result": "{\"language\":\"ru\",\"reason\":\"last_direct_clause\",\"order\":4,\"revision\":1,\"origin_update\":349804531,\"request\":540,\"source\":\"admitted_input\"}"
+      },
+      {
+        "id": 3192,
+        "request_id": 540,
+        "at": 1793860803,
+        "kind": "optimization",
+        "target": null,
+        "item": null,
+        "result": "{\"intent\":\"inherit\",\"effective\":\"off\",\"reason\":\"not_attached\"}"
+      },
+      {
+        "id": 3193,
+        "request_id": 540,
+        "at": 1793860808,
+        "kind": "tool",
+        "target": "/bin/bash -lc \"python3 -B - <<'PY'\nimport os, time\nprint('P198-CANCEL-READY', os.getpid(), flush=True)\ntime.sleep(90)\nprint('P198-CANCEL-NOT-EXPECTED', flush=True)\nPY\"",
+        "item": "exec-988198c9-b9ed-4e68-8814-20ae13512061",
+        "result": null
+      },
+      {
+        "id": 3194,
+        "request_id": 541,
+        "at": 1793860848,
+        "kind": "reply_language",
+        "target": null,
+        "item": null,
+        "result": "{\"language\":\"ru\",\"reason\":\"retained\",\"order\":5,\"revision\":1,\"origin_update\":349804532,\"request\":541,\"source\":\"admitted_input\"}"
+      },
+      {
+        "id": 3196,
+        "request_id": 542,
+        "at": 1793860906,
+        "kind": "reply_language",
+        "target": null,
+        "item": null,
+        "result": "{\"language\":\"ru\",\"reason\":\"last_direct_clause\",\"order\":6,\"revision\":1,\"origin_update\":349804533,\"request\":542,\"source\":\"admitted_input\"}"
+      },
+      {
+        "id": 3198,
+        "request_id": 542,
+        "at": 1793860907,
+        "kind": "optimization",
+        "target": null,
+        "item": null,
+        "result": "{\"intent\":\"inherit\",\"effective\":\"off\",\"reason\":\"not_attached\"}"
+      },
+      {
+        "id": 3199,
+        "request_id": 542,
+        "at": 1793860911,
+        "kind": "tool",
+        "target": "dynamicToolCall",
+        "item": "exec-945a1414-dac1-4060-afc6-5a75f856e9b2",
+        "result": "completed"
+      },
+      {
+        "id": 3200,
+        "request_id": 542,
+        "at": 1793860911,
+        "kind": "call",
+        "target": "task_status",
+        "item": null,
+        "result": null
+      },
+      {
+        "id": 3201,
+        "request_id": 542,
+        "at": 1793860927,
+        "kind": "task",
+        "target": "gradus/cyprusbz status #541",
+        "item": null,
+        "result": "read"
+      },
+      {
+        "id": 3202,
+        "request_id": 542,
+        "at": 1793860927,
+        "kind": "tool",
+        "target": "dynamicToolCall",
+        "item": "exec-3a60a102-926a-4c55-877a-f24d35ca5da4",
+        "result": "completed"
+      },
+      {
+        "id": 3203,
+        "request_id": 542,
+        "at": 1793860927,
+        "kind": "call",
+        "target": "task_status",
+        "item": null,
+        "result": null
+      },
+      {
+        "id": 3204,
+        "request_id": 542,
+        "at": 1793860938,
+        "kind": "task",
+        "target": "gradus/cyprusbz status #540",
+        "item": null,
+        "result": "read"
+      },
+      {
+        "id": 3205,
+        "request_id": 542,
+        "at": 1793860953,
+        "kind": "runtime_status",
+        "target": null,
+        "item": "2",
+        "result": "gpt-6.1-sol · 🙂 11% · 🌗 56% ↻ 7d"
+      }
+    ],
+    "native_test_processes_present": false,
+    "schema": 14
+  },
+  "stop_new_source": {
+    "requests": [
+      540,
+      541
+    ],
+    "run": 306,
+    "native_shell_pid": 474986,
+    "observed_running_before": true,
+    "shell_exists_after": false,
+    "run_state": "fenced",
+    "runtime_seconds": 46,
+    "reply": "Остановлено; последующие сообщения остаются в очереди.",
+    "outbox": 7185,
+    "message": 789,
+    "attempts": 1,
+    "possible_duplicate": 0,
+    "verdict": "PASS: actual native process cancellation and Russian ack on 0.2.41; prior request487 FAIL retained historically"
+  },
+  "DEV_delivery_542": {
+    "request": 542,
+    "run": 307,
+    "tools": [
+      "task_status #541",
+      "task_status #540"
+    ],
+    "audit_ids": [
+      3199,
+      3200,
+      3201,
+      3202,
+      3203,
+      3204
+    ],
+    "final_outbox": 7189,
+    "final_message": 792,
+    "verdict": "PARTIAL_OBSERVED: exact DEV inclusion and pipeline/smoke separation, LIVE unavailable; source170 full closing-verdict/report scenario not yet covered",
+    "DEV_served_sha": "e14be775990b27a7a0a143f6c933cea045f1483c",
+    "DEV_deployed_at": "2026-11-05T00:18:50.696Z",
+    "LIVE": "unknown: Git read failed",
+    "main_pipeline_first": 10930,
+    "deploy_first": 49890,
+    "smoke_first": 49891,
+    "main_pipeline_later": 11534,
+    "pipeline_SHAs": "not supplied by observed adapter response",
+    "writes_or_release": false
+  },
+  "remaining_exact": [
+    "Real TaskQ option-card saved actor/removal/repeated or stale press; current198 Ask has no choices; use a real disposable PM evidence-review decision, never forged callback",
+    "Full plan launch/card lifecycle with real worker question/closure, failure/retry and queue/working states",
+    "New registration/gap/fix/override/first-launch and project disconnect/reconnect; no new grant/security changes authorized",
+    "Active-request service restart with finished-versus-unfinished receipt; normal protected drain must not be bypassed",
+    "Model full DM/topic/role and missing/stale-usage coverage; historical model package retains old-source limitation",
+    "LIVE read Git topology: local heads/live absent and cached origin/live stale; no ref mutations performed; investigate existing work before narrow fix",
+    "Exact source170 status540 accepted diagnosis/report/followup and scope505/507/audio-comment503",
+    "Current exact Chrome version blocked by browser protocol policy; no alternate surface or workaround attempted",
+    "Remaining RU/EN/media/visual/error/long-chunk/fallback coverage; 539 rich reply is one final only"
+  ],
+  "updated_utc": "2026-11-05T06:45:25.927427+00:00"
+}
