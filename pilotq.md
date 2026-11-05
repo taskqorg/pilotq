@@ -179,7 +179,7 @@ AgentQ tool compression and conversation summarization have separate owners; pre
 Receipt p95 ≤2 seconds; acknowledgement ≤5 seconds; no fixed turn duration or tool-call cap; cancel after ten minutes
 without a runtime event, with the exact reason; cancellation acknowledgement ≤5 seconds plus a five-second termination
 grace; recovery within thirty seconds of readiness. Runtime events renew the inactivity clock; typing and progress
-timers do not. One topic progress message is updated no more often than every thirty seconds.
+timers do not. One topic progress message is updated no more often than every thirty seconds. A loop tick posts no progress message: it runs unattended and reports through its reply.
 
 With `slot_root` set, each manager turn holds one TaskQ host slot (`taskq service slots`) until its runtime and tools end. AgentQ runtime supplies one usage observation per turn to CoreQ storage with its route code; the launcher marker suppresses duplicate optimizer observations.
 Start with four concurrent conversations, one run each, round-robin routes; pending caps are fifty per route and 1,000 total. Safe dependency attempts total at most three within the original deadline; delivery attempts at most five per episode across restarts. Task notifications follow a fresh observed transition within fifteen seconds when Telegram is reachable.

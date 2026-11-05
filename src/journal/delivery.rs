@@ -29,6 +29,7 @@ impl Journal {
         let mut q=self.0.prepare("SELECT q.id,q.chat,q.topic,nullif(q.message,0),q.language,r.started_at
             FROM requests q JOIN runs r ON r.request_id=q.id
             WHERE q.front='telegram' AND q.state='running' AND r.state='running' AND r.started_at<=?1-30
+            AND NOT EXISTS(SELECT 1 FROM audit_events a WHERE a.request_id=q.id AND a.kind='loop_tick')
             AND NOT EXISTS(SELECT 1 FROM outbox o WHERE o.request_id=q.id AND o.kind='turn_progress'
                 AND (o.state='pending' OR o.next_at>?1-30))").map_err(|e|e.to_string())?;
         let rows:Vec<(i64,i64,Option<i64>,Option<i64>,Option<String>,i64)>=q.query_map([at],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).and_then(Iterator::collect).map_err(|e|e.to_string())?;

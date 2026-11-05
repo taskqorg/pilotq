@@ -391,6 +391,9 @@ fn collect(bound:Result<(crate::taskq::Taskq,String),String>,j:&std::sync::Mutex
 
 }
 
+/// Normal seconds between passes of one board's observer (conversation contract).
+const OBSERVE:u64=30;
+
 /// One observation pass; collection failures keep the binding and baseline for subsequent passes.
 fn observer_pass(tq:&crate::taskq::Taskq,j:&std::sync::Mutex<Journal>,w:&Watch,failures:&mut u32)->Option<u64> {
     let selected={
@@ -407,7 +410,7 @@ fn observer_pass(tq:&crate::taskq::Taskq,j:&std::sync::Mutex<Journal>,w:&Watch,f
             for l in all(&guard.0).unwrap_or_default() {if l.watches.iter().any(|x|x.board==w.board) {let _=audit(&guard.0,l.source,crate::now() as i64,"loop_board_unknown",&w.board);}}
         }
     }
-    Some(if *failures==0 {5} else {(5u64 << failures.saturating_sub(1).min(4)).min(60)})
+    Some(if *failures==0 {OBSERVE} else {(5u64 << failures.saturating_sub(1).min(4)).min(60)})
 }
 
 /// #264 A2: every registered board is observed, with or without a loop; the first project by name on a board names it.
@@ -545,9 +548,9 @@ mod tests {
         std::fs::write(p.join("snapshot.json"),"{}").unwrap();
         assert_eq!(observer_pass(&tq,&mutex,&w,&mut failures),Some(10));
         snapshot(json!([{"n":1,"state":"doing","revision":1}]));
-        assert_eq!(observer_pass(&tq,&mutex,&w,&mut failures),Some(5));assert_eq!(failures,0);
+        assert_eq!(observer_pass(&tq,&mutex,&w,&mut failures),Some(OBSERVE));assert_eq!(failures,0);
         snapshot(json!([{"n":1,"state":"failed","revision":2}]));
-        assert_eq!(observer_pass(&tq,&mutex,&w,&mut failures),Some(5));
+        assert_eq!(observer_pass(&tq,&mutex,&w,&mut failures),Some(OBSERVE));
         assert_eq!(pending(&mutex.lock().unwrap()),1,"the recovered observer still wakes its route");
         drop(mutex);std::fs::remove_dir_all(p).unwrap();
     }
