@@ -550,14 +550,14 @@ fn dispatch_until(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Va
         let running = tq.snapshot().map(|s| s["tasks"].as_array().into_iter().flatten().filter(|t| t["state"] == "doing").map(|t| format!("#{}", t["n"])).collect::<Vec<_>>().join(", ")).unwrap_or("unknown".into());
         return Ok(format!("TaskQ admission is paused on this host; no new task starts. Running workers continue. Still running: {running}."));
     }
-    // #242 / §5: a broad status read has a set of concrete authorized targets,
-    // not an ambiguous single-task target. Historical context cannot narrow it.
-    if name == "project_status" && args["include_release"] != true {
+    // #242/#370 / §5: status reads may name several boards, including release observations.
+    // Historical context and model arguments cannot narrow an unbound broad read.
+    if name == "project_status" {
         let projects = {
             let guard=j.lock().unwrap();
             let projects=guard.projects()?.into_iter().filter(|p|allowed(&guard,sender,&p.0,false).is_ok()).collect::<Vec<_>>();
-            let named=projects.iter().any(|p|crate::direct::named_target(&r.text,&p.0) || crate::direct::named_target(&r.text,&p.1));
-            if !named && (guard.unbound_topic(r)? || guard.current_project(&r.session)?.is_none()) {Some(projects)} else {None}
+            let named=projects.iter().filter(|p|crate::direct::named_target(&r.text,&p.0) || crate::direct::named_target(&r.text,&p.1)).cloned().collect::<Vec<_>>();
+            if named.len()>1 {Some(named)} else if named.is_empty() && (guard.unbound_topic(r)? || guard.current_project(&r.session)?.is_none()) {Some(projects)} else {None}
         };
         if let Some(projects)=projects {
             if projects.is_empty() {return Err("No accessible registered board; status unavailable".into());}
@@ -572,7 +572,7 @@ fn dispatch_until(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Va
                         allowed(&guard,sender,&project,false)?;
                         tq.registered(&guard,&project)?.0
                     };
-                    project_status_read(&bound,j,r,&project,&board,false,turn_end)
+                    project_status_read(&bound,j,r,&project,&board,args["include_release"]==true,turn_end)
                 })();
                 boards.push(match result {
                     Ok(status)=>status,
@@ -1726,6 +1726,49 @@ print(json.dumps(dict(task=19,op_id=op,outcome='accepted',state='doing',revision
         drop(j);std::fs::remove_dir_all(dir).unwrap();
     }
 
+    // #370 A3 / §5: named multi-board status is a read set; a later one-board request must stay scoped.
+    #[cfg(unix)]
+    #[test]
+    fn status_scope_370() {
+        let dir=std::env::temp_dir().join(format!("pilotq-scope-370-{}",std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin=dir.join("taskq");
+        crate::test_support::write_script(&bin,"#!/bin/sh\n[ \"$1 $2\" = \"status --json\" ] || exit 99\necho read >> reads\ncat snapshot.json\n").unwrap();
+        let mut journal=Journal::open(&dir.join("journal.sqlite")).unwrap();journal.bootstrap(7,0).unwrap();
+        for project in ["cyprusbz","pilotq","tight"] {
+            let root=dir.join(project);std::fs::create_dir_all(&root).unwrap();
+            let board=format!("invented/{project}");
+            std::fs::write(root.join("taskq.json"),json!({"repo":board}).to_string()).unwrap();
+            std::fs::write(root.join("snapshot.json"),json!({"complete":true,"board":{"repo":board},"observed":1,"tasks":[]}).to_string()).unwrap();
+            journal.add_project(7,project,&board,root.to_str().unwrap(),0).unwrap();
+        }
+        let tq=Taskq{bot:None,bin,root:dir.clone(),poll:Duration::from_secs(1)};
+        for (text,args,expected) in [
+            ("status for cs and pilotq",json!({}),vec!["cyprusbz","pilotq"]),
+            ("are cs and pilotq on LIVE?",json!({"include_release":true}),vec!["cyprusbz","pilotq"]),
+            ("and cs on LIVE?",json!({"project":"cs","include_release":true}),vec!["cyprusbz"]),
+            ("list tasks",json!({"project":"pilotq","include_release":true}),vec!["cyprusbz","pilotq","tight"]),
+        ] {
+            let r=journal.ask(7,text,crate::now() as i64).unwrap();let j=Mutex::new(journal);
+            let result:Value=serde_json::from_str(&dispatch(&tq,&j,&r,"project_status",&args).unwrap()).unwrap();
+            let boards=result["boards"].as_array().cloned().unwrap_or_else(||vec![result.clone()]);
+            assert_eq!(boards.len(),expected.len(),"{result}");
+            for project in ["cyprusbz","pilotq","tight"] {
+                let reads=dir.join(project).join("reads");
+                assert_eq!(std::fs::read_to_string(&reads).unwrap_or_default(),if expected.contains(&project) {"read\n"} else {""},"{text}: {project}");
+                if reads.exists() {std::fs::remove_file(reads).unwrap();}
+                if expected.contains(&project) {
+                    let board=boards.iter().find(|b|b["project"]==project).unwrap();
+                    assert!(board["tasks"].is_array());
+                    if args["include_release"]==true {assert_eq!(board["dev"]["reason"],"Release configuration missing");}
+                }
+            }
+            journal=j.into_inner().unwrap();
+            let questions:i64=journal.0.query_row("SELECT count(*) FROM audit_events WHERE request_id=?1 AND kind='project_question'",[r.request],|row|row.get(0)).unwrap();assert_eq!(questions,0);
+            journal.finish(&r,None,None,&crate::manager::Outcome::Answered("observed status".into()),crate::now() as i64).unwrap();
+        }
+        drop(journal);std::fs::remove_dir_all(dir).unwrap();
+    }
     // #157 / §5: an explicit project could not override ambiguous earlier mentions, and the person's
     // answer "1" to PilotQ's own question named nothing, so task_plan stayed refused.
     #[cfg(unix)]
