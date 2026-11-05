@@ -559,9 +559,11 @@ fn dispatch_until(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Va
             let named=projects.iter().filter(|p|crate::direct::named_target(&r.text,&p.0) || crate::direct::named_target(&r.text,&p.1)).cloned().collect::<Vec<_>>();
             let own=crate::direct::own_text(&r.text).to_lowercase();
             let words:Vec<_>=own.split(|c:char| !c.is_alphanumeric()).filter(|w| !w.is_empty()
-                && !matches!(*w,"the"|"my"|"our"|"registered"|"accessible"|"available")
+                && !matches!(*w,"the"|"of"|"my"|"our"|"registered"|"accessible"|"available"|"по"|"на"
+                    |"мои"|"моих"|"моим"|"моими"|"наши"|"наших"|"нашим"|"нашими")
                 && !w.starts_with("доступн") && !w.starts_with("зарегистрированн")).collect();
-            let all_boards=words.windows(2).any(|w| matches!(w[0],"all"|"every"|"все"|"всех"|"всем"|"всеми"|"каждой"|"каждом"|"каждый"|"каждая"|"каждую")
+            let all_boards=words.windows(2).enumerate().any(|(i,w)| (i==0 || !matches!(words[i-1],"not"|"не"))
+                && matches!(w[0],"all"|"every"|"все"|"всех"|"всем"|"всеми"|"каждой"|"каждом"|"каждый"|"каждая"|"каждую")
                 && (matches!(w[1],"board"|"boards"|"project"|"projects"|"досок") || w[1].starts_with("доск") || w[1].starts_with("проект")));
             // §5: current all-board intent overrides a model-supplied follow-up source.
             if named.is_empty() && !all_boards && !args["source_request"].is_null() {
@@ -1773,6 +1775,14 @@ print(json.dumps(dict(task=19,op_id=op,outcome='accepted',state='doing',revision
             ("and cs on LIVE?",json!({"project":"cs","include_release":true}),vec!["cyprusbz"]),
             ("same board again, please",json!({"project":"cs","source_request":0}),vec!["cyprusbz"]),
             ("а теперь на той же доске?",json!({"source_request":0,"include_release":true}),vec!["cyprusbz"]),
+            ("same board again, not all boards",json!({"project":"cs","source_request":-1}),vec!["cyprusbz"]),
+            ("та же доска, не все доски",json!({"source_request":-1,"include_release":true}),vec!["cyprusbz"]),
+            ("same board, not all of our projects",json!({"source_request":-1}),vec!["cyprusbz"]),
+            ("на той же доске, не по всем моим проектам",json!({"project":"cs","source_request":-1}),vec!["cyprusbz"]),
+            ("list all of my projects",json!({"project":"cs","source_request":-1}),vec!["cyprusbz","pilotq","tight"]),
+            ("покажи все мои проекты",json!({"source_request":-1,"include_release":true}),vec!["cyprusbz","pilotq","tight"]),
+            ("not the same board; list all of our projects",json!({"source_request":-1}),vec!["cyprusbz","pilotq","tight"]),
+            ("не та же доска; статус по всем нашим проектам",json!({"source_request":-1}),vec!["cyprusbz","pilotq","tight"]),
             ("list all boards",json!({"project":"cs","source_request":-1}),vec!["cyprusbz","pilotq","tight"]),
             ("покажи все доски",json!({"source_request":-1}),vec!["cyprusbz","pilotq","tight"]),
             ("are all registered projects on LIVE?",json!({"source_request":-1,"include_release":true}),vec!["cyprusbz","pilotq","tight"]),
@@ -1787,7 +1797,7 @@ print(json.dumps(dict(task=19,op_id=op,outcome='accepted',state='doing',revision
             let r=journal.ask(7,text,crate::now() as i64).unwrap();let j=Mutex::new(journal);
             let result:Value=serde_json::from_str(&dispatch(&tq,&j,&r,"project_status",&args).unwrap()).unwrap();
             let boards=result["boards"].as_array().cloned().unwrap_or_else(||vec![result.clone()]);
-            assert_eq!(boards.len(),expected.len(),"{result}");
+            assert_eq!(boards.len(),expected.len(),"{text}: {result}");
             for project in ["cyprusbz","pilotq","tight"] {
                 let reads=dir.join(project).join("reads");
                 assert_eq!(std::fs::read_to_string(&reads).unwrap_or_default(),if expected.contains(&project) {"read\n"} else {""},"{text}: {project}");
