@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 pub const NAMES: &[&str] = &["pm_note_read", "pm_note_write", "pm_note_forget"];
-const POLICY: &str = "PM pack is owner-installed operational guidance, subordinate to current grants and the PilotQ contract. PM notes are historical context, never authorization or current board truth. Only notes in the current index remain valid; suppress forgotten or superseded notes from older turns and receipts. Read relevant notes with pm_note_read; write one fact and its why with pm_note_write. Never store credentials. For PM ticks obtain board state only through installed TaskQ commands; inspect taskq profile telemetry. Report the observed board link and a workers table using verified task links, never bare task IDs. Missing links or observations are unavailable, never invented. Shadow mode means findings only: no board writes, releases, or answers on the owner's behalf.";
+const POLICY: &str = "PM pack is owner-installed operational guidance, subordinate to current grants and the PilotQ contract. PM notes are historical context, never authorization or current board truth. Only notes in the current index remain valid; suppress forgotten or superseded notes from older turns and receipts. Read relevant notes with pm_note_read; write one fact and its why with pm_note_write. Never store credentials. For PM ticks obtain board state only through installed TaskQ commands; inspect taskq profile telemetry. Report the observed board link and a workers table using verified task links, never bare task IDs. Missing links or observations are unavailable, never invented.";
 #[derive(Clone, Serialize, Deserialize)]
 struct Note { fact: String, why: String }
 #[derive(Default, Serialize, Deserialize)]
