@@ -557,7 +557,14 @@ fn dispatch_until(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &Va
             let guard=j.lock().unwrap();
             let projects=guard.projects()?.into_iter().filter(|p|allowed(&guard,sender,&p.0,false).is_ok()).collect::<Vec<_>>();
             let named=projects.iter().filter(|p|crate::direct::named_target(&r.text,&p.0) || crate::direct::named_target(&r.text,&p.1)).cloned().collect::<Vec<_>>();
-            if named.is_empty() && !args["source_request"].is_null() {
+            let own=crate::direct::own_text(&r.text).to_lowercase();
+            let words:Vec<_>=own.split(|c:char| !c.is_alphanumeric()).filter(|w| !w.is_empty()
+                && !matches!(*w,"the"|"my"|"our"|"registered"|"accessible"|"available")
+                && !w.starts_with("доступн") && !w.starts_with("зарегистрированн")).collect();
+            let all_boards=words.windows(2).any(|w| matches!(w[0],"all"|"every"|"все"|"всех"|"всем"|"всеми"|"каждой"|"каждом"|"каждый"|"каждая"|"каждую")
+                && (matches!(w[1],"board"|"boards"|"project"|"projects"|"досок") || w[1].starts_with("доск") || w[1].starts_with("проект")));
+            // §5: current all-board intent overrides a model-supplied follow-up source.
+            if named.is_empty() && !all_boards && !args["source_request"].is_null() {
                 let source=args["source_request"].as_i64().ok_or("status source_request must be an input ID")?;
                 // §2/§5: semantic follow-ups bind a completed one-board read, never ambiguous history or a model guess.
                 let target:String=guard.0.query_row("SELECT min(a.target) FROM requests q JOIN runs x ON x.request_id=q.id
@@ -1766,10 +1773,17 @@ print(json.dumps(dict(task=19,op_id=op,outcome='accepted',state='doing',revision
             ("and cs on LIVE?",json!({"project":"cs","include_release":true}),vec!["cyprusbz"]),
             ("same board again, please",json!({"project":"cs","source_request":0}),vec!["cyprusbz"]),
             ("а теперь на той же доске?",json!({"source_request":0,"include_release":true}),vec!["cyprusbz"]),
+            ("list all boards",json!({"project":"cs","source_request":-1}),vec!["cyprusbz","pilotq","tight"]),
+            ("покажи все доски",json!({"source_request":-1}),vec!["cyprusbz","pilotq","tight"]),
+            ("are all registered projects on LIVE?",json!({"source_request":-1,"include_release":true}),vec!["cyprusbz","pilotq","tight"]),
+            ("статус по всем доступным проектам",json!({"project":"cs","source_request":-1}),vec!["cyprusbz","pilotq","tight"]),
+            ("list every project",json!({"source_request":-1}),vec!["cyprusbz","pilotq","tight"]),
+            ("same board, all tasks, please; quoted: «покажи все доски»",json!({"source_request":-1}),vec!["cyprusbz"]),
             ("list tasks",json!({"project":"cs"}),vec!["cyprusbz","pilotq","tight"]),
             ("list tasks",json!({"project":"pilotq","include_release":true}),vec!["cyprusbz","pilotq","tight"]),
         ] {
             if args["source_request"]==0 {args["source_request"]=json!(source.unwrap());}
+            if args["source_request"]==-1 {args["source_request"]=json!(single_source);}
             let r=journal.ask(7,text,crate::now() as i64).unwrap();let j=Mutex::new(journal);
             let result:Value=serde_json::from_str(&dispatch(&tq,&j,&r,"project_status",&args).unwrap()).unwrap();
             let boards=result["boards"].as_array().cloned().unwrap_or_else(||vec![result.clone()]);
