@@ -3,13 +3,30 @@ use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-pub struct Observation { value: Value, start: Instant }
+const PASS: &str = "service.pass";
+
+/// A span created under no subscriber can cache `never` for a later collector.
+fn collecting() -> bool {
+    tracing::dispatcher::get_default(|d| !d.is::<tracing::subscriber::NoSubscriber>())
+}
+
+/// CoreQ's repeating root: steady calls under it fold into 15-minute aggregates, while a failed
+/// call or changed result keeps its rows. Unchanged service work must not displace request records.
+fn repeating() -> tracing::Span {
+    if collecting() { tracing::info_span!("operation", coreq_operation="service.steady", coreq_repeating=true) }
+    else { tracing::Span::none() }
+}
+
+/// Runs a repeated background read, such as a board snapshot, under the repeating root.
+pub fn steady<T>(action: impl FnOnce() -> T) -> T { repeating().in_scope(action) }
+
+pub struct Observation { value: Value, start: Instant, keep: bool }
 
 impl Observation {
     pub fn start(kind: &'static str, operation: &'static str) -> Self {
         let link = coreq::telemetry::capture::TraceContext::current().map(|c| c.encode());
         let ids = link.as_deref().map(|s| s.split(' ').collect::<Vec<_>>());
-        Self { start: Instant::now(), value: coreq::telemetry::shared(&json!({
+        Self { start: Instant::now(), keep: kind != PASS, value: coreq::telemetry::shared(&json!({
             "product":"pilotq", "version":env!("CARGO_PKG_VERSION"), "kind":kind, "operation":operation,
             "trace":ids.as_ref().map(|v|v[1]), "span":ids.as_ref().map(|v|v[2]),
             "started_ms":SystemTime::now().duration_since(UNIX_EPOCH).ok().map(|d|d.as_millis() as u64),
@@ -28,7 +45,20 @@ impl Observation {
         self.outcome(if result.is_ok() {"ok"} else {"failed"}, if result.is_ok() {"none"} else {"operation-failed"});
     }
 
-    pub fn handled(&mut self, count: usize) { self.value["counts"] = json!({"handled":count}); }
+    /// Items this pass acted on. A nonzero count keeps the pass as its own record.
+    pub fn handled(&mut self, count: usize) {
+        self.keep |= count > 0;
+        self.value["counts"] = json!({"handled":count});
+    }
+
+    /// A polled level, such as registered boards: only a change is news, even a change to zero.
+    pub fn level(&mut self, last: &mut Option<usize>, count: usize) {
+        if *last != Some(count) {
+            self.handled(count);
+            self.keep = true;
+            *last = Some(count);
+        }
+    }
 }
 
 impl Drop for Observation {
@@ -39,8 +69,15 @@ impl Drop for Observation {
             if !self.value[key].is_null() { self.value["unknown"].as_object_mut().unwrap().remove(key); }
         }
         if std::thread::panicking() { self.outcome("failed", "panic"); }
+        // An idle pass adds to its 15-minute aggregate; failed, unfinished and working passes stay rows.
+        let idle = !self.keep && self.value["outcome"] == "ok";
+        let root = if idle { repeating() } else { tracing::Span::none() };
+        if idle {
+            self.value["kind"] = json!("method.aggregate");
+            self.value.as_object_mut().unwrap().remove("counts");
+        }
         // A missing collector is explicit; it never changes the operation's result.
-        if let Err(error) = coreq::telemetry::capture::observe_linked(self.value.clone()) {
+        if let Err(error) = root.in_scope(|| coreq::telemetry::capture::observe_linked(self.value.clone())) {
             if error != "telemetry collector unavailable" { eprintln!("Telemetry: unknown ({error})"); }
         }
     }
@@ -111,6 +148,65 @@ mod tests {
         assert!(events.iter().any(|r|r["operation"]=="service.update" && r["outcome"]=="unknown"));
         let text = rows.to_string();
         assert!(!text.contains("invented-private-error") && !text.contains("/private/path"));
+        drop(capture); drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+
+    // #374 A2, A4 / R17: idle passes displaced request records from the store. They now fold with
+    // their calls and duration, while a working or failed pass and a level change keep their rows.
+    #[test]
+    fn idle_passes_374_fold_and_exceptions_keep_rows() {
+        let path = std::env::temp_dir().join(format!("pilotq-idle374-{}.sqlite", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let store = Arc::new(coreq::telemetry::Store::open(&path).unwrap());
+        let capture = coreq::telemetry::capture::Capture::new(store.clone(), "pilotq", env!("CARGO_PKG_VERSION")).unwrap();
+        let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(capture.clone()));
+        let rows = |store: &coreq::telemetry::Store| store.export(0, 0, 1024).unwrap()["events"].as_array().unwrap().clone();
+        let idle = |count: usize| for _ in 0..count {
+            let mut pass = Observation::start(PASS, "service.controls");
+            pass.result(&Ok::<(), ()>(()));
+            pass.handled(0);
+        };
+        tracing::dispatcher::with_default(&dispatch, || {
+            drop(Observation::start("operation", "request"));
+            idle(1);
+            capture.flush().unwrap();
+            let before = rows(&store).len();
+            idle(50);
+            capture.flush().unwrap();
+            assert_eq!(rows(&store).len(), before, "an idle pass adds no row");
+            let mut level = None;
+            for count in [2, 2, 0, 0] {
+                let mut pass = Observation::start(PASS, "service.boards");
+                pass.result(&Ok::<(), ()>(()));
+                pass.level(&mut level, count);
+            }
+            let mut working = Observation::start(PASS, "service.delivery");
+            working.result(&Ok::<(), ()>(()));
+            working.handled(1);
+            drop(working);
+            let mut failed = Observation::start(PASS, "service.controls");
+            failed.result(&Err::<(), _>(()));
+            drop(failed);
+            let mut failed_read = None;
+            steady(|| failed_read = coreq::telemetry::capture::operation("taskq.read", || Err::<(), ()>(()), |_| "taskq-failed").err());
+            assert!(failed_read.is_some());
+            for _ in 0..3 { steady(|| coreq::telemetry::capture::operation("taskq.cli", || Ok::<(), ()>(()), |_| "taskq-failed")).unwrap(); }
+        });
+        capture.finish().unwrap();
+        let all = rows(&store);
+        let events: Vec<_> = all.iter().map(|r| &r["observation"]).collect();
+        assert!(events.iter().any(|r| r["operation"] == "request" && r["kind"] == "operation"), "the request row stays");
+        let folded: Vec<_> = events.iter().filter(|r| r["operation"] == "service.controls" && r["kind"] == "method.aggregate").collect();
+        assert_eq!(folded.iter().map(|r| r["calls"].as_u64().unwrap()).sum::<u64>(), 51, "calls survive the fold");
+        assert!(folded.iter().all(|r| r["outcome"] == "ok" && r["duration_us"].is_u64()), "duration survives the fold");
+        let boards: Vec<_> = events.iter().filter(|r| r["operation"] == "service.boards" && r["kind"] == PASS).map(|r| r["counts"]["handled"].as_u64().unwrap()).collect();
+        assert_eq!(boards, [2, 0], "only a changed level keeps its count");
+        assert!(events.iter().any(|r| r["operation"] == "service.delivery" && r["kind"] == PASS && r["counts"]["handled"] == 1));
+        assert!(events.iter().any(|r| r["operation"] == "service.controls" && r["kind"] == PASS && r["outcome"] == "failed"));
+        assert!(events.iter().any(|r| r["operation"] == "pilotq.operation.taskq.read" && r["kind"] == "method" && r["outcome"] == "failed"), "{:?}", events.iter().map(|r| (&r["operation"], &r["kind"], &r["outcome"])).collect::<Vec<_>>());
+        assert_eq!(events.iter().filter(|r| r["operation"] == "pilotq.operation.taskq.cli" && r["kind"] == "method.aggregate").map(|r| r["calls"].as_u64().unwrap()).sum::<u64>(), 3);
+        assert!(!events.iter().any(|r| r["operation"] == "pilotq.operation.taskq.cli" && r["kind"] == "method"));
         drop(capture); drop(store);
         let _ = std::fs::remove_file(path);
     }

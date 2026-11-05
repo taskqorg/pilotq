@@ -954,7 +954,7 @@ pub fn watch(tq: std::sync::Arc<Taskq>, j: crate::telegram::Shared, wake: std::s
         }
         if work || last.elapsed() >= tq.poll {
             last = std::time::Instant::now();
-            work |= scan(&tq, &j);
+            work |= crate::telemetry::steady(|| scan(&tq, &j));
         }
         if work {
             wake.notify_one();

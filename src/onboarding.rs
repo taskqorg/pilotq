@@ -629,7 +629,7 @@ pub fn startup(j:&Journal)->Result<(),String> {
 pub fn serve(t:coreq::Tool,j:Shared) {
     loop {
         let mut pass=crate::telemetry::Observation::start("service.pass", "service.onboarding");
-        let result=scan(&t,&j);
+        let result=crate::telemetry::steady(||scan(&t,&j));
         pass.result(&result);
         if let Err(e)=result {eprintln!("onboarding: {e}");}
         drop(pass);

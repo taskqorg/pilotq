@@ -1654,6 +1654,32 @@ fn u23_audit_records_and_readers() {
     let _ = std::fs::remove_dir_all(p);
 }
 
+// #374 A4 / R17: pruning could hide a failed request, so the report counted a low `failed` instead of unknown.
+#[test]
+fn pilot_report_374_reads_unknown_when_rows_were_pruned_in_its_window() {
+    let day = 86_400_000;
+    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+    let fixture = |tag: &str, ages: &[i64]| {
+        let (j, p) = journal(tag);
+        let times: Vec<i64> = ages.iter().map(|age| at - age * day).collect();
+        let events: Vec<_> = times.iter().enumerate().map(|(n, started)| coreq::telemetry::Event::identified("pilotq.request", &n.to_string(), json!({"product":"pilotq","version":"invented",
+            "operation":"request","kind":"pilotq.request","trace":"invented","span":"invented","started_ms":started,"outcome":"failed","error":"invented"})).unwrap()).collect();
+        // CoreQ applies its 30-day retention as this history arrives.
+        coreq::telemetry::Store::open(&p.join("telemetry.sqlite")).unwrap().import_history("fixture", None, "position.1", &events, &times).unwrap();
+        (j, p)
+    };
+    let report = |j: &Journal, days: i64| j.pilot_report(Some((at - days * day) / 1000)).unwrap();
+    let (whole, whole_path) = fixture("pilot-whole", &[10, 1]);
+    assert_eq!(report(&whole, 90)["failed"], 2, "a store with nothing pruned counts every row");
+    let (pruned, pruned_path) = fixture("pilot-pruned", &[60, 10, 1]);
+    assert_eq!(report(&pruned, 5)["failed"], 1, "rows pruned before the window leave its count exact");
+    let unknown = report(&pruned, 90);
+    assert!(unknown["failed"].is_null(), "{unknown}");
+    assert_eq!(unknown["failed_reason"], "telemetry pruned rows inside the reported window");
+    drop((whole, pruned));
+    for path in [whole_path, pruned_path] { let _ = std::fs::remove_dir_all(path); }
+}
+
 // #373 A3, §9: retired journals refuse before schema writes and preserve their data, including unstamped old databases.
 #[test]
 fn retired_schemas_373_are_refused_without_writes() {

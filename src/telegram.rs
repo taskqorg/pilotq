@@ -486,13 +486,14 @@ async fn send_inner(bot: &Bot, j: &Shared, d: &Delivery) -> Sent {
 pub async fn typing(bot: Bot, j: Shared, _deadline: Duration) {
     let mut tick = tokio::time::interval(Duration::from_secs(4));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut active=None;
     loop {
         tick.tick().await;
         let mut pass=crate::telemetry::Observation::start("service.pass", "service.typing");
         let mut sends = tokio::task::JoinSet::new();
         let routes = j.lock().unwrap().typing(now(), i64::MAX);
         pass.result(&routes);
-        if let Ok(routes)=&routes {pass.handled(routes.len());}
+        if let Ok(routes)=&routes {pass.level(&mut active,routes.len());}
         let routes=routes.unwrap_or_default();
         for (chat, topic) in routes {
             if j.lock().unwrap().route_held(chat,topic).unwrap_or(true) { continue; }
@@ -519,7 +520,7 @@ pub async fn drafts(bot: Bot, j: Shared) {
         let mut pass=crate::telemetry::Observation::start("service.pass", "service.drafts");
         let previews = j.lock().unwrap().previews();
         pass.result(&previews);
-        if let Ok(previews)=&previews {pass.handled(previews.len());}
+        let mut sent=0;
         let previews=previews.unwrap_or_default();
         shown.retain(|run, _| previews.iter().any(|p| p.0 == *run));
         for (run, chat, topic, text) in previews {
@@ -543,6 +544,7 @@ pub async fn drafts(bot: Bot, j: Shared) {
                 raw(&bot,&j,"sendMessageDraft",body).await
             };
             pass.result(&result);
+            sent+=1;
             // Fallback starts on the next tick, so even rejected rich drafts never exceed one update per second.
             match result {
                 Err(Sent::Retry { .. }) => {} // Rate limits and temporary losses never trigger another method.
@@ -550,6 +552,7 @@ pub async fn drafts(bot: Bot, j: Shared) {
                 _ => entry.0=text,
             }
         }
+        pass.handled(sent);
         drop(pass);
         tokio::time::sleep(Duration::from_secs(1)).await;
     }

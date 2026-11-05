@@ -397,14 +397,15 @@ const OBSERVE:u64=30;
 /// One observation pass; collection failures keep the binding and baseline for subsequent passes.
 fn observer_pass(tq:&crate::taskq::Taskq,j:&std::sync::Mutex<Journal>,w:&Watch,failures:&mut u32)->Option<u64> {
     let mut pass=crate::telemetry::Observation::start("service.pass", "service.board");
-    let selected={
-        let guard=j.lock().unwrap();
-        registered(&guard).ok().and_then(|ws|ws.into_values().find(|x|x.board==w.board)).map(|current|(tq.registered(&guard,&current.project),current))
-    };
-    let (bound,current)=selected?;
-    let result=collect(bound,j,&current);
+    let result=crate::telemetry::steady(|| {
+        let selected={
+            let guard=j.lock().unwrap();
+            registered(&guard).ok().and_then(|ws|ws.into_values().find(|x|x.board==w.board)).map(|current|(tq.registered(&guard,&current.project),current))
+        };
+        let (bound,current)=selected?;
+        Some(collect(bound,j,&current))
+    })?;
     pass.result(&result);
-    pass.handled(1);
     match result {
         Ok(())=>*failures=0,
         Err(e)=>{
@@ -426,11 +427,12 @@ fn registered(j:&Journal)->Result<std::collections::BTreeMap<String,Watch>,Strin
 /// A concrete board has one collector, shared by every route; slow boards never hold journal locks or other boards.
 pub fn watch_boards(tq:std::sync::Arc<crate::taskq::Taskq>,j:crate::telegram::Shared) {
     let mut observers=std::collections::HashMap::<String,std::thread::JoinHandle<()>>::new();
+    let mut boards=None;
     loop {
         let mut pass=crate::telemetry::Observation::start("service.pass", "service.boards");
         let watches=registered(&j.lock().unwrap());
         pass.result(&watches);
-        if let Ok(watches)=&watches {pass.handled(watches.len());}
+        if let Ok(watches)=&watches {pass.level(&mut boards,watches.len());}
         if let Ok(watches)=watches {
             // Join finished collectors before starting replacements; there is never a duplicate board collector.
             let finished=observers.iter().filter(|(_,h)|h.is_finished()).map(|(k,_)|k.clone()).collect::<Vec<_>>();

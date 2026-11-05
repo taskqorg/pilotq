@@ -61,6 +61,16 @@ pub(crate) fn valid_grant(g: &str) -> bool {
     GRANTS.contains(&g) || ["release:", "project:", "owner:"].iter().any(|k| g.strip_prefix(k).is_some_and(name))
 }
 
+/// R17: rows are pruned oldest first and their times are gone, so a window is complete only if the
+/// oldest row above the pruned range predates it. Any other pruned window can hide a failure.
+fn complete_window(r: &coreq::telemetry::Reader, page: &Value, since_ms: i64) -> Result<(), String> {
+    let through = page["pruned_through"].as_i64().ok_or("telemetry export has no pruned range")?;
+    if page["pruned_count"].as_i64().unwrap_or(1) == 0 { return Ok(()); }
+    let oldest = r.export(0, through, 1)?["events"][0]["received_ms"].as_i64();
+    if oldest.is_some_and(|at| at < since_ms) { return Ok(()); }
+    Err("telemetry pruned rows inside the reported window".into())
+}
+
 fn held(c: &Connection, user: i64, grant: &str) -> Result<bool, String> {
     c.query_row("SELECT 1 FROM grants WHERE user=?1 AND name=?2", params![user, grant], |_| Ok(())).optional().map(|r| r.is_some()).map_err(|e| e.to_string())
 }
@@ -1237,6 +1247,7 @@ impl Journal {
                 count += page["events"].as_array().into_iter().flatten().filter(|v| v.to_string().contains("\"outcome\":\"failed\"")).count() as i64;
                 after = page["next"].as_i64().unwrap_or(after);
                 if page["more"] != true {
+                    complete_window(&r, &page, since * 1000)?;
                     return Ok(count);
                 }
             }

@@ -951,6 +951,50 @@ fn u23_audit_through_service_and_cli() {
     cleanup(&d);
 }
 
+// #374 A2, A4 / R17: unchanged service passes wrote rows until CoreQ pruned the request records.
+// Idle passes and repeated board reads now add no row of their own, and the request row stays.
+#[test]
+fn idle_service_374_keeps_request_rows_and_adds_no_row_per_pass() {
+    let (d, st) = tq_setup("idle374", false);
+    // A control reaches a terminal request record without a model turn.
+    st.lock().unwrap().updates.push(text(1, OWNER, None, OWNER, "/version"));
+    let mut c = spawn(&d, None);
+    let rows = || {
+        let reader = coreq::telemetry::Reader::open(&d.join("telemetry.sqlite")).ok()?;
+        let (mut after, mut rows) = (0, Vec::new());
+        loop {
+            let page = reader.export(0, after, 1024).ok()?;
+            rows.extend(page["events"].as_array()?.iter().map(|e| e["observation"].clone()));
+            if page["more"] != true { return Some(rows); }
+            after = page["next"].as_i64()?;
+        }
+    };
+    let requests = |rows: &[Value]| rows.iter().filter(|r| r["kind"] == "pilotq.request").count();
+    wait("request record", 30, || rows().is_some_and(|r| requests(&r) == 1));
+    // Aggregates and poll rows close per window, and the store records its own checkpoints; none is per pass.
+    let own = |rows: &[Value]| rows.iter().filter(|r| !matches!(r["kind"].as_str(), Some("method.aggregate"|"poll"|"poll.change"))
+        && r["operation"] != "pilotq.operation.telemetry.checkpoint").cloned().collect::<Vec<_>>();
+    // Startup and the request wind down before the count starts.
+    let (mut last, mut still) = (own(&rows().unwrap()).len(), 0);
+    wait("service settles", 30, || {
+        std::thread::sleep(Duration::from_secs(1));
+        let now = own(&rows().unwrap()).len();
+        still = if now == last { still + 1 } else { 0 };
+        last = now;
+        still == 3
+    });
+    // This spans the 30 s board observer and many passes of the 1 s board scan and 100 ms controls.
+    std::thread::sleep(Duration::from_secs(35));
+    let after = rows().unwrap();
+    let grown = own(&after);
+    let added: Vec<_> = grown[last.min(grown.len())..].iter().map(|r| (&r["operation"], &r["kind"], &r["outcome"])).collect();
+    assert!(added.is_empty(), "idle passes wrote rows: {added:?}");
+    assert_eq!(requests(&after), 1, "the request row stays");
+    c.kill().unwrap();
+    c.wait().unwrap();
+    cleanup(&d);
+}
+
 // F06, L18: polling fails with 401 while sending still works. Poll health turns failed with its reason, delivery health stays ok
 // and the committed acknowledgement is still delivered.
 #[test]

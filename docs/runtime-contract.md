@@ -371,7 +371,12 @@ Stable operation series:
   `service.drafts` and `service.delivery`: service passes with duration, outcome/error class and
   the observed item count when collected. Waiting between passes is excluded where separated
   from work; a dropped unfinished pass reads unknown. Cosmetic typing failures do not change a
-  request outcome.
+  request outcome. A pass that handled items, failed, stayed unfinished or saw a polled level
+  change writes its own `service.pass` row. Every other pass folds, through CoreQ's repeating
+  root, into one `method.aggregate` row per operation and 15-minute window, with calls and total
+  duration. Repeated host and board reads fold the same way, under the `service.steady` root. Abrupt
+  termination can lose the current window's counts. Idle passes therefore add no per-pass rows
+  that could displace request and agent records from the capacity-bounded store.
 
 Nested synchronous work inherits CoreQ trace context; the runtime launch carries that context
 across its thread boundary. The request journal stores only the execution link in `telemetry_link`
@@ -387,7 +392,10 @@ launched turn ends, including cancellation; runtime refusal to produce a record 
 The runtime's own missing-field reasons remain authoritative. The route is retained; missing
 runtime correlation or provider measurements remain unknown rather than inferred from audit.
 
-The existing journal, `pilotq.request` events and `pilot report` remain active. The new terminal
+Working passes and agent records still consume that capacity, so CoreQ can still prune old
+records. `pilot report` then reads `failed` as unknown with a reason whenever pruned rows may lie
+inside its window, never as a low count. The existing journal, `pilotq.request` events and
+`pilot report` remain active. The new terminal
 request observation and its legacy event are appended together with immutable identities. A later
 task may delete the PilotQ store/path only after same-window parity is established. Runtime usage
 and model-call totals are alternative views of the same tokens and must not be summed together.

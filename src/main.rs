@@ -439,6 +439,7 @@ fn service_run(t: &Tool, command: &telemetry::Command) -> ! {
             let mut pass=telemetry::Observation::start("service.pass", "service.update");
             let result=scheduled_update(&maintenance, now());
             pass.result(&result);
+            if matches!(result,Ok(Some(_))) {pass.handled(1);}
             drop(pass);
             match result {
                 Ok(Some(v)) => {
@@ -456,7 +457,7 @@ fn service_run(t: &Tool, command: &telemetry::Command) -> ! {
     eprintln!("pilotq {} service running", t.version);
     loop {
         let mut pass=telemetry::Observation::start("service.pass", "service.status");
-        let mut s = status_doc(t, now());
+        let mut s = telemetry::steady(|| status_doc(t, now()));
         {
             let mut j = j.lock().unwrap();
             let result=j.status(&mut s, now() as i64);
