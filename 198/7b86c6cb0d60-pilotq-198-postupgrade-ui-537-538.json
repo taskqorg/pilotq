@@ -1,0 +1,234 @@
+{
+  "schema": "pilotq.198.pm-postupgrade-ui/1",
+  "source": "0be207e4a983a9f33a0fd21eb798d24054d2c368",
+  "installed_version": "0.2.41",
+  "installed_sha256": "83b79d3fc76738625c8207064fe2d57f3c72c38428b9ad10f517439929ca90f5",
+  "TaskQ_version": "4.6.83",
+  "preflight": {
+    "observed_utc": "2026-11-05T06:03:26.196809+00:00",
+    "TaskQ_exe": "/home/hermes/.local/share/taskq/releases/4.6.83/taskq",
+    "TaskQ_service_version": "4.6.83",
+    "PilotQ_version": "0.2.41",
+    "PilotQ_pid": 4052917,
+    "PilotQ_sha256": "83b79d3fc76738625c8207064fe2d57f3c72c38428b9ad10f517439929ca90f5",
+    "canonical_board_match": true,
+    "service_running": true,
+    "service_fresh": true,
+    "service_age_seconds": 2,
+    "project_complete": true,
+    "project_age_seconds": 32,
+    "project_error": null,
+    "registry_error": null,
+    "host_binding": "current",
+    "active_TEST": 0,
+    "new_actual_TEST_ingress": [],
+    "journal_schema": 14,
+    "max_request": 536,
+    "eligible": true
+  },
+  "events": {
+    "observed_utc": "2026-11-05T06:07:05.363779+00:00",
+    "new_TEST": [
+      {
+        "id": 537,
+        "kind": "builtin",
+        "state": "answered",
+        "message": 779,
+        "reply_to": 3,
+        "error": null,
+        "received_at": 1793858624,
+        "input_type": "onboard",
+        "safe_reply": "pilotq: настройки проверены, проект готов к первой задаче.",
+        "runs": [],
+        "outbox": [
+          {
+            "id": 7158,
+            "kind": "reply",
+            "state": "delivered",
+            "attempts": 1,
+            "possible_duplicate": 0,
+            "sent_message": 780,
+            "error": null
+          }
+        ],
+        "task_effect_count": 0
+      },
+      {
+        "id": 538,
+        "kind": "text",
+        "state": "answered",
+        "message": 781,
+        "reply_to": 3,
+        "error": null,
+        "received_at": 1793858774,
+        "input_type": "marker",
+        "safe_reply": "P198-AFTER-0241",
+        "runs": [
+          {
+            "id": 304,
+            "state": "answered",
+            "model": "gpt-6.1-sol",
+            "runtime": "codex",
+            "generation": 10,
+            "started_at": 1793858774,
+            "ended_at": 1793858778,
+            "tool": 0
+          }
+        ],
+        "outbox": [
+          {
+            "id": 7159,
+            "kind": "reaction",
+            "state": "delivered",
+            "attempts": 1,
+            "possible_duplicate": 0,
+            "sent_message": 781,
+            "error": null
+          },
+          {
+            "id": 7160,
+            "kind": "rich",
+            "state": "delivered",
+            "attempts": 1,
+            "possible_duplicate": 0,
+            "sent_message": 782,
+            "error": null
+          },
+          {
+            "id": 7161,
+            "kind": "rich_part",
+            "state": "superseded",
+            "attempts": 0,
+            "possible_duplicate": 0,
+            "sent_message": null,
+            "error": null
+          }
+        ],
+        "task_effect_count": 0
+      }
+    ]
+  },
+  "invariants": {
+    "observed_utc": "2026-11-05T06:11:06.609773+00:00",
+    "actual_owner_ingress": [
+      {
+        "id": 537,
+        "kind": "builtin",
+        "state": "answered",
+        "message": 779,
+        "reply_to": 3,
+        "is_onboard": true,
+        "is_marker": false
+      },
+      {
+        "id": 538,
+        "kind": "text",
+        "state": "answered",
+        "message": 781,
+        "reply_to": 3,
+        "is_onboard": false,
+        "is_marker": true
+      }
+    ],
+    "audio_ingress_count": 0,
+    "grant_log_max_id": 9,
+    "max_request": 538,
+    "active_TEST": 0,
+    "route_models": [
+      {
+        "route": "TEST",
+        "saved_model": null,
+        "generation": 10
+      },
+      {
+        "route": "DM_ROOT",
+        "saved_model": "gpt-6.1-sol",
+        "generation": 5
+      }
+    ],
+    "onboarding": {
+      "epoch": 41,
+      "ready": true,
+      "pending": false,
+      "checking_until": null,
+      "override": null,
+      "service_identity": [
+        "f644e9a1-72f8-4cf1-9404-0a94e8874a74",
+        "da98f7f9-3b87-458e-b2aa-493ebfb42c5e-93809",
+        "4.6.83"
+      ]
+    },
+    "onboarding_gaps": [],
+    "task_effects_537_538": 0,
+    "marker_audit_kind_counts": [
+      {
+        "kind": "optimization",
+        "n": 1
+      },
+      {
+        "kind": "quote",
+        "n": 1
+      },
+      {
+        "kind": "rebuild",
+        "n": 1
+      },
+      {
+        "kind": "reply_language",
+        "n": 1
+      },
+      {
+        "kind": "runtime_status",
+        "n": 1
+      }
+    ],
+    "baseline_files": [
+      {
+        "path": "/home/hermes/.local/share/taskq/projects",
+        "bytes": 314,
+        "sha256": "2290f5bc67cfe8a2b4a03540eb72345a316a0dc3afe134c94f64d37f65329996"
+      },
+      {
+        "path": "/home/hermes/projects/taskqorg/pilotq/.taskq/focus",
+        "bytes": 3,
+        "sha256": "5ef5ef0364b6939c4ca61f34b393f7b368d1be8619647aaf83d5b395919ab629"
+      }
+    ],
+    "config_stat": {
+      "bytes": 617,
+      "mtime_ns": "1793544480170756321"
+    },
+    "pilotq_sha256": "83b79d3fc76738625c8207064fe2d57f3c72c38428b9ad10f517439929ca90f5",
+    "journal_schema": 14
+  },
+  "ui": {
+    "browser": "Chrome",
+    "tab": "1062614479",
+    "url": "https://web.telegram.org/a/#-1003995096980_3",
+    "single_actor": "Previous helper latest turns completed/read-only, activeFlags empty; no actual TEST ingress after535 at preflight. Current actor claimed existing TEST tab successfully; no other executor launched.",
+    "submission": "Typed and clicked fresh AX Send Message once per command; no Go-to-bottom action executed.",
+    "visible_results": [
+      {
+        "message": 780,
+        "text": "pilotq: настройки проверены, проект готов к первой задаче."
+      },
+      {
+        "message": 782,
+        "text": "P198-AFTER-0241"
+      }
+    ],
+    "visibility": "Both actual bubbles simultaneously present in fresh AX state; readiness and marker also visible in topic preview.",
+    "composer_end": "Empty; Record voice message button visible, no recording/attachment/reply state.",
+    "DM_draft": "Not opened or changed by current actor.",
+    "client_build": "No fresh exact Chrome/WebA build read in this pass; prior build observations remain historical.",
+    "screenshot": "Not captured in this pass; AX evidence only.",
+    "navigation_denial": "Auto-review rejected Go-to-bottom click because of prior unintended voice-recording incidents. Action did not execute and was not retried or worked around; normal asynchronous UI updates later displayed both bubbles.",
+    "completion_summary": "Verified TEST results"
+  },
+  "verdicts": {
+    "existing_project_onboarding": "PASS_ON_INSTALLED_0241: request537 answered; readytrue/gaps[]/nooverride; outbox7158→message780 once; no task effects/modelruns. Old535 FAIL retained.",
+    "postupgrade_owner_marker": "PASS_ON_INSTALLED_0241: request538/run304 codex/gpt-6.1-sol/generation10/tools0, exact reply; outbox7160→782 once; no effects.",
+    "continuity_boundary": "Idle planned-upgrade conversation/model route continuity only; not restart during active work or full launch/lifecycle.",
+    "foreign_actor": "OWNER_WAIVED_NOT_TESTED; not performed."
+  }
+}
