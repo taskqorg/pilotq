@@ -848,6 +848,44 @@ mod tests {
             let ready=crate::onboarding::check_with(&d,&t,&m,"pah",end(),&doctor).unwrap();
             assert_eq!(ready["ready"],true,"{ready}");
             assert!(crate::onboarding::gate(&m.lock().unwrap(),"pah").is_ok());
+            // #198 / §5: TaskQ's omitted public-host defaults must pass the real
+            // Recheck chain; explicit foreign board identities must still fail.
+            if front=="cli" {
+                let keys=d.keys.list().unwrap();
+                for (kind,host) in [("github","github.com"),("gitlab","gitlab.com")] {
+                    let mut default_config=config.clone();
+                    default_config["board"]=json!(kind);
+                    default_config.as_object_mut().unwrap().remove("host");
+                    for case in ["default-host","explicit-host","foreign-host","foreign-repo","foreign-kind","incomplete","default-board"] {
+                        if case=="default-board" && kind!="github" {continue;}
+                        let mut cfg=default_config.clone();
+                        let mut observed=status.clone();
+                        observed["board"]["kind"]=json!(kind);observed["board"]["host"]=json!(host);
+                        match case {
+                            "explicit-host"=>cfg["host"]=json!(host),
+                            "foreign-host"=>observed["board"]["host"]=json!("foreign.example.test"),
+                            "foreign-repo"=>observed["board"]["repo"]=json!("invented/other"),
+                            "foreign-kind"=>observed["board"]["kind"]=json!("foreign"),
+                            "incomplete"=>observed["complete"]=json!(false),
+                            "default-board"=>{cfg.as_object_mut().unwrap().remove("board");},
+                            _=>{},
+                        }
+                        let cfg=cfg.to_string();
+                        std::fs::write(root.join("taskq.json"),&cfg).unwrap();
+                        std::fs::write(install.join("board.json"),observed.to_string()).unwrap();
+                        let report=crate::onboarding::check_with(&d,&t,&m,"pah",end(),&doctor).unwrap();
+                        let expected=matches!(case,"default-host"|"explicit-host"|"default-board");
+                        assert_eq!(report["ready"],expected,"{kind}/{case}: {report}");
+                        assert_eq!(crate::onboarding::gate(&m.lock().unwrap(),"pah").is_ok(),expected);
+                        assert_eq!(std::fs::read_to_string(root.join("taskq.json")).unwrap(),cfg);
+                        assert_eq!(std::fs::read_to_string(install.join("projects")).unwrap(),format!("{original}{}\n",root.display()));
+                        assert_eq!(std::fs::read_to_string(root.join(".taskq/focus")).unwrap(),"off\n");
+                        assert_eq!(d.keys.list().unwrap(),keys,"Recheck changed key metadata");
+                    }
+                }
+                std::fs::write(root.join("taskq.json"),config.to_string()).unwrap();
+                std::fs::write(install.join("board.json"),status.to_string()).unwrap();
+            }
             assert_eq!(std::fs::read_to_string(install.join("projects")).unwrap(),format!("{original}{}\n",root.display()),"Recheck duplicated entry");
             assert_eq!(std::fs::read_to_string(&unit).unwrap(),"invented unit; never modify");
             assert_eq!(std::fs::metadata(install.join("projects")).unwrap().permissions().mode() & 0o777,0o600);

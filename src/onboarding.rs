@@ -404,8 +404,11 @@ pub(crate) fn check_with(d:&crate::direct::Direct,tq:&Taskq,j:&std::sync::Mutex<
     let fallback=Taskq{bot:None,bin:tq.bin.clone(),root:root.clone().into(),poll:Duration::from_secs(15)};
     let status=probe(&fallback.bin,&root,&["status","--json"],end.min(Instant::now()+Duration::from_secs(10)),&active);
     let config:Value=std::fs::read(fallback.root.join("taskq.json")).ok().and_then(|s|serde_json::from_slice(&s).ok()).unwrap_or(Value::Null);
+    let kind=config["board"].as_str().unwrap_or("github");
+    let host=config["host"].as_str().or_else(||match kind {"github"=>Some("github.com"),"gitlab"=>Some("gitlab.com"),_=>None});
     let matched=status["complete"]==true && status["board"]["repo"]==board && config["repo"]==board
-        && ["kind","host"].iter().all(|k|status["board"][k].is_null() || status["board"][k]==config[if *k=="kind" {"board"} else {"host"}]);
+        && (status["board"]["kind"].is_null() || status["board"]["kind"]==kind)
+        && (status["board"]["host"].is_null() || host.is_some_and(|h|status["board"]["host"]==h));
     let attached=if !matched {Err("Owner: restore matching TaskQ configuration and board readback, then Recheck".into())}
         else if board_only {Ok(())}
         else {attach(&fallback,j,project,&epoch,end.min(Instant::now()+Duration::from_secs(10)),&active)};
