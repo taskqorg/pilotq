@@ -453,6 +453,8 @@ fn f01_crash_points_keep_each_input_once() {
     wait("both reactions", 15, || st.lock().unwrap().reactions.len() == 2);
     wait("retention notice",15,|| st.lock().unwrap().sent.len()==1);
     wait("cursor past update 2", 15, || try_query(&d, "SELECT value FROM meta WHERE key='cursor'") == Some(3));
+    // The mock sees a send before PilotQ commits its receipt; a kill in that gap is an allowed visible duplicate (§4).
+    wait("delivery receipts", 15, || try_query(&d, "SELECT count(*) FROM outbox WHERE state NOT IN ('delivered','superseded')") == Some(0));
     let mut c = c;
     c.kill().unwrap(); // after cursor advancement
     c.wait().unwrap();
