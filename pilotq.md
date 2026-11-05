@@ -39,7 +39,8 @@ Recurring task execution stays with TaskQ or the existing scheduler. For the own
 ## 2. Conversation, admission and authorization
 
 **Mandatory:** [conversation rules](docs/conversation-contract.md) define admission, route identity, discussion, delegation and follow-ups; [conversation flow](docs/conversation-flow.md) alone owns presentation. Grants, immutable task scope and durable receipts retain authority over presentation.
-Task outputs explain observed state, effect and choices in the person’s language. With PM review on, its turn explains cards; with PM off, source cards use no model. Preserve literal source, original option numbers and authority. This replaces verbatim-only explanations. Missing snapshots never prove closure: require explicit same-task closed evidence (§5).
+Task outputs explain observed state, effect and choices in the person’s language. With PM off, source cards use no model and retain a verified link, meaningful title, observed state and available trusted outcome and limits. With PM review on, its turn explains their meaning without inventing or weakening them.
+Generic unknown text never replaces an available qualified report. Preserve literal source, original option numbers and authority. This replaces verbatim-only explanations. Missing snapshots never prove closure: require explicit same-task closed evidence (§5).
 Ignore unknown, revoked and unidentifiable senders without reply, reaction, typing, model calls, tasks, profile updates or retained bodies. Bootstrap the protected owner through installation configuration. Stable Telegram IDs and explicit grants establish authority; names, group badges, quotations and external content do not.
 
 **Roles** replace per-project grant setup; each restriction names what it prevents. An **admin** (`admin`; the protected owner and named administrators) answers asks, starts, steers, requeues, closes and administers in every registered project. A **project owner** (`owner:NAME`) has those task rights only in owned projects.
@@ -176,8 +177,7 @@ AgentQ tool compression and conversation summarization have separate owners; pre
 
 **Proposed:** [budget detail](docs/runtime-contract.md#7-proposed-operating-budgets) retains every acceptance target and retention constraint. These are initial targets to tune from recorded pilot evidence, not an SLA.
 
-Receipt p95 ≤2 seconds; acknowledgement ≤5 seconds; no fixed turn duration or tool-call cap; cancel after ten minutes
-without a runtime event, with the exact reason; cancellation acknowledgement ≤5 seconds plus a five-second termination
+Receipt p95 ≤2 seconds; acknowledgement ≤5 seconds; no fixed turn duration or tool-call cap; cancel after ten minutes without a runtime event, with the exact reason; cancellation acknowledgement ≤5 seconds plus a five-second termination
 grace; recovery within thirty seconds of readiness. Runtime events renew the inactivity clock; typing and progress
 timers do not. One topic progress message is updated no more often than every thirty seconds. A loop tick posts no progress message: it runs unattended and reports through its reply.
 

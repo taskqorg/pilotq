@@ -1,0 +1,203 @@
+{
+  "n": 2453,
+  "title": "Qualify the retained A7 candidate on Mac",
+  "url": "https://github.com/taskqorg/taskq/issues/2453",
+  "state": "closed",
+  "revision": 6670877601,
+  "issue": {
+    "number": 2453,
+    "url": "https://github.com/taskqorg/taskq/issues/2453",
+    "title": "Qualify the retained A7 candidate on Mac",
+    "state": "closed",
+    "comments": [
+      {
+        "id": 6670058392,
+        "author": "alexkirs",
+        "created": "2026-11-05T21:30:38Z",
+        "edited": true,
+        "trusted": true,
+        "body": "<!-- taskq-summary -->\n**Closed**\nChanged: R5: Mac A7 evidence for #2427 is accepted: all 4 runtimes have native start/resume, transcript parity and status/heartbeat rows on a candidate Service with a fixture board; no source change.\nOpen: #2427 owns: exact tip fails macOS build, so evidence binaries are tip + overlay (R12); 2 launch tests depend on Mac env; installed-service parity unproved (Mac runs 4.6.84).\nREADME overstates status/heartbeat equality: Claude's last row is local running, heartbeat unknown; first reads are local null; counts lack a total. Cause unverified; #2427 A7 settles it.\nFiles: [⬇ taskq-2453-mac-evidence.zip](https://github.com/taskqorg/taskq/raw/c3bf0bf0bc24546250b266f11708c294e238ec65/2453/5e6ae58eef0e-taskq-2453-mac-evidence.zip)"
+      },
+      {
+        "id": 6670748579,
+        "author": "alexkirs",
+        "created": "2026-11-05T22:05:01Z",
+        "edited": false,
+        "trusted": true,
+        "body": "taskq: result d8bbcfb05774f1a5ed666338b9767cce95496c82 attempt 6670270429\nChanged: Mac A7 evidence is attached: all 4 runtimes passed start/resume and transcript parity and reached status/heartbeat rows on a candidate Service with a fixture board (R12).\nChecks: A1 archive and bundle SHA-256, git bundle verify, isolated fetch, fsck -- pass; tip 0af92c03 and 16 original commit SHAs kept\nChecks: A2 native_trait_start_resume_and_transcript, 4 Mac runtimes, tip + 2-line compile overlay -- pass; same session, exact input, transcript parity\nChecks: A3 temp native_service_observation_2453, fixture board and in-process Service -- status/heartbeat rows seen; 2 first-run instrument assertion failures explained in README, no replay\nChecks: execution_heartbeat_is_fenced on Mac -- pass, 4 runtimes, fixture only\nChecks: runtime:: on Mac -- 136 passed 2 failed in probe env; 138 passed 0 failed with python symlink, /private/tmp TMPDIR and worker AgentQ env\nChecks: A4 policy and host hashes before/after, permissions readback, app PIDs -- unchanged; rev 34; 12 bounded turns, no replay\nOpen: #2427 must fix: exact tip 0af92c03 fails to build on macOS (2 errors, overlay attached) and 2 launch tests depend on Mac env. No installed-service proof: Mac runs 4.6.84; README lists codex-app limits.\n\nEvidence: [⬇ taskq-2453-mac-evidence.zip](https://github.com/taskqorg/taskq/raw/c3bf0bf0bc24546250b266f11708c294e238ec65/2453/5e6ae58eef0e-taskq-2453-mac-evidence.zip)"
+      },
+      {
+        "id": 6670835977,
+        "author": "alexkirs",
+        "created": "2026-11-05T22:09:35Z",
+        "edited": false,
+        "trusted": true,
+        "body": "taskq: publish attempt 6670772350\nChanged: R5: Mac A7 evidence for #2427 is accepted: all 4 runtimes have native start/resume, transcript parity and status/heartbeat rows on a candidate Service with a fixture board; no source change.\nChecks: Task fit: A1 ok, A2 ok, A3 ok with named limits, A4 ok, A5 ok except one README sentence, see Open; merge-result CI not applicable: no-commit route, d8bbcfb0 already on main\nChecks: R12 A1 rerun: published ZIP SHA256 a1e098f1 and bundle da3c1fab match; bundle verify, isolated fetch and connectivity fsck pass; tip 0af92c03, 16 commits; Mac taskq-2427 stays at 2701721e\nChecks: R12 A2 readback: canaries of all 4 runtimes are in their native transcripts for the recorded sessions; the instrument asserts same session, acceptance and the TaskQ transcript reply\nChecks: R12 A3 readback: codex-app rollout SHA256 600f107d matches summary and holds its 2453 canary; its test stays FAILED on an instrument log check, named in README; fixture board, no installed service\nChecks: R9 A4 readback: host.json and worker-policy.json hashes equal the receipts now; grant read at each launch; ChatGPT app PIDs 1227 and 73225 alive; 12 turns, 180 s bound, no replay\nChecks: A5: 26 files, no tokens or home paths; result on main, taskq-2453 branch clean, no push or PR; macOS build errors confirmed in tip source\nChecks: Implementation quality: no binding gaps; the README correction is in Open\nOpen: #2427 owns: exact tip fails macOS build, so evidence binaries are tip + overlay (R12); 2 launch tests depend on Mac env; installed-service parity unproved (Mac runs 4.6.84).\nREADME overstates status/heartbeat equality: Claude's last row is local running, heartbeat unknown; first reads are local null; counts lack a total. Cause unverified; #2427 A7 settles it."
+      },
+      {
+        "id": 6670877601,
+        "author": "alexkirs",
+        "created": "2026-11-05T22:11:46Z",
+        "edited": false,
+        "trusted": true,
+        "body": "taskq: close\nRepeats: publish 6670835977\n\ndelivery auto-merge r0: d8bbcfb05774f1a5ed666338b9767cce95496c82 already on main"
+      }
+    ]
+  },
+  "closed_snapshot": {
+    "schema": 1,
+    "source": "board",
+    "more": false,
+    "tasks": [
+      {
+        "n": 2453,
+        "revision": 6670877601,
+        "title": "Qualify the retained A7 candidate on Mac",
+        "url": "https://github.com/taskqorg/taskq/issues/2453",
+        "state": "closed",
+        "closed": 1793916710,
+        "outcome": "success",
+        "close": "delivered",
+        "conversation": null,
+        "history": [
+          {
+            "question": null,
+            "answered": {
+              "by": "alexkirs",
+              "text": "taskq: hold",
+              "at": 1793914237,
+              "source": {
+                "id": 6670057840,
+                "kind": "hold",
+                "question": null,
+                "asked_at": 1793914237,
+                "attempt": null,
+                "session": null,
+                "role": null
+              }
+            }
+          },
+          {
+            "question": null,
+            "answered": {
+              "by": "alexkirs",
+              "text": "taskq: start",
+              "at": 1793914283,
+              "source": {
+                "id": 6670073594,
+                "kind": "start",
+                "question": null,
+                "asked_at": 1793914283,
+                "attempt": null,
+                "session": null,
+                "role": null
+              }
+            }
+          },
+          {
+            "question": null,
+            "answered": {
+              "by": "alexkirs",
+              "text": "taskq: spawn worker claude:2c8bce5b-ff91-4308-9190-4b34fe038b3f mac\nweighted pick claude: running 1, weight 6, headroom not observed, effective 6.000; selected claude",
+              "at": 1793914883,
+              "source": {
+                "id": 6670270429,
+                "kind": "spawn",
+                "question": null,
+                "asked_at": 1793914883,
+                "attempt": 6670270429,
+                "session": "claude:2c8bce5b-ff91-4308-9190-4b34fe038b3f mac",
+                "role": "worker"
+              }
+            }
+          },
+          {
+            "question": null,
+            "answered": {
+              "by": "alexkirs",
+              "text": "taskq: result d8bbcfb05774f1a5ed666338b9767cce95496c82 attempt 6670270429\nChanged: Mac A7 evidence is attached: all 4 runtimes passed start/resume and transcript parity and reached status/heartbeat rows on a candidate Service with a fixture board (R12).\nChecks: A1 archive and bundle SHA-256, git bundle verify, isolated fetch, fsck -- pass; tip 0af92c03 and 16 original commit SHAs kept\nChecks: A2 native_trait_start_resume_and_transcript, 4 Mac runtimes, tip + 2-line compile overlay -- pass; same session, exact input, transcript parity\nChecks: A3 temp native_service_observation_2453, fixture board and in-process Service -- status/heartbeat rows seen; 2 first-run instrument assertion failures explained in README, no replay\nChecks: execution_heartbeat_is_fenced on Mac -- pass, 4 runtimes, fixture only\nChecks: runtime:: on Mac -- 136 passed 2 failed in probe env; 138 passed 0 failed with python symlink, /private/tmp TMPDIR and worker AgentQ env\nChecks: A4 policy and host hashes before/after, permissions readback, app PIDs -- unchanged; rev 34; 12 bounded turns, no replay\nOpen: #2427 must fix: exact tip 0af92c03 fails to build on macOS (2 errors, overlay attached) and 2 launch tests depend on Mac env. No installed-service proof: Mac runs 4.6.84; README lists codex-app limits.\n\nEvidence: [⬇ taskq-2453-mac-evidence.zip](https://github.com/taskqorg/taskq/raw/c3bf0bf0bc24546250b266f11708c294e238ec65/2453/5e6ae58eef0e-taskq-2453-mac-evidence.zip)",
+              "at": 1793916301,
+              "source": {
+                "id": 6670748579,
+                "kind": "result",
+                "question": null,
+                "asked_at": 1793916301,
+                "attempt": 6670270429,
+                "session": "claude:2c8bce5b-ff91-4308-9190-4b34fe038b3f mac",
+                "role": "worker"
+              }
+            }
+          },
+          {
+            "question": null,
+            "answered": {
+              "by": "alexkirs",
+              "text": "taskq: spawn reviewer claude:4ddf71ad-c651-4d76-8513-479c2bd0f9d3 mac\nweighted pick claude: running 0, weight 6, headroom not observed, effective 6.000; selected claude",
+              "at": 1793916374,
+              "source": {
+                "id": 6670772350,
+                "kind": "spawn",
+                "question": null,
+                "asked_at": 1793916374,
+                "attempt": null,
+                "session": null,
+                "role": null
+              }
+            }
+          },
+          {
+            "question": null,
+            "answered": {
+              "by": "alexkirs",
+              "text": "taskq: publish attempt 6670772350\nChanged: R5: Mac A7 evidence for #2427 is accepted: all 4 runtimes have native start/resume, transcript parity and status/heartbeat rows on a candidate Service with a fixture board; no source change.\nChecks: Task fit: A1 ok, A2 ok, A3 ok with named limits, A4 ok, A5 ok except one README sentence, see Open; merge-result CI not applicable: no-commit route, d8bbcfb0 already on main\nChecks: R12 A1 rerun: published ZIP SHA256 a1e098f1 and bundle da3c1fab match; bundle verify, isolated fetch and connectivity fsck pass; tip 0af92c03, 16 commits; Mac taskq-2427 stays at 2701721e\nChecks: R12 A2 readback: canaries of all 4 runtimes are in their native transcripts for the recorded sessions; the instrument asserts same session, acceptance and the TaskQ transcript reply\nChecks: R12 A3 readback: codex-app rollout SHA256 600f107d matches summary and holds its 2453 canary; its test stays FAILED on an instrument log check, named in README; fixture board, no installed service\nChecks: R9 A4 readback: host.json and worker-policy.json hashes equal the receipts now; grant read at each launch; ChatGPT app PIDs 1227 and 73225 alive; 12 turns, 180 s bound, no replay\nChecks: A5: 26 files, no tokens or home paths; result on main, taskq-2453 branch clean, no push or PR; macOS build errors confirmed in tip source\nChecks: Implementation quality: no binding gaps; the README correction is in Open\nOpen: #2427 owns: exact tip fails macOS build, so evidence binaries are tip + overlay (R12); 2 launch tests depend on Mac env; installed-service parity unproved (Mac runs 4.6.84).\nREADME overstates status/heartbeat equality: Claude's last row is local running, heartbeat unknown; first reads are local null; counts lack a total. Cause unverified; #2427 A7 settles it.",
+              "at": 1793916575,
+              "source": {
+                "id": 6670835977,
+                "kind": "publish",
+                "question": null,
+                "asked_at": 1793916575,
+                "attempt": 6670772350,
+                "session": "claude:4ddf71ad-c651-4d76-8513-479c2bd0f9d3 mac",
+                "role": "reviewer"
+              }
+            }
+          },
+          {
+            "question": null,
+            "answered": {
+              "by": "alexkirs",
+              "text": "taskq: close\nRepeats: publish 6670835977\n\ndelivery auto-merge r0: d8bbcfb05774f1a5ed666338b9767cce95496c82 already on main",
+              "at": 1793916706,
+              "source": {
+                "id": 6670877601,
+                "kind": "close",
+                "question": null,
+                "asked_at": 1793916706,
+                "attempt": null,
+                "session": null,
+                "role": null
+              }
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "inbox": {
+    "schema": 1,
+    "task": 2453,
+    "title": "Qualify the retained A7 candidate on Mac",
+    "url": "https://github.com/taskqorg/taskq/issues/2453",
+    "open": false,
+    "state": "closed",
+    "revision": 6670877601,
+    "card": null,
+    "result": "d8bbcfb05774f1a5ed666338b9767cce95496c82",
+    "attempt": null,
+    "last": {
+      "id": 6670877601,
+      "at": 1793916706
+    },
+    "answers": []
+  }
+}

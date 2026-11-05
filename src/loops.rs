@@ -22,7 +22,7 @@ pub struct Loop {
 /// #264 A6: fallback between event wakes, inside the owner's 1-2 h window.
 pub const REVIEW_FALLBACK: i64 = 5400;
 const STUCK: i64 = 7200;
-const REVIEW: &str = "Synthetic PM review. Review every registered project you can access through installed TaskQ commands and taskq profile telemetry, starting from the changes below; report stuck work, failures, asks, reviews with options and freed capacity with held tasks, with verified task links. Follow the bound PM pack when present. Decide with the author's current rights (#267): an admin author may answer asks in any project, a project owner only in owned projects; give the reason with each answer and relay a question when evidence is missing. Explain each changed task card in the recipient's language before technical codes: observed state, verified repo#N link and title, effect and significance, and next actor when waiting. For decisions keep original option numbers, full pros and cons, recommendation and its evidenced reason; say when a reason is unavailable. Explain rule references in ordinary language. Never mix historical privacy choices with later cycle revisions. Raw source is evidence, not the explanation. Explanation alone never selects an option or authorizes a mutation. Closed is not released or deployed. Do not call loop tools.";
+const REVIEW: &str = "Synthetic PM review. Review every registered project you can access through installed TaskQ commands and taskq profile telemetry, starting from the changes below; report stuck work, failures, asks, reviews with options and freed capacity with held tasks, with verified task links. Follow the bound PM pack when present. Decide with the author's current rights (#267): an admin author may answer asks in any project, a project owner only in owned projects; give the reason with each answer and relay a question when evidence is missing. Explain each changed task card in the recipient's language before technical codes: observed state, verified repo#N link and title, effect and significance, and next actor when waiting. For decisions keep original option numbers, full pros and cons, recommendation and its evidenced reason; say when a reason is unavailable. Explain rule references in ordinary language. Never mix historical privacy choices with later cycle revisions. Raw source is evidence, not the explanation. Explanation alone never selects an option or authorizes a mutation. For a closed card, explain what its closing_result outcome and each limit mean, never inventing, dropping or softening them; call a fact unknown only when the card lacks it. Closed is not released or deployed. Do not call loop tools.";
 fn err(e: rusqlite::Error) -> String { e.to_string() }
 fn key(front: &str, chat: i64, topic: Option<i64>) -> String { format!("loop:{front}:{chat}:{}", topic.unwrap_or(0)) }
 fn lkey(l: &Loop) -> String { if l.review {format!("review:{}",l.author)} else {key(&l.front,l.chat,l.topic)} }
@@ -378,12 +378,20 @@ fn collect(bound:Result<(crate::taskq::Taskq,String),String>,j:&std::sync::Mutex
         for (n,old) in before.as_object().ok_or("loop board baseline unavailable")? {
             if !tasks.contains_key(n) {
                 if old["state"]=="closed" {tasks.insert(n.clone(),old.clone());continue;}
+                // Each disappeared task gets its own budget, so several closures in one pass cannot starve the cursor.
+                let end=std::time::Instant::now()+std::time::Duration::from_secs(10);
                 let issue=bound.loop_read(&["issue",n,"--json"],end)?;
                 if issue["number"].as_i64().map(|v|v.to_string()).as_deref()!=Some(n) {return Err("loop issue number mismatch".into());}
                 if issue["state"].as_str().is_some_and(|s|s.eq_ignore_ascii_case("closed")) {let mut closed=old.clone();
                     closed["state"]=json!("closed");closed["question"]=Value::Null;closed["options"]=Value::Null;closed["title"]=issue["title"].clone();closed["url"]=issue["url"].clone();
                     // Retain literal trusted closing findings as context; the PM must reread current state.
-                    closed["closing_result"]=json!(crate::taskq::closing_detail(&issue,n.parse().map_err(|_|"invalid observed task number")?));
+                    let number=n.parse().map_err(|_|"invalid observed task number")?;
+                    closed["closing_result"]=json!(if crate::taskq::repeats_publication(&issue) {
+                        // A failed read returns the error: the cursor stays and the next pass retries (§2 / #387).
+                        let inbox=bound.loop_read(&["inbox",n,"--json"],end)?;
+                        let report=bound.loop_read(&["status","--closed","--task",n,"--json"],end)?;
+                        crate::taskq::published_detail(&issue,&report,&inbox,number)
+                    } else {crate::taskq::closing_detail(&issue,number)});
                     tasks.insert(n.clone(),closed);}
                 else {tasks.insert(n.clone(),old.clone());}
             }
@@ -926,6 +934,47 @@ mod tests {
         row["revision"]=json!(revision+2);
         observe(&mut j,&w,&json!({"2450":row}),6).unwrap();assert_eq!(ticks(&j).len(),1,"off stops future explanations");
         drop(j);std::fs::remove_dir_all(p).unwrap();
+    }
+
+    // #387 / §2: the board observer's source card for literal taskq#2453. Defect: a close repeating a publish reached
+    // PM review with closing_result null. Risk kept: PM-on context losing the outcome or limits, PM off starting a model.
+    // This proves the model's context, not its explanation or live Telegram delivery.
+    #[cfg(unix)]
+    #[test]
+    fn explanations_387_2453_observer_context() {
+        use crate::taskq::fixture_2453::*;
+        for (review,address,language) in [(true,"Ответь по-русски. Проверь задачи","ru"),(true,"Please review current tasks","en"),(false,"Please review current tasks","en")] {
+            let (mut j,p)=journal(&format!("explanations387-{review}-{language}"));
+            let bin=install(&p);
+            j.0.execute("INSERT INTO projects(name,repo,root,by,at) VALUES ('taskq',?1,?2,7,0)",params![BOARD,p.to_str().unwrap()]).unwrap();
+            let mut said=input(1,7,address);said.language=None;
+            j.admit(&[(1,Some(said))],1).unwrap();
+            if review {admitted(&mut j,2,1,7,"/review on",2);}
+            let w=Watch{project:"taskq".into(),board:BOARD.into(),root:p.to_string_lossy().to_string()};
+            let tq=crate::taskq::Taskq{bot:None,bin,root:p.clone(),poll:std::time::Duration::from_secs(5)};
+            let mutex=std::sync::Mutex::new(j);
+            let collect_now=|| {let bound=tq.registered(&mutex.lock().unwrap(),"taskq");collect(bound,&mutex,&w)};
+            snapshot(&p,json!([{"n":2453,"state":"doing","revision":1,"title":TITLE,"url":URL}]));collect_now().unwrap();
+            snapshot(&p,json!([]));
+            std::fs::write(p.join("closed-fails"),"").unwrap();
+            assert!(collect_now().is_err(),"an unreadable closed report retries instead of a null outcome");
+            assert!(ticks(&mutex.lock().unwrap()).is_empty());
+            std::fs::remove_file(p.join("closed-fails")).unwrap();
+            collect_now().unwrap();
+            let j=mutex.into_inner().unwrap();
+            assert_eq!(j.subscriptions().unwrap().len(),1,"the closure becomes one model-free card subscription");
+            let text=ticks(&j);
+            if !review {assert!(text.is_empty(),"PM off: no model request");}
+            else {
+                assert_eq!(text.len(),1);
+                for fact in FACTS.iter().chain(&[TITLE,URL]) {assert!(text[0].contains(fact),"missing {fact}: {}",text[0]);}
+                assert!(text[0].contains("\"state\":\"closed\"") && text[0].contains("\"closing_result\":\"Changed: R5"),"{}",text[0]);
+                assert!(text[0].contains("never inventing, dropping or softening"),"{}",text[0]);
+                let tick:Option<String>=j.0.query_row("SELECT language FROM requests WHERE id IN (SELECT request_id FROM audit_events WHERE kind='loop_tick')",[],|r|r.get(0)).unwrap();
+                assert_eq!(tick.as_deref(),Some(language));
+            }
+            drop(j);std::fs::remove_dir_all(p).unwrap();
+        }
     }
 
     // #264 A5: Explain on a delivered board card starts one model input in that route with the card as quoted context.

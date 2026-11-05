@@ -105,9 +105,16 @@ pub(crate) fn closing_detail(issue: &Value, task: i64) -> Option<String> {
     if lines.is_empty() {None} else {Some(lines.join("\n"))}
 }
 
+/// A close that only repeats a publication holds no findings itself; they need the closed snapshot (§5 / #387).
+pub(crate) fn repeats_publication(issue: &Value) -> bool {
+    issue["comments"].as_array().into_iter().flatten().rev().filter(|c|c["trusted"]==true && c["edited"]!=true)
+        .filter_map(|c|c["body"].as_str()).find(|b|b.lines().next().is_some_and(|l|l.starts_with("taskq: close")))
+        .is_some_and(|b|b.lines().any(|l|l.starts_with("Repeats:")))
+}
+
 /// §5: TaskQ owns acceptance. Compare its resolved verdict to the exact raw source,
 /// never fold the lifecycle here or follow a URL supplied in comment prose.
-fn published_detail(issue: &Value, closed: &Value, inbox: &Value, task: i64) -> Option<String> {
+pub(crate) fn published_detail(issue: &Value, closed: &Value, inbox: &Value, task: i64) -> Option<String> {
     if issue["number"] != task || issue["state"] != "closed" || inbox["task"] != task
         || inbox["state"] != "closed" || inbox["open"] != false || closed["schema"] != 1
         || closed["source"] != "board" { return None; }
@@ -248,7 +255,7 @@ impl Taskq {
         let out=crate::commands::execute_bounded(command,end,||true,1024*1024);
         if out["status"]!="success" {return Err(format!("TaskQ loop observation unavailable: {}",out["status"]));}
         let value:Value=serde_json::from_str(out["stdout"].as_str().ok_or("TaskQ loop output unavailable")?).map_err(|_|"TaskQ loop output is not JSON")?;
-        if args.first()==Some(&"status") {
+        if args.first()==Some(&"status") && args.get(1)!=Some(&"--closed") {
             if value["complete"]!=true || !value["tasks"].is_array() {return Err("TaskQ loop snapshot incomplete".into());}
             self.check(value["board"]["repo"].as_str().ok_or("TaskQ loop board missing")?)?;
         }
@@ -317,7 +324,8 @@ impl Taskq {
         })
     }
 
-    /// Closure and accepted findings are separate claims (§5 / #385).
+    /// Closure and accepted findings are separate claims (§5 / #385), but an unreadable report is not an absent one:
+    /// it stays unconfirmed so the scan retries instead of showing generic unknown text (§2 / #387).
     pub(crate) fn closed_observation(&self, task:i64) -> Option<(Value,Option<String>)> {
         let before=self.inbox(task).ok()?;
         let issue=self.issue(task).ok()?;
@@ -327,6 +335,7 @@ impl Taskq {
         let after=self.inbox(task).ok()?;
         if before!=after || issue!=self.issue(task).ok()? || after["state"]!="closed" || after["open"]!=false
             || issue["url"]!=after["url"] {return None;}
+        if closed.is_none() && repeats_publication(&issue) {return None;}
         let detail=(|| {
             let close=issue["comments"].as_array()?.iter().find(|c|c["id"]==after["revision"])?;
             if close["trusted"]!=true || close["edited"]!=false
@@ -1005,6 +1014,37 @@ pub fn watch(tq: std::sync::Arc<Taskq>, j: crate::telegram::Shared, wake: std::s
     }
 }
 
+/// #387 / §§2,5: literal taskq#2453 readbacks served through a fake installed CLI on the real closing paths.
+#[cfg(all(test,unix))]
+pub(crate) mod fixture_2453 {
+    use serde_json::Value;
+    pub(crate) const BOARD:&str="taskqorg/taskq";
+    pub(crate) const TITLE:&str="Qualify the retained A7 candidate on Mac";
+    pub(crate) const URL:&str="https://github.com/taskqorg/taskq/issues/2453";
+    /// Accepted outcome, its evidence boundary and every limit the owner named. Each survives every sink literally.
+    pub(crate) const FACTS:[&str;15]=["Mac A7 evidence for #2427 is accepted","all 4 runtimes","transcript parity",
+        "candidate Service with a fixture board","no source change","#2427 owns","exact tip fails macOS build","tip + overlay",
+        "2 launch tests depend on Mac env","installed-service parity unproved","README overstates","Claude's last row is local running",
+        "heartbeat unknown","Cause unverified","#2427 A7 settles it"];
+    pub(crate) fn fixture()->Value {serde_json::from_str(include_str!("../tests/fixtures/385/2453.json")).unwrap()}
+    /// Writes the fake CLI and its readbacks. A `closed-fails` file makes the closed-report read fail.
+    pub(crate) fn install(dir:&std::path::Path)->std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let f=fixture();
+        std::fs::write(dir.join("taskq.json"),format!(r#"{{"repo":"{BOARD}","create_claim_issue":1}}"#)).unwrap();
+        for (file,field) in [("issue.json","issue"),("inbox.json","inbox"),("closed.json","closed_snapshot")] {
+            std::fs::write(dir.join(file),f[field].to_string()).unwrap();
+        }
+        let bin=dir.join("taskq");
+        std::fs::write(&bin,"#!/bin/sh\ncase \"$1 $2\" in\n\"status --closed\") [ -e closed-fails ] && exit 1; cat closed.json;;\nstatus*) cat snapshot.json;;\nissue*) cat issue.json;;\ninbox*) cat inbox.json;;\n*) exit 99;;\nesac\n").unwrap();
+        std::fs::set_permissions(&bin,std::fs::Permissions::from_mode(0o700)).unwrap();
+        bin
+    }
+    pub(crate) fn snapshot(dir:&std::path::Path,tasks:Value) {
+        std::fs::write(dir.join("snapshot.json"),serde_json::json!({"complete":true,"board":{"repo":BOARD},"tasks":tasks}).to_string()).unwrap();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1064,6 +1104,75 @@ mod tests {
         let mut missing=closed["closed_snapshot"].clone();missing["tasks"][0]["history"].as_array_mut().unwrap().pop();
         assert!(published_detail(&closed["issue"],&missing,&closed["inbox"],2451).is_none());
         assert!(!link.contains("deployed"));
+    }
+
+    // #387 / §2: the real PM-off closing path must show every fact in each sink. Defect: an unreadable closed
+    // report became a permanent generic unknown line. Risk kept: closing cards losing their outcome or limits.
+    // This is closure, journal and renderer evidence; it does not prove live Telegram delivery.
+    #[cfg(unix)]
+    #[test]
+    fn explanations_387_2453_pm_off_closing_card() {
+        use fixture_2453::*;
+        for (language,address,state,button) in [("ru","Покажи текущие задачи","Задача закрыта","Объяснить"),("en","Please show current tasks","Task closed","Explain")] {
+            let dir=std::env::temp_dir().join(format!("pilotq-2453-{language}-{}-{}",std::process::id(),now()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let bin=install(&dir);
+            snapshot(&dir,json!([]));
+            let root=dir.to_string_lossy().to_string();
+            let mut journal=Journal::open(&dir.join("journal.sqlite")).unwrap();
+            journal.bootstrap(7,0).unwrap();
+            journal.add_project(7,"taskq",BOARD,&root,0).unwrap();
+            let input=crate::journal::Input{files:vec![],callback:None,media_group:None,quote:None,image:None,voice:None,language:None,chat:7,topic:None,sender:Some(7),name:Some("Owner".into()),message:1,kind:"text",text:Some(address.into()),reply_to:None};
+            journal.admit(&[(1,Some(input))],1).unwrap();
+            assert!(crate::journal::board_card(&journal.0,"taskq",BOARD,&root,2453,2).unwrap());
+            let queued=|j:&Journal|->i64 {j.0.query_row("SELECT count(*) FROM requests WHERE state IN ('queued','running')",[],|r|r.get(0)).unwrap()};
+            let before=queued(&journal);
+            let j=Mutex::new(journal);
+            let tq=Taskq{bot:None,bin,root:dir.clone(),poll:Duration::from_secs(15)};
+            std::fs::write(dir.join("closed-fails"),"").unwrap();
+            assert!(!scan(&tq,&j),"an unreadable closed report keeps the subscription");
+            assert_eq!(j.lock().unwrap().subscriptions().unwrap().len(),1);
+            let cards:i64=j.lock().unwrap().0.query_row("SELECT count(*) FROM outbox WHERE kind='status' AND task=2453",[],|r|r.get(0)).unwrap();
+            assert_eq!(cards,0,"no generic unknown card replaces an available report");
+            std::fs::remove_file(dir.join("closed-fails")).unwrap();
+            assert!(scan(&tq,&j),"the retried read closes with the trusted report");
+            assert!(j.lock().unwrap().subscriptions().unwrap().is_empty());
+            let journal=j.lock().unwrap();
+            let (id,text):(i64,String)=journal.0.query_row("SELECT id,text FROM outbox WHERE kind='status' AND task=2453 ORDER BY id DESC LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+            assert_eq!(queued(&journal),before,"PM off starts no model request");
+            assert_eq!(journal.card_buttons(id).unwrap(),vec![(format!("explain:{id}"),button.into())]);
+            for sink in [text.clone(),crate::telegram::markdown(&text),crate::telegram::html(&text)] {
+                for fact in FACTS.iter().chain(&[TITLE,URL,state,"taskq#2453"]) {assert!(sink.contains(fact),"missing {fact}: {sink}");}
+                for wrong in ["not confirmed","не подтверждены","**Closed**","R12 A1 rerun","✅","deployed","released"] {assert!(!sink.contains(wrong),"{wrong}: {sink}");}
+            }
+            drop(journal);drop(j);std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    // #387 / §5: 2453 findings stay bound to the exact trusted publish, close, author and revision.
+    // A mismatch keeps the outcome unconfirmed; it never promotes the edited summary or a changed body.
+    #[cfg(unix)]
+    #[test]
+    fn explanations_387_2453_trust_guards() {
+        let f=fixture_2453::fixture();
+        let (issue,closed,inbox)=(&f["issue"],&f["closed_snapshot"],&f["inbox"]);
+        let detail=published_detail(issue,closed,inbox,2453).expect("literal qualified report");
+        assert!(detail.starts_with("Changed: R5: Mac A7") && detail.contains("\nOpen: #2427 owns") && detail.ends_with("#2427 A7 settles it."));
+        assert!(!detail.contains("Checks:"));
+        let publish=issue["comments"].as_array().unwrap().iter().position(|c|c["id"]==6670835977_i64).unwrap();
+        for (field,value) in [("trusted",json!(false)),("edited",json!(true)),("body",json!("taskq: publish attempt 6670772350\nChanged: invented\nOpen: none"))] {
+            let mut bad=issue.clone();bad["comments"][publish][field]=value;
+            assert!(published_detail(&bad,closed,inbox,2453).is_none(),"bad publish {field}");
+        }
+        let history=closed["tasks"][0]["history"].as_array().unwrap().iter().position(|h|h["answered"]["source"]["id"]==6670835977_i64).unwrap();
+        for (field,value) in [("by",json!("invented-actor")),("text",json!("invented"))] {
+            let mut bad=closed.clone();bad["tasks"][0]["history"][history]["answered"][field]=value;
+            assert!(published_detail(issue,&bad,inbox,2453).is_none(),"bad history {field}");
+        }
+        for (field,value) in [("revision",json!(6670835977_i64)),("task",json!(2451)),("state",json!("doing"))] {
+            let mut bad=inbox.clone();bad[field]=value;
+            assert!(published_detail(issue,closed,&bad,2453).is_none(),"bad inbox {field}");
+        }
     }
 
     // #97 / §12: preserve bilingual source trade-offs, while controls omit details and CLI boilerplate.
