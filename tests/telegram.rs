@@ -3084,10 +3084,10 @@ fn u95_cases(live: bool) {
 #[test]
 fn u95_scripted_reply_task_question_status() { u95_cases(false); }
 
-// Run on FRA with the subscription login. Fake Telegram/TaskQ avoid live board mutations.
+// Run on the supported Linux test host with the subscription login. Fake Telegram/TaskQ avoid live board mutations.
 // PILOTQ_A8_CODEX_HOME=<subscription home> cargo test --locked --test telegram u95_live -- --ignored --nocapture
 #[test]
-#[ignore = "uses the real Codex subscription on FRA"]
+#[ignore = "uses the real Codex subscription on a Linux test host"]
 fn u95_live_reply_task_question_status() { u95_cases(true); }
 // #94 / §5 / R11: a trusted board answer closes only its original question; stale taps show the receipt without writes.
 #[test]
@@ -3863,7 +3863,7 @@ fn u165_status_observations_without_reply_footer() {
     measured*)
       text='measured answer\n- **Status**: queued\n- [Task](https://example.invalid/task)'
       echo '{"method":"thread/tokenUsage/updated","params":{"threadId":"'$th'","turnId":"u1","tokenUsage":{"last":{"inputTokens":800,"totalTokens":900},"modelContextWindow":1000}}}'
-      # Keep the 3h ceiling away from its boundary during async delivery.
+      # Keep the 2:30 ceiling away from its boundary during async delivery.
       reset=$(($(date +%s) + 9000))
       echo '{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"codex","planType":"invented-secret-plan","secondary":{"usedPercent":25,"windowDurationMins":10080,"resetsAt":'$reset'}}}}'
       echo '{"method":"thread/tokenUsage/updated","params":{"threadId":"other","turnId":"u1","tokenUsage":{"last":{"inputTokens":0},"modelContextWindow":1000}}}' ;;
@@ -3881,7 +3881,7 @@ fn u165_status_observations_without_reply_footer() {
         let answer=texts(&st).into_iter().find(|s|s.contains("re: measured answer")).unwrap();
         assert!(!answer.contains("gpt-test") && !answer.contains("80%") && !answer.contains("75%"),"#165 no reply footer: {answer}");
         push(&st,text(3,chat,topic,OWNER,"/status"));
-        wait("measured status",15,||sent_has(&st,"gpt-test · 😣 80% · 🌖 75% ↻ 3h"));
+        wait("measured status",15,||sent_has(&st,"gpt-test · 😣 80% · 🌖 75% ↻ 2:30"));
         {
             let f=st.lock().unwrap();
             let attempts: Vec<_>=f.api.iter().filter(|(m,v,_)| {
@@ -3913,7 +3913,7 @@ fn u165_status_observations_without_reply_footer() {
         push(&st,text(6,chat,topic,OWNER,"/new"));
         wait("reset model announcement",10,||sent_has(&st,"New conversation started. Model: default (Codex configuration)."));
         assert_eq!(query(&d,"SELECT count(*) FROM runs"),2,"/new is deterministic");
-        assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='runtime_status' AND result LIKE '%😣 80% · 🌖 75% ↻ 3h%'"),1,"measurements persisted separately");
+        assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='runtime_status' AND result LIKE '%😣 80% · 🌖 75% ↻ 2:30%'"),1,"measurements persisted separately");
         assert!(!texts(&st).join("\n").contains("invented-secret-plan"));
         stop(c,d);
       }

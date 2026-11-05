@@ -262,7 +262,7 @@ Run 1 failed before any board write and exposed a defect. Three requests started
 
 ## Human trial (task #42)
 
-[Contract §5](integration-contract.md#human-trial) records the owner's 2026-10-26 simplification: the two existing FRA users, the owner and Simon, test on the fly with test tasks. No invitation, private-ID exchange or additional readiness gate is required. This supersedes the earlier three-person plan. The owner ended the human trial on 2026-10-29 using available evidence, shortening the planned seven-day observation period; the request-linked report remains and gate 4 stays separate.
+[Contract §5](integration-contract.md#human-trial) records the owner's 2026-10-26 simplification: the two existing testers, the owner and Simon, test on the fly with test tasks. No invitation, private-ID exchange or additional readiness gate is required. This supersedes the earlier three-person plan. The owner ended the human trial on 2026-10-29 using available evidence, shortening the planned seven-day observation period; the request-linked report remains and gate 4 stays separate.
 
 ### Testing and feedback
 
@@ -276,7 +276,7 @@ Record the actual UTC observation window, release revisions used, participating 
 
 **Readiness evidence:** owner 2026-10-26 reports PM A40 14/14 at `49043392fb12b80d2e6d4c8db3fee28942d916ce`, referencing [#62](https://github.com/taskqorg/pilotq/issues/62). The worker read #62's merged fix and green merge-result CI record; the 14/14 result is supplied by the owner, not independently rerun here. It does not prove an installed 0.2.2 run. No further A40 or continuity submission is added as a gate for this human trial.
 
-A1 records the current plan in the contract and these cases. The owner's continuation supplies the tester choice for A2 and replaces the invitation procedure. A3 uses existing grants and the guide; the PM export records one active user, while Simon sent no requests. A4 evidence and existing defect references are recorded in the [trial report](trial-42.md). The report preserves missing observations and does not qualify two-user behavior, gate 4 or production acceptance.
+A1 records the current plan in the contract and these cases. The owner's continuation supplies the tester choice for A2 and replaces the invitation procedure. A3 uses existing grants and the guide; the PM export records one active user, while Simon sent no requests. A4 evidence and existing defect references are recorded in the [trial report](https://github.com/taskqorg/pilotq/issues/42). The report preserves missing observations and does not qualify two-user behavior, gate 4 or production acceptance.
 
 ## Step 4 qualification
 
@@ -369,27 +369,11 @@ Not run for C01–C07. With agentq attached, PilotQ's model-visible tool results
 
 `journal::pilot_report_counts_gate_4` covers the counts, the first-start rule and unknown telemetry.
 
-### Pilot start
+### Serving host and pilot evidence
 
-The seven-day FRA pilot started on 2026-10-23 at 09:12:26 UTC (`pilot_start` 1792746746) on the separate test bot. The earliest gate 4 readout is 2026-10-30 at 09:12:26 UTC, and only once the counts reach 500 accepted requests, 200 simple requests, two users, three routes, two projects and ten TaskQ tasks.
+The only serving host is pds18 (`pds18.ufobe.com`). The PM readback for [#373](https://github.com/taskqorg/pilotq/issues/373) found PilotQ 0.2.41 running with journal schema 14; Mac has no service and Windows has no PilotQ process. FRA is retired. Its historical pilot setup and measurements are retained in Git history, not current installation instructions.
 
-| Item | Setting |
-|---|---|
-| Build | FRA `hermes-fra1`, Linux 6.8.0-142-generic; pilotq 0.1.0 built `--release --locked` from `a2165805a1c13db30a24e77ca9ce14d32febe9e7`; binary SHA256 `655731731f2f085435d77cd7626a6a96203ed69949a40f2cd1188eee22e43bd1` |
-| Runtime | FRA codex-cli 0.162.0 in PilotQ's own Codex home, its own owner device-auth ChatGPT login (PM confirmation); model `gpt-6.1-sol`, native compaction, agentq off |
-| People | Owner `134142744` (every grant); second user `728914418` with `chat`, `taskq`, `project:pilotq`, `project:agentq` (owner, 2026-10-23) |
-| Routes | The owner's DM, the second user's DM, the test group's shared topic `-1003995096980:3` (three registered routes) |
-| Projects | `pilotq` (`taskqorg/pilotq`, TaskQ tools, `create_claim_issue` 20) and `agentq` (`taskqorg/agentq`, direct reads) |
-| TaskQ | The host TaskQ CLI, root = the owner's `pilotq` checkout, 60 s board scan |
-| Keys | None yet: `issue_read` and the owner's comments and labels need a key the owner adds with `pilotq keys add` |
-
-The earlier Mac start at 06:17:54 UTC failed A5's host requirement and does not count toward this pilot. The PM verified the Mac poller stopped before FRA activation (§4). Before remediation, FRA had no second-user grants, routes, projects or isolated login. After the PM ran the prepared setup, read-only journal inspection confirmed the approved grants, all three routes, both projects and the stored start. Request 1 ended `answered` with `FRA pilot readiness confirmed.` before the start; no requests had been accepted since the start at readback. The installed binary hash matches the built artifact. FRA status showed fresh successful poll/storage observations and model success; TaskQ observation and Telegram delivery remained `unknown: not-observed`, not qualified by this CLI check (§7, §12). The PM confirmed the user service active. Service-bus access and administrative CLI writes remain sandbox-blocked in the worker.
-
-The deployed artifact predates the rebase integration with #33. The candidate's `pilot report` retains gate counts and adds #33's `tools`, `since` and `until` measurement fields. `--until` bounds tool-size measurements only; gate counts remain since-start or since-argument counts. The rebased artifact has deterministic evidence below, not a claim of deployment.
-
-A4 regression remediation (§10 step 5): before the fix, `pilot report --since 20 --until 30` printed only tool sizes and omitted every gate count. `cargo test --locked --test update pilot_report_prints_gate_counts_and_tool_window -- --nocapture` reproduced the missing `accepted` count, then passed after text output included all gate counts. The CLI check verifies both text and JSON, unavailable telemetry as unknown with its reason, and the retained tool-size window `[since, until)`. An intervention at `until` remains counted, confirming that `--until` bounds tool measurements only. This correction changes the candidate, not the deployed FRA artifact or pilot start.
-
-Record each manual intervention and provider outage with `pilotq pilot note`. Rollback on FRA: stop and drain the test service; preserve the schema 7 journal and protected configuration. No previous FRA release exists. Do not downgrade its journal or reactivate the Mac poller automatically. Resume only a compatible verified build (§12).
+Gate 4 remains a separate qualification under [adoption](adoption.md#10-adoption-sequence). No historical start or healthy service proves its counts or production-cutover acceptance (R19, §9).
 
 ### Case matrix
 
@@ -589,18 +573,20 @@ The first diagnostic live A40 run used subscription Codex 0.162.0 and the real b
 
 **Task #48 remediation (R5, R17, §5, §9):** the PM run on `b0b508d` failed the pause case with `QueryReturnedNoRows`. The audit stores `queue_pause` as a `call` target and the completed native item as a `tool` with target `dynamicToolCall`; it does not store tool-result text there. The pause check now reads those existing records and verifies the fixture remains doing. `u10_restart_new_status_pause_and_park` reproduced the same missing-row failure before the query fix and passed afterward.
 
-**Task #62 remediation (R5, R8, §5, §9):** the FRA run at `ded8266` timed out waiting for the scripted doing observation. The adapter subscribed immediately after held creation and treated absence from a complete snapshot as closure, including while the manager was still starting the task. TaskQ 4.6.39's `start_one` removes `q-held` before adding `taskq`; its open snapshot excludes an issue with neither label. A scan in that interval permanently closed the subscription. `Journal::subscriptions` now defers scanning tickets whose plan run is still creating; the existing submission recovery retains their operation IDs. `cargo test --locked a40_start_label_gap_keeps_subscription` failed before the fix with `an in-flight start must not emit a closing outcome` and passed afterward, also checking subsequent doing, stale-revision rejection and eventual closure. The 60-second live wait is unchanged. This reproduces the race at the adapter/journal boundary; the private FRA journal was not inspected and the earlier passing run's TaskQ version is unknown. The PM must rerun installed A40 on FRA after merge; this deterministic check is not live release evidence.
+**Task #62 remediation (R5, R8, §5, §9):** the FRA run at `ded8266` timed out waiting for the scripted doing observation. The adapter subscribed immediately after held creation and treated absence from a complete snapshot as closure, including while the manager was still starting the task. TaskQ 4.6.39's `start_one` removes `q-held` before adding `taskq`; its open snapshot excludes an issue with neither label. A scan in that interval permanently closed the subscription. `Journal::subscriptions` now defers scanning tickets whose plan run is still creating; the existing submission recovery retains their operation IDs. `cargo test --locked a40_start_label_gap_keeps_subscription` failed before the fix with `an in-flight start must not emit a closing outcome` and passed afterward, also checking subsequent doing, stale-revision rejection and eventual closure. The 60-second live wait is unchanged. This reproduces the race at the adapter/journal boundary; the private FRA journal was not inspected and the earlier passing run's TaskQ version is unknown. The PM must rerun installed A40 on pds18 after the merged release; this deterministic check is not live release evidence.
 
 Cleanup now uses an exact-argument, matching-operation accepted create receipt to identify a known fixture, then reads its current board state and parks it. It replays the original claim only when no accepted receipt exists; an unavailable reconciliation without a receipt remains a cleanup failure. `automatic::a40_failure_report_and_cleanup` failed before the fix with an unavailable create replay and retained `focus.paused`; it passed afterward. The check retains lost-response reconciliation with the same arguments/op ID, failed/not-run case reporting, copied-login removal and refusal to overwrite concurrent focus changes. This changes neither the product contract nor those required protections (TaskQ §7 step 4).
 
 The A40 report includes per-tool `calls`, `p95_result_bytes` and `max_result_bytes` from `pilot report --since 0 --json`. Its source is the install journal's `tool_sizes`, measured as UTF-8 result bytes after secret scrubbing and before Codex delivery; `audit_events` holds native tool status rather than result text. These sizes are input for agentq#167, not provider token savings. Live qualification remains pending: the PM must run the A40 command above on the merged candidate and retain an exit-zero report with every case passing, cleanup included. Deterministic checks do not establish that §9 release gate.
 
-**A40 audit project remediation, task #51 (R17, §5, §8):** `cargo test --locked a40_topic_plan_run_audit_project -- --nocapture` failed before the fix because the authorized run was absent from the `pilotq` project audit filter (0 rows, expected 1), then passed after authorization stored the saved plan's project in the same transaction. The retained journal regression checks a forum-topic request after a conversation project switch, refusal without an audit project change, single-run retry, restart persistence and the exported `where.project`, chat and topic. The live `audit_delivery` assertion remains unchanged. This deterministic evidence does not qualify A40 live; the PM reruns A40 on FRA at the result candidate and reports to #38.
+**A40 audit project remediation, task #51 (R17, §5, §8):** `cargo test --locked a40_topic_plan_run_audit_project -- --nocapture` failed before the fix because the authorized run was absent from the `pilotq` project audit filter (0 rows, expected 1), then passed after authorization stored the saved plan's project in the same transaction. The retained journal regression checks a forum-topic request after a conversation project switch, refusal without an audit project change, single-run retry, restart persistence and the exported `where.project`, chat and topic. The live `audit_delivery` assertion remains unchanged. This deterministic evidence does not qualify A40 live; the PM reruns A40 on pds18 at the result candidate and reports to #38.
 
-**A40 topic delivery remediation, task #54 (R1, §5, §12):** `cargo test --locked --test telegram a40_topic_state_notifications -- --nocapture` failed before the fix because recorded status edits had no `message_thread_id`, then passed after the fake Bot API retained the edited message's original topic. Telegram's `editMessageText` addresses an existing chat/message and has no topic parameter; production sends and durable outbox rows already preserved the topic. The fake now rejects edits of unknown messages and records their effective destination, rather than treating an edit payload as a new message. The retained deterministic trace covers ready, doing, parked, ask, review and closed across restart, verifies every task outbox destination and every accepted message's chat/topic, and asserts that closure is a new message that is never edited. The live A40 assertions remain unchanged. This proves the fake-backed delivery path, not real Telegram or the live management suite; the PM reruns A40 on FRA at the candidate SHA and reports to #38.
+**A40 topic delivery remediation, task #54 (R1, §5, §12):** `cargo test --locked --test telegram a40_topic_state_notifications -- --nocapture` failed before the fix because recorded status edits had no `message_thread_id`, then passed after the fake Bot API retained the edited message's original topic. Telegram's `editMessageText` addresses an existing chat/message and has no topic parameter; production sends and durable outbox rows already preserved the topic. The fake now rejects edits of unknown messages and records their effective destination, rather than treating an edit payload as a new message. The retained deterministic trace covers ready, doing, parked, ask, review and closed across restart, verifies every task outbox destination and every accepted message's chat/topic, and asserts that closure is a new message that is never edited. The live A40 assertions remain unchanged. This proves the fake-backed delivery path, not real Telegram or the live management suite; the PM reruns A40 on pds18 at the candidate SHA and reports to #38.
 
 
-## FRA release update and setup check (#41)
+## Historical release and setup evidence (#41)
+
+The following dated observations describe retired FRA installations. They are historical evidence only; current release and qualification commands target pds18 under §9.
 
 Owner continuation 2026-10-24 authorizes implementing `doctor` and deployment after verification. Before this change, the CLI dispatch had no `doctor` command and the tester guide explicitly reported it unimplemented; A1 could not pass. The §9 read-only check now reports configuration, Telegram bot identity, isolated Codex ChatGPT login and complete TaskQ board reachability, with nonzero failure and no raw dependency diagnostics (§8, R9). `doctor_missing_configuration_is_not_healthy` protects against reporting absent setup as healthy and against writing state during inspection.
 
@@ -634,7 +620,7 @@ Read-only inspection found that `Journal::audit` opens a deferred transaction, r
 
 The owner requested `0.2.2` in PR #60 because published `0.2.1` lacks the #62 fix at `49043392fb12b80d2e6d4c8db3fee28942d916ce` (§9). Package metadata and tester commands now select `0.2.2`; no test or acceptance protection changed. The PM reports A40 passed 14/14 on FRA at `4904339` on 2026-10-25 at 01:14 UTC. This is attributed development-candidate evidence, not an installed `0.2.2` result.
 
-After merge and the PM's `live` push, the PM updates FRA through `pilotq update` and supplies the installed source commit, A40 case results and cleanup, pilot report and journal request IDs before and after activation. Reconcile those IDs with effects and delivery receipts before claiming A3 (§4, §9, R17). The earlier installed-suite failure and continuity gap remain open until that evidence arrives.
+After merge and the PM's `live` push, the PM updates pds18 through `pilotq update` and supplies the installed source commit, A40 case results and cleanup, pilot report and journal request IDs before and after activation. Reconcile those IDs with effects and delivery receipts before claiming A3 (§4, §9, R17). The earlier installed-suite failure and continuity gap remain open until that evidence arrives.
 
 ### Task #68 reply-flow checks
 
@@ -659,7 +645,7 @@ The version marker is not reliable evidence that these columns are absent: `v0.2
 
 The repair checks each column under the migration's writer transaction, adds only missing columns and commits version 10 with the migration. It removes the redundant unconditional version write. The existing schema tests retain older-journal upgrades, native-session refresh and refusal of newer or corrupt journals. No supported schema range or protection changes.
 
-Rollback notification is tracked by [#77](https://github.com/taskqorg/pilotq/issues/77) (A5). After merge, the PM owns `live` publication, FRA activation and A40; the owner's screenshot answer supplies A4. These live checks remain unproved by the worker's SQLite tests.
+Rollback notification is tracked by [#77](https://github.com/taskqorg/pilotq/issues/77) (A5). After merge, the PM owns `live` publication, pds18 activation and A40; the owner's screenshot answer supplies A4. These live checks remain unproved by the worker's SQLite tests.
 
 ### Rollback owner incident (#77, R11, §9)
 
@@ -693,7 +679,7 @@ Task [#84](https://github.com/taskqorg/pilotq/issues/84) implements option A fro
 - `cargo test --locked service_incidents_hold_dedup_recover_and_cap` (A2). `taskq` and `poll` open an owner incident only after 2 minutes of failure. `model` opens one only after two consecutive failed runs; a success resets the count. Reopening the journal does not reopen an open episode. Only a later successful observation closes it. A recovery line is sent only for an episode whose opening was sent. Each incident key sends at most one opening per 6 hours. A capped episode still opens and closes in the journal, without messages. All service messages, the #77 rollback included, share the cap of 10 per day.
 - `cargo test --locked downtime_and_unplanned_restart_notices` (A3). Each service pass records `alive`. On start, a stop without a planned marker records the gap from the last pass. `pilotq service stop` and the update drain both set the planned marker; an update that does not restart withdraws it. A crash loop keeps the earliest gap start. The next healthy start sends one notice. A gap over 5 minutes gets the downtime line; a shorter gap gets the unplanned-restart line. The `restart` key caps both at one per 6 hours. A rollback incident consumes the gap silently, so a rollback produces one message.
 
-These checks do not qualify A4. A4 needs A40 and fault drills on FRA after merge: revoke the Codex login, stop TaskQ and kill the service. Detection is after the fact: a dead service is reported only on its next healthy start.
+These checks do not qualify A4. A4 needs A40 and fault drills on pds18 after the merged release: revoke the Codex login, stop TaskQ and kill the service. Detection is after the fact: a dead service is reported only on its next healthy start.
 
 **FRA release and drills, 2026-10-28 (#84 A4).** `0.2.6` was published from `067dec1` and installed on FRA through `pilotq update` at 21:42:54 UTC. Two minutes later `current` was 0.2.6, the release was marked healthy, the binary matched `SHA256SUMS`, and `status`, `selftest` and `doctor` passed; the planned update sent no message. A40 passed 14/14 with cleanup at `067dec1`. The drills changed only PilotQ's own `config.json`, restored it byte for byte afterwards, and used planned restarts:
 
@@ -778,7 +764,7 @@ Retained risk: FLEURS is read speech; spontaneous, noisy Telegram voice notes fr
 
 ### Existing-model speech scope, task #344
 
-Owner note6564613656 supersedes the selector/retry proposals: automatic Russian/English recognition must handle Russian then English within one recording, without a user language choice. Hebrew remains removed. Replies and every user-visible table follow the latest own user address by actor+chat, preserving topic sharing. Notes6564700192/6564705751 approve explicit reply-language request first, otherwise the last substantive direct clause; quotes/code/names/borrowed words do not switch. Ambiguous/wordless turns retain last resolved language, else bounded default. Existing installed Russian assets/settings stay intact until a qualified normal activation; Russian quality must not regress. The exact owner instruction and source/interface assessment are recorded in [the current research report](research/344.md#automatic-russianenglish-owner-scope).
+Owner note6564613656 supersedes the selector/retry proposals: automatic Russian/English recognition must handle Russian then English within one recording, without a user language choice. Hebrew remains removed. Replies and every user-visible table follow the latest own user address by actor+chat, preserving topic sharing. Notes6564700192/6564705751 approve explicit reply-language request first, otherwise the last substantive direct clause; quotes/code/names/borrowed words do not switch. Ambiguous/wordless turns retain last resolved language, else bounded default. Existing installed Russian assets/settings stay intact until a qualified normal activation; Russian quality must not regress. The exact owner instruction and source/interface assessment are recorded in [the current research report](research/344.md#findings-and-limits).
 
 | Case | Required boundary and evidence |
 |---|---|
@@ -797,7 +783,7 @@ Note6566515450 preparation: combined KNF feature-only script/manifest/inner argv
 
 Earlier fixed-English CPP short0/24/private0/15 and long427.877s throughput are limited observations, not automatic mixed-speech or full-quality acceptance. Retained long output contains concrete name errors/omissions separate from tail ambiguity. No production engine/source activation is selected. Independent review, merge-result CI/MQ, PM final-source A40/cleanup and release/install/live acceptance remain required (§9, R19). Existing branch Whisper replacement remains an unaccepted earlier candidate requiring reconciliation, not the selected Russian path.
 
-Owner note6630454809 selects stock Sherpa NeMo CTC with the pinned GigaAM-Multilingual large export, rejects the experimental engine patch and supersedes its build-only isolation stop. [Current route evidence](research/344.md#selected-stock-route-owner-note6630454809) records contract-first source/provisioning, CTC/transducer regression and shared ingress, verified large assets, real Ogg/Opus/MP3/MP4 Russian and English observations. English includes a name error and joined words. Artificial RU→EN/EN→RU joins lose/corrupt English; repeated35-second English differs between full and25+10-second recognition. These are concrete fidelity failures, not full-quality PASS. No chunking change is claimed. Lowercase/no punctuation, possible Cyrillic English transliteration and text languages ru/en/kk/ky/uz (no Hebrew) are owner-accepted route limits. PM synthetic macOS say 35-second Russian success stays separate from repeated stress and is not human evidence. No installed activation; Current-01..04 comprehensive quality/output/live and §9 gates remain unqualified.
+Owner note6630454809 selects stock Sherpa NeMo CTC with the pinned GigaAM-Multilingual large export, rejects the experimental engine patch and supersedes its build-only isolation stop. [Current route evidence](research/344.md#findings-and-limits) records contract-first source/provisioning, CTC/transducer regression and shared ingress, verified large assets, real Ogg/Opus/MP3/MP4 Russian and English observations. English includes a name error and joined words. Artificial RU→EN/EN→RU joins lose/corrupt English; repeated35-second English differs between full and25+10-second recognition. These are concrete fidelity failures, not full-quality PASS. No chunking change is claimed. Lowercase/no punctuation, possible Cyrillic English transliteration and text languages ru/en/kk/ky/uz (no Hebrew) are owner-accepted route limits. PM synthetic macOS say 35-second Russian success stays separate from repeated stress and is not human evidence. No installed activation; Current-01..04 comprehensive quality/output/live and §9 gates remain unqualified.
 
 #### Historical superseded ru/en/he candidate cases
 
@@ -907,7 +893,7 @@ Retained checks:
 - `u165_status_observations_without_reply_footer`: no footer through rich, HTML
   and plain delivery in each route; measured or unavailable observations appear only in `/status`.
 
-A8 remains a post-release live FRA check. In the owner DM/topic, ask “What is
+A8 remains a post-release live pds18 check. In the owner DM/topic, ask “What is
 the task status for Pilot Q?”, then “Make a task so this works”; verify fresh
 board status and a local `pilotq` draft without another project question. Check
 an ambiguous two-project request asks for the project and writes nothing.
@@ -976,7 +962,7 @@ deployment is part of #126.
 
 ### Telegram reply files (#145)
 
-Under [§5](integration-contract.md#5-taskq-integration), photos and documents with optional captions reach TaskQ answer, steer and owner requeue as readable files. Local `reply_files` checks protect identity/caption admission, duplicate and ignored updates, source isolation, bounded HTTP downloads, readable CLI files, original revision and same-operation retry. Existing question/grant/fence checks continue to apply. A refusal or uncertain write retains the reply and explains its reason and fix. The PM executes the [A2 live recipe](reply-files-145.md) after release on PDS 18, recording exact client/TaskQ revisions, a photo, a 20 MB document, mixed text/files and verified worker copies. A2 is not qualified by fake transport or CI.
+Under [§5](integration-contract.md#5-taskq-integration), photos and documents with optional captions reach TaskQ answer, steer and owner requeue as readable files. Local `reply_files` checks protect identity/caption admission, duplicate and ignored updates, source isolation, bounded HTTP downloads, readable CLI files, original revision and same-operation retry. Existing question/grant/fence checks continue to apply. A refusal or uncertain write retains the reply and explains its reason and fix. The PM executes the [A2 live recipe](https://github.com/taskqorg/pilotq/issues/145) after release on PDS 18, recording exact client/TaskQ revisions, a photo, a 20 MB document, mixed text/files and verified worker copies. A2 is not qualified by fake transport or CI.
 
 ### Administration by request (#160)
 
@@ -1161,13 +1147,13 @@ readback. Foreign subject arguments refuse; group/topic replies contain only DM
 guidance. Restart/reset retain current facts and grants; forgotten/superseded facts
 stay absent from the fresh model profile, even when history contains them. Profile
 edits never grant access, and revoked people remain ignored. The local executable
-trace and its before/after evidence are in [profile-196-evidence.md](profile-196-evidence.md).
+trace and its before/after evidence are in [task #196 evidence](https://github.com/taskqorg/pilotq/issues/196).
 Real Telegram presentation remains PM qualification under §9.
 
 ## Input revisions and route incidents (#197)
 
 R5/R11 and runtime §§4, 12 retain I202–I204 and I801–I803 from the
-[contract inventory](contract-177-inventory.md). Source request:
+[contract inventory](https://github.com/taskqorg/pilotq/issues/177). Source request:
 [task #197](https://github.com/taskqorg/pilotq/issues/197).
 
 - `edit_and_route_events_reach_ingress` checks edited text, topic closure, migration,
@@ -1196,18 +1182,18 @@ protect route identity and service-event admission rather than requiring new mod
 
 ## Route loops and board wakes (#220)
 
-The [owner decision and protocol](conversation-contract.md#route-loops-and-board-wakes) bind these cases (R5, R10, R13, R17). `loop_220_cli_route_exclusion` protects both directions of CLI/tick mutual exclusion. `loop_220_board_adapter_shared_cursor` protects bounded installed-CLI readback, confirmed closure and shared board cursors. `loop_220_controls_and_dynamic` protects fixed/dynamic bounds, bot suffixes, CLI/Telegram common admission, refusal and stale tick decisions. `loop_220_restart_drain_coalesce_revoke` protects durable armed/pending timers, restart/drain, queued coalescing, revocation and reset. `loop_220_running_reset_and_revocation_fence` protects immediate fencing of running ticks after reset or shell revocation. `loop_220_three_routes_boards_and_human` protects independent boards, baseline/deduplicated wakes, review options, failure/closure, drain-held events, human priority and route context/reply isolation. Adapter collection and target-platform timing require their own evidence; [the PM checklist](loop-220-live.md) covers real Codex and Telegram TEST qualification without authorizing worker installation.
+The [owner decision and protocol](conversation-contract.md#route-loops-and-board-wakes) bind these cases (R5, R10, R13, R17). `loop_220_cli_route_exclusion` protects both directions of CLI/tick mutual exclusion. `loop_220_board_adapter_shared_cursor` protects bounded installed-CLI readback, confirmed closure and shared board cursors. `loop_220_controls_and_dynamic` protects fixed/dynamic bounds, bot suffixes, CLI/Telegram common admission, refusal and stale tick decisions. `loop_220_restart_drain_coalesce_revoke` protects durable armed/pending timers, restart/drain, queued coalescing, revocation and reset. `loop_220_running_reset_and_revocation_fence` protects immediate fencing of running ticks after reset or shell revocation. `loop_220_three_routes_boards_and_human` protects independent boards, baseline/deduplicated wakes, review options, failure/closure, drain-held events, human priority and route context/reply isolation. Adapter collection and target-platform timing require their own evidence; [the PM checklist](https://github.com/taskqorg/pilotq/issues/220) covers real Codex and Telegram TEST qualification without authorizing worker installation.
 
 ## PM packs and scoped notes (#221)
 
 The [root contract §9](../pilotq.md#9-cli-releases-and-service-operations) owns the approved pack boundary.
-The worker stage supplies [the owner-installable runbook](pm-pack.md) and [the PM checklist](pm-221-live.md).
+The worker stage supplies [the owner-installable runbook](pm-pack.md) and [the PM checklist](https://github.com/taskqorg/pilotq/issues/221).
 `cargo test --locked pm_221 -- --nocapture` covers pack binding, fresh context on resumed turns, note tools,
 route/DM isolation, credential refusal, restart, `/new`, CLI correction/forget and revoked access.
 These are journal/process/adapter checks, not real model parity or live qualification (R13, R16, R19).
 
 The owner confirmed a staged handoff in task #221: worker implementation/checklist first, then the PM's one-hour
-findings-only shadow run. The PM run below follows [the PM checklist](pm-221-live.md).
+findings-only shadow run. The PM run below follows [the PM checklist](https://github.com/taskqorg/pilotq/issues/221).
 
 Window (UTC): **2026-11-01 02:11:14–03:06:14**, twelve shadow ticks every 5 minutes. Released source/binary:
 **0.2.35** (`c0e102a`) on the PDS host. Shadow route/project: PilotQ TEST, PilotQ topic, project `pilotq`.
@@ -1398,6 +1384,6 @@ post-release evidence; production cutover remains unauthorized (R19, §9).
 
 ### Speech344 final owner disposition
 
-Owner note 6631669730 closes A3 on the recorded route limit without a natural mixed RU/EN recording: mixed natural human speech is unqualified; separate-clip and synthetic-join omissions remain known limits. No further recording request is pending. Root §1 and [the final report](research/344.md#final-owner-disposition-and-russian-parity-note-6631669730) record the decision.
+Owner note 6631669730 closes A3 on the recorded route limit without a natural mixed RU/EN recording: mixed natural human speech is unqualified; separate-clip and synthetic-join omissions remain known limits. No further recording request is pending. Root §1 and [the final report](research/344.md#findings-and-limits) record the decision.
 
 A4 Russian parity uses the PM same-audio comparison, whose SHA256 and all three normalized word equalities were verified on worker readback: human FLEURS 7/7, legacy example 26/26, and synthetic macOS say 35-second speech 81/81. The earlier “natural35-second Russian” label above is incorrect: that recording is synthetic, not human evidence. Stock is about 2–3 times slower, without punctuation/capitals. No human Russian longer than approximately 11 seconds was compared; long human parity remains unproved. These observations do not qualify arbitrary mixed speech or live intake. Normal CI/MQ and PM final-source A40/cleanup/release/Chrome gates remain separate (§9, R19).

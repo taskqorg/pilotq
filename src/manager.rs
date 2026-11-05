@@ -17,6 +17,11 @@ use std::time::{Duration, Instant};
 pub(crate) const GRACE: Duration = Duration::from_secs(5);
 /// Item types that act outside the model; once one starts, a missing terminal outcome is uncertain, never a clean failure.
 const TOOLS: [&str; 5] = ["commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch"];
+enum LaunchFailure { NotStarted(String), Exited(String) }
+
+impl LaunchFailure {
+    fn message(&self) -> &str { match self { Self::NotStarted(e) | Self::Exited(e) => e } }
+}
 /// The trait's cause for a resumed session that does not exist and ran nothing: the turn is rebuilt once from the journal.
 // ponytail: AgentQ reports every refused app-server resume alike, so a refusal for another reason is also rebuilt once and then
 // fails on the new session; a finer refusal cause in the trait if the audit reason must tell them apart
@@ -306,14 +311,19 @@ impl Runtime {
         // ponytail: a late handshake keeps START up to AgentQ's 30 s reply deadline; a cancellable launch in the trait if it matters
         let (tx, rx) = std::sync::mpsc::channel();
         let session = resume.map(str::to_string);
+        let spawned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = spawned.clone();
+        l.process.spawned = Some(std::sync::Arc::new(move |_| { observed.store(true, std::sync::atomic::Ordering::Release); Ok(()) }));
         std::thread::spawn(move || {
             let _start = app_server.then(|| START.lock().unwrap_or_else(|e| e.into_inner()));
-            let _ = tx.send(match &session { Some(s) => a.resume(s, &l), None => a.launch(&l) }.map(|run| Owned { a, run }));
+            let launched = match &session { Some(s) => a.resume(s, &l), None => a.launch(&l) }.map(|run| Owned { a, run })
+                .map_err(|e| if spawned.load(std::sync::atomic::Ordering::Acquire) { LaunchFailure::Exited(e) } else { LaunchFailure::NotStarted(e) });
+            let _ = tx.send(launched);
         });
         let launched = loop {
             match rx.recv_timeout(Duration::from_millis(200)) {
                 Ok(r) => break r,
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break Err("launch ended without an outcome".to_string()),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break Err(LaunchFailure::Exited("launch ended without an outcome".into())),
                 Err(_) if !alive() => return Ok((resume.map(str::to_string), None, Outcome::Fenced)),
                 Err(_) if start.elapsed() >= self.limits.first_event => return failed(format!("{label} sent no first event within {} s", self.limits.first_event.as_secs())),
                 Err(_) => {}
@@ -321,11 +331,11 @@ impl Runtime {
         };
         let mut owned = match launched {
             Ok(owned) => owned,
-            Err(e) if resume.is_some() && missing(a, &e) => return Err(()),
+            Err(e) if resume.is_some() && missing(a, e.message()) => return Err(()),
             // native diagnostics can name paths or account details: operator log only, never a reply, the journal or telemetry
             Err(e) => {
-                crate::host::log(name, &e);
-                return failed(if e.contains("spawn") { format!("{label} did not start; check login and runtime health.") } else { format!("{label} exited without a terminal event") });
+                crate::host::log(name, e.message());
+                return failed(match e { LaunchFailure::NotStarted(_) => format!("{label} did not start; check login and runtime health."), LaunchFailure::Exited(_) => format!("{label} exited without a terminal event") });
             }
         };
         let run = &mut owned.run;
@@ -931,7 +941,7 @@ mod tests {
             if tooled { j.lock().unwrap().tool(&r,"commandExecution","invented",None,1).unwrap(); }
             assert!(run(&c,&j,&r,||2,None,&d).unwrap_err().contains("no rows"));
             let guard=j.lock().unwrap();
-            assert_eq!(guard.running().unwrap(),0);
+            assert_eq!(guard.0.query_row("SELECT count(*) FROM requests WHERE state='running'", [], |r| r.get::<_, i64>(0)).unwrap(),0);
             assert_eq!(guard.request(r.request).unwrap().0,if tooled {"uncertain"} else {"failed"});
             assert!(!std::path::Path::new("telemetry.sqlite").exists(),"in-memory test journal must not dirty the worktree");
         }
@@ -1009,6 +1019,11 @@ for line in sys.stdin:
         assert!(matches!(run(false,None,"restricted",false),Outcome::Answered(s) if s=="finished"));
         assert!(matches!(run(false,Some("existing"),"restricted",false),Outcome::Answered(s) if s=="finished"));
         assert!(matches!(run(false,Some("missing"),"restricted",false),Outcome::Answered(s) if s=="finished"));
+        // #373 A5: a diagnostic containing "spawn" cannot turn an exited child into a launch failure.
+        std::fs::write(&bin,"#!/bin/sh\necho spawn-diagnostic >&2\nexit 1\n").unwrap();
+        assert!(matches!(run(true,None,"active",false),Outcome::Failed(s) if s=="Codex CLI exited without a terminal event"));
+        std::fs::remove_file(&bin).unwrap();
+        assert!(matches!(run(true,None,"active",false),Outcome::Failed(s) if s=="Codex CLI did not start; check login and runtime health."));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

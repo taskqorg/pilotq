@@ -1,9 +1,0 @@
-{
-  "scope": "preparation only; no compile/feature execution/model/session/inference/install authorized",
-  "files": {
-    "giga344-candidate.patch": "1fd40797067dee98386df7daca538a4440e96e6854de572b18bf921ee6b586bc",
-    "giga344-candidate.json": "d935d2de8c6308b2321b6d2ec460abdfbb2af35fc213b120d95ad9e4a0745184",
-    "giga344-boundary.cc": "92e598c9804085133b6276a60ff3c68534112e8327ec9dca63ace80e416309dc",
-    "giga344-features.cc": "538f487f0b9891b2dfa9c333e365ea41b8a728daa04d86aa03dacd39cfb16432"
-  }
-}

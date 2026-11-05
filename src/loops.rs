@@ -99,12 +99,13 @@ fn apply(c:&Connection,request:i64,name:&str,args:&Value,at:i64)->Result<String,
     match name {
         "loop_status" => Ok(old.map(|l| {
             let mode=match (ru,l.interval) {
-                (true,Some(s))=>format!("каждые {s} с"),(false,Some(s))=>format!("every {s}s"),
-                (true,None)=>"динамический (резерв: 300 с)".into(),(false,None)=>"dynamic (fallback: 300 s)".into(),
+                (true,Some(s))=>format!("каждые {}",crate::time::interval(s,ru)),(false,Some(s))=>format!("every {}",crate::time::interval(s,ru)),
+                (true,None)=>"динамический (резерв: 5 мин)".into(),(false,None)=>"dynamic (fallback: 5m)".into(),
             };
-            let delay=l.next.saturating_sub(at).max(0);
-            if ru {format!("Цикл: {mode} · следующий запуск через {delay} с · {}",l.prompt)}
-            else {format!("Loop: {mode} · next run in {delay} s · {}",l.prompt)}
+            let delay=crate::time::countdown(l.next.saturating_sub(at),ru);
+            let exact=crate::time::exact(Some(l.next));
+            if ru {format!("Цикл: {mode} · следующий запуск через {delay} ({exact}) · {}",l.prompt)}
+            else {format!("Loop: {mode} · next run in {delay} ({exact}) · {}",l.prompt)}
         }).unwrap_or(if ru {"В этом диалоге нет цикла."} else {"No loop in this route."}.into())),
         "loop_stop" => {
             c.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?1,?2)",params![fence_key,request]).map_err(err)?;
@@ -117,7 +118,7 @@ fn apply(c:&Connection,request:i64,name:&str,args:&Value,at:i64)->Result<String,
             let seconds=args["seconds"].as_i64().filter(|s|(60..=3600).contains(s)).ok_or("Delay must be 60..3600 seconds.")?;
             l.next=at+seconds; save(c,&l)?;
             audit(c,request,at,"loop_next",&seconds.to_string())?;
-            Ok(if ru {format!("Следующий запуск цикла через {seconds} с.")}else{format!("Next loop tick in {seconds}s.")})
+            Ok(if ru {format!("Следующий запуск цикла через {} ({}).",crate::time::countdown(seconds,ru),crate::time::exact(Some(l.next)))}else{format!("Next loop tick in {} ({}).",crate::time::countdown(seconds,ru),crate::time::exact(Some(l.next)))})
         },
         "loop_start" => {
             if is_tick {return Err("A tick cannot start or replace a loop.".into());}
@@ -138,7 +139,7 @@ fn apply(c:&Connection,request:i64,name:&str,args:&Value,at:i64)->Result<String,
             save(c,&l)?;
             c.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?1,?2)",params![fence_key,request]).map_err(err)?;
             let mode=match (ru,interval) {
-                (true,Some(s))=>format!("каждые {s} с"),(false,Some(s))=>format!("every {s}s"),
+                (true,Some(s))=>format!("каждые {}",crate::time::interval(s,ru)),(false,Some(s))=>format!("every {}",crate::time::interval(s,ru)),
                 (true,None)=>"динамический; резервный интервал 300 с, пока модель не выберет 60–3600 с".into(),
                 (false,None)=>"dynamic; 300 s fallback until the model sets 60–3600 s".into(),
             };
@@ -254,8 +255,8 @@ pub fn review_command(c:&Connection,request:i64,text:&str,at:i64)->Result<String
     let old=read(c,&format!("review:{user}"))?;
     match text.split_whitespace().nth(1).unwrap_or("") {
         ""=>Ok(match (old,ru) {
-            (Some(l),true)=>format!("PM-обзор включён · события доски или резервный запуск через {} с.",l.next.saturating_sub(at).max(0)),
-            (Some(l),false)=>format!("PM review is on · board events or fallback run in {} s.",l.next.saturating_sub(at).max(0)),
+            (Some(l),true)=>format!("PM-обзор включён · события доски или резервный запуск через {} ({}).",crate::time::countdown(l.next.saturating_sub(at),ru),crate::time::exact(Some(l.next))),
+            (Some(l),false)=>format!("PM review is on · board events or fallback run in {} ({}).",crate::time::countdown(l.next.saturating_sub(at),ru),crate::time::exact(Some(l.next))),
             (None,true)=>"PM-обзор выключен. Включить: /review on.".into(),(None,false)=>"PM review is off. Turn it on with /review on.".into(),
         }),
         "on"=>{
@@ -492,7 +493,28 @@ mod tests {
             let listing=apply(&j.0,id,"loop_status",&json!({}),0).unwrap();
             assert!(!listing.contains("Unix"),"{listing}");
             assert!(listing.contains(if lang=="ru" {"через"} else {"in "}),"{listing}");
+            let overdue=apply(&j.0,id,"loop_status",&json!({}),300).unwrap();
+            assert!(overdue.contains(if lang=="ru" {"через сейчас"} else {"in now"}),"{overdue}");
+
             drop(j);drop(mutex);std::fs::remove_dir_all(p).unwrap();
+        }
+    }
+    // #373 A5/A6/R11: a saved interval is exact, unlike a rounded age or countdown.
+    #[test]
+    fn loop_373_interval_accuracy() {
+        for (lang,prefix) in [("en","every"),("ru","каждые")] {
+            let (mut j,p)=journal(lang);
+            let id=admitted(&mut j,1,1,7,"/loop 90m inspect",0);
+            j.0.execute("UPDATE requests SET language=?2 WHERE id=?1",params![id,lang]).unwrap();
+            for (input,seconds,en,ru) in [("90m",5400,"90m","90 мин"),("23h",82800,"23h","23 ч"),("1440m",86400,"1d","1 д")] {
+                let expected=format!("{prefix} {}",if lang=="ru" {ru} else {en});
+                let reply=command(&j.0,id,&format!("/loop {input} inspect"),0).unwrap();
+                assert!(reply.contains(&expected),"{reply}");
+                let listing=command(&j.0,id,"/loop",0).unwrap();
+                assert!(listing.contains(&expected),"{listing}");
+                assert_eq!(read(&j.0,&key("telegram",-100,Some(1))).unwrap().unwrap().interval,Some(seconds));
+            }
+            drop(j);std::fs::remove_dir_all(p).unwrap();
         }
     }
     // #229 A4/R5: actual first status timeout must retain the watch, retry with backoff and later wake.
@@ -657,7 +679,7 @@ mod tests {
         j.grant(7,8,&["chat".into()],0).unwrap();
         let id=admitted(&mut j,8,1,8,"/loop 1m forbidden",304);assert!(j.request(id).unwrap().2.is_some());
         let id=j.builtin_cli(7,"/loop 24h inspect CLI",305).unwrap().unwrap();
-        assert!(j.request(id).unwrap().1.unwrap().contains("86400s"));
+        assert!(j.request(id).unwrap().1.unwrap().contains("every 1d"));
         assert_eq!(all(&j.0).unwrap().len(),1);
         drop(j);std::fs::remove_dir_all(p).unwrap();
     }

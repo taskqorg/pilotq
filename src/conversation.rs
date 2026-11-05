@@ -72,7 +72,7 @@ pub fn progress(phase: &str, elapsed: i64, language: Option<&str>) -> String {
         (true,"creating")=>"Создаю задачи",(true,"starting")=>"Отправляю задачи в работу",(true,_)=>"Ожидаю продолжения",
         (false,"creating")=>"Creating tasks",(false,"starting")=>"Starting tasks",(false,_)=>"Waiting to continue",
     };
-    format!("{label} · {} {}",elapsed.max(0),if ru {"с"} else {"s"})
+    format!("{label} · {}",if ru {crate::footer::russian_units(&crate::time::age(elapsed))} else {crate::time::age(elapsed)})
 }
 
 pub fn task_state(state: &str, closed: bool, language: Option<&str>) -> &'static str {

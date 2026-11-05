@@ -221,7 +221,7 @@ pub fn delivery_text(v:&Value)->String {
         text+=&format!(" DEV health, separately: DEV serves {dev}, which contains merge {merge} (Git ancestry).");
     }
     if let Some(reason)=v["reason"].as_str() {return format!("{text} Pipeline unknown: {reason}.");}
-    text+=&format!("\nMerged at {}.",v["merged_at"].as_str().unwrap_or("unknown"));
+    text+=&format!("\nMerged at {}.",crate::time::source(v["merged_at"].as_str(),crate::now() as i64));
     let first=&v["first_main"];
     text+=&format!("\nFirst containing main pipeline: {} ({}).",first["state"].as_str().unwrap_or("unknown"),first["url"].as_str().unwrap_or(""));
     text+=&format!("\nDEV deploy: {} ({}).",first["deploy"]["state"].as_str().unwrap_or("unknown"),first["deploy"]["url"].as_str().unwrap_or(""));
@@ -250,7 +250,8 @@ pub fn delivery_text_localized(v:&Value, ru:bool)->String {
         text+=&format!(" Отдельная проверка DEV: обслуживается {dev}, содержащий слияние {merge} (история Git).");
     }
     if let Some(reason)=v["reason"].as_str() {return format!("{text} Конвейер: нет данных. {}.",delivery_reason_ru(reason));}
-    text+=&format!("\nВремя слияния: {}.",v["merged_at"].as_str().unwrap_or("нет данных"));
+    let merged=crate::footer::russian_units(&crate::time::source(v["merged_at"].as_str(),crate::now() as i64)).replace(" ago"," назад").replace("unavailable","нет данных");
+    text+=&format!("\nВремя слияния: {merged}.");
     let first=&v["first_main"];
     text+=&format!("\nПервый конвейер main со слиянием: {} ({}).",state(&first["state"]),first["url"].as_str().unwrap_or(""));
     text+=&format!("\nРазвёртывание DEV: {} ({}).",state(&first["deploy"]["state"]),first["deploy"]["url"].as_str().unwrap_or(""));
@@ -324,7 +325,7 @@ fn dev_observe(j:&std::sync::Mutex<Journal>,p:&str,c:&Value,merged:Option<&str>,
     let key=format!("dev-first:{p}:{a}");
     let first=get(&j,&key)?.unwrap_or(json!(crate::now()));put(&j,&key,&first)?;
     let time=h["deployed_at"].as_str().or_else(||h["started_at"].as_str()).filter(|s|!s.is_empty() && s.len()<100);
-    Ok(json!({"state":match time {Some(t)=>format!("on DEV since {t}"),None=>format!("on DEV since {} (first observed)",first)},"sha":b,"merge":a,"includes_merge":true,"serves_target_exactly":a==b,"observed_at":crate::now()}))
+    Ok(json!({"state":match time {Some(t)=>format!("on DEV since {}",crate::time::source(Some(t),crate::now() as i64)),None=>format!("on DEV since {} (first observed)",crate::time::moment(first.as_i64(),crate::now() as i64))},"sha":b,"merge":a,"includes_merge":true,"serves_target_exactly":a==b,"observed_at":crate::now()}))
 }
 pub fn task_observations(j:&std::sync::Mutex<Journal>,request:i64,p:&str,issue:&Value,end:Instant)->(Value,Value) {
     std::thread::scope(|scope| {
@@ -654,7 +655,7 @@ mod tests {
                 "smoke":[{"state":"failed","url":"https://example.invalid/j/3","first_failing_check":"invented source check"}]},
             "later_main":{"state":"running","url":"https://example.invalid/p/4"},"live_includes":false});
         let ru=delivery_text_localized(&v,true);
-        for expected in ["Этап доставки: проверка DEV", "успешно", "ошибка", "выполняется", "LIVE отстаёт", "abc123", "def456", "2026-11-04T10:00:00Z", "https://example.invalid/j/3", "invented source check"] {
+        for expected in ["Этап доставки: проверка DEV", "успешно", "ошибка", "выполняется", "LIVE отстаёт", "abc123", "def456", "назад (2026-11-04 10:00 UTC)", "https://example.invalid/j/3", "invented source check"] {
             assert!(ru.contains(expected),"missing {expected}: {ru}");
         }
         assert_eq!(delivery_text_localized(&v,false),delivery_text(&v));
@@ -775,7 +776,7 @@ mod tests {
         assert_eq!(got["live_includes"],false);
         assert!(!got.to_string().contains("after-check"));
         let reply=delivery_text(&got);
-        for fact in ["smoke1","smoke2","web_dev","2026-10-30T16:10:00Z","homepage returns 503","login returns 500","LIVE is behind"] {assert_eq!(reply.matches(fact).count(),1,"{reply}");}
+        for fact in ["smoke1","smoke2","web_dev","ago (2026-10-30 16:10 UTC)","homepage returns 503","login returns 500","LIVE is behind"] {assert_eq!(reply.matches(fact).count(),1,"{reply}");}
         assert!(reply.contains("Later containing main pipeline: success"));
         assert!(reply.contains("First containing main pipeline: failed"));
         let slow_git=f.dir.join("slow-git");
@@ -827,7 +828,7 @@ mod tests {
         let got=delivery_config(config(&j,"sample"),&issue(&result,true),end);
         assert_eq!(got["sha"],merge.as_str(),"{got}");assert_eq!(got["stage"],"on DEV");assert_eq!(got["live_includes"],false);
         let reply=delivery_text(&got);
-        for fact in ["2026-10-30T16:10:00Z","web_dev","homepage returns 503","Later containing main pipeline: success","LIVE is behind"] {assert!(reply.contains(fact),"{reply}");}
+        for fact in ["ago (2026-10-30 16:10 UTC)","web_dev","homepage returns 503","Later containing main pipeline: success","LIVE is behind"] {assert!(reply.contains(fact),"{reply}");}
     }
     // §5/§7/§12: a slow pipeline cannot hold controls or renew Git read budgets.
     #[test]
@@ -848,7 +849,7 @@ mod tests {
         assert!(start.elapsed()<Duration::from_secs(2),"adapter renewed deadline");
         let end=Instant::now()+Duration::from_secs(1);
         let h=json!({"sha":f.b,"deployed_at":"2026-10-30T16:10:00Z"});
-        assert_eq!(dev_observe(&f.j,"sample",&c,Some(&f.b),&h,end).unwrap()["state"],"on DEV since 2026-10-30T16:10:00Z");
+        assert!(dev_observe(&f.j,"sample",&c,Some(&f.b),&h,end).unwrap()["state"].as_str().unwrap().contains("ago (2026-10-30 16:10 UTC)"));
         let h=json!({"sha":f.b});
         let first=dev_observe(&f.j,"sample",&c,Some(&f.b),&h,end).unwrap();
         assert!(first["state"].as_str().unwrap().ends_with("(first observed)"));
@@ -890,7 +891,7 @@ mod tests {
     #[test]
     fn dev_ancestry_and_trusted_merge_174() {
         let f=fixture("ancestry");assert!(ancestor(&f.c,&f.a,&f.b).unwrap());assert!(!ancestor(&f.c,&f.b,&f.a).unwrap());assert!(ancestor(&f.c,&"a".repeat(40),&f.b).is_err());
-        let end=Instant::now()+Duration::from_secs(10);let observed=dev_observe(&f.j,"sample",&f.c,Some(&f.a),&json!({"sha":f.b,"deployed_at":"2026-10-30T10:00:00Z"}),end).unwrap();assert_eq!(observed["state"],"on DEV since 2026-10-30T10:00:00Z");assert_eq!(dev_observe(&f.j,"sample",&f.c,Some(&f.b),&json!({"sha":f.a}),end).unwrap()["state"],"not yet on DEV");assert!(dev_observe(&f.j,"sample",&f.c,None,&json!({"sha":f.b}),end).is_err());
+        let end=Instant::now()+Duration::from_secs(10);let observed=dev_observe(&f.j,"sample",&f.c,Some(&f.a),&json!({"sha":f.b,"deployed_at":"2026-10-30T10:00:00Z"}),end).unwrap();assert!(observed["state"].as_str().unwrap().contains("ago (2026-10-30 10:00 UTC)"));assert_eq!(dev_observe(&f.j,"sample",&f.c,Some(&f.b),&json!({"sha":f.a}),end).unwrap()["state"],"not yet on DEV");assert!(dev_observe(&f.j,"sample",&f.c,None,&json!({"sha":f.b}),end).is_err());
         let body=format!("taskq: close\nChanged: sample\n\ndelivery auto-merge r0: merged #1 as {}; merge-result CI green",f.b);
         assert_eq!(merged_sha(&json!({"comments":[{"trusted":true,"body":body}]})),Some(f.b.clone()));assert_eq!(merged_sha(&json!({"comments":[{"trusted":false,"body":body}]})),None);
     }

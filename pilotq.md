@@ -243,7 +243,7 @@ Supported managed host: Linux x86_64. Minimums: Codex 0.162.0 and Claude Code 2.
 
 Use executable `--version`; only tools without that command use owner-provisioned version/SHA256 receipts. Verify recognizer bytes before trusting its receipt. Missing/unparseable/old tools refuse installed startup, install and update; report an exact operator remedy. Never provision tools, elevate privileges or change logins automatically.
 
-Retain CoreQ v0.19.1 and journal schema 14; open schemas 0–14 through migrations, refuse newer schemas and refuse unsafe downgrade. The installation owner owns the user service/configuration. Releases use CoreQ versioned directories, checksum verification, selftest and rollback after three unhealthy starts.
+Retain CoreQ v0.19.2 and journal schema 14; create new journals at schema 14, migrate schema 13, refuse older or newer journals and refuse unsafe downgrade. The installation owner owns the user service/configuration. Releases use CoreQ versioned directories, checksum verification, selftest and rollback after three unhealthy starts.
 
 Publish only by fast-forwarding `live` to a merge-queue-accepted main commit. That workflow builds/verifies static linux-x86_64 and publishes tag, binary, SHA256SUMS and latest.json. Tags alone do not publish. The PM updates the test pilot and records source/binary identity, status, selftest, doctor and request/journal continuity; production cutover is not authorized.
 
@@ -290,8 +290,6 @@ Use one bounded journal reconciler at startup and periodically. Keep external ca
 - [docs/acceptance.md](docs/acceptance.md): product cases, metrics, automatic-management suite and qualification evidence.
 - [docs/tester-guide.md](docs/tester-guide.md): operator installation, provisioning, checks and current limitations.
 - [docs/status-notifications.md](docs/status-notifications.md): service-incident projections and deferred notification stages.
-- [docs/reply-files-145.md](docs/reply-files-145.md): PM live file-handoff qualification recipe.
-- [docs/trial-42.md](docs/trial-42.md): request-linked human-trial observations.
 - [docs/research.md](docs/research.md): runtime and Telegram mechanism evidence.
 - [docs/mechanism-matrix.md](docs/mechanism-matrix.md): source mechanisms, scoped proposals and acceptance mapping.
 - [docs/core-options.md](docs/core-options.md): architecture alternatives and subscription-runtime findings.
