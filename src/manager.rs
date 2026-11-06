@@ -18,6 +18,10 @@ pub(crate) const GRACE: Duration = Duration::from_secs(5);
 const TOOLS: [&str; 5] = ["commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch"];
 enum LaunchFailure { NotStarted(String), Exited(String) }
 
+/// #390 A4: why an app-server handshake ended, after the child spawned and before any input. The child may have exited or the
+/// adapter may have stopped it, so this claims neither; the adapter's reason stays in the operator log.
+pub const HANDSHAKE_FAILED: &str = "could not open the conversation, so this request was not submitted; the saved conversation is kept. Send the request again; if this repeats, the owner should check the PilotQ service log.";
+
 impl LaunchFailure {
     fn message(&self) -> &str { match self { Self::NotStarted(e) | Self::Exited(e) => e } }
 }
@@ -304,7 +308,8 @@ impl Runtime {
             // dynamic tools are an experimental app-server field; they are fixed at thread creation, so schema upgrades
             // explicitly rebuild older catalogues from the journal
             let mut thread = json!({"cwd": self.workspace, "developerInstructions": dynamic.1});
-            if resume.is_none() { thread["dynamicTools"] = dynamic.0.clone(); }
+            // #390: the resume reply is one stdout record; the native thread keeps its context without returning its turns
+            if resume.is_none() { thread["dynamicTools"] = dynamic.0.clone(); } else { thread["excludeTurns"] = json!(true); }
             l.mode = Mode::AppServer { initialize: json!({"clientInfo": {"name": "pilotq", "title": "PilotQ", "version": env!("CARGO_PKG_VERSION")}, "capabilities": {"experimentalApi": true}}), thread };
         } else {
             l.parts = parts(input);
@@ -338,7 +343,7 @@ impl Runtime {
             // native diagnostics can name paths or account details: operator log only, never a reply, the journal or telemetry
             Err(e) => {
                 crate::host::log(name, e.message());
-                return failed(match e { LaunchFailure::NotStarted(_) => format!("{label} did not start; check login and runtime health."), LaunchFailure::Exited(_) => format!("{label} exited without a terminal event") });
+                return failed(match e { LaunchFailure::NotStarted(_) => format!("{label} did not start; check login and runtime health."), LaunchFailure::Exited(_) if app_server => format!("{label} {HANDSHAKE_FAILED}"), LaunchFailure::Exited(_) => format!("{label} exited without a terminal event") });
             }
         };
         let result = (|| {
@@ -1088,9 +1093,80 @@ for line in sys.stdin:
         assert!(matches!(run(false,Some("missing"),"restricted",false),Outcome::Answered(s) if s=="finished"));
         // #373 A5: a diagnostic containing "spawn" cannot turn an exited child into a launch failure.
         std::fs::write(&bin,"#!/bin/sh\necho spawn-diagnostic >&2\nexit 1\n").unwrap();
-        assert!(matches!(run(true,None,"active",false),Outcome::Failed(s) if s=="Codex CLI exited without a terminal event"));
+        assert!(matches!(run(true,None,"active",false),Outcome::Failed(s) if s==format!("Codex CLI {HANDSHAKE_FAILED}")));
         std::fs::remove_file(&bin).unwrap();
         assert!(matches!(run(true,None,"active",false),Outcome::Failed(s) if s=="Codex CLI did not start; check login and runtime health."));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // #390: native Codex returns a thread's turns in its one resume record unless excluded (AgentQ research 253). Invented bytes only.
+    const LONG_THREAD: &str = r#"#!/usr/bin/env python3
+import json,os,sys
+here=os.path.dirname(os.path.abspath(__file__))
+log=open(os.path.join(here,'calls.jsonl'),'a')
+def send(v):
+ sys.stdout.write(json.dumps(v)+'\n'); sys.stdout.flush()
+for line in sys.stdin:
+ m=json.loads(line); method=m.get('method'); ident=m.get('id'); p=m.get('params') or {}
+ if method:
+  log.write(json.dumps({'method':method,'thread':p.get('threadId'),'exclude':p.get('excludeTurns'),'tools':'dynamicTools' in p,'input':[i.get('text') for i in p.get('input',[])]})+'\n'); log.flush()
+ if method in ('initialize','account/rateLimits/read'): send({'id':ident,'result':{}})
+ elif method=='thread/start': send({'id':ident,'result':{'thread':{'id':'new-thread'},'model':'unchanged'}})
+ elif method=='thread/resume':
+  long=not p.get('excludeTurns') or os.path.exists(os.path.join(here,'always-long'))
+  turns=[{'id':'old','text':'PRIVATE-HISTORY'+'x'*(8*1024*1024)}] if long else []
+  send({'id':ident,'result':{'thread':{'id':p['threadId'],'turns':turns},'model':'unchanged'}})
+ elif method=='turn/start':
+  t={'threadId':p['threadId'],'turnId':'invented-turn'}
+  send({'id':ident,'result':{'turn':{'id':'invented-turn','status':'inProgress'}}})
+  send({'method':'item/completed','params':{**t,'item':{'type':'agentMessage','text':'finished'}}})
+  send({'method':'turn/completed','params':{**t,'turn':{'id':'invented-turn','status':'completed'}}})
+"#;
+
+    #[test]
+    fn long_thread_resumes_in_place_390() {
+        let dir=std::env::temp_dir().join(format!("pilotq-resume390-{}",std::process::id()));
+        let _=std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin=dir.join("fake");
+        std::fs::write(&bin,LONG_THREAD).unwrap();
+        std::fs::set_permissions(&bin,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let c=Runtime{workspace:dir.clone(),logs:dir.join("logs"),optimization:Intent::Off,limits:Limits{first_event:Duration::from_secs(30),silent:Duration::from_secs(30),deadline:Duration::from_secs(30)},
+            agents:[("codex".to_string(),Agent{bin:bin.to_str().unwrap().into(),home:Some(dir.join("home")),models:vec![]})].into(),default:"codex".into(),routes:Default::default(),slots:None};
+        let rebuilds=std::cell::Cell::new(0);
+        let turn=|thread:Option<&str>| c.turn("codex",true,thread,None,&json!([{"type":"text","text":"current input"}]),(&json!([]),"instructions"),
+            ||true,|_,_,_|{},|_,_,_|(true,String::new()),||{rebuilds.set(rebuilds.get()+1);Ok(json!({}))},|_|{},|_,_|{},|_|{},"cli");
+        let calls=|method:&str| std::fs::read_to_string(dir.join("calls.jsonl")).unwrap().lines()
+            .map(|l|serde_json::from_str::<Value>(l).unwrap()).filter(|c|c["method"]==method).collect::<Vec<_>>();
+        let clear=||std::fs::remove_file(dir.join("calls.jsonl")).unwrap();
+
+        // An over-bound history reply is avoided: the same native thread answers the input once, without a rebuild.
+        let (thread,model,outcome)=turn(Some("long-thread"));
+        assert!(matches!(&outcome,Outcome::Answered(a) if a=="finished"),"{outcome:?}");
+        assert_eq!((thread.as_deref(),model.as_deref(),rebuilds.get()),(Some("long-thread"),Some("unchanged"),0));
+        let resumed=calls("thread/resume");
+        assert_eq!((resumed.len(),&resumed[0]["thread"],&resumed[0]["exclude"],&resumed[0]["tools"]),(1,&json!("long-thread"),&json!(true),&json!(false)));
+        assert!(calls("thread/start").is_empty(),"no new thread");
+        let started=calls("turn/start");
+        assert_eq!((started.len(),&started[0]["thread"],&started[0]["input"]),(1,&json!("long-thread"),&json!(["current input"])));
+        clear();
+
+        // thread/start keeps its tools and sends no resume-only field.
+        let (thread,_,outcome)=turn(None);
+        assert!(matches!(&outcome,Outcome::Answered(_)),"{outcome:?}");
+        assert_eq!(thread.as_deref(),Some("new-thread"));
+        let opened=calls("thread/start");
+        assert_eq!((opened.len(),&opened[0]["tools"],&opened[0]["exclude"]),(1,&json!(true),&Value::Null));
+        clear();
+
+        // The record bound still holds. The adapter stops the child, so the failure claims no exit and carries no native
+        // text, and the thread stays without a rebuild, a new thread or any input.
+        std::fs::write(dir.join("always-long"),"").unwrap();
+        let (thread,_,outcome)=turn(Some("long-thread"));
+        assert!(matches!(&outcome,Outcome::Failed(s) if *s==format!("Codex CLI {HANDSHAKE_FAILED}")),"{outcome:?}");
+        assert_eq!((thread.as_deref(),rebuilds.get()),(Some("long-thread"),0));
+        assert_eq!(calls("thread/resume").len(),1);
+        assert!(calls("thread/start").is_empty() && calls("turn/start").is_empty());
+        let _=std::fs::remove_dir_all(dir);
     }
 }
