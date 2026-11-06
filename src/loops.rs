@@ -22,7 +22,7 @@ pub struct Loop {
 /// #264 A6: fallback between event wakes, inside the owner's 1-2 h window.
 pub const REVIEW_FALLBACK: i64 = 5400;
 const STUCK: i64 = 7200;
-const REVIEW: &str = "Synthetic PM review. Review every registered project you can access through installed TaskQ commands and taskq profile telemetry, starting from the changes below; report stuck work, failures, asks, reviews with options and freed capacity with held tasks, with verified task links. Follow the bound PM pack when present. Decide with the author's current rights (#267): an admin author may answer asks in any project, a project owner only in owned projects; give the reason with each answer and relay a question when evidence is missing. Explain each changed task card in the recipient's language before technical codes: observed state, verified repo#N link and title, effect and significance, and next actor when waiting. For decisions keep original option numbers, full pros and cons, recommendation and its evidenced reason; say when a reason is unavailable. Explain rule references in ordinary language. Never mix historical privacy choices with later cycle revisions. Raw source is evidence, not the explanation. Explanation alone never selects an option or authorizes a mutation. For a closed card, explain what its closing_result outcome and each limit mean, never inventing, dropping or softening them; call a fact unknown only when the card lacks it. Closed is not released or deployed. Do not call loop tools.";
+const REVIEW: &str = "Synthetic PM review. Review every registered project you can access through installed TaskQ commands and taskq profile telemetry, starting from the changes below; report stuck work, failures, asks, reviews with options and freed capacity with held tasks, with verified task links. Follow the bound PM pack when present. Decide with the author's current rights (#267): an admin author may answer asks in any project, a project owner only in owned projects; give the reason with each answer and relay a question when evidence is missing. A technical action is yours within those rights; a product, scope or visual choice stays with its owner, and you never invent one. For each changed question: read the task with installed TaskQ, read the current project, specq or task clause behind every code it cites, then call task_explain once with its exact revision so the service edits that card into one primary explanation. Never repeat an explained card in the reply; if only explained cards changed and nothing else is new, reply exactly NO_CHANGE. If task_explain says this route has no card, or the clause cannot be read, give the same parts in your reply and call the rule unknown. Never claim a violation or exception from a code alone. Explain each changed task card in the recipient's language before technical codes: observed state, verified repo#N link and title, effect and significance, and next actor when waiting. For decisions keep original option numbers, full pros and cons, recommendation and its evidenced reason; say when a reason is unavailable. Explain rule references in ordinary language. Never mix historical privacy choices with later cycle revisions. Raw source is evidence, not the explanation. Explanation alone never selects an option or authorizes a mutation. For a closed card, explain what its closing_result outcome and each limit mean, never inventing, dropping or softening them; call a fact unknown only when the card lacks it. Closed is not released or deployed. Do not call loop tools.";
 fn err(e: rusqlite::Error) -> String { e.to_string() }
 fn key(front: &str, chat: i64, topic: Option<i64>) -> String { format!("loop:{front}:{chat}:{}", topic.unwrap_or(0)) }
 fn lkey(l: &Loop) -> String { if l.review {format!("review:{}",l.author)} else {key(&l.front,l.chat,l.topic)} }
@@ -36,6 +36,13 @@ fn read(c: &Connection, k: &str) -> Result<Option<Loop>, String> {
 pub fn all(c: &Connection) -> Result<Vec<Loop>, String> { stored(c,"loop:%") }
 /// #264: one PM review per person.
 pub fn reviews(c: &Connection) -> Result<Vec<Loop>, String> { stored(c,"review:%") }
+/// #401 A3: a current PM review of this project shows in this route or is its author's own DM, so its turn may explain cards here.
+pub fn pm_on(c: &Connection, project: &str, chat: i64, topic: Option<i64>) -> Result<bool, String> {
+    for l in reviews(c)? {
+        if ((l.chat==chat && l.topic==topic) || (chat==l.author && topic.is_none())) && allowed(c,l.author)? && (has(c,l.author,"projects")? || has(c,l.author,&format!("project:{project}"))?) {return Ok(true);}
+    }
+    Ok(false)
+}
 fn stored(c: &Connection, pattern: &str) -> Result<Vec<Loop>, String> {
     let mut q=c.prepare("SELECT CAST(value AS TEXT) FROM meta WHERE key LIKE ?1 ORDER BY key").map_err(err)?;
     q.query_map([pattern],|r|r.get::<_,String>(0)).map_err(err)?.map(|s|serde_json::from_str(&s.map_err(err)?).map_err(|e|e.to_string())).collect()
@@ -1026,6 +1033,86 @@ mod tests {
         }
     }
 
+    // #401 A3,A5,A7 / §§2,4: the real delivery path of an explained question. Defect: raw English source was the primary card and
+    // a second PM message followed. Risk kept: lost answer binding, duplicate controls, stale edits, unreachable source after a
+    // failed model turn or a restart, and a foreign route. This proves delivery state, not the model's wording or Telegram rendering.
+    #[test]
+    fn explanation_401_edits_the_card_and_keeps_binding() {
+        let f:Value=serde_json::from_str(include_str!("../tests/fixtures/401/agentq260.json")).unwrap();
+        let q=&f["question"];
+        let (mut j,p)=journal("explain401");
+        j.0.execute("INSERT INTO projects(name,repo,root,by,at) VALUES ('alpha','invented/alpha','/invented/alpha',7,0)",[]).unwrap();
+        j.0.execute("INSERT INTO route_projects(chat,topic,project) VALUES (-100,5,'alpha')",[]).unwrap();
+        let w=watch("alpha");
+        observe(&mut j,&w,&json!({"1":{"state":"doing","revision":1}}),0).unwrap();
+        // PM off: the subscription renders the complete literal source, unchanged, with no model turn.
+        observe(&mut j,&w,&json!({"1":{"state":"ask","revision":2,"question":q}}),1).unwrap();
+        assert!(!j.question_review_on("alpha",1).unwrap(),"PM off");
+        assert!(j.observe("alpha",1,"ask",2,Some(&q.to_string()),"",Some("full literal source"),2).unwrap());
+        let tick=admitted(&mut j,1,5,7,"/review on",3);
+        assert!(j.question_review_on("alpha",1).unwrap(),"PM on in the card's route");
+        let delivered=|j:&mut Journal|{while let Some(d)=j.due(99).unwrap().0 {let m=500+d.id;j.record(d.id,&crate::journal::Sent::Ok(m),99).unwrap();}};
+        delivered(&mut j);
+        let e=crate::explain::parse(&f["authored"],q,true).unwrap();
+        let (card,labelled)=crate::explain::render(&e,q,"🛑 link",2,true);
+        // Another person's DM and another route have no card; nothing is queued for them.
+        let foreign=admitted(&mut j,2,6,7,"other topic",4);
+        assert!(j.explain_question(foreign,"alpha",1,2,&card,&labelled,"{}",5).unwrap_err().contains("no card"));
+        assert!(j.explain_question(tick,"alpha",1,1,&card,&labelled,"{}",5).unwrap_err().contains("no card"),"stale revision");
+        j.explain_question(tick,"alpha",1,2,&card,&labelled,"{}",6).unwrap();
+        j.explain_question(tick,"alpha",1,2,&card,&labelled,"{}",6).unwrap();
+        assert_eq!(j.0.query_row("SELECT count(*) FROM outbox WHERE kind='question_explained'",[],|r|r.get::<_,i64>(0)).unwrap(),1,"a repeat queues one edit");
+        assert_eq!(j.0.query_row("SELECT count(*) FROM audit_events WHERE kind='task_explanation'",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+        // A restart keeps the obligation; the edit targets the same message with relabelled source numbers.
+        drop(j);let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
+        let original:i64=j.0.query_row("SELECT sent_message FROM outbox WHERE kind='question'",[],|r|r.get(0)).unwrap();
+        let d=loop {let d=j.due(10).unwrap().0.expect("edit stays due after restart");if d.kind=="question_explained" {break d;} j.record(d.id,&crate::journal::Sent::Ok(700+d.id),10).unwrap();};
+        assert_eq!(d.edit,Some(original),"edits the delivered question, no new message");
+        assert_eq!(d.buttons.iter().map(|b|b.0.as_str()).collect::<Vec<_>>(),vec!["answer:1","answer:2"]);
+        assert!(d.buttons[0].1.starts_with("1. Доработать") && d.buttons[0].1.ends_with('★'),"{:?}",d.buttons);
+        assert!(d.rich && d.text.contains("**Суть:**") && d.text.contains("> 🔎 "));
+        j.record(d.id,&crate::journal::Sent::Ok(original),10).unwrap();
+        // The answer still binds to the source row: its numbers, label and revision are the worker's own.
+        assert_eq!(j.choice("alpha",1,2,"1").unwrap().unwrap().1,"Complete protected-child A2");
+        assert_eq!(j.open_questions("alpha",1).unwrap(),vec![2]);
+        // A newer question retires the old card from source text, so its explanation cannot stay on a stale question.
+        assert!(j.observe("alpha",1,"ask",3,Some(&q.to_string()),"",Some("newer"),11).unwrap());
+        let stale:String=j.0.query_row("SELECT text FROM outbox WHERE kind='question_superseded'",[],|r|r.get(0)).unwrap();
+        assert!(stale.contains("full literal source") && !stale.contains("Суть"),"{stale}");
+        assert!(j.explain_question(tick,"alpha",1,2,&card,&labelled,"{}",12).unwrap_err().contains("superseded"));
+        // A question that was never delivered gets no replacement message: the explanation has nothing to edit.
+        j.0.execute("UPDATE outbox SET state='failed',sent_message=NULL WHERE kind='question' AND revision=3",[]).unwrap();
+        delivered(&mut j);
+        j.explain_question(tick,"alpha",1,3,&card,&labelled,"{}",13).unwrap();
+        let d=j.due(14).unwrap().0.unwrap();assert_eq!((d.kind.as_str(),d.edit),("question_explained",None));
+        drop(j);std::fs::remove_dir_all(p).unwrap();
+    }
+    // #401 A3 / §2: with PM on in the route the status card shows state and link, and literal goal and outcome stay expandable.
+    // PM off keeps the literal card byte for byte. The owner's DM counts as the author's own route; another person's does not.
+    #[test]
+    fn explanation_401_status_card_and_routes() {
+        let (mut j,p)=journal("explain401-status");
+        j.0.execute("INSERT INTO projects(name,repo,root,by,at) VALUES ('alpha','invented/alpha','/invented/alpha',7,0)",[]).unwrap();
+        let launch=admitted(&mut j,1,9,7,"launch",0);
+        j.0.execute("UPDATE requests SET state='answered' WHERE id=?1",[launch]).unwrap();
+        j.0.execute("INSERT INTO tasks(number,request_id,chat,topic,state,revision,observed,project,board,root) VALUES (3,?1,-100,9,'doing',1,0,'alpha','invented/alpha','/invented/alpha')",[launch]).unwrap();
+        j.remember_task_goal("alpha",3,Some("Literal goal text"),0).unwrap();
+        assert!(j.close_task("alpha",3,"Закрыта\nLiteral outcome and limit",1).unwrap());
+        let literal=j.launch_status(launch,2).unwrap();
+        assert!(literal.contains("Literal goal text") && literal.contains("Literal outcome and limit") && !literal.contains("> 🔎 "),"{literal}");
+        admitted(&mut j,2,9,7,"/review on",3);
+        let compact=j.launch_status(launch,4).unwrap();
+        let (primary,source)=compact.split_once("> 🔎 ").unwrap();
+        assert!(!primary.contains("Literal") && source.contains("Literal goal text") && source.contains("Literal outcome and limit"),"{compact}");
+        let html=crate::telegram::html(&compact);
+        assert!(html.contains("<blockquote expandable>🔎") && html.contains("Literal outcome and limit"),"{html}");
+        assert!(pm_on(&j.0,"alpha",7,None).unwrap(),"author's own DM");
+        assert!(!pm_on(&j.0,"alpha",8,None).unwrap() && !pm_on(&j.0,"alpha",-100,Some(5)).unwrap(),"another person's DM or topic");
+        j.0.execute("DELETE FROM grants WHERE user=7 AND name='shell'",[]).unwrap();
+        admitted(&mut j,3,9,7,"/review off",5);
+        assert_eq!(j.launch_status(launch,2).unwrap(),literal,"PM off restores the literal card");
+        drop(j);std::fs::remove_dir_all(p).unwrap();
+    }
     // #264 A5: Explain on a delivered board card starts one model input in that route with the card as quoted context.
     #[test]
     fn board_264_explain_button() {
