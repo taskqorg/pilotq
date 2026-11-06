@@ -527,6 +527,7 @@ mod tests {
                 for (path,status,mime,body,head) in replies {
                     let deadline=std::time::Instant::now()+Duration::from_secs(5);
                     let mut stream=loop {match listener.accept() {Ok((s,_))=>break s,Err(e) if e.kind()==std::io::ErrorKind::WouldBlock && std::time::Instant::now()<deadline=>std::thread::sleep(Duration::from_millis(5)),Err(e)=>panic!("missing request {path}: {e}")}};
+                    stream.set_nonblocking(false).unwrap();
                     stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
                     let mut buf=[0;4096];let n=stream.read(&mut buf).unwrap();let request=String::from_utf8_lossy(&buf[..n]);
                     assert!(request.starts_with(&format!("{} {path} ",if head {"HEAD"} else {"GET"})),"{request}");

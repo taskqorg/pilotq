@@ -28,7 +28,7 @@ keeps the service user's own login). `runtime` selects the installation runtime 
 or `claude`); `runtime_routes` maps a route (`cli`, `CHAT` or `CHAT:TOPIC`) to an override. The
 #265 keys `codex`, `claude`, `claude_home` and `claude_models` remain readable for existing
 installations. Every manager turn runs through the `agentq-runtime` runtime trait
-(`agent::runtime(name)`), pinned to release `runtime-v0.7.0` (`b5ef97c257a97664bcd087bfd5d3ec0797c931c7`),
+(`agent::runtime(name)`), pinned to release `runtime-v0.8.0` (`eb13fe90cc86a682ec37259d9865dfe3e6f11e6e`),
 one process group per turn, and keeps the existing grants, native-shell authority, private answer
 drafts, model choice, inactivity watches and recovery rules.
 
@@ -49,8 +49,9 @@ drafts, model choice, inactivity watches and recovery rules.
   The 8 MiB record bound stays in the adapter. Unconfirmed startup after spawn never claims an
   exit or invites replay: preserve the conversation, show `/status` and ask the owner to inspect
   the protected service log before retrying. No native diagnostics reach the reply.
-- Explicit configured `models` remain overrides. Otherwise `/model` reads the trait `catalogue`
-  when available, else the adapter defaults; PilotQ sends no native catalogue request.
+- Explicit configured `models` remain overrides. Otherwise `/model` reads the trait catalogue
+  with the configured runtime executable when available, else the adapter defaults; PilotQ sends
+  no native catalogue request and never substitutes a PATH executable for the configured one.
 - The trait's process setup keeps only runtime necessities and the adapter's launch variables in the
   child environment, so no API key reaches it and no paid API fallback exists (R9).
 - Every runtime reaches PilotQ's own tools through a per-turn stdio MCP relay, `pilotq --mcp-bridge
@@ -59,10 +60,13 @@ drafts, model choice, inactivity watches and recovery rules.
   thread are fixed at its creation and no longer answered, so its first turn after this upgrade
   rebuilds once from the journal without repeating effects.
 - `Text` events feed answer drafts; the final text is the last `Message`. `ToolStart` and `ToolEnd`
-  retain kind, name, identity and observed status in audit and the uncertain-effect record; missing
-  status stays unconfirmed. A PilotQ relay tool uses one audit name on every runtime and writes no
+  retain kind, name, identity, optional adapter-sanitized command/file detail and observed status in
+  audit and the uncertain-effect record; missing status stays unconfirmed. Detail passes the protected
+  key scrubber before audit or retained findings and never enters metadata-only telemetry. A PilotQ
+  relay tool uses one audit name on every runtime and writes no
   native finding, because its boundary keeps its own. `Quota` and `Context` feed `/status`: retain every reported window,
-  including named unknowns, without exposing account, credit or plan data.
+  including named unknowns, without exposing account, credit or plan data. Context belongs only to
+  the current native thread; foreign notifications cannot replace or invalidate its measurement.
 - Worker acceptance uses local/CI evidence. After a merged release, the PM qualifies live private
   text and voice prefixes on both runtimes, group delivery without drafts, edits at most once per
   second, final text matching the last `Message`, relay calls for both principals on first/resumed

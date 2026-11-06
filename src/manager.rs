@@ -105,7 +105,7 @@ impl Runtime {
         let d = a.descriptor();
         if !agent.models.is_empty() { return Ok(agent.models.clone()); }
         if !d.has("catalogue") { return Ok(d.models.iter().map(|s| s.to_string()).collect()); }
-        let models = a.catalogue(agent.home.as_deref()).map_err(|_| "Model catalogue unavailable")?;
+        let models = a.catalogue_with_executable(agent.home.as_deref(), Some(std::path::Path::new(&agent.bin))).map_err(|_| "Model catalogue unavailable")?;
         if models.is_empty() { return Err("Model catalogue is empty".into()); }
         Ok(models.into_iter().map(|m| m.id).collect())
     }
@@ -192,7 +192,6 @@ fn native_access(j:&Journal,user:i64)->Result<bool,String> {
     Ok(j.owner()?==Some(user) || j.has(user,"shell")?)
 }
 
-/// Ordered user input as trait parts; `localImage` items are files PilotQ already stored for this turn.
 /// PilotQ's own tool behind a native MCP item, under one name on every runtime. Its boundary owns findings (§5, #383).
 fn relay_tool<'a>(tools: &Value, kind: ToolKind, name: Option<&'a str>) -> Option<&'a str> {
     let name = name?;
@@ -206,6 +205,7 @@ fn tool_fingerprint(name: &str, tools: &Value) -> Value {
     if runtime(name).is_some_and(|a| a.descriptor().has("app-server")) { json!({"relay": tools}) } else { tools.clone() }
 }
 
+/// Ordered user input as trait parts; `localImage` items are files PilotQ already stored for this turn.
 fn parts(input: &Value, resumed: bool) -> Vec<Part> {
     input.as_array().into_iter().flatten().filter(|i| !resumed || i["historical"] != true).map(|i| match i["path"].as_str() {
         Some(p) if i["type"] == "localImage" => Part::Image(p.into()),
@@ -378,11 +378,11 @@ impl Runtime {
                             preview(&draft);
                         }
                         Event::Message { text, .. } => { preview(&text); draft.clear(); answer = Some(text); }
-                        Event::ToolStart { id, kind, name } => {
+                        Event::ToolStart { id, kind, name, detail } => {
                             tooled = true;
                             let own = relay_tool(tools.0, kind, name.as_deref()).map(str::to_string);
                             let kind = match kind { ToolKind::Shell => "shell", ToolKind::Mcp => "mcp", ToolKind::Web => "web", ToolKind::Other => "other" };
-                            let item = json!({"type": kind, "id": id, "tool": own.as_deref().or(name.as_deref()), "relay": own.is_some()});
+                            let item = json!({"type": kind, "id": id, "tool": own.as_deref().or(name.as_deref()), "detail": detail, "relay": own.is_some()});
                             tool(kind, id.as_deref().unwrap_or(""), None);
                             observation("native_started", &item);
                             items.insert(id, item);
@@ -706,7 +706,7 @@ fn observe(j: &Mutex<Journal>, r: &Run, d: &crate::direct::Direct, now: &impl Fn
     "native_started" | "native_completed" => {
         let completed=kind=="native_completed";
         let kind=data["type"].as_str().unwrap_or("tool");
-        let detail=d.keys.scrub(data["tool"].as_str().unwrap_or(kind));
+        let detail=d.keys.scrub(data["detail"].as_str().or(data["tool"].as_str()).unwrap_or(kind));
         let guard=j.lock().unwrap();
         let _=guard.0.execute("UPDATE audit_events SET target=?3 WHERE run_id=?1 AND item=?2 AND kind='tool'",rusqlite::params![r.id,data["id"].as_str().unwrap_or(""),detail]);
         if completed && data["relay"]!=true {
@@ -936,6 +936,36 @@ mod tests {
         for (kind,native) in [(ToolKind::Mcp,Some("mcp__other__project_list")),(ToolKind::Mcp,Some("other")),(ToolKind::Mcp,None),(ToolKind::Shell,Some("project_list"))] {
             assert_eq!(relay_tool(&tools,kind,native),None);
         }
+    }
+
+    // R16/R17: neutral command/file detail reaches audit and recovery findings only after the same key scrubber.
+    #[test]
+    fn native_tool_detail_is_scrubbed_383() {
+        use super::*;
+        let dir=std::env::temp_dir().join(format!("pilotq-detail383-{}",token()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let d=crate::direct::Direct{keys:crate::keys::Keys(dir.join("keys.json"))};
+        d.keys.add("invented","invented test key",&["issue_read".into()],"invented-detail-383").unwrap();
+        let mut journal=Journal::open(std::path::Path::new(":memory:")).unwrap();
+        journal.bootstrap(7,0).unwrap();
+        let r=journal.ask(7,"invented request",1).unwrap();
+        let j=Mutex::new(journal);
+        let mut footer=crate::footer::Footer::default();
+        for (id,kind,name,detail,expected) in [
+            ("command","shell",None,Some("touch invented-detail-383"),"touch [key invented]"),
+            ("file","other",Some("Edit"),Some("src/invented-detail-383"),"src/[key invented]"),
+            ("missing","shell",None,None,"shell"),
+        ] {
+            j.lock().unwrap().tool(&r,kind,id,None,2).unwrap();
+            let item=json!({"id":id,"type":kind,"tool":name,"detail":detail,"status":"completed"});
+            for event in ["native_started","native_completed"] { observe(&j,&r,&d,&||3,&mut footer,false,event,&item); }
+            let guard=j.lock().unwrap();
+            let target:String=guard.0.query_row("SELECT target FROM audit_events WHERE run_id=?1 AND kind='tool' AND item=?2",rusqlite::params![r.id,id],|row|row.get(0)).unwrap();
+            assert_eq!(target,expected);
+            let finding:String=guard.0.query_row("SELECT result FROM audit_events WHERE run_id=?1 AND kind='kept_finding' ORDER BY id DESC LIMIT 1",[r.id],|row|row.get(0)).unwrap();
+            assert_eq!(finding,format!("{expected}: completed"));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     // #383 A4: the resumed native thread already holds old pixels; rebuilds still receive them in order.

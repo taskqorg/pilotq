@@ -367,7 +367,7 @@ fn texts(st: &State) -> Vec<String> {
 
 fn service(d: &Path, fault: Option<&str>) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_pilotq"));
-    c.env("PATH", format!("{}:{}:{}", d.join("catalogue-bin").display(), d.display(), std::env::var("PATH").unwrap_or_default()));
+    c.env("PATH", format!("{}:{}", d.display(), std::env::var("PATH").unwrap_or_default()));
     c.args(["service", "run"]).env("PILOTQ_INSTALL", d).stdout(Stdio::null()).stderr(Stdio::piped());
     if let Some(f) = fault {
         c.env("PILOTQ_FAULT", f);
@@ -558,7 +558,7 @@ fn f05_delivery_faults_are_bounded() {
 }
 
 fn cli(d: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_pilotq")).args(args).env("PILOTQ_INSTALL", d).env("PATH", format!("{}:{}:{}",d.join("catalogue-bin").display(),d.display(),std::env::var("PATH").unwrap_or_default())).output().unwrap()
+    Command::new(env!("CARGO_BIN_EXE_pilotq")).args(args).env("PILOTQ_INSTALL", d).env("PATH", format!("{}:{}",d.display(),std::env::var("PATH").unwrap_or_default())).output().unwrap()
 }
 
 // #205 A3 / R5,R13: the real CLI waits for a restart writer, then durably answers through the shared path.
@@ -3847,7 +3847,7 @@ fn doctor_voice_readiness() {
     // #144 / §9: an unusable gh cannot affect CLI-only doctor.
     let gh_ok = r#"if [ "$1" = --version ]; then echo 'gh version 2.45.0 (invented)'; else echo '[]'; fi"#;
     script(&d, "gh", gh_ok);
-    let gh_path = format!("{}:{}:{}",d.join("catalogue-bin").display(),d.display(),std::env::var("PATH").unwrap_or_default());
+    let gh_path = format!("{}:{}",d.display(),std::env::var("PATH").unwrap_or_default());
     let model = d.join("model");
     fs::create_dir(&model).unwrap();
     for (mode, expected) in [(0,"voice not configured"),(1,"voice recognizer unavailable"),(2,"voice model unavailable"),
@@ -3890,12 +3890,16 @@ fn u106_telegram_controls_and_models() {
     let (d,st)=setup("u106",vec![]);
     let fake=FAKE.replace("d=$(dirname \"$0\")", "d=$(dirname \"$0\")\ncase \"$*\" in *'login status'*) echo 'Logged in using ChatGPT'; exit 0;; esac")
         .replace("  *'\"method\":\"initialize\"'*)", "  *'\"method\":\"model/list\"'*) echo '{\"id\":2,\"result\":{\"data\":[{\"model\":\"invented-a\",\"hidden\":false},{\"model\":\"invented-b\",\"hidden\":false}],\"nextCursor\":null}}' ;;\n  *'\"method\":\"initialize\"'*)");
-    fs::create_dir_all(d.join("catalogue-bin")).unwrap();
+    // #383 A5: the configured native executable is outside PATH; a PATH fixture masked catalogue lookup drift.
+    let configured=d.join("configured-runtime");
+    fs::create_dir_all(&configured).unwrap();
+    let executable=configured.join("control-codex");
     let source=d.join("catalogue-fixture.rs");
-    let body=format!("fn main() {{ let status=std::process::Command::new(\"sh\").arg({:?}).args(std::env::args_os().skip(1)).status().unwrap(); std::process::exit(status.code().unwrap_or(1)); }}",d.join("control-codex"));
+    let body=format!("fn main() {{ let status=std::process::Command::new(\"sh\").arg({:?}).args(std::env::args_os().skip(1)).status().unwrap(); std::process::exit(status.code().unwrap_or(1)); }}",d.join("control-script"));
     fs::write(&source,body).unwrap();
-    assert!(Command::new("rustc").args(["--crate-name","catalogue_fixture"]).arg(&source).arg("-o").arg(d.join("catalogue-bin/codex")).status().unwrap().success());
-    limits(&d,&script(&d,"control-codex",&fake),json!({"first_event":3,"silent":60,"deadline":60}));
+    assert!(Command::new("rustc").args(["--crate-name","catalogue_fixture"]).arg(&source).arg("-o").arg(&executable).status().unwrap().success());
+    script(&d,"control-script",&fake);
+    limits(&d,&executable,json!({"first_event":3,"silent":60,"deadline":60}));
     let mut c=spawn(&d,None);
     push(&st,text(1,OWNER,None,OWNER,"slow active"));
     wait("active manager",10,||try_query(&d,"SELECT count(*) FROM runs WHERE state='running'")==Some(1));
@@ -4194,7 +4198,7 @@ while [ "$1" != -i ]; do shift; done; input=$2; for a; do out=$a; done; cp "$inp
         "projects":[{"root":d.join("root"),"status":{"complete":true,"capacity":{"limits":{"codex":4},"gate":"open"},
         "access":[{"runtime":"codex","grant":"none (taskq.json is a request)","effective":"legacy","refused":"no operator grant"}]}}]});
     fs::write(d.join("setup-service.json"),svc.to_string()).unwrap();
-    let out=Command::new(env!("CARGO_BIN_EXE_pilotq")).env("PILOTQ_INSTALL",&d).env("PATH",format!("{}:{}:{}",d.join("catalogue-bin").display(),d.display(),std::env::var("PATH").unwrap_or_default()))
+    let out=Command::new(env!("CARGO_BIN_EXE_pilotq")).env("PILOTQ_INSTALL",&d).env("PATH",format!("{}:{}",d.display(),std::env::var("PATH").unwrap_or_default()))
         .args(["projects","add","cyprusbz-board",d.join("root").to_str().unwrap(),"--json"]).output().unwrap();
     let v:Value=serde_json::from_slice(&out.stdout).unwrap_or_else(|_|panic!("{}",String::from_utf8_lossy(&out.stderr)));
     assert!(!out.status.success(),"a missing grant must fail the setup command while preserving registration");
