@@ -1408,15 +1408,17 @@ Worker evidence is local and CI: `cargo test --locked explanation_401`.
 
 - A7 replays the observed agentq#260 child-context and taskq#2482 research/read-only questions through the real parser, source check and renderer, using both an authored explanation and a recorded [model explanation](../tests/fixtures/401/README.md). Primary text carries no bare criterion code, hash or attempt ID, and every option number, star and evidence link stays.
 - The boundary refuses unverified clauses, paths outside the registered root, foreign links, wrong-language text, changed options and invented trade-offs or recommendations.
-- Delivery edits the delivered question with source-numbered buttons, survives restart, refuses stale and foreign revisions and sends no replacement when the question is missing. PM-off cards stay literal.
+- Delivery edits the delivered question with source-numbered buttons, survives restart, refuses stale and foreign revisions and sends no replacement when the question is missing.
+- The [model-free default](conversation-flow.md#model-free-default) replays both observed questions in Russian and English: each resolvable code shows its literal clause and source, an unresolved R13 stays not found, `Done` stays in details and every number, star, trade-off and link stays. A real scan on a fresh journal with no notes, pack or review queues no model request, and its card and buttons stay after restart. Worker English stays untranslated by the owner's model-free decision.
 - A rebuilt session receives the reconciled authority rules and the new catalogue. Rule presence is not quality evidence.
 
-PM check after release, on the existing test pilot, with the PM runbook reinstalled from `docs/pm-pack.md` because the installed pack keeps its old text until then:
+PM check after release, on the existing test pilot. Keep the runbook as installed for steps 1 and 2, then reinstall it from `docs/pm-pack.md`, because the installed pack keeps its old text until then:
 
 1. Record a before screenshot of one raw source question from the previous build and the installed identity with `pilotq version`.
-2. Turn on `/review on` in a route that receives a disposable technical question, and confirm the compact card and then one edited explanation with working buttons.
-3. Answer that question from the card and read the receipt back through TaskQ. Retain the after screenshot.
-4. Confirm a card in another shared route keeps its literal source while the PM reply explains it.
+2. With review off in a new route, file a disposable technical question that cites an acceptance code and an undefined code. Confirm the clause line, the not-found line, the next actor, collapsed `Done`, working buttons and no new model request. Retain the after screenshot.
+3. Turn on `/review on` in a route that receives a second disposable technical question, and confirm the compact card and then one edited explanation with working buttons.
+4. Answer that question from the card and read the receipt back through TaskQ.
+5. Confirm a card in another shared route keeps its model-free source while the PM reply explains it.
 
 Local and CI checks do not qualify Telegram rendering or live model wording. Workers never install.
 

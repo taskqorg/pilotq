@@ -1,5 +1,6 @@
-//! #401 / §2: a PM explanation of one question revision. The model supplies plain-language fields; the service checks them,
-//! keeps option numbers, stars and links from the source, and renders the card. An explanation confers no authority.
+//! #401 / §2: two layers over one question revision. By default the service looks up the clause behind each cited code with no
+//! model. With PM review on, the model supplies plain-language fields; the service checks them, keeps option numbers, stars and
+//! links from the source, and renders the card. Neither layer confers authority.
 use crate::telegram::details;
 use serde_json::{Value, json};
 use std::path::{Component, Path};
@@ -10,6 +11,9 @@ const LABEL: usize = 48;
 const TOTAL: usize = 2000;
 const EXCERPT: usize = 12;
 const CLAUSE_FILE: u64 = 4 << 20;
+/// A looked-up clause stays one short line and a card names few of them: the task link holds the rest.
+const CLAUSE: usize = 240;
+const CLAUSES: usize = 6;
 
 #[derive(Debug, PartialEq)]
 pub struct Source { pub kind: String, pub path: Option<String>, pub excerpt: String }
@@ -159,6 +163,69 @@ fn clause_file(root: &Path, path: &str) -> Result<String, String> {
     std::fs::read_to_string(&file).map_err(|_| refused())
 }
 
+/// Codes a person would have to look up: one capital and up to three digits, `§7` or `section 7`, first use only.
+/// A code right after another task's reference (`taskq#2428 A2`) is that task's, so it never resolves against this one.
+pub fn cited(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    let (mut foreign, mut section) = (false, false);
+    for word in text.split_whitespace() {
+        for token in word.split(|c: char| !c.is_alphanumeric() && c != '§').filter(|t| !t.is_empty()) {
+            let number = |n: &str| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit());
+            let mut chars = token.chars();
+            let letter = chars.next().is_some_and(|c| c.is_ascii_uppercase());
+            let rest = chars.as_str();
+            let code = if section && number(token) { Some(format!("§{token}")) }
+                else if token.strip_prefix('§').is_some_and(number) { Some(token.to_string()) }
+                else if letter && rest.len() <= 3 && number(rest) { Some(token.to_string()) }
+                else { None };
+            if let Some(code) = code.filter(|c| !foreign && !out.contains(c)) { out.push(code); }
+            section = token == "§" || token.eq_ignore_ascii_case("section");
+        }
+        foreign = word.contains('#');
+    }
+    out
+}
+
+/// The clause that defines a code: a line that starts with it, or the numbered heading for `§7`. Literal, never a paraphrase.
+pub fn clause(text: &str, code: &str) -> Option<String> {
+    let found = text.lines().find_map(|line| {
+        let rest = match code.strip_prefix('§') {
+            Some(number) => line.trim().strip_prefix("## ")?.strip_prefix(number)?,
+            None => line.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '-' | '*')).strip_prefix(code)?,
+        };
+        if rest.chars().next().is_some_and(char::is_alphanumeric) { return None; }
+        let rest = rest.replace("**", "");
+        let rest = rest.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '.' | ':' | ')' | '—' | '–' | '-')).trim();
+        (!rest.is_empty()).then(|| rest.to_string())
+    })?;
+    Some(if found.chars().count() > CLAUSE { format!("{}…", found.chars().take(CLAUSE).collect::<String>()) } else { found })
+}
+
+/// A1/A2 with no model: what each code cited in `text` says, from this task's text or the project contract at the registered
+/// root. A code neither defines stays named as not found. The clause stays in its source language; only the frame is localized.
+pub fn clauses(text: &str, task: Option<&str>, root: &Path, board: &str, ru: bool) -> Vec<String> {
+    let codes = cited(text);
+    if codes.is_empty() { return vec![]; }
+    let name = format!("{}.md", board.rsplit('/').next().unwrap_or(board));
+    let mut contract = None;
+    let mut lines = vec![];
+    let mut missing = vec![];
+    for code in codes.iter().take(CLAUSES) {
+        if let Some(found) = task.and_then(|t| clause(t, code)) {
+            lines.push(format!("{code} ({}): {found}", if ru { "условие задачи" } else { "task text" }));
+            continue;
+        }
+        let text = contract.get_or_insert_with(|| clause_file(root, &name).ok());
+        match text.as_deref().and_then(|t| clause(t, code)) {
+            Some(found) => lines.push(format!("{code} (`{name}`): {found}")),
+            None => missing.push(code.as_str()),
+        }
+    }
+    if !missing.is_empty() { lines.push(format!("{}: {}.", if ru { "Не найдено в задаче и контракте проекта" } else { "Not found in the task or project contract" }, missing.join(", "))); }
+    if codes.len() > CLAUSES { lines.push(if ru { "Остальные ссылки на правила смотрите в задаче." } else { "See the task for the other rule references." }.into()); }
+    lines
+}
+
 fn evidence_line(q: &Value, ru: bool) -> Option<String> {
     let links: Vec<String> = q["evidence"].as_array().into_iter().flatten()
         .filter_map(|e| Some(format!("[{}]({})", e["label"].as_str()?, e["url"].as_str()?))).collect();
@@ -167,11 +234,12 @@ fn evidence_line(q: &Value, ru: bool) -> Option<String> {
 
 fn source_block(q: &Value, revision: i64, ru: bool) -> String {
     let title = if ru { format!("Исходный вопрос исполнителя, ревизия {revision}") } else { format!("Worker's source question, revision {revision}") };
-    details(&title, &crate::taskq::question_body(q))
+    // Source details are literal text, so the Markdown escape of a leading `+` must not show there.
+    details(&title, &crate::taskq::question_body(q).replace(r"\+", "+"))
 }
 
 /// PM-on source card before an explanation exists: every number, label and link stays actionable, and the source stays one tap away.
-pub fn compact_question(head: &str, goal: Option<&str>, q: &Value, revision: i64, ru: bool) -> String {
+pub fn compact_question(head: &str, goal: Option<&str>, q: &Value, revision: i64, clauses: &[String], ru: bool) -> String {
     let mut lines = vec![head.to_string()];
     if let Some(goal) = goal { lines.push(goal.to_string()); }
     lines.push(if ru { "Объяснение PM заменит эту строку, когда будет готово; исходный текст ниже." } else { "A PM explanation replaces this line when it is ready; the source text is below." }.into());
@@ -179,7 +247,10 @@ pub fn compact_question(head: &str, goal: Option<&str>, q: &Value, revision: i64
     for c in crate::taskq::choices(q) {
         lines.push(format!("{}. {}{}", c["id"], c["label"].as_str().unwrap_or(""), if c["recommended"] == true { " ★" } else { "" }));
     }
-    format!("{}\n\n{}", lines.join("\n"), source_block(q, revision, ru))
+    // A failed model turn leaves this card, so what the codes say stays with the source it explains.
+    let mut source = source_block(q, revision, ru);
+    for line in clauses { source = format!("{source}\n> {line}"); }
+    format!("{}\n\n{source}", lines.join("\n"))
 }
 
 fn actor_name(actor: &str, ru: bool) -> &'static str {
@@ -380,14 +451,47 @@ mod tests {
             let f = fixture(name);
             let q = &f["question"];
             for ru in [true, false] {
-                let card = compact_question("🛑 [link](https://forge.invalid/1)", Some("Goal: literal"), q, 7, ru);
+                let card = compact_question("🛑 [link](https://forge.invalid/1)", Some("Goal: literal"), q, 7, &["A2 (task text): literal clause".to_string()], ru);
                 let (primary, source) = card.split_once("> 🔎 ").unwrap();
                 for c in crate::taskq::choices(q) { assert!(primary.contains(&format!("{}. {}", c["id"], c["label"].as_str().unwrap()))); }
                 for e in q["evidence"].as_array().unwrap() { assert!(primary.contains(e["url"].as_str().unwrap())); }
                 assert!(!primary.contains(q["problem"].as_str().unwrap()) && source.contains(q["problem"].as_str().unwrap()));
                 assert!(source.contains('7'), "source is bound to its revision");
+                assert!(source.contains("A2 (task text): literal clause") && !primary.contains("literal clause"), "clauses stay with the source");
                 assert!(primary.contains(if ru { "Объяснение PM" } else { "A PM explanation" }));
             }
         }
+    }
+
+    // #401 A1,A2,A7 / §2: the model-free lookup on the two observed questions. Defect: a bare A2 or R13 reached the reader with
+    // nothing behind it. Risk kept: a clause credited to the wrong task or contract, or an unread code presented as resolved.
+    #[test]
+    fn explanation_401_clause_lookup_is_literal_and_honest() {
+        let cases = [("agentq260", "taskqorg/agentq", "A2", "A consumer passes its CoreQ Store", "R13"), ("taskq2482", "taskqorg/taskq", "A3", "Preserve ee39a45", "R13")];
+        for (name, board, code, literal, missing) in cases {
+            let f = fixture(name);
+            let dir = root(name, &f["clauses"]);
+            let body = f["task"]["body"].as_str();
+            for ru in [true, false] {
+                let lines = clauses(f["question"]["problem"].as_str().unwrap(), body, &dir, board, ru);
+                let found = lines.iter().find(|l| l.starts_with(code)).unwrap_or_else(|| panic!("{name}: {lines:?}"));
+                assert!(found.contains(literal) && found.contains(if ru { "условие задачи" } else { "task text" }), "{found}");
+                let last = lines.last().unwrap();
+                assert!(last.contains(missing) && last.contains(if ru { "Не найдено" } else { "Not found" }), "{name}: an unread code stays unknown: {last}");
+            }
+        }
+        assert_eq!(cited("A2-A3 (R13, section 7); §5 PR262 E2E eac48ee2 Entry6680789876 A2"), ["A2", "A3", "R13", "§7", "§5"]);
+        assert_eq!(cited("Unblock taskq#2428 A2 before A3"), ["A3"], "a code after another task's reference is that task's");
+        assert_eq!(clause("- **R13 Two front ends:** the CLI and Telegram", "R13").as_deref(), Some("Two front ends: the CLI and Telegram"));
+        assert_eq!(clause("A2. first\nA21. other", "A21").as_deref(), Some("other"));
+        assert_eq!(clause("A21. other", "A2"), None, "a longer code never matches");
+        assert_eq!(clause("## 7. Budgets\n## 70. Other", "§7").as_deref(), Some("Budgets"));
+        assert!(clause(&format!("A2. {}", "x".repeat(CLAUSE * 2)), "A2").unwrap().chars().count() <= CLAUSE + 1);
+        let dir = root("contract", &json!({"board.md": "- **R13 Two front ends:** shared path\n## 7. Budgets"}));
+        let lines = clauses("R13 and section 7 and Z9", None, &dir, "org/board", false);
+        assert_eq!(lines, ["R13 (`board.md`): Two front ends: shared path", "§7 (`board.md`): Budgets", "Not found in the task or project contract: Z9."]);
+        assert!(clauses("no codes here", None, &dir, "org/board", false).is_empty());
+        let many = clauses("A1 A2 A3 A4 A5 A6 A7", None, &dir, "org/board", false);
+        assert!(many.last().unwrap().contains("other rule references"), "{many:?}");
     }
 }

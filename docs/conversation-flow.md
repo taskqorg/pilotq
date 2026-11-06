@@ -8,7 +8,20 @@ Normal replies lead with one short essence line in the person's language, follow
 
 Task updates explain the effect and why it matters, with a specq semantic status icon, observed state and verified `repo#N — title` link. Keep title, trusted closing verdict and limitations together; closure never implies release or deployment. Every model-free task card uses one format: verified link and meaningful title, observed state, the essence (the first line of the task's filed goal, as literal source) and, when closed, the available trusted outcome and material limitations, unfiltered. Say the outcome is unconfirmed only when no qualified report exists; a failed read of an available report is retried, never shown as unknown. Waiting updates name the next authorized actor, or explicitly say that actor is unknown.
 
-Decisions must be understandable without reading a specification. Preserve original option numbers and complete pros and cons; explain the recommendation and its grounded reason. Do not invent missing trade-offs, reasons, state or evidence. Keep literal immutable source in audit/evidence, separate from the localized explanation. Raw source alone is not an explanation. With PM review enabled (`/review on`), its existing event-woken turn explains source cards in the recipient’s language; with PM review off, deterministic cards retain source text without using a model. A PM explanation states what the trusted outcome and each limitation mean for the recipient; it never invents, drops or softens them, and it calls a fact unknown only when the source card lacks it. Ordinary model replies and PM explanations follow this rule for questions, results and errors in English and Russian, including rich Markdown, HTML and plain fallback. Model-free cards localize owned state and control labels; they do not pretend to translate arbitrary source prose. Explanations confer no authority and never rewrite revision, actor, grants, option mapping or receipts. Encode literal source once at the output sink.
+Decisions must be understandable without reading a specification. Preserve original option numbers and complete pros and cons; explain the recommendation and its grounded reason. Do not invent missing trade-offs, reasons, state or evidence. Keep literal immutable source in audit/evidence, separate from the localized explanation. Raw source alone is not an explanation. With PM review enabled (`/review on`), its existing event-woken turn explains source cards in the recipient’s language; with PM review off, [deterministic cards](#model-free-default) retain source text without using a model. A PM explanation states what the trusted outcome and each limitation mean for the recipient; it never invents, drops or softens them, and it calls a fact unknown only when the source card lacks it. Ordinary model replies and PM explanations follow this rule for questions, results and errors in English and Russian, including rich Markdown, HTML and plain fallback. Model-free cards localize owned state and control labels; they do not pretend to translate arbitrary source prose. Explanations confer no authority and never rewrite revision, actor, grants, option mapping or receipts. Encode literal source once at the output sink.
+
+### Model-free default
+
+PM review is off until a person turns it on. A fresh install and a new chat therefore get model-free cards, with no model turn, PM note, custom pack or instruction. Restart and `/new` change nothing here.
+
+A model-free question card keeps the worker's decision text, original option numbers, trade-offs, star and links literal. It adds or moves only these parts:
+
+- **Requirement:** one line per cited code with the literal clause and its source, read from the task text or from `<repo>.md` at the registered root. A code that neither defines is named as not found, and the card never claims what it means. A code right after another task's reference belongs to that task and gets no line.
+- **Impact:** the source trade-offs carry it. When no option has one, the card says the worker did not state the impact.
+- **Next actor:** an admin or the project owner decides and the worker waits. A model-free card does not separate a technical ask from an owner choice.
+- **Details:** the `Done` receipt, with its hashes and attempt IDs, stays expandable on the same card.
+
+A closing card adds the same clause lines to its literal outcome and limits. Worker prose stays in its source language, because translating it needs a model. A person gets that explanation by enabling PM review or by asking, and each spends one model turn.
 
 ### Question explanations
 
@@ -18,7 +31,7 @@ The explanation preserves original option numbers, the source star, verified lin
 
 | Path | What the person sees |
 |---|---|
-| PM review off | The complete literal source card with its buttons; no model runs |
+| PM review off (default) | The [model-free card](#model-free-default) with its buttons; no model runs |
 | PM on, explanation pending, delayed or failed | A compact card with every number, label, star and link, the expandable source and a line saying an explanation replaces that line when ready |
 | Explanation accepted | The same message and buttons, edited in place; a repeated identical explanation queues nothing |
 | Stale, answered or superseded revision | The explanation is refused; a superseded card returns to its source body with the existing supersession line |
@@ -41,7 +54,7 @@ A failed request produces one plain localized failure line, with no commands, pa
 | Launch accepted | Verified task links; distinguish held, queued and working | None | None | Same plan receives launch outcome; one status card tracks the launch |
 | Queued | Last confirmed waiting state, observation age and verified links | None | None | Edit status card on fresh working/question/done observation |
 | Working | Last confirmed working state, observation age and verified links | None | None | Edit status card; never infer execution from admission |
-| Worker question | PM off: complete numbered source card. PM on: [one explanation on the card](#question-explanations), no footer | Number and label, recommendation star | Answer only current question under current grants | Edit question with accepted option/text and actor; remove buttons; status card says waiting for answer |
+| Worker question | PM off: [model-free numbered card](#model-free-default). PM on: [one explanation on the card](#question-explanations), no footer | Number and label, recommendation star | Answer only current question under current grants | Edit question with accepted option/text and actor; remove buttons; status card says waiting for answer |
 | Done | One factual effect line followed by trusted TaskQ closing result and limitations; explicitly unconfirmed when unavailable | None | None | Edit status card; preserve unanswered question and terminal evidence |
 | Cancelled plan | Original summary plus “Plan cancelled.” | None | None | Same message, no new acknowledgement |
 | Repeated answered current-question callback | Exact saved answer; durable confirmation in the original route | None | No TaskQ write or continuation | Replace a delivered queue notice with the terminal answer; popup expiry does not lose confirmation |

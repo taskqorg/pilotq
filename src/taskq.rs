@@ -447,12 +447,18 @@ pub(crate) fn choices(q: &Value) -> &[Value] {
 /// In Telegram an option button or a reply answers, so the CLI `To answer:` line never shows (#82).
 pub(crate) fn question_body(q: &Value) -> String { question_body_language(q,None) }
 
-fn question_body_language(q: &Value, language: Option<&str>) -> String {
-    if q["parsed"] != true { return q["text"].as_str().unwrap_or("").to_string(); }
+fn question_body_language(q: &Value, language: Option<&str>) -> String { question_parts(q,language,true,&[]) }
+
+fn question_parts(q: &Value, language: Option<&str>, done: bool, clauses: &[String]) -> String {
+    if q["parsed"] != true {
+        let text=q["text"].as_str().unwrap_or("").to_string();
+        return if clauses.is_empty() {text} else {format!("{text}\n{}",clauses.join("\n"))};
+    }
     let mut lines = Vec::new();
     let ru=language.unwrap_or("en").starts_with("ru");
-    if let Some(t) = q["done"].as_str() { lines.push(format!("{}: {t}",if ru {"Сделано"} else {"Done"})); }
+    if let Some(t) = q["done"].as_str().filter(|_|done) { lines.push(format!("{}: {t}",if ru {"Сделано"} else {"Done"})); }
     if let Some(t) = q["problem"].as_str() { lines.push(format!("{}: {t}",if ru {"Нужно решить"} else {"Decision"})); }
+    lines.extend_from_slice(clauses);
     let evidence: Vec<String> = q["evidence"].as_array().into_iter().flatten()
         .filter_map(|e| Some(format!("[{}]({})", e["label"].as_str()?, e["url"].as_str()?))).collect();
     if !evidence.is_empty() { lines.push(format!("{}: {}", if language.unwrap_or("en").starts_with("ru") {"Подтверждение"} else {"Evidence"}, evidence.join(", "))); }
@@ -467,8 +473,42 @@ fn question_body_language(q: &Value, language: Option<&str>) -> String {
     lines.join("\n")
 }
 
+/// The source layout that `question_body` keeps in details and tool output; cards use `question_card`.
+#[cfg(test)]
 fn question_text(board: &str, task: i64, q: &Value, title: Option<&str>, url: Option<&str>, language: Option<&str>) -> String {
     format!("🛑 {}\n{}", task_link(board, task, title, url), question_body_language(q,language))
+}
+
+/// The worker's decision text, where a cited code changes what the reader must decide. `Done` is a receipt and stays in details.
+fn question_decision(q: &Value) -> String {
+    if q["parsed"] != true { return q["text"].as_str().unwrap_or("").to_string(); }
+    let mut parts=vec![q["problem"].as_str().unwrap_or("")];
+    for c in choices(q) { parts.extend([c["label"].as_str().unwrap_or(""),c["detail"].as_str().unwrap_or("")]); }
+    parts.join("\n")
+}
+
+/// #401 / §2: the default question card, the same from a fresh install with no model, note, pack or review. It keeps the source
+/// wording and every number, star and link, says what each cited code requires and who acts next, and keeps receipts in details.
+#[allow(clippy::too_many_arguments)]
+fn question_card(board: &str, task: i64, q: &Value, title: Option<&str>, url: Option<&str>, language: Option<&str>, goal: Option<&str>, clauses: &[String]) -> String {
+    let ru=language.unwrap_or("en").starts_with("ru");
+    let mut lines=vec![format!("🛑 {}",task_link(board,task,title,url))];
+    lines.extend(goal.map(|g|goal_line(g,language)));
+    lines.push(question_parts(q,language,false,clauses));
+    if !choices(q).iter().any(|c|c["detail"].as_str().is_some_and(|d|!d.trim().is_empty())) {
+        lines.push(if ru {"Последствия: исполнитель их не указал."} else {"Impact: not stated by the worker."}.into());
+    }
+    lines.push(match (choices(q).is_empty(),ru) {
+        (false,true)=>"Далее: решает администратор или владелец проекта, кнопкой или ответом; исполнитель ждёт.",
+        (false,false)=>"Next: an admin or the project owner decides, with a button or a reply; the worker waits.",
+        (true,true)=>"Далее: отвечает администратор или владелец проекта, ответом на это сообщение; исполнитель ждёт.",
+        (true,false)=>"Next: an admin or the project owner answers by replying to this message; the worker waits.",
+    }.into());
+    let card=lines.join("\n");
+    match q["done"].as_str().filter(|d|q["parsed"]==true && !d.trim().is_empty()) {
+        Some(done)=>format!("{card}\n\n{}",crate::telegram::details(if ru {"Что уже сделано"} else {"Already done"},done)),
+        None=>card,
+    }
 }
 
 fn now() -> i64 {
@@ -963,6 +1003,14 @@ fn scan(tq: &Taskq, j: &Mutex<Journal>) -> bool {
             failure=Some(format!("{project} #{n}: closure unconfirmed; subscription retained"));
             continue;
         }
+        // #401 A1/A2: read the clauses before taking the journal; a read is local and bounded, and missing text stays not found.
+        let language=j.lock().unwrap().task_language(&project,n).ok().flatten();
+        let ru=language.as_deref().unwrap_or("en").starts_with("ru");
+        let clauses=match (find(s,n),&closing) {
+            (Some(t),_) if t["question"].is_object() => crate::explain::clauses(&question_decision(&t["question"]),t["brief"].as_str(),&bound.root,&board,ru),
+            (None,Some((issue,Some(detail)))) => crate::explain::clauses(detail,issue["body"].as_str(),&bound.root,&board,ru),
+            _ => vec![],
+        };
         let j = j.lock().unwrap();
         let r = match find(s, n) {
             Some(t) => {
@@ -976,30 +1024,25 @@ fn scan(tq: &Taskq, j: &Mutex<Journal>) -> bool {
                 let _=j.remember_task_title(&project,n,t["title"].as_str(),now());
                 let _=j.remember_task_goal(&project,n,task_goal(t["brief"].as_str()).as_deref(),now());
                 let goal=j.task_goal(&project,n).ok().flatten();
-                let language=j.task_language(&project,n).ok().flatten();
                 let task_url=j.task_url(&project,n).ok().flatten();
                 j.observe(&project, n, state, t["revision"].as_i64().unwrap_or(0), question.map(Value::to_string).as_deref(), &status_text(&board, n, state, title, task_url.as_deref()), question.map(|q| {
                     // #401 A3/A5: with PM review on here the source stays reachable behind compact controls until its explanation arrives.
                     if j.question_review_on(&project,n).unwrap_or(false) {
                         let goal=goal.as_deref().map(|g|goal_line(g,language.as_deref()));
-                        let ru=language.as_deref().unwrap_or("en").starts_with("ru");
-                        return crate::explain::compact_question(&format!("🛑 {}",task_link(&board,n,title,task_url.as_deref())),goal.as_deref(),q,t["revision"].as_i64().unwrap_or(0),ru);
+                        return crate::explain::compact_question(&format!("🛑 {}",task_link(&board,n,title,task_url.as_deref())),goal.as_deref(),q,t["revision"].as_i64().unwrap_or(0),&clauses,ru);
                     }
-                    let text=question_text(&board, n, q, title, task_url.as_deref(), language.as_deref());
-                    match (goal.as_deref(),text.split_once('\n')) {
-                        (Some(goal),Some((head,body)))=>format!("{head}\n{}\n{body}",goal_line(goal,language.as_deref())),
-                        _=>text,
-                    }
+                    question_card(&board,n,q,title,task_url.as_deref(),language.as_deref(),goal.as_deref(),&clauses)
                 }).as_deref(), now())
             }
             None => {
-                let language=j.task_language(&project,n).ok().flatten();
-                let unknown=if language.as_deref().unwrap_or("en").starts_with("ru") {"Результат и ограничения пока не подтверждены."} else {"Result and limitations are not confirmed yet."};
+                let unknown=if ru {"Результат и ограничения пока не подтверждены."} else {"Result and limitations are not confirmed yet."};
                 let (issue,detail)=closing.as_ref().expect("explicit closed observation checked above");
                 j.remember_task_url(&project,n,issue["url"].as_str(),now()).ok();
                 j.remember_task_title(&project,n,issue["title"].as_str(),now()).ok();
                 j.remember_task_goal(&project,n,task_goal(issue["body"].as_str()).as_deref(),now()).ok();
-                j.close_task(&project,n,&format!("{}\n{}",crate::conversation::task_state("",true,language.as_deref()),detail.as_deref().unwrap_or(unknown)),now())
+                let mut text=format!("{}\n{}",crate::conversation::task_state("",true,language.as_deref()),detail.as_deref().unwrap_or(unknown));
+                for line in &clauses {text=format!("{text}\n{line}");}
+                j.close_task(&project,n,&text,now())
             },
         };
         match r {
@@ -1149,6 +1192,96 @@ mod tests {
         assert!(!link.contains("deployed"));
     }
 
+    fn replay_401(name:&str)->Value {
+        serde_json::from_str(match name {"agentq260"=>include_str!("../tests/fixtures/401/agentq260.json"),_=>include_str!("../tests/fixtures/401/taskq2482.json")}).unwrap()
+    }
+
+    // #401 A1,A4,A5,A7 / §2: the default card of each observed question, with no model. Defect: a bare A2 or R13 and receipts full
+    // of hashes led the card. Risk kept: lost option numbers, stars, links or source text, and a code presented as resolved when
+    // nothing defines it. Worker English stays literal by the owner's model-free decision; this does not prove live rendering.
+    #[test]
+    fn explanation_401_default_card_replays_observed_questions() {
+        for (name,board,code,literal) in [("agentq260","taskqorg/agentq","A2","A consumer passes its CoreQ Store"),("taskq2482","taskqorg/taskq","A3","Preserve ee39a45")] {
+            let f=replay_401(name);
+            let q=&f["question"];
+            let body=f["task"]["body"].as_str();
+            for (language,next,found,missing,done) in [("ru","Далее: ","условие задачи","Не найдено","Что уже сделано"),("en","Next: an admin or the project owner ","task text","Not found","Already done")] {
+                let clauses=crate::explain::clauses(&question_decision(q),body,std::path::Path::new("/invented/none"),board,language=="ru");
+                let card=question_card(board,1,q,f["task"]["title"].as_str(),f["task"]["url"].as_str(),Some(language),None,&clauses);
+                let (primary,source)=card.split_once("> 🔎 ").unwrap_or_else(||panic!("{name}: {card}"));
+                assert!(primary.contains(q["problem"].as_str().unwrap()),"{name}: the decision stays literal: {primary}");
+                assert!(primary.contains(&format!("{code} ({found}): {literal}")),"{name}: the code gets its clause: {primary}");
+                assert!(primary.contains(missing) && primary.contains("R13"),"{name}: an unread code stays unknown: {primary}");
+                assert!(primary.contains(next),"{name}: names who acts next: {primary}");
+                assert!(!primary.contains(q["done"].as_str().unwrap()) && source.contains(q["done"].as_str().unwrap()) && source.contains(done),"{name}: receipts stay in details: {card}");
+                for c in choices(q) {
+                    let star=if c["recommended"]==true {" ★"} else {""};
+                    assert!(primary.contains(&format!("{}. {}{star}",c["id"],c["label"].as_str().unwrap())),"{name}: option fidelity: {primary}");
+                    let detail=c["detail"].as_str().unwrap();
+                    assert!(primary.contains(detail.strip_prefix('+').unwrap_or(detail)),"{name}: trade-offs stay: {primary}");
+                }
+                for e in q["evidence"].as_array().unwrap() {assert!(primary.contains(e["url"].as_str().unwrap()),"{name}: evidence link");}
+                assert_eq!(crate::telegram::options(q).len(),choices(q).len(),"{name}: one button per option");
+                let html=crate::telegram::html(&card);
+                assert!(html.contains("<blockquote expandable>🔎") && !html.contains("&gt; ") && html.contains(literal),"{name} html: {html}");
+                assert!(crate::telegram::markdown(&card).contains("<blockquote expandable>🔎"),"{name} rich");
+                assert_eq!(crate::journal::chunks(&card).len(),1,"{name} stays one message with its buttons");
+            }
+        }
+        // No trade-offs, no choices and an unparsed card each say what is missing and never invent it.
+        let owner=json!({"parsed":true,"problem":"Provide the token","choices":[],"evidence":[]});
+        let card=question_card("o/r",1,&owner,None,None,Some("en"),None,&[]);
+        assert!(card.contains("Impact: not stated by the worker.") && card.contains("by replying to this message") && !card.contains("> 🔎 "),"{card}");
+        let raw=json!({"parsed":false,"text":"Raw A9 text"});
+        let card=question_card("o/r",1,&raw,None,None,Some("ru"),None,&["A9 (условие задачи): смысл".to_string()]);
+        assert!(card.contains("Raw A9 text") && card.contains("A9 (условие задачи): смысл") && crate::telegram::options(&raw).is_empty(),"{card}");
+    }
+
+    // #401 / note 6682042732 and the owner's model-free correction: a fresh install behaves this way out of the box. Empty notes,
+    // no pack, no review and no coaching history; the real scan, journal and card, then restart and /new. Defect: readable cards
+    // depended on turning review on. Risk kept: a default that spends subscription, loses controls or needs instructions.
+    #[cfg(unix)]
+    #[test]
+    fn explanation_401_fresh_install_default_needs_no_model() {
+        use fixture_2453::*;
+        let f=replay_401("agentq260");
+        let q=&f["question"];
+        let dir=std::env::temp_dir().join(format!("pilotq-401-fresh-{}-{}",std::process::id(),now()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin=install(&dir);
+        snapshot(&dir,json!([]));
+        std::fs::write(dir.join("taskq.md"),"- **R13 Spec first:** edit the contract first\n## 7. Task flow").unwrap();
+        let root=dir.to_string_lossy().to_string();
+        let mut journal=Journal::open(&dir.join("journal.sqlite")).unwrap();
+        journal.bootstrap(7,0).unwrap();
+        journal.add_project(7,"taskq",BOARD,&root,0).unwrap();
+        assert!(crate::journal::board_card(&journal.0,"taskq",BOARD,&root,2453,2).unwrap());
+        let j=Mutex::new(journal);
+        let tq=Taskq{bot:None,bin,root:dir.clone(),poll:Duration::from_secs(15)};
+        std::fs::write(dir.join("inbox.json"),r#"{"schema":1,"task":2453,"answers":[]}"#).unwrap();
+        snapshot(&dir,json!([{"n":2453,"state":"ask","revision":2,"title":TITLE,"url":URL,"brief":f["task"]["body"],"question":q}]));
+        assert!(scan(&tq,&j));
+        let journal=j.into_inner().unwrap();
+        let card:String=journal.0.query_row("SELECT text FROM outbox WHERE kind='question' AND task=2453",[],|r|r.get(0)).unwrap();
+        assert!(card.contains("A2 (task text): A consumer passes its CoreQ Store"),"task clause: {card}");
+        assert!(card.contains("R13 (`taskq.md`): Spec first: edit the contract first"),"contract clause: {card}");
+        assert!(card.contains("Next: an admin or the project owner decides") && card.contains("> 🔎 "),"{card}");
+        for c in choices(q) {assert!(card.contains(c["label"].as_str().unwrap()));}
+        let models=|j:&Journal|->i64 {j.0.query_row("SELECT count(*) FROM requests WHERE state IN ('queued','running')",[],|r|r.get(0)).unwrap()};
+        assert_eq!(models(&journal),0,"no model turn starts for a card");
+        assert!(crate::loops::reviews(&journal.0).unwrap().is_empty(),"review stays off unless a person enables it");
+        // Restart: the card and its buttons stay due with no second card, and the answer still binds to the source row.
+        drop(journal);
+        let mut journal=Journal::open(&dir.join("journal.sqlite")).unwrap();
+        let d=loop {let d=journal.due(i64::MAX/2).unwrap().0.expect("question stays due after restart");if d.kind=="question" {break d;} journal.record(d.id,&crate::journal::Sent::Ok(d.id),i64::MAX/2).unwrap();};
+        assert_eq!(d.text,card);
+        assert_eq!(d.buttons.iter().map(|b|b.0.as_str()).collect::<Vec<_>>(),vec!["answer:1","answer:2"]);
+        assert_eq!(journal.choice("taskq",2453,2,"1").unwrap().unwrap().1,"Complete protected-child A2");
+        assert_eq!(models(&journal),0);
+        drop(journal);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     // #387 / §2: the real PM-off closing path must show every fact in each sink. Defect: an unreadable closed
     // report became a permanent generic unknown line. Risk kept: closing cards losing their outcome or limits.
     // This is closure, journal and renderer evidence; it does not prove live Telegram delivery.
@@ -1212,6 +1345,8 @@ mod tests {
             assert!(j.lock().unwrap().subscriptions().unwrap().is_empty());
             assert!(!scan(&tq,&j),"a repeated observation sends nothing");
             let (id,text)=status(&j,"status");
+            // #401 A2: a closing card names a code nothing defines here, while `#2427 A7` stays with its own task.
+            assert!(text.contains(if language=="ru" {"Не найдено в задаче и контракте проекта: R5"} else {"Not found in the task or project contract: R5"}),"{text}");
             let journal=j.lock().unwrap();
             let closing:i64=journal.0.query_row("SELECT count(*) FROM audit_events WHERE kind='task_result' AND target='taskq#2453'",[],|r|r.get(0)).unwrap();
             assert_eq!(closing,1,"one closing receipt");
