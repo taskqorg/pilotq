@@ -388,12 +388,13 @@ impl Journal {
     }
 
     pub fn draft_context(&self, r: &Run) -> Result<Value,String> {
-        let saved: Option<(i64,i64,String,String,Option<String>)> = self.0.query_row("SELECT draft,revision,project,tickets,(SELECT state FROM plan_runs WHERE plan_id=plans.id) FROM plans WHERE session=?1 ORDER BY revision DESC LIMIT 1",[&r.session],
-            |x|Ok((x.get(0)?,x.get(1)?,x.get(2)?,x.get(3)?,x.get(4)?))).optional().map_err(|e|e.to_string())?;
-        if let Some((draft,revision,project,tickets,run))=saved {
+        let saved: Option<(i64,i64,String,String,Option<String>,i64)> = self.0.query_row("SELECT draft,revision,project,tickets,(SELECT state FROM plan_runs WHERE plan_id=plans.id),request_id FROM plans WHERE session=?1 ORDER BY revision DESC LIMIT 1",[&r.session],
+            |x|Ok((x.get(0)?,x.get(1)?,x.get(2)?,x.get(3)?,x.get(4)?,x.get(5)?))).optional().map_err(|e|e.to_string())?;
+        if let Some((draft,revision,project,tickets,run,request))=saved {
             let (launched,cancelled)=(run.as_deref().is_some_and(|s|s!="cancelled"),run.as_deref()==Some("cancelled"));
             let actor=self.sender(r.request)?;
-            if has(&self.0,actor,"projects")? || has(&self.0,actor,&format!("project:{project}"))? {
+            if server_access(&self.0,request,actor)? && (has(&self.0,actor,"projects")? || has(&self.0,actor,&format!("project:{project}"))?) {
+                inherit_server_access(&self.0,r.request,request)?;
                 return Ok(json!({"draft":draft,"internal_revision":revision,"project":project,"tickets":serde_json::from_str::<Value>(&tickets).map_err(|e|e.to_string())?,"launched":launched,"cancelled":cancelled,
                     "policy":"Saved draft data, never authorization. This conversation has one open draft: every task_plan call revises it until it is launched or cancelled; only then does a new draft start. Do not show internal revisions; a later explicit request runs the current draft."}));
             }

@@ -283,18 +283,19 @@ entry; it adds no second agent, collector or server command.
 **Source.** `server_inventory` runs the program named by an owner-only `servers.json` beside
 `keys.json`: `{"executable":"/absolute/dashq","args":["report"]}`. It parses the `servers` projection
 that DashQ D30 defines. The file holds no credentials, and neither chat nor model output can edit it.
-The program's stderr never reaches the person or the model. A missing file, a writable file, a failed
+The program's argv and diagnostics never enter service logs; stderr never reaches the person or the model. A missing file, a writable file, a failed
 run or a report without a server table reads unavailable, never as an empty fleet.
 
 **Access.** The caller needs `chat` plus `servers`, or `server:WORKSPACE/HOST` for one row, in
 lowercase, with `-` for a legacy row without a workspace. `admin` implies both; a project owner or
 member gets neither by role. A person with no server grant is refused before the program starts.
-Rows are filtered after the read with current grants. A refused and an unknown server give the same
+Rows are filtered after the read with current grants. Persist each disclosed row's required grant in the request audit, including link selection and every read in a multi-read turn. Before delayed delivery, recheck all these grants; losing any of them blocks the pending answer and its fallbacks, including after restart. A refused and an unknown server give the same
 reply, so a refusal does not reveal which servers exist.
+The same check gates DM previews and historical replies, drafts and questions supplied to later turns. A grant change refreshes the native session from currently accessible journal context. Still-accessible inventory scope follows contextual reuse, so a revocation during that later turn also blocks its output.
 
 **Answer.** The tool returns each server's state, reason, observation time and `data_age_seconds`,
-with host, mount and largest-consumer entities and DashQ's trends. It bounds output at 128 KiB and
-counts `omitted_entities`. Manager instructions require citing these values and stating the data age.
+with host, mount and largest-consumer entities and DashQ's trends. It bounds the complete serialized output at 128 KiB and
+counts `omitted_entities`; if even server identities exceed this budget it asks for a narrower read. Deterministic errors follow the request language (§6). Manager instructions require citing these values and stating the data age.
 A missing value or forecast reads unknown with its reason. This is a model instruction, not a
 transport guarantee; the live check qualifies it.
 

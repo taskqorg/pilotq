@@ -1410,6 +1410,12 @@ Worker evidence is local and CI: `cargo test --locked servers::` and `cargo test
 - A person without a server grant is refused before the source runs. A narrow grant never reads another server by name, `all` or selection, and revocation refuses the next read.
 - Source diagnostics stay private. A missing, writable or table-less source reads unavailable.
 - The link digest selects only a readable server. A forged or foreign digest selects nothing.
+- Failed-source stderr and argv stay out of service logs. English and Russian failures follow the resolved request language.
+- A queued inventory answer, rich/plain fallback or selection reply is blocked after server access is revoked, including after restart and multiple reads in one turn.
+- DM previews and later journal/native context obey the same revocation, including a turn that only reuses earlier findings.
+- The entire JSON response stays within 128 KiB, retains every selected server and counts omitted entities; oversized identities require a narrower read.
+
+See [the revision report](research/375.md) for red/green evidence and the A4 publisher dependency. The accepted answer on #375 leaves A7 explicitly unverified at code handoff for PM proof after release; it does not qualify the live flow.
 
 PM live check after release, with ServerQ inventory and DashQ's server table deployed on PDS 18:
 

@@ -723,7 +723,27 @@ fn revalidate(c: &Connection) -> Result<Vec<i64>, String> {
         [],
     )
     .map_err(e)?;
+    // §8 / #375: a reply may combine several inventory reads; retain every server binding.
+    c.execute("UPDATE outbox SET state='blocked',error='server access revoked before delivery'
+        WHERE state IN ('pending','standby') AND request_id IN (
+            SELECT a.request_id FROM audit_events a JOIN requests r ON r.id=a.request_id
+            WHERE a.kind='server_read' AND NOT EXISTS (
+                SELECT 1 FROM grants g WHERE g.user=r.sender AND g.name IN ('admin','servers',a.target)))", []).map_err(e)?;
     Ok(ids)
+}
+
+/// §8: historical inventory is visible only with every grant bound to that request.
+fn server_access(c: &Connection, request: i64, actor: i64) -> Result<bool,String> {
+    c.query_row("SELECT NOT EXISTS(SELECT 1 FROM audit_events a WHERE a.request_id=?1 AND a.kind='server_read'
+        AND NOT EXISTS(SELECT 1 FROM grants g WHERE g.user=?2 AND g.name IN ('admin','servers',a.target)))",
+        params![request,actor],|r|r.get(0)).map_err(|e|e.to_string())
+}
+
+fn inherit_server_access(c: &Connection, request: i64, source: i64) -> Result<(),String> {
+    c.execute("INSERT INTO audit_events(request_id,at,kind,target)
+        SELECT DISTINCT ?1,?3,'server_read',a.target FROM audit_events a WHERE a.request_id=?2 AND a.kind='server_read'
+        AND NOT EXISTS(SELECT 1 FROM audit_events old WHERE old.request_id=?1 AND old.kind='server_read' AND old.target=a.target)",
+        params![request,source,crate::now() as i64]).map(drop).map_err(|e|e.to_string())
 }
 
 fn ids(tx: &Connection, session: &str, state: &str) -> Result<Vec<String>, String> {
