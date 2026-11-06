@@ -1415,7 +1415,7 @@ Worker evidence is local and CI: `cargo test --locked servers::` and `cargo test
 - DM previews and later journal/native context obey the same revocation, including a turn that only reuses earlier findings.
 - The entire JSON response stays within 128 KiB, retains every selected server and counts omitted entities; oversized identities require a narrower read.
 
-See [the revision report](research/375.md) for red/green evidence and the A4 publisher dependency. The accepted answer on #375 leaves A7 explicitly unverified at code handoff for PM proof after release; it does not qualify the live flow.
+See [the revision report](research/375.md) for red/green evidence and the A4 producer comparison. The accepted answer on #375 leaves A7 explicitly unverified at code handoff for PM proof after release; it does not qualify the live flow.
 
 PM live check after release, with ServerQ inventory and DashQ's server table deployed on PDS 18:
 

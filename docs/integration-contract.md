@@ -306,8 +306,8 @@ invented selector `["example","invented-fresh/native"]` the payload is `server-0
 PilotQ's `/start server-DIGEST` control resolves the digest only among rows that person may read,
 stores the selector for that conversation and states the data age. It grants nothing, and each later
 read rechecks grants. A read with no `server` argument uses the selection; `all` reads every accessible
-server. DashQ's current `?server=` form cannot open this chat because Telegram ignores other
-parameters, so DashQ must emit this link before the link is live.
+server. Telegram ignores other parameters, so DashQ's fallback `?server=` form for other targets
+cannot select a server here.
 
 **Changes.** Proposed changes use the existing `task_plan` draft and launch path with its project
 resolution, readiness and grants. The discussion runs no command on a server. Other turns keep §5's
