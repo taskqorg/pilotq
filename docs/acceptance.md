@@ -1423,3 +1423,19 @@ PM live check after release, with ServerQ inventory and DashQ's server table dep
 2. Ask "what takes the most space on pds18" and compare the answer with `dashq report`.
 3. Ask for a cleanup and confirm that a draft appears, nothing runs on the server and a task exists only after Launch.
 4. Ask as a person without a server grant and confirm the one-line refusal.
+
+## Long-thread resume (#390)
+
+[Worker evidence and merge-queue fixture repair](research/390.md) retain the check boundaries and PM handoff.
+
+[AgentQ research 253](https://github.com/taskqorg/agentq/blob/0ba341d875ac82f24049340a68a188b8a7f49580/docs/research/253.md) reproduces the mechanism offline on real Codex. It does not prove the exact cause of live requests 714 and 716, which stays open until the PM checks.
+
+**Before:** on the fixture-only commit, Linux CI run [`42141109396`](https://github.com/taskqorg/pilotq/actions/runs/42141109396) failed `long_thread_resumes_in_place_390` with `app-server record incomplete or exceeds 8 MiB` in the operator log and `Codex CLI exited without a terminal event` as the outcome. These are the same two messages as the live failure. **After:** the same fixture passes with the fix.
+
+- **L390.1, resume:** an invented thread whose full reply is over the record bound opens with `excludeTurns: true`. The same thread ID answers one `turn/start` holding the unchanged input, with no `thread/start` and no rebuild.
+- **L390.2, new thread:** `thread/start` keeps its dynamic tools and sends no `excludeTurns`. The model catalogue path has its own parameters and is unchanged.
+- **L390.3, bound and failure text:** a reply that stays over the bound still fails before any input. The outcome claims no exit and carries no native text, and the thread stays without a rebuild. `handshake_failure_reply_390` covers the English and Russian replies. `concurrent_codex_starts_do_not_race` keeps the protection that the reply carries no raw stderr and the private log names the reason.
+
+The fixture shows that PilotQ sends the field and handles both replies. Model context on real Codex rests on research 253, which measured identical model request size and item counts. Linux behavior of real Codex is unmeasured there.
+
+After merge and release, the PM alone verifies the same native thread, journal continuity and real Telegram manager recovery on the existing pds18 test pilot (§9). Local fixtures and CI do not qualify this path (R19). Production cutover remains unauthorized.

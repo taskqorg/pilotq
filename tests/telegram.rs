@@ -1045,16 +1045,17 @@ fn concurrent_codex_starts_do_not_race() {
     let racy = script(&d, "racy-codex", r#"d=$(dirname "$0")
 mkdir "$d/init.lock" 2>/dev/null || { echo 'Error: failed to initialize sqlite state runtime' >&2; exit 1; }
 sleep 0.5; rmdir "$d/init.lock"; exec "$d/fake-codex""#);
-    use_codex(&d, &racy);
+    // This checks startup serialization, not speed; three queued handshakes must fit under CI load.
+    limits(&d, &racy, json!({"first_event": 30, "silent": 2, "deadline": 4}));
     let c = spawn(&d, None);
-    wait("three answers", 20, || ["re: a @", "re: b @", "re: c @"].iter().all(|t| sent_has(&st, t)));
+    wait("three answers", 45, || ["re: a @", "re: b @", "re: c @"].iter().all(|t| sent_has(&st, t)));
     assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE state='answered'"), 3);
     stop(c, d);
 
     let (d, _st) = setup("dead", vec![]);
     use_codex(&d, &script(&d, "dead-codex", "echo 'Error: boom' >&2; exit 1"));
     let o = cli(&d, &["ask", "--json", "hi"]);
-    assert_eq!(serde_json::from_slice::<Value>(&o.stdout).unwrap()["error"], "Codex CLI exited without a terminal event", "the reply carries no raw stderr");
+    assert_eq!(serde_json::from_slice::<Value>(&o.stdout).unwrap()["error"], "Codex CLI could not open the conversation, so this request was not submitted; the saved conversation is kept. Send the request again; if this repeats, the owner should check the PilotQ service log.", "the reply carries no raw stderr");
     assert!(fs::read_to_string(d.join("codex/app-server.log")).unwrap().contains("Error: boom"), "the private operator log names the reason");
     cleanup(&d);
 }
