@@ -16,7 +16,12 @@ pub fn tools() -> Vec<Value> {
 }
 
 pub(crate) fn load(d: &Direct) -> Result<Value, String> {
-    let path = d.keys.0.with_file_name("commands.json");
+    load_protected(&d.keys.0.with_file_name("commands.json"))
+}
+
+/// Owner-only JSON object beside `keys.json`; a missing file is an empty object.
+pub(crate) fn load_protected(path: &Path) -> Result<Value, String> {
+    let name = path.file_name().and_then(|n|n.to_str()).unwrap_or("configuration");
     let file = match std::fs::File::open(path) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(json!({})),
@@ -26,7 +31,7 @@ pub(crate) fn load(d: &Direct) -> Result<Value, String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if meta.permissions().mode() & 0o077 != 0 { return Err("commands.json must be owner-only (chmod 600)".into()); }
+        if meta.permissions().mode() & 0o077 != 0 { return Err(format!("{name} must be owner-only (chmod 600)")); }
     }
     if !meta.is_file() || meta.len() > 65536 { return Err("invalid command configuration".into()); }
     serde_json::from_reader(file).ok().filter(Value::is_object).ok_or("invalid command configuration".into())

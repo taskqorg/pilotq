@@ -1402,6 +1402,28 @@ The owner’s accepted PM-on/off decision is retained in [the task report](resea
 
 After merge and release, the PM updates only the existing pds18 test install under §9 and records binary/source/specq identity, healthy service, selftest, doctor and request/journal continuity. In real authorized DM/topic routes, capture English and Russian ordinary replies, PM-off cards with no new model runs, PM-on explanations of a question and closing outcome, a real closing card of the taskq#2453 shape in both modes, errors, rich/HTML/plain delivery, and a disposable three-option question answered with original option 2. Retain screenshots, original/edited card IDs, revision, authorized actor and accepted answer receipt. Verify stale/foreign/repeated presses and revoked grants make no additional writes. Do not replay the historical owner decisions in the fixtures. Record unsupported or untested paths as gaps. Workers never install; local fixtures and CI do not qualify these live paths (R19, §9).
 
+### A375 — Discuss servers in chat
+
+Worker evidence is local and CI: `cargo test --locked servers::` and `cargo test --locked start_375`.
+
+- Inventory answers carry data age, largest consumers and explicit unknowns.
+- A person without a server grant is refused before the source runs. A narrow grant never reads another server by name, `all` or selection, and revocation refuses the next read.
+- Source diagnostics stay private. A missing, writable or table-less source reads unavailable.
+- The link digest selects only a readable server. A forged or foreign digest selects nothing.
+- A short name such as `pds18` reads the host `pds18.ufobe.com`, with or without `/KIND`. A shared first label stays ambiguous, and a name grants no access.
+- Failed-source stderr and argv stay out of service logs. English and Russian failures follow the resolved request language.
+- A queued inventory answer, rich/plain fallback or selection reply is blocked after server access is revoked, including after restart and multiple reads in one turn.
+- DM previews and later journal/native context obey the same revocation, including a turn that only reuses earlier findings.
+- The entire JSON response stays within 128 KiB, retains every selected server and counts omitted entities; oversized identities require a narrower read.
+
+See [the revision report](research/375.md) for red/green evidence and the A4 producer comparison. The accepted answer on #375 leaves A7 explicitly unverified at code handoff for PM proof after release; it does not qualify the live flow.
+
+PM live check after release, with ServerQ inventory and DashQ's server table deployed on PDS 18:
+
+1. Open a DashQ row link and confirm the chat replies with that server selected and its data age.
+2. Ask "what takes the most space on pds18" and compare the answer with `dashq report`.
+3. Ask for a cleanup and confirm that a draft appears, nothing runs on the server and a task exists only after Launch.
+4. Ask as a person without a server grant and confirm the one-line refusal.
 
 ## Long-thread resume (#390)
 

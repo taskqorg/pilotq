@@ -37,7 +37,7 @@ pub const ATTEMPTS: i64 = 5;
 /// Named grants (§ 2, § 5, § 8). `chat` admits conversation only; every other grant is separate. `project:NAME` scopes a project;
 /// `projects` covers every project; `queue` pauses host admission. Roles (#267): `admin` implies every named grant and every
 /// project; `owner:NAME` implies `project:NAME` and TaskQ writes there only. Neither implies `release:NAME`.
-pub const GRANTS: [&str; 8] = ["chat", "users", "projects", "taskq", "audit", "queue", "shell", "admin"];
+pub const GRANTS: [&str; 9] = ["chat", "users", "projects", "taskq", "audit", "queue", "shell", "admin", "servers"];
 /// Section 7 health sources, each reported separately.
 pub const SOURCES: [&str; 5] = ["poll", "storage", "model", "taskq", "delivery"];
 /// §9 / #81 owner incidents: source, opening and recovery text. Plain lines, no internal IDs or raw errors (§4).
@@ -58,7 +58,9 @@ const PROGRESS_EDIT: i64 = 30;
 
 pub(crate) fn valid_grant(g: &str) -> bool {
     let name = |p: &str| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
-    GRANTS.contains(&g) || ["release:", "project:", "owner:"].iter().any(|k| g.strip_prefix(k).is_some_and(name))
+    // §5 / #375: `server:WORKSPACE/HOST` names a DashQ row, lowercase; the host may keep its `/kind` suffix.
+    let server = |p: &str| p.split_once('/').is_some_and(|(w, h)| !w.is_empty() && !h.is_empty()) && p.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "-_./".contains(c));
+    GRANTS.contains(&g) || ["release:", "project:", "owner:"].iter().any(|k| g.strip_prefix(k).is_some_and(name)) || g.strip_prefix("server:").is_some_and(server)
 }
 
 /// R17: rows are pruned oldest first and their times are gone, so a window is complete only if the
@@ -723,7 +725,27 @@ fn revalidate(c: &Connection) -> Result<Vec<i64>, String> {
         [],
     )
     .map_err(e)?;
+    // §8 / #375: a reply may combine several inventory reads; retain every server binding.
+    c.execute("UPDATE outbox SET state='blocked',error='server access revoked before delivery'
+        WHERE state IN ('pending','standby') AND request_id IN (
+            SELECT a.request_id FROM audit_events a JOIN requests r ON r.id=a.request_id
+            WHERE a.kind='server_read' AND NOT EXISTS (
+                SELECT 1 FROM grants g WHERE g.user=r.sender AND g.name IN ('admin','servers',a.target)))", []).map_err(e)?;
     Ok(ids)
+}
+
+/// §8: historical inventory is visible only with every grant bound to that request.
+fn server_access(c: &Connection, request: i64, actor: i64) -> Result<bool,String> {
+    c.query_row("SELECT NOT EXISTS(SELECT 1 FROM audit_events a WHERE a.request_id=?1 AND a.kind='server_read'
+        AND NOT EXISTS(SELECT 1 FROM grants g WHERE g.user=?2 AND g.name IN ('admin','servers',a.target)))",
+        params![request,actor],|r|r.get(0)).map_err(|e|e.to_string())
+}
+
+fn inherit_server_access(c: &Connection, request: i64, source: i64) -> Result<(),String> {
+    c.execute("INSERT INTO audit_events(request_id,at,kind,target)
+        SELECT DISTINCT ?1,?3,'server_read',a.target FROM audit_events a WHERE a.request_id=?2 AND a.kind='server_read'
+        AND NOT EXISTS(SELECT 1 FROM audit_events old WHERE old.request_id=?1 AND old.kind='server_read' AND old.target=a.target)",
+        params![request,source,crate::now() as i64]).map(drop).map_err(|e|e.to_string())
 }
 
 fn ids(tx: &Connection, session: &str, state: &str) -> Result<Vec<String>, String> {
@@ -1270,6 +1292,15 @@ impl Journal {
             "failed": failed.as_ref().ok(),
             "failed_reason": failed.err(),
         }))
+    }
+
+    /// §5 / #375: the DashQ selector chosen by this conversation's server link. It selects only; every read rechecks grants.
+    pub fn selected_server(&self, session: &str) -> Result<Option<String>, String> {
+        self.0.query_row("SELECT value FROM meta WHERE key=?1", [format!("server-selection:{session}")], |r| r.get(0)).optional().map_err(|e| e.to_string())
+    }
+
+    pub fn select_server(&self, session: &str, selector: &str) -> Result<(), String> {
+        self.0.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?1,?2)", params![format!("server-selection:{session}"), selector]).map(drop).map_err(|e| e.to_string())
     }
 
     /// The conversation's current project, set only by an explicit switch.

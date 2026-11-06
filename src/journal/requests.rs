@@ -160,14 +160,30 @@ impl Journal {
             "state":x.get::<_,String>(3)?, "observed_at":x.get::<_,i64>(4)?, "question_revision":x.get::<_,i64>(6)?, "question":x.get::<_,Option<String>>(7)?,
             "intent":x.get::<_,Option<String>>(5)?.and_then(|v|serde_json::from_str::<Value>(&v).ok())
         }))).and_then(Iterator::collect).map_err(e)?;
-        let plan: Option<Value> = self.0.query_row("SELECT revision,project,tickets FROM plans p WHERE session=?1
+        let plan: Option<(i64,Value)> = self.0.query_row("SELECT request_id,revision,project,tickets FROM plans p WHERE session=?1
             AND (EXISTS(SELECT 1 FROM grants WHERE user=?2 AND name='projects')
             OR EXISTS(SELECT 1 FROM grants WHERE user=?2 AND name='project:' || p.project)) ORDER BY revision DESC LIMIT 1",
-            params![r.session,self.sender(r.request)?], |x| Ok(json!({"revision":x.get::<_,i64>(0)?,"project":x.get::<_,String>(1)?,
-                "tickets":x.get::<_,String>(2)?}))).optional().map_err(e)?;
-        let mut q=self.0.prepare("SELECT c.id,c.question,c.options,c.used_request FROM cards c JOIN requests q ON q.id=c.request_id WHERE q.session=?1 AND c.generation=?2 AND c.options IS NOT NULL AND q.sender=(SELECT sender FROM requests WHERE id=?3) ORDER BY c.id DESC LIMIT 4").map_err(e)?;
-        let questions:Vec<Value>=q.query_map(params![r.session,r.generation,r.request],|x|Ok(json!({"card":x.get::<_,i64>(0)?,"question":x.get::<_,String>(1)?,"options":x.get::<_,String>(2)?,"answered":x.get::<_,Option<i64>>(3)?.is_some()}))).and_then(Iterator::collect).map_err(e)?;
-        for item in &mut recent { item["files"] = json!(self.reply_files(item["request"].as_i64().ok_or("invalid context request")?)?); }
+            params![r.session,self.sender(r.request)?], |x| Ok((x.get(0)?,json!({"revision":x.get::<_,i64>(1)?,"project":x.get::<_,String>(2)?,
+                "tickets":x.get::<_,String>(3)?})))).optional().map_err(e)?;
+        let actor=self.sender(r.request)?;
+        let plan=match plan {Some((id,value)) if server_access(&self.0,id,actor)?=>{inherit_server_access(&self.0,r.request,id)?;Some(value)},_=>None};
+        let mut q=self.0.prepare("SELECT c.id,c.question,c.options,c.used_request,c.request_id FROM cards c JOIN requests q ON q.id=c.request_id WHERE q.session=?1 AND c.generation=?2 AND c.options IS NOT NULL AND q.sender=(SELECT sender FROM requests WHERE id=?3) ORDER BY c.id DESC LIMIT 4").map_err(e)?;
+        let rows:Vec<(i64,Value)>=q.query_map(params![r.session,r.generation,r.request],|x|Ok((x.get(4)?,json!({"card":x.get::<_,i64>(0)?,"question":x.get::<_,String>(1)?,"options":x.get::<_,String>(2)?,"answered":x.get::<_,Option<i64>>(3)?.is_some()})))).and_then(Iterator::collect).map_err(e)?;
+        let mut questions=Vec::new();
+        for (id,value) in rows {if server_access(&self.0,id,actor)? {questions.push(value);}}
+        for item in &mut recent {
+            let id=item["request"].as_i64().ok_or("invalid context request")?;
+            item["files"] = json!(self.reply_files(id)?);
+            if !server_access(&self.0,id,actor)? {item["reply"]=Value::Null;item["reply_gap"]=json!("server access unavailable");}
+        }
+        // Native sessions can retain older reads beyond the recent window. Carry their still-authorized scope
+        // so revocation during this turn also blocks previews and delayed replies derived from that context.
+        self.0.execute("INSERT INTO audit_events(request_id,at,kind,target)
+            SELECT DISTINCT ?1,?2,'server_read',a.target FROM audit_events a JOIN requests q ON q.id=a.request_id
+            WHERE a.kind='server_read' AND q.session=?3 AND q.id<?1
+            AND EXISTS(SELECT 1 FROM runs x WHERE x.request_id=q.id AND x.generation=?4)
+            AND EXISTS(SELECT 1 FROM grants g WHERE g.user=?5 AND g.name IN ('admin','servers',a.target))
+            AND NOT EXISTS(SELECT 1 FROM audit_events old WHERE old.request_id=?1 AND old.kind='server_read' AND old.target=a.target)",params![r.request,crate::now() as i64,r.session,r.generation,actor]).map_err(e)?;
         let context = json!({"policy": crate::manager::CONVERSATION, "recent":recent,"tasks":tasks,"plan":plan,"discussion_questions":questions});
         if context.to_string().len() > 100_000 { return Err("conversation context exceeds budget".into()); }
         Ok(context)
@@ -280,11 +296,16 @@ impl Journal {
         let mut q = tx.prepare("SELECT id, sender, text, reply, state, image FROM requests WHERE id IN
             (SELECT DISTINCT q.id FROM requests q JOIN runs x ON x.request_id=q.id
              WHERE q.session=?1 AND x.generation=?2 AND q.id<?3 ORDER BY q.id DESC LIMIT 12) ORDER BY id").map_err(e)?;
-        let history: Vec<Value> = q.query_map(params![r.session, r.generation, r.request], |x| Ok(json!({
+        let mut history: Vec<Value> = q.query_map(params![r.session, r.generation, r.request], |x| Ok(json!({
             "request": x.get::<_, i64>(0)?, "author": x.get::<_, i64>(1)?, "text": x.get::<_, Option<String>>(2)?,
             "reply": x.get::<_, Option<String>>(3)?, "state": x.get::<_, String>(4)?, "image": x.get::<_,Option<String>>(5)?
         }))).and_then(Iterator::collect).map_err(e)?;
         drop(q);
+        for item in &mut history {
+            if !server_access(&tx,item["request"].as_i64().ok_or("invalid recovery request")?,self.sender(r.request)?)? {
+                item["reply"]=Value::Null;item["reply_gap"]=json!("server access unavailable");
+            }
+        }
         // Retain effect/task evidence beyond the recent-text window, including unresolved outcomes.
         let mut q = tx.prepare("SELECT a.request_id, a.kind, a.target, a.item, a.result FROM audit_events a JOIN requests q ON q.id=a.request_id
             WHERE q.session=?1 AND EXISTS (SELECT 1 FROM runs x WHERE x.request_id=q.id AND x.generation=?2) AND a.kind IN ('direct','task','admin','admin_recovery') ORDER BY a.id").map_err(e)?;
@@ -308,6 +329,9 @@ impl Journal {
         use std::hash::{Hash, Hasher};
         let mut hash=std::collections::hash_map::DefaultHasher::new();
         tools.to_string().hash(&mut hash);
+        self.grants(self.sender(r.request)?)?.hash(&mut hash);
+        // A revocation between context loading and this snapshot must not bless that native session for reuse.
+        server_access(&self.0,r.request,self.sender(r.request)?)?.hash(&mut hash);
         let hash=hash.finish() as i64;
         let tx=self.0.unchecked_transaction().map_err(|e|e.to_string())?;
         let key=format!("catalogue:{}",r.session);
@@ -336,10 +360,14 @@ impl Journal {
     }
 
     pub fn previews(&self) -> Result<Vec<(i64,i64,Option<i64>,String)>, String> {
-        let mut q = self.0.prepare("SELECT p.run,r.chat,r.topic,CASE WHEN EXISTS(SELECT 1 FROM audit_events WHERE request_id=r.id AND kind='transcript') THEN '> 🎤 ' || replace((SELECT item FROM audit_events WHERE request_id=r.id AND kind='transcript' ORDER BY id LIMIT 1),char(10),char(10) || '> ') || char(10) || char(10) || p.text ELSE p.text END FROM previews p JOIN runs u ON u.id=p.run JOIN requests r ON r.id=u.request_id JOIN conversations c ON c.session=u.session
+        let mut q = self.0.prepare("SELECT p.run,r.chat,r.topic,CASE WHEN EXISTS(SELECT 1 FROM audit_events WHERE request_id=r.id AND kind='transcript') THEN '> 🎤 ' || replace((SELECT item FROM audit_events WHERE request_id=r.id AND kind='transcript' ORDER BY id LIMIT 1),char(10),char(10) || '> ') || char(10) || char(10) || p.text ELSE p.text END,r.id,r.sender FROM previews p JOIN runs u ON u.id=p.run JOIN requests r ON r.id=u.request_id JOIN conversations c ON c.session=u.session
             WHERE u.state='running' AND r.state='running' AND r.front='telegram' AND r.chat=r.sender AND c.fence=u.fence AND c.generation=u.generation
             AND EXISTS (SELECT 1 FROM grants g WHERE g.user=r.sender AND g.name='chat')").map_err(|e|e.to_string())?;
-        q.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).and_then(Iterator::collect).map_err(|e|e.to_string())
+        let rows:Vec<(i64,i64,(i64,i64,Option<i64>,String))>=q.query_map([], |r| Ok((r.get(4)?,r.get(5)?,(r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))))
+            .and_then(Iterator::collect).map_err(|e|e.to_string())?;
+        let mut visible=Vec::new();
+        for (request,actor,row) in rows {if server_access(&self.0,request,actor)? {visible.push(row);}}
+        Ok(visible)
     }
 
     /// Records a tool item of the run in its audit record: `result` None when it starts, its status when it completes.
