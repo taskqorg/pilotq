@@ -182,7 +182,6 @@ pub fn gate(t: &coreq::Tool) -> Result<(),String> {
 #[cfg(all(test,unix))]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
     // #257 A5: an adapter's HTTPS handshake timeout traceback is logged as one short line ending in its summary.
     #[test]
     fn traceback_logs_one_line() {
@@ -210,14 +209,13 @@ mod tests {
         let bin=d.join("tool");
         for (minimum,old) in [("0.162.0","0.161.9"),("4.6.40","4.6.39"),("4.6.46","4.6.45"),("2.45.0","2.9.0"),("6.1.0","6.0.9"),("2.0.1","2.0.0"),("1.8.2","1.8.1"),("7.68.0","7.67.9"),("245","244"),("3.3.17","3.3.16"),("3.23","3.22")] {
             for (found,expected) in [(old,"failed"),(minimum,"ok"),("nonsense","failed"),("2.45.0-rc1","failed")] {
-                std::fs::write(&bin,format!("#!/bin/sh\necho 'tool {found}'\n")).unwrap();
-                std::fs::set_permissions(&bin,std::fs::Permissions::from_mode(0o700)).unwrap();
+                crate::test_support::write_script(&bin,format!("#!/bin/sh\necho 'tool {found}'\n")).unwrap();
                 assert_eq!(probe("fixture",bin.to_str(),&["--version"],minimum,"tool ","install tool")["outcome"],expected);
             }
         }
         // §9 / #154: TaskQ self-updates must not require a checksum receipt.
         for (found,expected) in [("4.6.45","failed"),("4.6.46","ok")] {
-            std::fs::write(&bin,format!("#!/bin/sh\n[ \"$*\" = --version ] || exit 1\necho '{found}'\n")).unwrap();
+            crate::test_support::write_script(&bin,format!("#!/bin/sh\n[ \"$*\" = --version ] || exit 1\necho '{found}'\n")).unwrap();
             assert_eq!(probe("taskq",bin.to_str(),&["--version"],"4.6.46","","update taskq")["outcome"],expected);
         }
         // Known SHA-256 for the empty string; a changed executable cannot inherit its release identity.

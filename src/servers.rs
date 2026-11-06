@@ -209,8 +209,7 @@ mod tests {
         std::fs::write(dir.join("report.json"), report.to_string()).unwrap();
         let log = dir.join("calls.log");
         let script = dir.join("report.sh");
-        std::fs::write(&script, format!("#!/bin/sh\necho \"$@\" >> '{}'\necho invented-secret-stderr >&2\ncat '{}'\n", log.display(), dir.join("report.json").display())).unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        crate::test_support::write_script(&script, format!("#!/bin/sh\necho \"$@\" >> '{}'\necho invented-secret-stderr >&2\ncat '{}'\n", log.display(), dir.join("report.json").display())).unwrap();
         let config = dir.join("servers.json");
         std::fs::write(&config, json!({"executable":script,"args":["report"]}).to_string()).unwrap();
         std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
@@ -280,7 +279,7 @@ mod tests {
         if std::env::var_os("PILOTQ_375_PRIVATE_CHILD").is_some() {
             let f = fixture("private-child");
             std::fs::write(f.dir.join("servers.json"),json!({"executable":f.dir.join("report.sh"),"args":["invented-secret-argument"]}).to_string()).unwrap();
-            std::fs::write(f.dir.join("report.sh"), "#!/bin/sh\necho invented-secret-stderr >&2\nexit 1\n").unwrap();
+            crate::test_support::write_script(f.dir.join("report.sh"), "#!/bin/sh\necho invented-secret-stderr >&2\nexit 1\n").unwrap();
             assert!(!ask(&f, 7, json!({})).0);
             std::fs::remove_dir_all(f.dir).unwrap();
             return;
