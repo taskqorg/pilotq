@@ -28,7 +28,7 @@ keeps the service user's own login). `runtime` selects the installation runtime 
 or `claude`); `runtime_routes` maps a route (`cli`, `CHAT` or `CHAT:TOPIC`) to an override. The
 #265 keys `codex`, `claude`, `claude_home` and `claude_models` remain readable for existing
 installations. Every manager turn runs through the `agentq-runtime` runtime trait
-(`agent::runtime(name)`), pinned to release `runtime-v0.8.0` (`eb13fe90cc86a682ec37259d9865dfe3e6f11e6e`),
+(`agent::runtime(name)`), pinned to the release tag in `Cargo.toml`,
 one process group per turn, and keeps the existing grants, native-shell authority, private answer
 drafts, model choice, inactivity watches and recovery rules.
 
@@ -97,7 +97,7 @@ drafts, model choice, inactivity watches and recovery rules.
   Claude excludes user settings, so its launch requests compression off rather than claiming those
   excluded hooks are active.
   Tool-result compression still needs section 11's tool qualification, separate from runtime adoption.
-- CoreQ is v0.21.0 for installation, process and telemetry primitives. Schema 14 converts legacy
+- CoreQ, at the tag in `Cargo.toml`, is for installation, process and telemetry primitives. Schema 14 converts legacy
   `RUNTIME:ID` sessions into the runtime column on first open. A build reading at most schema 13
   refuses the migrated journal, so rollback across this upgrade needs a build that reads schema 14 or
   the pre-upgrade snapshot; never replay interrupted effects or erase pending delivery to downgrade.

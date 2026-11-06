@@ -1,0 +1,12 @@
+name: pin update
+on:
+  schedule:
+    - cron: '47 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  update:
+    uses: taskqorg/agentq/.github/workflows/pin-update.yml@main
+    secrets:
+      PIN_APP_KEY: ${{ secrets.PIN_APP_KEY }}
