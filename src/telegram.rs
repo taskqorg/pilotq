@@ -307,7 +307,7 @@ fn failed(e: RequestError, backoff: i64) -> Sent {
 #[path="telegram_text.rs"]
 mod text;
 pub(crate) use text::html;
-use text::markdown;
+pub(crate) use text::markdown;
 #[cfg(test)]
 use text::tidy;
 
