@@ -117,7 +117,7 @@ impl Journal {
                         WHEN kind='answer_confirmation' THEN (SELECT s.sent_message FROM outbox s WHERE s.request_id=o.request_id AND s.kind='queued' AND s.state='delivered' AND s.chat=o.chat AND s.topic IS o.topic ORDER BY s.id DESC LIMIT 1)
                         WHEN kind='choice_answered' THEN o.reply_to
                         WHEN kind='question_superseded' AND o.reply_to IS NOT NULL THEN o.reply_to
-                        WHEN kind IN ('question_answered','question_superseded') THEN (SELECT s.sent_message FROM outbox s WHERE s.request_id=o.request_id AND s.task=o.task AND s.project=o.project AND s.chat=o.chat AND s.topic IS o.topic
+                        WHEN kind IN ('question_answered','question_superseded','question_explained') THEN (SELECT s.sent_message FROM outbox s WHERE s.request_id=o.request_id AND s.task=o.task AND s.project=o.project AND s.chat=o.chat AND s.topic IS o.topic
                         AND s.kind='question' AND s.revision=o.revision AND s.state='delivered' ORDER BY s.id DESC LIMIT 1)
                         WHEN kind IN ('draft_closed','plan_answered','plan_progress','plan_problem') THEN (SELECT s.sent_message FROM outbox s JOIN cards c ON c.id=o.revision WHERE ((s.request_id=c.request_id AND s.kind IN ('rich','rich_part')) OR (s.revision=c.id AND s.kind IN ('plan_answered','plan_progress','plan_problem'))) AND s.state='delivered' ORDER BY s.id DESC LIMIT 1) END, kind {heads} AND next_at<=?1 AND coalesce((SELECT value FROM meta WHERE key='telegram-cooldown:' || o.chat),0)<=?1 ORDER BY (kind='reaction') DESC,id LIMIT 1"
                 ),
@@ -127,7 +127,7 @@ impl Journal {
             .optional()
             .map_err(|e| e.to_string())?;
         if let Some(d) = &mut row {
-            d.buttons = if d.kind=="question" {self.question(d.id)?.map_or_else(Vec::new,|q|crate::telegram::options(&q))} else {self.card_buttons(d.id)?};
+            d.buttons = if matches!(d.kind.as_str(),"question"|"question_explained") {self.question(d.id)?.map_or_else(Vec::new,|q|crate::telegram::options(&q))} else {self.card_buttons(d.id)?};
             self.prepare_delivery(d)?;
         }
         let next = self.0.query_row(&format!("SELECT min(next_at) {heads}"), [], |r| r.get(0)).map_err(|e| e.to_string())?;

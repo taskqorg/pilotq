@@ -27,7 +27,7 @@ fn route(s:&str)->Result<(),String> {
     let parts:Vec<_>=s.split(':').collect();
     if parts.len()>2 || parts[0].parse::<i64>().ok().is_none_or(|n| n==0 || n.to_string()!=parts[0]) || (parts.len()==2 && parts[1].parse::<i64>().ok().is_none_or(|n|n<=0 || n.to_string()!=parts[1])) {return Err("Route must be cli, CHAT or CHAT:TOPIC with exact numeric IDs.".into());} Ok(())
 }
-fn clean(keys:&crate::keys::Keys,s:&str,max:usize)->Result<(),String> {
+pub(crate) fn clean(keys:&crate::keys::Keys,s:&str,max:usize)->Result<(),String> {
     if s.trim().is_empty() || s.len()>max {return Err(format!("PM text must be nonempty and at most {max} bytes."));}
     // Known stored values plus common credential syntax. No rejected text is echoed or persisted here.
     let lower=s.to_ascii_lowercase();

@@ -308,6 +308,7 @@ fn failed(e: RequestError, backoff: i64) -> Sent {
 mod text;
 pub(crate) use text::html;
 pub(crate) use text::markdown;
+pub(crate) use text::details;
 #[cfg(test)]
 use text::tidy;
 
@@ -385,6 +386,8 @@ async fn send_inner(bot: &Bot, j: &Shared, d: &Delivery) -> Sent {
         return Sent::Held("Telegram route held; administrator revalidation required".into());
     }
     let backoff = d.attempts + 1;
+    // #401 A5: an explanation only edits its delivered question; a new message would duplicate controls answers cannot bind to.
+    if d.kind=="question_explained" && d.edit.is_none() { return Sent::Ok(0); }
     if d.kind=="result_image_gap" {
         if let Err(e)=crate::result_images::authorize(&j.lock().unwrap(),d.id) {return Sent::Held(e);}
     }
@@ -456,6 +459,7 @@ async fn send_inner(bot: &Bot, j: &Shared, d: &Delivery) -> Sent {
         match r.await {
             Ok(m) => return Sent::Ok(m.id.0 as i64),
             Err(RequestError::Api(ApiError::MessageNotModified)) => return Sent::Ok(m),
+            Err(RequestError::Api(ApiError::MessageToEditNotFound)) if d.kind=="question_explained" => return Sent::Ok(m),
             Err(RequestError::Api(ApiError::MessageToEditNotFound)) => {}
             Err(e) => return failed(e, backoff),
         }

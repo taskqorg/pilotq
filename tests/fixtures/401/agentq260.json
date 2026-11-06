@@ -1,0 +1,129 @@
+{
+  "source": "taskq: ask attempt 6681763630 on https://github.com/taskqorg/agentq/issues/260, read through gh on 2026-11-06",
+  "question": {
+    "parsed": true,
+    "text": "Done: Reviewed eac48ee2/PR262; metadata fix and exact-head CI pass. Entry6680789876 preserved; merge_group and runtime tag pending (R12).\nProblem: A2 includes runtime children, but protected host drops caller context (host.rs:447; RUNTIME Observation). No accepted exception exists (R13).\nPrior review kept this gap Open; specq Review forbids new rejection on unchanged code. Reconcile A2 scope before publication.\nEvidence: [#262](https://github.com/taskqorg/agentq/pull/262)\n1. Complete protected-child A2 - + meets unchanged acceptance; - needs a scoped fix before publication ★\n2. Approve protected exception - + publishes ordinary-path support sooner; - protected children still lose context\nTo answer: `taskq answer 260.K` or comment `K` or the option text.",
+    "done": "Reviewed eac48ee2/PR262; metadata fix and exact-head CI pass. Entry6680789876 preserved; merge_group and runtime tag pending (R12).",
+    "problem": "A2 includes runtime children, but protected host drops caller context (host.rs:447; RUNTIME Observation). No accepted exception exists (R13). Prior review kept this gap Open; specq Review forbids new rejection on unchanged code. Reconcile A2 scope before publication.",
+    "evidence": [
+      {
+        "label": "#262",
+        "url": "https://github.com/taskqorg/agentq/pull/262"
+      }
+    ],
+    "choices": [
+      {
+        "id": 1,
+        "text": "Complete protected-child A2 - + meets unchanged acceptance; - needs a scoped fix before publication",
+        "label": "Complete protected-child A2",
+        "detail": "+ meets unchanged acceptance; - needs a scoped fix before publication",
+        "recommended": true,
+        "consequential": false
+      },
+      {
+        "id": 2,
+        "text": "Approve protected exception - + publishes ordinary-path support sooner; - protected children still lose context",
+        "label": "Approve protected exception",
+        "detail": "+ publishes ordinary-path support sooner; - protected children still lose context",
+        "recommended": false,
+        "consequential": false
+      }
+    ]
+  },
+  "task": {
+    "title": "Align agentq-runtime with inherited CoreQ context",
+    "url": "https://github.com/taskqorg/agentq/issues/260",
+    "body": "## Goal\nUnblock taskq#2428 A2-A3 with one CoreQ store/context API.\n\n## Acceptance\nA2. A consumer passes its CoreQ Store to Run::record; nested records and runtime children preserve project, task, attempt, actor and entry, with null reasons for missing values."
+  },
+  "clauses": {
+    "agentq.md": "- **P3 Spec first.** A change that alters a decision edits this file or its linked detail first; code, README and INSTALL follow. Only the owner accepts a decision change. AGENTS.md points here."
+  },
+  "authored": {
+    "issue": "Обычный запуск уже передаёт контекст вызывающего: проект, задачу, попытку, исполнителя и запись. У дочерних процессов защищённого хоста этот контекст теряется.",
+    "impact": "Если опубликовать так, записи этих процессов останутся без привязки к задаче. Доработка отложит публикацию.",
+    "requirement": {
+      "plain": "Условие задачи требует сохранять контекст и во вложенных записях, и у дочерних процессов. Отступить от решения может только владелец.",
+      "sources": [
+        {
+          "kind": "task",
+          "excerpt": "nested records and runtime children preserve project, task, attempt, actor and entry"
+        },
+        {
+          "kind": "file",
+          "path": "agentq.md",
+          "excerpt": "Only the owner accepts a decision change."
+        }
+      ]
+    },
+    "next": {
+      "actor": "owner",
+      "action": "выбрать: доработать или разрешить исключение."
+    },
+    "options": [
+      {
+        "id": 1,
+        "label": "Доработать контекст детей",
+        "meaning": "Исправить защищённый хост до публикации.",
+        "gain": "условие задачи выполнено без изменений",
+        "cost": "нужна отдельная правка до публикации"
+      },
+      {
+        "id": 2,
+        "label": "Разрешить исключение",
+        "meaning": "Опубликовать поддержку обычного пути, а дочерние процессы защищённого хоста оставить без контекста.",
+        "gain": "поддержка обычного пути выходит раньше",
+        "cost": "дочерние процессы защищённого хоста по-прежнему теряют контекст"
+      }
+    ],
+    "recommendation_reason": "Условие задачи не менялось, а доработка выполняет его без нового решения об исключении.",
+    "unknowns": [
+      "Причину потери контекста в коде PM сам не проверял; это утверждение исполнителя."
+    ]
+  },
+  "model": {
+    "issue": "Проверка PR завершена: исправление метаданных и CI на проверенном коммите проходят. Но, по отчёту проверки, защищённый хост теряет контекст вызывающего, хотя условие приёмки распространяется и на дочерние элементы runtime, поэтому нужно решить, доделывать это или принять исключение.",
+    "impact": "До согласования объёма публиковать результат нельзя; проверка merge_group и тег runtime тоже ещё ожидаются. От выбора зависит, будет ли контекст сохраняться и в защищённом пути или только в обычном.",
+    "requirement": {
+      "plain": "Вложенные записи и дочерние элементы runtime должны сохранять проект, задачу, попытку, исполнителя и запись, а для отсутствующих значений давать null с причиной. Исключение из этого условия изменило бы решение, а изменение решения принимает только владелец.",
+      "sources": [
+        {
+          "kind": "task",
+          "excerpt": "A2. A consumer passes its CoreQ Store to Run::record; nested records and runtime children preserve project, task, attempt, actor and entry, with null reasons for missing values."
+        },
+        {
+          "kind": "file",
+          "path": "agentq.md",
+          "excerpt": "Only the owner accepts a decision change."
+        }
+      ]
+    },
+    "next": {
+      "actor": "owner",
+      "action": "Выбрать: доделать сохранение контекста в защищённом пути или принять исключение."
+    },
+    "options": [
+      {
+        "id": 1,
+        "label": "Доделать защищённый путь",
+        "meaning": "Обеспечить сохранение контекста для защищённых дочерних элементов runtime до публикации.",
+        "gain": "Условие приёмки выполняется без изменений.",
+        "cost": "Перед публикацией нужно ограниченное по объёму исправление."
+      },
+      {
+        "id": 2,
+        "label": "Принять исключение",
+        "meaning": "Одобрить исключение для защищённого пути и оставить поддержку только в обычном пути.",
+        "gain": "Поддержка обычного пути публикуется раньше.",
+        "cost": "Защищённые дочерние элементы по-прежнему теряют контекст."
+      }
+    ],
+    "recommendation_reason": "Условие приёмки прямо включает дочерние элементы runtime, и только этот вариант выполняет его без изменений.",
+    "unknowns": [
+      "Потеря контекста известна только из отчёта проверки: код защищённого хоста в этом разборе не прочитан.",
+      "Текст правила о новых отказах при неизменённом коде не прочитан, поэтому его влияние на эту проверку неизвестно."
+    ]
+  },
+  "model_id": [
+    "claude-opus-5-5"
+  ]
+}

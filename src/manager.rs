@@ -677,6 +677,8 @@ fn tool_call(j: &Mutex<Journal>, r: &Run, tq: Option<&crate::taskq::Taskq>, d: &
             _ if crate::admin::NAMES.contains(&name) => crate::admin::call(d,j,r,name,args,command_deadline,tq),
             _ if crate::commands::NAMES.contains(&name) => crate::commands::call(d,j,r,name,args,command_deadline,tq),
             _ if direct::NAMES.contains(&name) => direct::call(d, j, r, name, args, tq),
+            // #401 / R16: this tool's text reaches the card without a final reply's scrub.
+            Some(_) if name=="task_explain" && crate::pm::clean(&d.keys,&args.to_string(),16384).is_err() => (false,"The explanation refuses credential material; nothing was changed.".to_string()),
             Some(tq) => crate::taskq::call_until(tq, j, r, name, args,command_deadline),
             None => (false, "TaskQ is not configured".into()),
         };

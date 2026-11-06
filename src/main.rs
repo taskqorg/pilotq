@@ -6,6 +6,7 @@ mod onboarding;
 mod catalog;
 mod builtins;
 mod direct;
+mod explain;
 mod asana;
 mod servers;
 mod commands;

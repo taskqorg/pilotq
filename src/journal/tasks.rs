@@ -665,24 +665,32 @@ impl Journal {
     }
 
     /// #165 A5: all tasks in a launch project into one status card, never one message per transition.
-    pub(super) fn launch_status(&self, request: i64, at: i64) -> Result<String,String> {
+    pub(crate) fn launch_status(&self, request: i64, at: i64) -> Result<String,String> {
         let language:Option<String>=event_reply_language(&self.0,request)?;
-        let mut q=self.0.prepare("SELECT project,board,number,state,closed,observed FROM tasks WHERE request_id=?1 ORDER BY project,number").map_err(|e|e.to_string())?;
-        let rows:Vec<(String,String,i64,String,bool,i64)>=q.query_map([request],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).and_then(Iterator::collect).map_err(|e|e.to_string())?;
+        let mut q=self.0.prepare("SELECT project,board,number,state,closed,observed,chat,topic FROM tasks WHERE request_id=?1 ORDER BY project,number").map_err(|e|e.to_string())?;
+        let rows:Vec<(String,String,i64,String,bool,i64,i64,Option<i64>)>=q.query_map([request],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?))).and_then(Iterator::collect).map_err(|e|e.to_string())?;
         let ru=language.as_deref().unwrap_or("en").starts_with("ru");
         let mut lines=Vec::new();
-        for (project,board,n,state,closed,observed) in rows {
+        for (project,board,n,state,closed,observed,chat,topic) in rows {
+            // #401 A3: with PM review on in this route its reply is the primary explanation; literal source stays one tap away.
+            let pm=crate::loops::pm_on(&self.0,&project,chat,topic)?;
+            let mut source=vec![];
             let status=crate::conversation::task_state(&state,closed,language.as_deref());
             let age=if closed {String::new()} else {if ru {format!(" · подтверждено {}",crate::footer::russian_units(&crate::time::moment(Some(observed),at)).replace(" ago", " назад"))} else {format!(" · confirmed {}",crate::time::moment(Some(observed),at))}};
             lines.push(format!("{} {status}{age} · {}",crate::taskq::state_icon(&state,closed),crate::taskq::task_link(&board,n,self.task_title(&project,n)?.as_deref(),self.task_url(&project,n)?.as_deref())));
-            if let Some(goal)=self.task_goal(&project,n)? {if let Some(card)=lines.last_mut() {*card=format!("{card}\n{}",crate::taskq::goal_line(&goal,language.as_deref()));}}
+            if let Some(goal)=self.task_goal(&project,n)? {
+                if pm {source.push(crate::taskq::goal_line(&goal,language.as_deref()));}
+                else if let Some(card)=lines.last_mut() {*card=format!("{card}\n{}",crate::taskq::goal_line(&goal,language.as_deref()));}
+            }
             if closed {
                 let result:Option<String>=self.0.query_row("SELECT result FROM audit_events WHERE request_id=?1 AND kind='task_result' AND target=?2 ORDER BY id DESC LIMIT 1",params![request,format!("{project}#{n}")],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
                 if let Some(result)=result {
                     let detail=result.lines().skip(1).collect::<Vec<_>>().join("\n");
-                    if !detail.is_empty() {lines.push(detail);} // Trusted source, not diagnostics: every limit stays literal (§2 / #387).
+                    // Trusted source, not diagnostics: every limit stays literal (§2 / #387).
+                    if !detail.is_empty() {if pm {source.push(detail);} else {lines.push(detail);}}
                 }
             }
+            if !source.is_empty() {lines.push(crate::telegram::details(if ru {"Исходный текст задачи"} else {"Task source text"},&source.join("\n")));}
         }
         Ok(if lines.is_empty() {if ru {"Ожидает отправки.".into()} else {"Waiting to submit.".into()}} else {lines.join("\n\n")})
     }
@@ -728,6 +736,38 @@ impl Journal {
         }
         tx.commit().map_err(e)?;
         Ok(true)
+    }
+
+    /// #401 A3: PM review explains this subscribed task's cards in the route that shows them.
+    pub fn question_review_on(&self, project: &str, task: i64) -> Result<bool,String> {
+        let route:Option<(i64,Option<i64>)>=self.0.query_row("SELECT chat,topic FROM tasks WHERE project=?1 AND number=?2 AND closed=0",params![project,task],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(|e|e.to_string())?;
+        route.map_or(Ok(false),|(chat,topic)|crate::loops::pm_on(&self.0,project,chat,topic))
+    }
+
+    /// #401 A2/A5: explanation of one current question card in this turn's route or its author's own DM, never another shared route.
+    /// Presentation only: the original question row, its message, numbers and answer binding stay. Answers and supersession queue
+    /// later, so a stale explanation cannot be shown last.
+    #[allow(clippy::too_many_arguments)]
+    pub fn explain_question(&self, request: i64, project: &str, task: i64, revision: i64, text: &str, question: &Value, audit: &str, at: i64) -> Result<String,String> {
+        let e=|e:rusqlite::Error|e.to_string();
+        let tx=self.0.unchecked_transaction().map_err(e)?;
+        let (chat,topic,sender):(i64,Option<i64>,i64)=tx.query_row("SELECT chat,topic,sender FROM requests WHERE id=?1",[request],|x|Ok((x.get(0)?,x.get(1)?,x.get(2)?))).map_err(e)?;
+        let card:Option<(i64,i64,Option<i64>)>=tx.query_row("SELECT request_id,chat,topic FROM outbox WHERE project=?1 AND task=?2 AND revision=?3 AND ((chat=?4 AND topic IS ?5) OR (chat=?6 AND topic IS NULL)) AND kind='question' ORDER BY id DESC LIMIT 1",
+            params![project,task,revision,chat,topic,sender],|x|Ok((x.get(0)?,x.get(1)?,x.get(2)?))).optional().map_err(e)?;
+        let Some((source,chat,topic))=card else {return Err("this route has no card for this question revision; explain it in your reply instead; nothing was changed".into())};
+        let settled:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM outbox WHERE project=?1 AND task=?2 AND revision=?3 AND chat=?4 AND topic IS ?5 AND kind IN ('question_answered','question_superseded'))",
+            params![project,task,revision,chat,topic],|x|x.get(0)).map_err(e)?;
+        if settled {return Err("this question was already answered or superseded; read the current state; nothing was changed".into());}
+        let same:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM outbox WHERE request_id=?1 AND project=?2 AND task=?3 AND revision=?4 AND kind='question_explained' AND text=?5 AND state<>'superseded')",
+            params![source,project,task,revision,text],|x|x.get(0)).map_err(e)?;
+        if !same {
+            tx.execute("UPDATE outbox SET state='superseded' WHERE request_id=?1 AND project=?2 AND task=?3 AND revision=?4 AND kind='question_explained' AND state='pending'",params![source,project,task,revision]).map_err(e)?;
+            let delivery=notice(&tx,source,chat,topic,"question_explained",project,task,revision,text,at)?;
+            tx.execute("UPDATE outbox SET question=?1 WHERE id=?2",params![question.to_string(),delivery]).map_err(e)?;
+            tx.execute("INSERT INTO audit_events(request_id,at,kind,target,result) VALUES (?1,?2,'task_explanation',?3,?4)",params![request,at,format!("{project}#{task}"),audit]).map_err(e)?;
+        }
+        tx.commit().map_err(e)?;
+        Ok("The question card now carries this explanation and its source details; do not repeat them in your reply. Explaining answered nothing.".into())
     }
 
     /// Questions awaiting an accepted-answer receipt; their original revision remains the answer fence (§5, #94).

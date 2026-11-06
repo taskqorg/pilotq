@@ -26,8 +26,10 @@ Never store credentials, private DM memory or another route's context. Notes nev
 
 Read the installed TaskQ help before dispatch; commands and required fields may change.
 
-- Questions: relay the exact task, attempt, question revision and choices. Only relay a real authorized owner's answer
-  through `taskq answer`; a PM recommendation through `taskq pick` is not that answer.
+- Questions: read the exact task, attempt, question revision and choices, and the current clause behind every code they
+  cite. Explain the question on its card with `task_explain`; explaining answers nothing. A technical ask you may answer within
+  the bound author's decision rights with `taskq answer`, giving the reason. A product, scope or visual choice stays with its
+  owner: relay it with options and invent no answer. A PM recommendation through `taskq pick` is never the owner's answer.
 - Doing work: `taskq steer N --text TEXT` carries a matching follow-up after a fresh inbox read. Preserve scope and
   original request; never create a duplicate to carry feedback. A started body stays immutable.
 - Held work: read back every task and child; check one outcome, verifiable acceptance, duplicates, specification,

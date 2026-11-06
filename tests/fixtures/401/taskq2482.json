@@ -1,0 +1,121 @@
+{
+  "source": "taskq: ask attempt 6681424539 on https://github.com/taskqorg/taskq/issues/2482, read through gh on 2026-11-06",
+  "question": {
+    "parsed": true,
+    "text": "Done: Original execution exit and release 6681722157 verified; result and archives preserved; sanitized before/after evidence attached.\nProblem: research requires docs/research/2482.md; A3/A4 and PM note 6681482099 forbid source edits. PM must reconcile completion; installed CLI has no revision-bound route amendment (R13, section 7).\nEvidence: [⬇ taskq-2482-windows-executi.zip](https://github.com/taskqorg/taskq/raw/680996eb2adfcfb0a5cc1c811024e3c6267487a5/2482/719b4a32f2a2-taskq-2482-windows-execution-6680828219.zip)\nTo answer: `taskq answer 2482 --text <done>`.",
+    "done": "Original execution exit and release 6681722157 verified; result and archives preserved; sanitized before/after evidence attached.",
+    "problem": "research requires docs/research/2482.md; A3/A4 and PM note 6681482099 forbid source edits. PM must reconcile completion; installed CLI has no revision-bound route amendment (R13, section 7).",
+    "evidence": [
+      {
+        "label": "⬇ taskq-2482-windows-executi.zip",
+        "url": "https://github.com/taskqorg/taskq/raw/680996eb2adfcfb0a5cc1c811024e3c6267487a5/2482/719b4a32f2a2-taskq-2482-windows-execution-6680828219.zip"
+      }
+    ],
+    "choices": []
+  },
+  "task": {
+    "title": "Diagnose the unresolved Windows execution blocking task 2463 review",
+    "url": "https://github.com/taskqorg/taskq/issues/2482",
+    "body": "## Acceptance\nA3. Preserve ee39a45cdaf50f9ebc9d4de3c9a8fc92118b2e34, result entry 6681009909 and original evidence/source ZIPs. No requeue, reviewer rerun, native replay, reboot, restart, source edit, deletion or new rights.\nA4. Compare observed failure with agentq#263 stdout disk-space error 112; prove or reject the relationship, or retain it as unknown. Return sanitized evidence outside source Git; no dependency on task 2463 completion.",
+    "log": [
+      "taskq: steer\nPM classification defect: research requires tracked docs/research/2482.md but source edits are forbidden. Installed CLI has no revision-bound type/completion-route amendment. Preserve current diagnostics and evidence; do not create tracked\nreport, rerun collection or weaken scope to complete."
+    ]
+  },
+  "clauses": {
+    "taskq.md": "Review Acceptance and contract. Checks follows [review](https://github.com/taskqorg/specq/blob/main/engineering/agent-workflow.md#review). Research/proposals need a report; decisions blocking another task require ask before close."
+  },
+  "authored": {
+    "issue": "Само исследование выполнено, но завершить задачу обычным путём нельзя: такому типу задач нужен отчёт в репозитории, а её условия запрещают менять исходники.",
+    "impact": "Результат и архивы сохранены. Задача не закроется, пока не будет согласован способ завершения; на выводы диагностики это не влияет.",
+    "requirement": {
+      "plain": "Для закрытия исследования нужен отчёт, а условия этой задачи запрещают правки исходников и требуют вернуть доказательства вне репозитория.",
+      "sources": [
+        {
+          "kind": "file",
+          "path": "taskq.md",
+          "excerpt": "Research/proposals need a report"
+        },
+        {
+          "kind": "task",
+          "excerpt": "Return sanitized evidence outside source Git"
+        },
+        {
+          "kind": "task",
+          "excerpt": "reboot, restart, source edit, deletion or new rights"
+        }
+      ]
+    },
+    "next": {
+      "actor": "pm",
+      "action": "согласовать способ завершения, не создавая отчёт в репозитории и не повторяя сбор данных."
+    },
+    "unknowns": [
+      "Что установленная команда не умеет менять маршрут завершения, известно только со слов исполнителя и заметки PM; отдельно это не проверено."
+    ]
+  },
+  "model": {
+    "issue": "Воркер проверил выход исходного запуска и release, сохранил результат и архивы и приложил очищенные доказательства «до/после». Штатно завершить задачу нельзя: PM-заметка и воркер указывают, что тип «исследование» требует отчёт в отслеживаемом файле, а условия задачи запрещают правки исходников.",
+    "impact": "Задача ждёт согласования завершения, хотя диагностика и доказательства уже сохранены. Создавать отслеживаемый отчёт, повторять сбор или ослаблять объём ради закрытия нельзя, а установленный CLI не умеет менять маршрут завершения с привязкой к ревизии.",
+    "requirement": {
+      "plain": "Правила проекта требуют отчёт для исследований. В этой задаче правки исходников запрещены, а очищенные доказательства нужно вернуть вне Git исходников.",
+      "sources": [
+        {
+          "kind": "file",
+          "path": "taskq.md",
+          "excerpt": "Research/proposals need a report"
+        },
+        {
+          "kind": "task",
+          "excerpt": "No requeue, reviewer rerun, native replay, reboot, restart, source edit, deletion or new rights."
+        },
+        {
+          "kind": "task",
+          "excerpt": "Return sanitized evidence outside source Git"
+        }
+      ]
+    },
+    "next": {
+      "actor": "pm",
+      "action": "Согласовать завершение задачи и ответить воркеру, сохранив доказательства и не создавая отслеживаемый отчёт, повторный сбор или ослабление объёма."
+    },
+    "unknowns": [
+      "Неизвестно, какой допустимый путь завершения остаётся, раз CLI не может изменить маршрут.",
+      "Правило, на которое ссылается воркер, не прочитано, поэтому его содержание неизвестно.",
+      "Карточка не говорит, подтверждена ли связь сбоя с ошибкой нехватки места на диске из связанной задачи AgentQ, опровергнута ли она или осталась неизвестной."
+    ]
+  },
+  "model_id": [
+    "claude-opus-5-5"
+  ],
+  "model_refused_first": {
+    "issue": "Воркер проверил выход исходного запуска и release, сохранил результат и архивы и приложил очищенные доказательства «до/после». Штатно завершить задачу нельзя: PM-заметка и воркер указывают, что тип «исследование» требует отчёт в отслеживаемом файле, а условия задачи запрещают правки исходников.",
+    "impact": "Задача ждёт согласования завершения, хотя диагностика и доказательства уже сохранены. Создавать отслеживаемый отчёт, повторять сбор или ослаблять объём ради закрытия нельзя, а установленный CLI не умеет менять маршрут завершения с привязкой к ревизии.",
+    "requirement": {
+      "plain": "Правила проекта требуют отчёт для исследований. В этой задаче правки исходников запрещены, а очищенные доказательства нужно вернуть вне Git исходников.",
+      "sources": [
+        {
+          "kind": "file",
+          "path": "taskq.md",
+          "excerpt": "Research/proposals need a report"
+        },
+        {
+          "kind": "task",
+          "excerpt": "No requeue, reviewer rerun, native replay, reboot, restart, source edit, deletion or new rights."
+        },
+        {
+          "kind": "task",
+          "excerpt": "Return sanitized evidence outside source Git"
+        }
+      ]
+    },
+    "next": {
+      "actor": "pm",
+      "action": "Согласовать завершение задачи и ответить воркеру, сохранив доказательства и не создавая отслеживаемый отчёт, повторный сбор или ослабление объёма."
+    },
+    "unknowns": [
+      "Неизвестно, какой допустимый путь завершения остаётся, раз CLI не может изменить маршрут.",
+      "Правило R13, раздел 7, на которое ссылается воркер, не прочитано.",
+      "Карточка не говорит, подтверждена ли связь сбоя с ошибкой диска 112 из agentq#263, опровергнута ли она или осталась неизвестной."
+    ]
+  }
+}

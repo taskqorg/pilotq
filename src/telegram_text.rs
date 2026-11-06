@@ -64,6 +64,22 @@ pub(crate) fn tidy(text: &str) -> String {
     out
 }
 
+/// #401: literal source moved out of a card's primary text. A marked block collapses in rich and HTML and stays quoted in plain.
+const DETAILS: &str = "> 🔎 ";
+
+pub(crate) fn details(title: &str, body: &str) -> String {
+    let mut out = format!("{DETAILS}{title}");
+    for line in body.lines() { out += "\n> "; out += line; }
+    out
+}
+
+/// The text before the first details block, the block, and the text after it.
+fn split_details(text: &str) -> Option<(&str, &str, &str)> {
+    let start = if text.starts_with(DETAILS) { 0 } else { text.find(&format!("\n\n{DETAILS}"))? + 2 };
+    let end = text[start..].find("\n\n").map_or(text.len(), |e| start + e);
+    Some((text[..start].trim_end(), &text[start..end], text[end..].trim_start()))
+}
+
 /// A small safe Markdown subset for Telegram HTML. Raw HTML always stays literal; unsupported Markdown stays readable.
 /// ponytail: headings, bullets, bold, italic, escapes, code and HTTP(S) links; a full Markdown parser only when the subset needs to grow.
 pub(crate) fn html(text: &str) -> String {
@@ -75,6 +91,12 @@ pub(crate) fn html(text: &str) -> String {
             let speech=speech.replace('&',"&amp;").replace('<',"&lt;").replace('>',"&gt;");
             return format!("<blockquote expandable>{speech}</blockquote>{}{}",if answer.is_empty(){""}else{"\n\n"},html(answer));
         }
+    }
+    if let Some((before,block,after))=split_details(text) {
+        let quoted=block.lines().map(|line|line.strip_prefix("> ").unwrap_or(line.strip_prefix('>').unwrap_or(line))).collect::<Vec<_>>().join("\n");
+        let quoted=quoted.replace('&',"&amp;").replace('<',"&lt;").replace('>',"&gt;");
+        let parts=[html(before),format!("<blockquote expandable>{quoted}</blockquote>"),html(after)];
+        return parts.into_iter().filter(|p|!p.is_empty()).collect::<Vec<_>>().join("\n\n");
     }
     let text = &tidy(text);
     fn escape(s: &str) -> String { s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;") }
@@ -148,7 +170,7 @@ pub(crate) fn html(text: &str) -> String {
 /// A single line break inside a paragraph is a Markdown soft break that renders as a space; it becomes a hard break (#82).
 pub(crate) fn markdown(text: &str) -> String {
     // Generated escaped HTML preserves literal speech and the expandable attribute in rich Markdown.
-    if text.starts_with("> 🎤 ") {return html(text);}
+    if text.starts_with("> 🎤 ") || split_details(text).is_some() {return html(text);}
     // a line that starts its own block never needs a hard break before it
     fn block(l: &str) -> bool {
         if l == "\u{a0}\n" { return false; } // #141: the footer spacer needs hard breaks on both sides

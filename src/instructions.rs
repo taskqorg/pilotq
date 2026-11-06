@@ -74,6 +74,33 @@ mod tests {
         }
     }
 
+    // #401 A6 / R13: a rebuilt session loads the explanation boundary and the reconciled PM authority, and no prompt keeps the
+    // relay-only conflict. Defect: pack and task instructions forbade what loop and review instructions allow. Presence never
+    // proves explanation quality; explain::tests replays the observed questions through the boundary for that.
+    #[test]
+    fn explanation_401_rebuilt_sessions_load_reconciled_rules() {
+        let policy=super::policy();
+        for rule in ["one primary explanation", "criterion code alone never explains", "real owner choice", "Inspect the current clause before claiming a violation"] {
+            assert!(policy.contains(rule),"missing explanation rule: {rule}");
+        }
+        assert!(crate::taskq::INSTRUCTIONS.contains("Only a PM tick or review answers an ask") && !crate::taskq::INSTRUCTIONS.contains("Never choose an answer for a worker."));
+        let pack=include_str!("../docs/pm-pack.md").split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(pack.contains("task_explain") && pack.contains("product, scope or visual choice") && !pack.contains("Only relay a real authorized owner's answer"));
+        // The catalogue a pre-#401 session recorded lacks the tool, so that session refreshes from the journal before its next turn.
+        assert!(crate::taskq::tools().as_array().unwrap().iter().any(|t|t["name"]=="task_explain"));
+        let p=std::env::temp_dir().join(format!("pilotq-401-rebuild-{}",std::process::id()));
+        std::fs::create_dir_all(&p).unwrap();
+        let mut j=crate::journal::Journal::open(&p.join("journal.sqlite")).unwrap();j.bootstrap(7,0).unwrap();
+        let r=j.ask(7,"hello",1).unwrap();
+        j.catalogue(&r,&serde_json::json!([{"name":"task_status"}])).unwrap();
+        j.finish(&r,Some(("codex","invented-native-thread")),None,&crate::manager::Outcome::Answered("hello".into()),2).unwrap();
+        let r=j.ask(7,"next",3).unwrap();
+        j.catalogue(&r,&crate::taskq::tools()).unwrap();
+        assert!(j.refresh_tools(&r).unwrap(),"the changed catalogue forces a rebuild");
+        assert!(j.rebuild(&r,4,crate::journal::RebuildReason::PolicyRefresh).is_ok());
+        drop(j);std::fs::remove_dir_all(p).unwrap();
+    }
+
     #[test]
     fn relocated_product_policy_is_loaded() {
         // R13 / §2: relocation must retain both delegation authority and card presentation.

@@ -1402,6 +1402,27 @@ The owner’s accepted PM-on/off decision is retained in [the task report](resea
 
 After merge and release, the PM updates only the existing pds18 test install under §9 and records binary/source/specq identity, healthy service, selftest, doctor and request/journal continuity. In real authorized DM/topic routes, capture English and Russian ordinary replies, PM-off cards with no new model runs, PM-on explanations of a question and closing outcome, a real closing card of the taskq#2453 shape in both modes, errors, rich/HTML/plain delivery, and a disposable three-option question answered with original option 2. Retain screenshots, original/edited card IDs, revision, authorized actor and accepted answer receipt. Verify stale/foreign/repeated presses and revoked grants make no additional writes. Do not replay the historical owner decisions in the fixtures. Record unsupported or untested paths as gaps. Workers never install; local fixtures and CI do not qualify these live paths (R19, §9).
 
+### A401 — Spec-grounded question explanations
+
+Worker evidence is local and CI: `cargo test --locked explanation_401`.
+
+- A7 replays the observed agentq#260 child-context and taskq#2482 research/read-only questions through the real parser, source check and renderer, using both an authored explanation and a recorded [model explanation](../tests/fixtures/401/README.md). Primary text carries no bare criterion code, hash or attempt ID, and every option number, star and evidence link stays.
+- The boundary refuses unverified clauses, paths outside the registered root, foreign links, wrong-language text, changed options and invented trade-offs or recommendations.
+- Delivery edits the delivered question with source-numbered buttons, survives restart, refuses stale and foreign revisions and sends no replacement when the question is missing.
+- The [model-free default](conversation-flow.md#model-free-default) replays both observed questions in Russian and English: each resolvable code shows its literal clause and source, an unresolved R13 stays not found, `Done` stays in details and every number, star, trade-off and link stays. A real scan on a fresh journal with no notes, pack or review queues no model request, its card and buttons stay after restart, and the next question after `/new` gets the same card with no model request. Worker English stays untranslated by the owner's model-free decision.
+- A rebuilt session receives the reconciled authority rules and the new catalogue. Rule presence is not quality evidence.
+- [Review correction evidence](research/401.md) covers full-message UTF-16 bounds, complete section/rule constraints and stop fencing after source reads. Oversized and stopped edits queue nothing; the current source card and controls remain.
+
+PM check after release, on the existing test pilot. Keep the runbook as installed for steps 1 and 2, then reinstall it from `docs/pm-pack.md`, because the installed pack keeps its old text until then:
+
+1. Record a before screenshot of one raw source question from the previous build and the installed identity with `pilotq version`.
+2. With review off in a new route, file a disposable technical question that cites an acceptance code and an undefined code. Confirm the clause line, the not-found line, the next actor, collapsed `Done`, working buttons and no new model request. Retain the after screenshot.
+3. Turn on `/review on` in a route that receives a second disposable technical question, and confirm the compact card and then one edited explanation with working buttons.
+4. Answer that question from the card and read the receipt back through TaskQ.
+5. Confirm a card in another shared route keeps its model-free source while the PM reply explains it.
+
+Local and CI checks do not qualify Telegram rendering or live model wording. Workers never install.
+
 ### A375 — Discuss servers in chat
 
 Worker evidence is local and CI: `cargo test --locked servers::` and `cargo test --locked start_375`.

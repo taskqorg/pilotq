@@ -138,6 +138,12 @@ pub(super) fn dispatch_until(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str
             if args["project"].as_str().map(crate::direct::canonical_project).is_some_and(|p| p != project) { return Err("saved plan cannot be retargeted; nothing was filed".into()); }
             allowed(&j, sender, project, true)?;
             (project.clone(), saved.as_ref().unwrap().2.clone(), 0)
+        } else if name=="task_explain" {
+            // The card must already exist in this route (checked at the write), so the target needs no conversation inference.
+            let project=crate::direct::canonical_project(args["project"].as_str().ok_or("project is required; nothing was changed")?).to_string();
+            let (_,board)=tq.registered(&j,&project)?;
+            let n=args["task"].as_i64().or_else(||args["task"].as_str().and_then(|t|t.trim().trim_start_matches('#').parse().ok())).filter(|n|*n>0).ok_or("task must be a task number; nothing was changed")?;
+            (project,board,n)
         } else if matches!(name,"task_status" | "task_steer" | "task_answer") {
             let inferred = if name == "task_answer" || args["project"].is_string() { None } else { crate::direct::context_project(&j,r,sender)? };
             match j.related_target(r,args["task"].as_str().ok_or("task is required")?,args["project"].as_str().map(crate::direct::canonical_project).or(inferred.as_deref()))? {
@@ -227,6 +233,29 @@ fn dispatch_target(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &V
                 guard.task_intent(r,project,board,&tq.root.to_string_lossy(),&argv,now())?
             };
             reconcile_effect(tq,j,&op,board,&argv,false)
+        }
+        "task_explain" => {
+            allowed(&j.lock().unwrap(),sender,project,true)?;
+            let revision=args["revision"].as_i64().ok_or("question revision is required; nothing was changed")?;
+            let snapshot=tq.snapshot_for(board)?;
+            let task=find(&snapshot,n).ok_or("task is not open; nothing was changed")?;
+            if task["state"]!="ask" || task["revision"]!=revision {
+                return Err("Question changed; nothing was changed. Read the current question before explaining it.".into());
+            }
+            let q=&task["question"];
+            let language=j.lock().unwrap().language(r.request)?;
+            let ru=language.as_deref().unwrap_or("en").starts_with("ru");
+            let explanation=crate::explain::parse(args,q,ru)?;
+            // An unreadable issue leaves only the fresh board row to quote; a clause outside it then stays unverified.
+            let issue=tq.issue(n).unwrap_or(Value::Null);
+            crate::explain::verify(&explanation,&crate::explain::strings(&[task,&issue]),&tq.root)?;
+            let guard=j.lock().unwrap();
+            if guard.fenced(r)? { return Err("this run was stopped; nothing was changed".into()); }
+            let url=guard.task_url(project,n)?.or_else(||task["url"].as_str().map(str::to_string));
+            let head=format!("🛑 {}",task_link(board,n,task["title"].as_str(),url.as_deref()));
+            let (card,labelled)=crate::explain::render(&explanation,q,&head,revision,ru)?;
+            allowed(&guard,sender,project,true)?;
+            guard.explain_question(r.request,project,n,revision,&card,&labelled,&crate::explain::audit(&explanation,revision),now())
         }
         "project_status" => {
             allowed(&j.lock().unwrap(), sender, project, false)?;
