@@ -11,8 +11,7 @@ const LABEL: usize = 48;
 const TOTAL: usize = 2000;
 const EXCERPT: usize = 12;
 const CLAUSE_FILE: u64 = 4 << 20;
-/// A looked-up clause stays one short line and a card names few of them: the task link holds the rest.
-const CLAUSE: usize = 240;
+/// A card names few clauses; each one keeps all its restrictions.
 const CLAUSES: usize = 6;
 
 #[derive(Debug, PartialEq)]
@@ -186,9 +185,10 @@ pub fn cited(text: &str) -> Vec<String> {
     out
 }
 
-/// The clause that defines a code: a line that starts with it, or the numbered heading for `§7`. Literal, never a paraphrase.
+/// Complete rule paragraphs or numbered sections, including continuations and restrictions; never a shortened paraphrase.
 pub fn clause(text: &str, code: &str) -> Option<String> {
-    let found = text.lines().find_map(|line| {
+    let mut lines = text.lines();
+    let found = lines.find_map(|line| {
         let rest = match code.strip_prefix('§') {
             Some(number) => line.trim().strip_prefix("## ")?.strip_prefix(number)?,
             None => line.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '-' | '*')).strip_prefix(code)?,
@@ -198,7 +198,22 @@ pub fn clause(text: &str, code: &str) -> Option<String> {
         let rest = rest.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '.' | ':' | ')' | '—' | '–' | '-')).trim();
         (!rest.is_empty()).then(|| rest.to_string())
     })?;
-    Some(if found.chars().count() > CLAUSE { format!("{}…", found.chars().take(CLAUSE).collect::<String>()) } else { found })
+    let section = code.starts_with('§');
+    let mut body = vec![found];
+    for line in lines {
+        let trimmed = line.trim();
+        if section {
+            if trimmed.starts_with("# ") || trimmed.starts_with("## ") { break; }
+        } else {
+            let start = trimmed.trim_start_matches(['-', '*', ' ']);
+            let mut chars = start.chars();
+            let next_code = chars.next().is_some_and(|c| c.is_ascii_uppercase())
+                && chars.next().is_some_and(|c| c.is_ascii_digit());
+            if trimmed.is_empty() || trimmed.starts_with('#') || next_code { break; }
+        }
+        body.push(line.to_string());
+    }
+    Some(body.join("\n").trim_end().to_string())
 }
 
 /// A1/A2 with no model: what each code cited in `text` says, from this task's text or the project contract at the registered
@@ -267,7 +282,7 @@ fn actor_name(actor: &str, ru: bool) -> &'static str {
 }
 
 /// The edited card and the question copy whose relabelled buttons keep the source numbers: answers still bind to the source row.
-pub fn render(e: &Explanation, q: &Value, head: &str, revision: i64, ru: bool) -> (String, Value) {
+pub fn render(e: &Explanation, q: &Value, head: &str, revision: i64, ru: bool) -> Result<(String, Value), String> {
     let word = |en: &'static str, ruw: &'static str| if ru { ruw } else { en };
     let mut lines = vec![head.to_string()];
     lines.push(format!("**{}:** {}", word("Issue", "Суть"), e.issue));
@@ -309,7 +324,10 @@ pub fn render(e: &Explanation, q: &Value, head: &str, revision: i64, ru: bool) -
     // A longer source moves behind the verified task link, so the edit stays one message and keeps its buttons.
     let full = format!("{body}\n\n{}", source_block(q, revision, ru));
     let text = if crate::journal::chunks(&full).len() > 1 { format!("{body}\n\n{}", word("The full source question is in the task link.", "Полный исходный вопрос доступен по ссылке на задачу.")) } else { full };
-    (text, labelled)
+    if crate::journal::chunks(&text).len() > 1 {
+        return Err("the complete question card exceeds one Telegram message, including its header, links and source paths; shorten the explanation; nothing was changed".into());
+    }
+    Ok((text, labelled))
 }
 
 /// What the audit keeps next to the card: which clause text was checked for which revision.
@@ -354,7 +372,7 @@ mod tests {
                 let args = &f[explanation];
                 let e = parse(args, q, true).unwrap_or_else(|why| panic!("{name} {explanation}: {why}"));
                 verify(&e, &task, &dir).unwrap_or_else(|why| panic!("{name} {explanation}: {why}"));
-                let (card, labelled) = render(&e, q, "🛑 [source link](https://forge.invalid/1)", 42, true);
+                let (card, labelled) = render(&e, q, "🛑 [source link](https://forge.invalid/1)", 42, true).unwrap();
                 let primary = card.split("> 🔎 ").next().unwrap();
                 assert!(primary.to_lowercase().contains(topic), "{name} {explanation} misses the issue: {primary}");
                 for word in primary.split_whitespace().filter(|w| !w.contains('(') && !w.contains('`')) { assert!(!technical(word), "{name} {explanation}: {word} in {primary}"); }
@@ -403,7 +421,7 @@ mod tests {
         args["unknowns"] = json!(["Какое именно правило нарушено, не подтверждено."]);
         let e = parse(&args, q, true).unwrap();
         verify(&e, &task, &dir).unwrap();
-        let (card, _) = render(&e, q, "🛑 link", 42, true);
+        let (card, _) = render(&e, q, "🛑 link", 42, true).unwrap();
         assert!(card.contains("**Правило:** не подтверждено; карточка не утверждает нарушение.") && card.contains("**Неизвестно:**"), "{card}");
     }
 
@@ -440,7 +458,7 @@ mod tests {
         // A recommendation without an evidenced reason says so instead of implying one.
         let mut args = base.clone();
         args["recommendation_reason"] = Value::Null;
-        let (card, _) = render(&parse(&args, q, true).unwrap(), q, "🛑 link", 42, true);
+        let (card, _) = render(&parse(&args, q, true).unwrap(), q, "🛑 link", 42, true).unwrap();
         assert!(card.contains("Основание рекомендации не подтверждено."), "{card}");
     }
 
@@ -461,6 +479,50 @@ mod tests {
                 assert!(primary.contains(if ru { "Объяснение PM" } else { "A PM explanation" }));
             }
         }
+    }
+
+    // #401 A5 / §4: header, links and source paths can overflow an edit even when all model fields fit.
+    // Risk: HTML/plain fallback edits only the first part, silently dropping choices or evidence.
+    #[test]
+    fn explanation_401_bounds_the_complete_edit() {
+        let f = fixture("agentq260");
+        for part in ["header", "links", "paths"] {
+            let mut q = f["question"].clone();
+            let mut args = f["authored"].clone();
+            let mut head = "🛑 [task](https://forge.invalid/1)".to_string();
+            match part {
+                "header" => head.push_str(&"x".repeat(4096)),
+                "links" => q["evidence"] = json!([{"label":"source", "url":format!("https://forge.invalid/{}", "x".repeat(4096))}]),
+                _ => args["requirement"]["sources"][0] = json!({"kind":"file", "path":format!("{}.md", "x".repeat(4096)), "excerpt":"verified clause text"}),
+            }
+            let e = parse(&args, &q, true).unwrap();
+            let why = render(&e, &q, &head, 42, true).unwrap_err();
+            assert!(why.contains("one Telegram message") && why.contains("nothing was changed"), "{part}: {why}");
+        }
+        let mut q = f["question"].clone();
+        q["done"] = json!("Source receipt with a long identifier. ".repeat(250));
+        let e = parse(&f["authored"], &q, true).unwrap();
+        let (card, labelled) = render(&e, &q, "🛑 [task](https://forge.invalid/1)", 42, true).unwrap();
+        assert_eq!(crate::journal::chunks(&card).len(), 1, "all fallback modes receive one complete edit");
+        assert!(card.contains("Полный исходный вопрос доступен по ссылке на задачу."));
+        for option in crate::taskq::choices(&labelled) {
+            let label = option["label"].as_str().unwrap();
+            for rendered in [card.clone(), crate::telegram::html(&card), crate::telegram::markdown(&card)] {
+                assert!(rendered.contains(label), "a fallback lost an option");
+            }
+        }
+    }
+
+    // #401 A1/A2 / §2: headings alone and shortened clauses hide the actual requirement and its restrictions.
+    #[test]
+    fn explanation_401_keeps_complete_clause_constraints() {
+        let contract = include_str!("../pilotq.md");
+        let section = clause(contract, "§9").unwrap();
+        assert!(section.contains("Workers never install live"), "section lookup dropped its body: {section}");
+        assert!(!section.contains("## 10."), "section lookup crossed the next section");
+        let rule = clause(contract, "R19").unwrap();
+        assert!(rule.contains("Production consumer replacement and unqualified acceptance gates remain unauthorized"), "rule was shortened: {rule}");
+        assert_eq!(clause("A2. Preserve the result\nand its restrictions.\nA3. Other requirement", "A2").as_deref(), Some("Preserve the result\nand its restrictions."));
     }
 
     // #401 A1,A2,A7 / §2: the model-free lookup on the two observed questions. Defect: a bare A2 or R13 reached the reader with
@@ -485,11 +547,12 @@ mod tests {
         assert_eq!(clause("- **R13 Two front ends:** the CLI and Telegram", "R13").as_deref(), Some("Two front ends: the CLI and Telegram"));
         assert_eq!(clause("A2. first\nA21. other", "A21").as_deref(), Some("other"));
         assert_eq!(clause("A21. other", "A2"), None, "a longer code never matches");
-        assert_eq!(clause("## 7. Budgets\n## 70. Other", "§7").as_deref(), Some("Budgets"));
-        assert!(clause(&format!("A2. {}", "x".repeat(CLAUSE * 2)), "A2").unwrap().chars().count() <= CLAUSE + 1);
-        let dir = root("contract", &json!({"board.md": "- **R13 Two front ends:** shared path\n## 7. Budgets"}));
+        assert_eq!(clause("## 7. Budgets\nKeep the limits.\n## 70. Other", "§7").as_deref(), Some("Budgets\nKeep the limits."));
+        let long = "x".repeat(500);
+        assert_eq!(clause(&format!("A2. {long}"), "A2").as_deref(), Some(long.as_str()), "complete requirements never get truncated");
+        let dir = root("contract", &json!({"board.md": "- **R13 Two front ends:** shared path\n## 7. Budgets\nKeep the limits."}));
         let lines = clauses("R13 and section 7 and Z9", None, &dir, "org/board", false);
-        assert_eq!(lines, ["R13 (`board.md`): Two front ends: shared path", "§7 (`board.md`): Budgets", "Not found in the task or project contract: Z9."]);
+        assert_eq!(lines, ["R13 (`board.md`): Two front ends: shared path", "§7 (`board.md`): Budgets\nKeep the limits.", "Not found in the task or project contract: Z9."]);
         assert!(clauses("no codes here", None, &dir, "org/board", false).is_empty());
         let many = clauses("A1 A2 A3 A4 A5 A6 A7", None, &dir, "org/board", false);
         assert!(many.last().unwrap().contains("other rule references"), "{many:?}");

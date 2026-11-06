@@ -250,9 +250,10 @@ fn dispatch_target(tq: &Taskq, j: &Mutex<Journal>, r: &Run, name: &str, args: &V
             let issue=tq.issue(n).unwrap_or(Value::Null);
             crate::explain::verify(&explanation,&crate::explain::strings(&[task,&issue]),&tq.root)?;
             let guard=j.lock().unwrap();
+            if guard.fenced(r)? { return Err("this run was stopped; nothing was changed".into()); }
             let url=guard.task_url(project,n)?.or_else(||task["url"].as_str().map(str::to_string));
             let head=format!("🛑 {}",task_link(board,n,task["title"].as_str(),url.as_deref()));
-            let (card,labelled)=crate::explain::render(&explanation,q,&head,revision,ru);
+            let (card,labelled)=crate::explain::render(&explanation,q,&head,revision,ru)?;
             allowed(&guard,sender,project,true)?;
             guard.explain_question(r.request,project,n,revision,&card,&labelled,&crate::explain::audit(&explanation,revision),now())
         }

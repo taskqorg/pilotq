@@ -1411,6 +1411,7 @@ Worker evidence is local and CI: `cargo test --locked explanation_401`.
 - Delivery edits the delivered question with source-numbered buttons, survives restart, refuses stale and foreign revisions and sends no replacement when the question is missing.
 - The [model-free default](conversation-flow.md#model-free-default) replays both observed questions in Russian and English: each resolvable code shows its literal clause and source, an unresolved R13 stays not found, `Done` stays in details and every number, star, trade-off and link stays. A real scan on a fresh journal with no notes, pack or review queues no model request, its card and buttons stay after restart, and the next question after `/new` gets the same card with no model request. Worker English stays untranslated by the owner's model-free decision.
 - A rebuilt session receives the reconciled authority rules and the new catalogue. Rule presence is not quality evidence.
+- [Review correction evidence](research/401.md) covers full-message UTF-16 bounds, complete section/rule constraints and stop fencing after source reads. Oversized and stopped edits queue nothing; the current source card and controls remain.
 
 PM check after release, on the existing test pilot. Keep the runbook as installed for steps 1 and 2, then reinstall it from `docs/pm-pack.md`, because the installed pack keeps its old text until then:
 

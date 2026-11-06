@@ -16,7 +16,7 @@ PM review is off until a person turns it on. A fresh install and a new chat ther
 
 A model-free question card keeps the worker's decision text, original option numbers, trade-offs, star and links literal. It adds or moves only these parts:
 
-- **Requirement:** one line per cited code with the literal clause and its source, read from the task text or from `<repo>.md` at the registered root. A code that neither defines is named as not found, and the card never claims what it means. A code right after another task's reference belongs to that task and gets no line.
+- **Requirement:** the complete literal clause and its source for each cited code, read from the task text or from `<repo>.md` at the registered root. A section reference includes its body, and length never removes restrictions or qualifications. A code that neither defines is named as not found, and the card never claims what it means. A code right after another task's reference belongs to that task and gets no line.
 - **Impact:** the source trade-offs carry it. When no option has one, the card says the worker did not state the impact.
 - **Next actor:** an admin or the project owner decides and the worker waits. A model-free card does not separate a technical ask from an owner choice.
 - **Details:** the `Done` receipt, with its hashes and attempt IDs, stays expandable on the same card.
@@ -36,8 +36,9 @@ The explanation preserves original option numbers, the source star, verified lin
 | Explanation accepted | The same message and buttons, edited in place; a repeated identical explanation queues nothing |
 | Stale, answered or superseded revision | The explanation is refused; a superseded card returns to its source body with the existing supersession line |
 | Question message missing or never delivered | The explanation sends nothing, because a new message would duplicate controls that cannot bind |
-| Rich, HTML or plain fallback | Rich and HTML collapse the source; plain keeps it as quoted lines. An explanation stays one message, moving a long source behind the task link |
+| Rich, HTML or plain fallback | Rich and HTML collapse the source; plain keeps it as quoted lines. The complete explanation, including header, links and source paths, stays one message, moving a long source behind the task link. An explanation that still exceeds the message bound is refused before queuing; the current card and controls remain |
 | Restart | Queued edits and compact cards survive in the outbox; an interrupted model turn is not replayed, so its compact card remains |
+| Stop or reset during a source read | Recheck the run fence after the read and before queuing an edit; a retired run changes no card |
 | Card in another shared route or the CLI | That card stays the literal source; the PM reply carries the same parts in its own route, because a review writes only to its route and its author's own DM |
 
 With PM review on, other task events keep state and verified link on the status card and move literal goal, outcome and limits into expandable details, and the PM reply is the primary explanation.

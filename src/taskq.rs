@@ -1737,6 +1737,46 @@ print(json.dumps(dict(task=19,op_id=op,outcome='accepted',state='doing',revision
         assert_eq!(answer_entry(&late,19,10),None);
     }
 
+    // #401 A5 / §4: overflowing cards and /stop during a TaskQ read must never enqueue a partial or fenced edit.
+    #[cfg(unix)]
+    #[test]
+    fn explanation_401_refuses_oversized_and_stopped_edits() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("pilotq-explain-stop-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f: Value = serde_json::from_str(include_str!("../tests/fixtures/401/agentq260.json")).unwrap();
+        std::fs::write(dir.join("taskq.json"), r#"{"repo":"taskqorg/pilotq","create_claim_issue":1}"#).unwrap();
+        let mut snapshot = json!({"complete":true,"board":{"repo":BOARD},"tasks":[{"n":401,"state":"ask","revision":42,"question":f["question"],"title":"🛑".repeat(2048),"url":"https://forge.invalid/401"}]});
+        std::fs::write(dir.join("snapshot.json"), snapshot.to_string()).unwrap();
+        std::fs::write(dir.join("issue.json"), json!({"number":401,"state":"open","title":"Invented task","url":"https://forge.invalid/401"}).to_string()).unwrap();
+        let bin = dir.join("taskq");
+        // Change the real journal fence during the external read, after dispatch's admission check.
+        std::fs::write(&bin, "#!/bin/sh\ncase \"$1\" in\nstatus) cat snapshot.json;;\nissue) if [ -e stop-during-read ]; then\npython3 - <<'PY'\nimport sqlite3\nwith sqlite3.connect('journal.sqlite') as db:\n    db.execute('UPDATE conversations SET fence=fence+1')\nPY\nfi\ncat issue.json;;\n*) exit 99;;\nesac\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut journal = Journal::open(&dir.join("journal.sqlite")).unwrap();
+        journal.bootstrap(7,0).unwrap();
+        journal.add_project(7,"pilotq",BOARD,&dir.to_string_lossy(),0).unwrap();
+        let r = journal.ask(7,"Объясни вопрос задачи",1).unwrap();
+        journal.0.execute("INSERT INTO tasks(number,request_id,chat,state,revision,observed,project,board,root) VALUES (401,?1,7,'doing',1,1,'pilotq',?2,?3)", rusqlite::params![r.request, BOARD, dir.to_string_lossy()]).unwrap();
+        journal.observe("pilotq",401,"ask",42,Some(&f["question"].to_string()),"",Some("source card"),1).unwrap();
+        let j = Mutex::new(journal);
+        let tq = Taskq { bot: None, bin, root: dir.clone(), poll: Duration::from_secs(15) };
+        let mut args = f["authored"].clone();
+        args["project"] = json!("pilotq"); args["task"] = json!("401"); args["revision"] = json!(42);
+        args["requirement"] = Value::Null;
+        assert!(dispatch(&tq,&j,&r,"task_explain",&args).unwrap_err().contains("one Telegram message"));
+        assert_eq!(j.lock().unwrap().0.query_row("SELECT count(*) FROM outbox WHERE kind='question_explained'",[],|row|row.get::<_,i64>(0)).unwrap(),0,"oversized edit reached the outbox");
+        snapshot["tasks"][0]["title"] = json!("Invented task");
+        std::fs::write(dir.join("snapshot.json"), snapshot.to_string()).unwrap();
+        std::fs::write(dir.join("stop-during-read"), "").unwrap();
+        let result = dispatch(&tq,&j,&r,"task_explain",&args);
+        let journal = j.into_inner().unwrap();
+        assert!(journal.fenced(&r).unwrap(), "fixture must stop the run during the read");
+        assert_eq!(journal.0.query_row("SELECT count(*) FROM outbox WHERE kind='question_explained'",[],|row|row.get::<_,i64>(0)).unwrap(),0,"stopped run queued an edit");
+        assert!(result.unwrap_err().contains("stopped"));
+        drop(journal); std::fs::remove_dir_all(dir).unwrap();
+    }
+
     // #124 / §5: board status must read the registered CLI, preserve runtime/session,
     // refuse unknown or mismatched boards and revoked grants, and never mutate TaskQ.
     #[cfg(unix)]

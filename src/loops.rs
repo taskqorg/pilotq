@@ -1054,7 +1054,7 @@ mod tests {
         let delivered=|j:&mut Journal|{while let Some(d)=j.due(99).unwrap().0 {let m=500+d.id;j.record(d.id,&crate::journal::Sent::Ok(m),99).unwrap();}};
         delivered(&mut j);
         let e=crate::explain::parse(&f["authored"],q,true).unwrap();
-        let (card,labelled)=crate::explain::render(&e,q,"🛑 link",2,true);
+        let (card,labelled)=crate::explain::render(&e,q,"🛑 link",2,true).unwrap();
         // Another person's DM and another route have no card; nothing is queued for them.
         let foreign=admitted(&mut j,2,6,7,"other topic",4);
         assert!(j.explain_question(foreign,"alpha",1,2,&card,&labelled,"{}",5).unwrap_err().contains("no card"));
