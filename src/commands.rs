@@ -216,7 +216,7 @@ mod tests {
         let d=Direct{keys:Keys(dir.join("keys.json"))};
         let entry=|bin:&str,argv:Value|json!({"description":"invented test capability","executable":bin,"cwd":dir,"project":"pilotq","board":"taskqorg/pilotq","users":[7],"args":argv});
         let config=dir.join("commands.json");
-        let entries=json!({"pwd":entry("/bin/pwd",json!([[]])),"exit":entry("/bin/false",json!([[]])),"missing":entry("/invented/missing-command",json!([[]])),"sleep":entry("/bin/sleep",json!([["1"]])),"flood":entry("/usr/bin/yes",json!([[]]))});
+        let entries=json!({"pwd":entry("/bin/pwd",json!([[]])),"exit":entry("/usr/bin/false",json!([[]])),"missing":entry("/invented/missing-command",json!([[]])),"sleep":entry("/bin/sleep",json!([["1"]])),"flood":entry("/usr/bin/yes",json!([[]]))});
         std::fs::write(&config,entries.to_string()).unwrap();
         std::fs::set_permissions(&config,std::fs::Permissions::from_mode(0o600)).unwrap();
         let probe = dir.join("taskq-probe");

@@ -53,7 +53,7 @@ PM live checklist (§9): on pds18 in PilotQ TEST, send one Russian voice questio
 | Event | User-visible behavior | Source of truth |
 |---|---|---|
 | Request committed | React 👀 within section 7’s budget; text only on reaction failure or queue wait over 30 seconds; first-use retention notice once | Journal commit and queue state |
-| Codex active | Private-chat answer drafts at most once per second; best-effort typing in the exact originating chat/topic | Current run and factual events |
+| Manager active on any runtime | Private-chat answer drafts at most once per second; best-effort typing in the exact originating chat/topic | Current run and `progress` events |
 | Meaningful progress | Update one correlated status message; describe an observed milestone without raw tool arguments, hidden reasoning or invented percentages | Completed tool result or fresh TaskQ transition |
 | Waiting | State what is needed: user answer, capacity, provider reset or sign-in; retain the request | Persisted reason and dependency evidence |
 | Stall or failure | State the affected request, what is known and the next available action; notify once per incident episode | Supervisor and receipts |

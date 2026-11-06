@@ -21,12 +21,13 @@ dependencies = [
 
 [[package]]
 name = "agentq-runtime"
-version = "0.6.0"
-source = "git+https://github.com/taskqorg/agentq?rev=c80675a557417532393e143ca2783c0f4c83b8d9#c80675a557417532393e143ca2783c0f4c83b8d9"
+version = "0.8.0"
+source = "git+https://github.com/taskqorg/agentq?tag=runtime-v0.8.0#eb13fe90cc86a682ec37259d9865dfe3e6f11e6e"
 dependencies = [
  "coreq",
  "libc",
  "ring",
+ "serde",
  "serde_json",
 ]
 

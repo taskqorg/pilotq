@@ -324,7 +324,7 @@ impl Journal {
         Ok(context)
     }
 
-    /// §4/§8: native dynamic tools are fixed at thread creation. Grant changes rebuild before reuse.
+    /// §4/§8: changed grants and tool instructions rebuild the native policy before reuse.
     pub fn catalogue(&self, r: &Run, tools: &Value) -> Result<(), String> {
         use std::hash::{Hash, Hasher};
         let mut hash=std::collections::hash_map::DefaultHasher::new();
@@ -442,9 +442,10 @@ impl Journal {
                 let notice=blocker_notice.unwrap();
                 ("answered",if a.contains(&notice) {a.clone()} else {format!("{a}\n{notice}")},None)
             },
+            Outcome::Uncertain(x) if x.ends_with(crate::manager::STARTUP_UNCONFIRMED) => ("uncertain", brief(language.as_deref(), "startup").into(), Some(x)),
             Outcome::Uncertain(x) if blocker_notice.is_some() => ("uncertain",format!("{}\n{}",blocker_notice.unwrap(),brief(language.as_deref(),"uncertain")),Some(x)),
             Outcome::Answered(a) => ("answered", a.clone(), None),
-            Outcome::Failed(x) => ("failed", media_brief(language.as_deref(), if x.ends_with(crate::manager::HANDSHAKE_FAILED) { "handshake" } else if x == "document parsing timed out" { "document_timeout" } else if x.starts_with("voice") { if x.contains("20 MiB") || x.contains("5 minutes") { "voice_limit" } else { "voice_failed" } } else if x.contains("20 MiB") { if files.is_empty() || image { "image_limit" } else { "file_limit" } } else if x.starts_with("image") || x.contains("image") { "image_failed" } else if x.contains("within") || x.contains("budget") { "limit" } else { "failed" }, &files), Some(x)),
+            Outcome::Failed(x) => ("failed", media_brief(language.as_deref(), if x == "document parsing timed out" { "document_timeout" } else if x.starts_with("voice") { if x.contains("20 MiB") || x.contains("5 minutes") { "voice_limit" } else { "voice_failed" } } else if x.contains("20 MiB") { if files.is_empty() || image { "image_limit" } else { "file_limit" } } else if x.starts_with("image") || x.contains("image") { "image_failed" } else if x.contains("within") || x.contains("budget") { "limit" } else { "failed" }, &files), Some(x)),
             Outcome::Uncertain(x) => ("uncertain", brief(language.as_deref(), "uncertain").into(), Some(x)),
         };
         if matches!(state,"failed"|"uncertain") {

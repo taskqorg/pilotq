@@ -1,10 +1,9 @@
 //! Manager turns through the AgentQ runtime trait (pilotq.md § 3, § 4 Runs, § 12 Runtime, #359). One process per turn: the
 //! process group is the fault boundary, so stop and deadlines end it, and its native session ID carries the conversation to
-//! the next turn. Runtime specifics live in the AgentQ adapters (#363); PilotQ states only its policy and reads records by
-//! their shape, never by name.
+//! the next turn. Runtime specifics live in the AgentQ adapters (#363); PilotQ states only its policy and reads typed events.
 
 use crate::journal::{Journal, Run, RebuildReason};
-use agentq_runtime::agent::{self, Approval, Builtin, Cause, Context, Launch, Mode, Part, Policy, Process, Scope, State};
+use agentq_runtime::agent::{self, Approval, Builtin, Cause, Context, Event, Launch, Part, Policy, Process, Scope, State, ToolKind};
 use agentq_runtime::optimization::Intent;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -14,16 +13,13 @@ use std::time::{Duration, Instant};
 
 /// Cancellation grace before the process group is killed (§ 7).
 pub(crate) const GRACE: Duration = Duration::from_secs(5);
-/// Item types that act outside the model; once one starts, a missing terminal outcome is uncertain, never a clean failure.
-const TOOLS: [&str; 5] = ["commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch"];
-enum LaunchFailure { NotStarted(String), Exited(String) }
+enum LaunchFailure { NotStarted(String), Unconfirmed(String) }
 
-/// #390 A4: why an app-server handshake ended, after the child spawned and before any input. The child may have exited or the
-/// adapter may have stopped it, so this claims neither; the adapter's reason stays in the operator log.
-pub const HANDSHAKE_FAILED: &str = "could not open the conversation, so this request was not submitted; the saved conversation is kept. Send the request again; if this repeats, the owner should check the PilotQ service log.";
+/// Startup includes submitting input; after spawn its outcome may be uncertain (§4, #390).
+pub const STARTUP_UNCONFIRMED: &str = "could not confirm turn startup; the saved conversation is kept. Check /status and ask the owner to inspect the PilotQ service log before retrying.";
 
 impl LaunchFailure {
-    fn message(&self) -> &str { match self { Self::NotStarted(e) | Self::Exited(e) => e } }
+    fn message(&self) -> &str { match self { Self::NotStarted(e) | Self::Unconfirmed(e) => e } }
 }
 /// The trait's cause for a resumed session that does not exist and ran nothing: the turn is rebuilt once from the journal.
 // ponytail: AgentQ reports every refused app-server resume alike, so a refusal for another reason is also rebuilt once and then
@@ -39,20 +35,16 @@ pub struct Limits {
     pub deadline: Duration,
 }
 
-/// Runtimes PilotQ can drive (#363): an app-server session, or a CLI turn that carries PilotQ's tool relay, instructions and
-/// input parts.
+/// Runtimes that accept the same ordered inputs, relay and live text on ordinary turns.
 pub(crate) fn supported() -> impl Iterator<Item = &'static dyn agent::Runtime> {
-    agent::runtimes().into_iter().filter(|r| {
-        let d = r.descriptor();
-        d.has("app-server") || ["mcp-config", "instructions-file", "turn-parts"].iter().all(|c| d.has(c))
-    })
+    agent::runtimes().into_iter().filter(|r| ["mcp-config", "instructions-file", "turn-parts", "turn-deltas"].iter().all(|c| r.descriptor().has(c)))
 }
 
 pub(crate) fn runtime(name: &str) -> Option<&'static dyn agent::Runtime> { supported().find(|r| r.descriptor().name == name) }
 
-/// The installation default: the first supported app-server runtime.
+/// Keep the installation default on the runtime with a model catalogue.
 pub(crate) fn default_runtime() -> &'static str {
-    supported().find(|r| r.descriptor().has("app-server")).or_else(|| supported().next()).map_or("", |r| r.descriptor().name)
+    supported().find(|r| r.descriptor().has("catalogue")).or_else(|| supported().next()).map_or("", |r| r.descriptor().name)
 }
 
 /// PilotQ's policy (#190, R9, #294): no user settings and subscription login only; native shell and web follow the principal.
@@ -60,8 +52,7 @@ fn policy(native: bool, relay: bool) -> Policy {
     let base = Policy { isolated: true, subscription: true, ..Policy::default() };
     match (native, relay) {
         (true, _) => Policy { write: Scope::Any, approval: Approval::Bypass, builtin: Builtin::On, ..base },
-        // relay tools write only through PilotQ's own boundary, and no runtime enforces read-only beside an MCP server, so a
-        // relay turn drops built-in tools and keeps the native write scope
+        // Runtimes without native sandbox scopes drop built-ins; relay writes still require PilotQ grants.
         (false, true) => Policy { builtin: Builtin::Off, ..base },
         (false, false) => Policy { write: Scope::None, approval: Approval::Deny, builtin: Builtin::Off, ..base },
     }
@@ -113,53 +104,26 @@ impl Runtime {
         let (a, agent) = self.parts(name)?;
         let d = a.descriptor();
         if !agent.models.is_empty() { return Ok(agent.models.clone()); }
-        if !d.models.is_empty() || !d.has("app-server") { return Ok(d.models.iter().map(|s| s.to_string()).collect()); }
-        let unavailable = || "Model catalogue unavailable".to_string();
-        let mut l = self.launch(a, agent, false, None, None, None)?;
-        l.mode = Mode::AppServer { initialize: json!({"clientInfo": {"name": "pilotq", "version": env!("CARGO_PKG_VERSION")}}), thread: json!({"cwd": self.workspace}) };
-        let run = { let _start = START.lock().unwrap_or_else(|e| e.into_inner()); a.launch(&l).map_err(|_| unavailable())? };
-        let mut owned = Owned { a, run, finished: false };
-        let run = &mut owned.run;
-        let end = Instant::now() + Duration::from_secs(10);
-        let mut models = vec![];
-        let mut params = json!({"limit": 100, "includeHidden": false});
-        for _ in 0..5 {
-            a.send(run, &json!({"method": "model/list", "params": params})).map_err(|_| unavailable())?;
-            let page = loop {
-                if Instant::now() >= end { return Err("Model catalogue timed out".into()); }
-                // a catalogue page is the reply whose result carries `data`; the open's own replies carry none
-                if let Some(m) = a.progress(run).map_err(|_| unavailable())?.into_iter().find(|m| m.get("method").is_none() && (m["result"]["data"].is_array() || m["error"].is_object())) { break m; }
-                std::thread::sleep(Duration::from_millis(50));
-            };
-            if page["error"].is_object() { return Err("Model catalogue refused".into()); }
-            for item in page["result"]["data"].as_array().into_iter().flatten() {
-                if item["hidden"] == true { continue; }
-                let name = item["model"].as_str().filter(|s| !s.is_empty() && s.len() <= 128 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b))).ok_or("Invalid model catalogue")?;
-                if !models.iter().any(|s| s == name) { models.push(name.to_string()); }
-            }
-            match page["result"]["nextCursor"].as_str() { Some(c) => params["cursor"] = json!(c), None => return if models.is_empty() { Err("Model catalogue is empty".into()) } else { Ok(models) } }
-        }
-        Err("Model catalogue exceeds limit".into())
+        if !d.has("catalogue") { return Ok(d.models.iter().map(|s| s.to_string()).collect()); }
+        let models = a.catalogue_with_executable(agent.home.as_deref(), Some(std::path::Path::new(&agent.bin))).map_err(|_| "Model catalogue unavailable")?;
+        if models.is_empty() { return Err("Model catalogue is empty".into()); }
+        Ok(models.into_iter().map(|m| m.id).collect())
     }
 
     /// The runtime-neutral launch of one turn: PilotQ's policy, its relay data for a CLI turn and its process setup.
     fn launch(&self, a: &dyn agent::Runtime, agent: &Agent, native: bool, relay: Option<&crate::relay::Relay>, model: Option<&str>, session: Option<&str>) -> Result<Launch, String> {
         let name = a.descriptor().name;
-        let app_server = a.descriptor().has("app-server");
         std::fs::create_dir_all(&self.workspace).map_err(|e| format!("workspace: {e}"))?;
         if let Some(home) = &agent.home { std::fs::create_dir_all(home).map_err(|e| format!("{name} home: {e}"))?; }
-        // an app-server log holds private stderr of every turn in the runtime home; a CLI turn log is its session's stream,
-        // appended on resume
-        let sessions = self.logs.join(format!("{name}-sessions"));
-        let (dir, log) = if app_server { (agent.home.clone().unwrap_or(sessions), "app-server.log".to_string()) } else { (sessions, format!("{}.jsonl", session.map_or_else(token, str::to_string))) };
+        let dir = self.logs.join(format!("{name}-sessions"));
         std::fs::create_dir_all(&dir).map_err(|e| format!("{name} logs: {e}"))?;
+        let log = format!("{}.jsonl", session.map_or_else(token, str::to_string));
         let mut l = Launch::new(&self.workspace, dir.join(log), "", "pilotq");
         l.command = vec![agent.bin.as_str().into()];
-        l.policy = policy(native, !app_server);
-        if !app_server {
-            if let Some(r) = relay { (l.mcp, l.instructions) = (Some(r.config.clone()), Some(r.instructions.clone())); }
-            l.deltas = true;
-        }
+        // The protected-host capability also supplies native sandbox scopes; other relays disable built-ins.
+        l.policy = policy(native, !a.descriptor().has("app-server"));
+        if let Some(r) = relay { (l.mcp, l.instructions) = (Some(r.config.clone()), Some(r.instructions.clone())); }
+        l.deltas = true;
         l.model = model.map(str::to_string);
         l.home = agent.home.clone();
         l.optimization = self.optimization;
@@ -228,9 +192,22 @@ fn native_access(j:&Journal,user:i64)->Result<bool,String> {
     Ok(j.owner()?==Some(user) || j.has(user,"shell")?)
 }
 
+/// PilotQ's own tool behind a native MCP item, under one name on every runtime. Its boundary owns findings (§5, #383).
+fn relay_tool<'a>(tools: &Value, kind: ToolKind, name: Option<&'a str>) -> Option<&'a str> {
+    let name = name?;
+    let name = name.strip_prefix("mcp__pilotq__").unwrap_or(name);
+    (kind == ToolKind::Mcp && tools.as_array()?.iter().any(|t| t["name"] == name)).then_some(name)
+}
+
+/// The fingerprint of a session's tools. An app-server thread from before #383 fixed dynamic tools at creation and no AgentQ
+/// turn answers their calls, so the relay key rebuilds it once from the journal even when the tool list is unchanged.
+fn tool_fingerprint(name: &str, tools: &Value) -> Value {
+    if runtime(name).is_some_and(|a| a.descriptor().has("app-server")) { json!({"relay": tools}) } else { tools.clone() }
+}
+
 /// Ordered user input as trait parts; `localImage` items are files PilotQ already stored for this turn.
-fn parts(input: &Value) -> Vec<Part> {
-    input.as_array().into_iter().flatten().map(|i| match i["path"].as_str() {
+fn parts(input: &Value, resumed: bool) -> Vec<Part> {
+    input.as_array().into_iter().flatten().filter(|i| !resumed || i["historical"] != true).map(|i| match i["path"].as_str() {
         Some(p) if i["type"] == "localImage" => Part::Image(p.into()),
         _ => Part::Text(i["text"].as_str().unwrap_or("").into()),
     }).collect()
@@ -238,7 +215,7 @@ fn parts(input: &Value) -> Vec<Part> {
 
 impl Runtime {
     /// Runs one turn of runtime `name` on `thread` (a new session when None). `alive` reports whether the journal still holds
-    /// this run's fence; `tool` persists a tool item's type, ID and, once completed, its status. `dynamic` offers PilotQ's own
+    /// this run's fence; `tool` persists a tool item's type, ID and, once completed, its status. `tools` offers PilotQ's own
     /// tools (their specs and instructions); `call` answers one complete call of them. `record` appends the turn's CoreQ usage
     /// observation. Returns the native session ID, the model used and the outcome.
     #[allow(clippy::too_many_arguments)]
@@ -249,7 +226,7 @@ impl Runtime {
         thread: Option<&str>,
         selected_model: Option<&str>,
         input: &Value,
-        dynamic: (&Value, &str),
+        tools: (&Value, &str),
         mut alive: impl FnMut() -> bool,
         mut tool: impl FnMut(&str, &str, Option<&str>),
         mut call: impl FnMut(&str, &Value, &str) -> (bool, String),
@@ -264,7 +241,7 @@ impl Runtime {
         // A resume that finds no native session is rebuilt once from the journal on a new session, never silently replaced.
         loop {
             let resumed = thread.is_some();
-            match self.attempt(name, native, thread.as_deref(), selected_model, &input, dynamic, &mut alive, &mut tool, &mut call, &mut preview, &mut observation, &mut record, route) {
+            match self.attempt(name, native, thread.as_deref(), selected_model, &input, tools, &mut alive, &mut tool, &mut call, &mut preview, &mut observation, &mut record, route) {
                 Err(()) if resumed => {
                     let Ok(history) = rebuild() else {
                         return (thread, None, Outcome::Failed("Conversation recovery could not be prepared; no work was repeated.".into()));
@@ -287,7 +264,7 @@ impl Runtime {
         resume: Option<&str>,
         selected_model: Option<&str>,
         input: &Value,
-        dynamic: (&Value, &str),
+        tools: (&Value, &str),
         alive: &mut impl FnMut() -> bool,
         tool: &mut impl FnMut(&str, &str, Option<&str>),
         call: &mut impl FnMut(&str, &Value, &str) -> (bool, String),
@@ -299,41 +276,54 @@ impl Runtime {
         let failed = |e: String| Ok((resume.map(str::to_string), None, Outcome::Failed(e)));
         let (a, agent) = match self.parts(name) { Ok(p) => p, Err(e) => return failed(e) };
         let label = a.descriptor().label;
-        let app_server = a.descriptor().has("app-server");
         // the first-event watch starts once this turn may spawn, before the runtime runs (§ 12)
         let start = Instant::now();
-        let relay = match crate::relay::Relay::open(&self.workspace, dynamic) { Ok(r) => r, Err(e) => return failed(e) };
+        let relay = match crate::relay::Relay::open(&self.workspace, tools) { Ok(r) => r, Err(e) => return failed(e) };
         let mut l = match self.launch(a, agent, native, Some(&relay), selected_model, resume) { Ok(l) => l, Err(e) => return failed(e) };
-        if app_server {
-            // dynamic tools are an experimental app-server field; they are fixed at thread creation, so schema upgrades
-            // explicitly rebuild older catalogues from the journal
-            let mut thread = json!({"cwd": self.workspace, "developerInstructions": dynamic.1});
-            // #390: the resume reply is one stdout record; the native thread keeps its context without returning its turns
-            if resume.is_none() { thread["dynamicTools"] = dynamic.0.clone(); } else { thread["excludeTurns"] = json!(true); }
-            l.mode = Mode::AppServer { initialize: json!({"clientInfo": {"name": "pilotq", "title": "PilotQ", "version": env!("CARGO_PKG_VERSION")}, "capabilities": {"experimentalApi": true}}), thread };
-        } else {
-            l.parts = parts(input);
-        }
-        // The launch (an app-server handshake) runs beside the first-event watch and the fence: a runtime that never answers
-        // fails within the watch, and the launching thread then drops what it started, ending its process group.
-        // ponytail: a late handshake keeps START up to AgentQ's 30 s reply deadline; a cancellable launch in the trait if it matters
+        l.parts = parts(input, resume.is_some());
+        // Startup is supervised beside the first-event watch and fence; a late launch drops its owned process group.
         let (tx, rx) = std::sync::mpsc::channel();
         let session = resume.map(str::to_string);
         let spawned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let observed = spawned.clone();
-        l.process.spawned = Some(std::sync::Arc::new(move |_| { observed.store(true, std::sync::atomic::Ordering::Release); Ok(()) }));
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let pid = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let (launch_cancelled, launch_pid) = (cancelled.clone(), pid.clone());
+        l.process.spawned = Some(std::sync::Arc::new(move |child| {
+            launch_pid.store(child.id(), std::sync::atomic::Ordering::SeqCst);
+            if launch_cancelled.load(std::sync::atomic::Ordering::SeqCst) { return Err("launch fenced before input".into()); }
+            observed.store(true, std::sync::atomic::Ordering::Release);
+            Ok(())
+        }));
+        let launched_process = spawned.clone();
         std::thread::spawn(coreq::telemetry::capture::bind(move || {
-            let _start = app_server.then(|| START.lock().unwrap_or_else(|e| e.into_inner()));
+            let _start = START.lock().unwrap_or_else(|e| e.into_inner());
             let launched = match &session { Some(s) => a.resume(s, &l), None => a.launch(&l) }.map(|run| Owned { a, run, finished: false })
-                .map_err(|e| if spawned.load(std::sync::atomic::Ordering::Acquire) { LaunchFailure::Exited(e) } else { LaunchFailure::NotStarted(e) });
+                .map_err(|e| if spawned.load(std::sync::atomic::Ordering::Acquire) { LaunchFailure::Unconfirmed(e) } else { LaunchFailure::NotStarted(e) });
             let _ = tx.send(launched);
         }));
+        let cancel_launch = || {
+            cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+            let pid = pid.load(std::sync::atomic::Ordering::SeqCst);
+            if pid != 0 {
+                let _ = crate::host::kill_group(pid);
+                // AgentQ bounds startup to 30 seconds; retain the slot until the killed launch is reaped.
+                let _ = rx.recv();
+            }
+            launched_process.load(std::sync::atomic::Ordering::Acquire)
+        };
         let launched = loop {
             match rx.recv_timeout(Duration::from_millis(200)) {
                 Ok(r) => break r,
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break Err(LaunchFailure::Exited("launch ended without an outcome".into())),
-                Err(_) if !alive() => return Ok((resume.map(str::to_string), None, Outcome::Fenced)),
-                Err(_) if start.elapsed() >= self.limits.first_event => return failed(format!("{label} sent no first event within {} s", self.limits.first_event.as_secs())),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break Err(LaunchFailure::Unconfirmed("launch ended without an outcome".into())),
+                Err(_) if !alive() => {
+                    if cancel_launch() { tool("startup", "unconfirmed-startup", None); }
+                    return Ok((resume.map(str::to_string), None, Outcome::Fenced));
+                },
+                Err(_) if start.elapsed() >= self.limits.first_event => {
+                    return if cancel_launch() { Ok((resume.map(str::to_string), None, Outcome::Uncertain(format!("{label} {STARTUP_UNCONFIRMED}")))) }
+                    else { failed(format!("{label} sent no first event within {} s", self.limits.first_event.as_secs())) };
+                },
                 Err(_) => {}
             }
         };
@@ -343,19 +333,18 @@ impl Runtime {
             // native diagnostics can name paths or account details: operator log only, never a reply, the journal or telemetry
             Err(e) => {
                 crate::host::log(name, e.message());
-                return failed(match e { LaunchFailure::NotStarted(_) => format!("{label} did not start; check login and runtime health."), LaunchFailure::Exited(_) if app_server => format!("{label} {HANDSHAKE_FAILED}"), LaunchFailure::Exited(_) => format!("{label} exited without a terminal event") });
+                return Ok((resume.map(str::to_string), None, match e { LaunchFailure::NotStarted(_) => Outcome::Failed(format!("{label} did not start; check login and runtime health.")), LaunchFailure::Unconfirmed(_) => Outcome::Uncertain(format!("{label} {STARTUP_UNCONFIRMED}")) }));
             }
         };
         let result = (|| {
             let run = &mut owned.run;
             observation("spawned", &json!(run.id()));
             observation("optimization", &run.optimization().json());
-            if app_server && let Err(e) = a.input(run, &parts(input)) { return failed(format!("{label} refused the input: {e}")); }
-            let (mut first, mut last, mut tooled, mut answer, mut error) = (false, start, false, None::<String>, None::<String>);
-            let (mut draft_item, mut draft, mut used, mut window) = (String::new(), String::new(), None::<u64>, None::<u64>);
-            let mut model = None::<String>;
+            let (mut first, mut last, mut tooled, mut answer) = (false, start, false, None::<String>);
+            let (mut draft_item, mut draft) = (None, String::new());
+            let model = None::<String>;
             let mut items = std::collections::HashMap::new();
-            let mut version = name.to_string();
+            let mut version = None::<String>;
             let fail = |tooled: bool, why: String| if tooled { Outcome::Uncertain(why) } else { Outcome::Failed(why) };
             let stop = |run: &mut agent::Run| {
                 let _ = a.cancel(run);
@@ -365,90 +354,56 @@ impl Runtime {
             let session = |run: &agent::Run| a.session_id(run).or_else(|| resume.map(str::to_string));
             loop {
                 if !alive() { stop(run); return Ok((session(run), model, Outcome::Fenced)); }
-                let mut progressed = relay.serve(&mut *call, &version);
+                let mut progressed = relay.serve(&mut |name, args, _| {
+                    let version = version.get_or_insert_with(|| {
+                        let mut command = std::process::Command::new(&agent.bin);
+                        command.arg("--version"); pilotq::configure(&mut command);
+                        crate::host::output(&mut command).ok().and_then(|o| String::from_utf8_lossy(&o.stdout).split_whitespace()
+                            .find(|s| crate::host::version(s).is_some()).map(str::to_string)).unwrap_or_else(|| "unknown".into())
+                    });
+                    tooled = true;
+                    call(name, args, version)
+                }, "unknown");
                 let state = a.poll(run);
-                for m in a.progress(run).unwrap_or_default() {
+                let events = match a.progress(run) {
+                    Ok(events) => events,
+                    Err(e) => { crate::host::log(name, &e); stop(run); return Ok((session(run), model, fail(tooled, format!("{label} event stream unavailable; check /status")))); }
+                };
+                for event in events {
                     progressed = true;
-                    let method = m["method"].as_str().unwrap_or("");
-                    if m.get("id").is_some() && !method.is_empty() {
-                        // a complete call of PilotQ's own tool: the boundary checks grants and the fence and answers (§ 5, § 12);
-                        // other server requests need an interactive protocol, so no approval is ever inferred
-                        let reply = if method == "item/tool/call" {
-                            let (ok, out) = call(m["params"]["tool"].as_str().unwrap_or(""), &m["params"]["arguments"], &version);
-                            json!({"id": m["id"], "result": {"contentItems": [{"type": "inputText", "text": out}], "success": ok}})
-                        } else { json!({"id": m["id"], "error": {"code": -32601, "message": "PilotQ does not grant this request"}}) };
-                        if let Err(e) = a.send(run, &reply) { eprintln!("{name}: {e}"); }
-                        continue;
-                    }
-                    if m.get("id").is_some() {
-                        if let Some(e) = m.get("error") {
-                            stop(run);
-                            return Ok((session(run), model, fail(tooled, format!("{label} refused {}: {}", m["id"], e["message"].as_str().unwrap_or("error")))));
-                        }
-                        if let Some(v) = m["result"]["userAgent"].as_str() { version = v.to_string(); }
-                        if let Some(v) = m["result"]["model"].as_str() { model = Some(v.to_string()); }
-                        continue;
-                    }
-                    let item = &m["params"]["item"];
-                    match (method, m["type"].as_str()) {
-                        ("item/started" | "item/completed", _) if TOOLS.contains(&item["type"].as_str().unwrap_or("")) => {
-                            tooled = true;
-                            let status = (method == "item/completed").then(|| item["status"].as_str().unwrap_or("completed"));
-                            tool(item["type"].as_str().unwrap_or(""), item["id"].as_str().unwrap_or(""), status);
-                            observation(if status.is_some() {"native_completed"} else {"native_started"}, item);
-                        }
-                        ("item/agentMessage/delta", _) => {
-                            let id = m["params"]["itemId"].as_str().unwrap_or("");
-                            if id != draft_item { draft.clear(); draft_item = id.to_string(); }
-                            draft.push_str(m["params"]["delta"].as_str().unwrap_or(""));
+                    match event {
+                        Event::Text { item, delta } => {
+                            if item != draft_item { draft.clear(); draft_item = item; }
+                            draft.push_str(&delta);
                             preview(&draft);
                         }
-                        ("item/completed", _) if item["type"] == "agentMessage" => answer = item["text"].as_str().map(str::to_string),
-                        ("error", _) => error = m["params"]["error"]["message"].as_str().map(str::to_string),
-                        // the native terminal reason, kept over AgentQ's outcome code
-                        ("turn/completed", _) => error = m["params"]["turn"]["error"]["message"].as_str().map(str::to_string).or(error),
-                        ("account/rateLimits/updated", _) => observation("quota", &m["params"]["rateLimits"]),
-                        ("thread/tokenUsage/updated", _) if m["params"]["threadId"].as_str().is_some() && m["params"]["threadId"].as_str() == a.session_id(run).as_deref() =>
-                            observation("context", &m["params"]["tokenUsage"]),
-                        (_, Some("stream_event")) => match m["event"]["type"].as_str() {
-                            Some("message_start") => draft.clear(),
-                            Some("content_block_delta") if m["event"]["delta"]["type"] == "text_delta" => {
-                                draft.push_str(m["event"]["delta"]["text"].as_str().unwrap_or(""));
-                                preview(&draft);
-                            }
-                            _ => {}
-                        },
-                        (_, Some("assistant")) => {
-                            let u = &m["message"]["usage"];
-                            used = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"].iter().map(|k| u[k].as_u64()).sum::<Option<u64>>().or(used);
-                            for b in m["message"]["content"].as_array().into_iter().flatten().filter(|b| b["type"] == "tool_use") {
-                                tooled = true;
-                                let it = crate::relay::item(b);
-                                tool(it["type"].as_str().unwrap_or(""), it["id"].as_str().unwrap_or(""), None);
-                                observation("native_started", &it);
-                                items.insert(it["id"].as_str().unwrap_or("").to_string(), it);
-                            }
+                        Event::Message { text, .. } => { preview(&text); draft.clear(); answer = Some(text); }
+                        Event::ToolStart { id, kind, name, detail } => {
+                            tooled = true;
+                            let own = relay_tool(tools.0, kind, name.as_deref()).map(str::to_string);
+                            let kind = match kind { ToolKind::Shell => "shell", ToolKind::Mcp => "mcp", ToolKind::Web => "web", ToolKind::Other => "other" };
+                            let item = json!({"type": kind, "id": id, "tool": own.as_deref().or(name.as_deref()), "detail": detail, "relay": own.is_some()});
+                            tool(kind, id.as_deref().unwrap_or(""), None);
+                            observation("native_started", &item);
+                            items.insert(id, item);
                         }
-                        (_, Some("user")) => for b in m["message"]["content"].as_array().into_iter().flatten().filter(|b| b["type"] == "tool_result") {
-                            let status = if b["is_error"] == true { "failed" } else { "completed" };
-                            let id = b["tool_use_id"].as_str().unwrap_or("");
-                            let mut it = items.remove(id).unwrap_or_else(|| json!({"type": "mcpToolCall", "id": id}));
-                            tool(it["type"].as_str().unwrap_or(""), id, Some(status));
-                            it["status"] = json!(status);
-                            observation("native_completed", &it);
-                        },
-                        (_, Some("result")) => {
-                            answer = m["result"].as_str().map(str::to_string).or(answer);
-                            window = m["modelUsage"].as_object().and_then(|u| u.values().filter_map(|u| u["contextWindow"].as_u64()).max());
+                        Event::ToolEnd { id, status } => {
+                            tooled = true;
+                            let mut item = items.remove(&id).unwrap_or_else(|| json!({"type": "tool", "id": id}));
+                            tool(item["type"].as_str().unwrap_or("tool"), id.as_deref().unwrap_or(""), status.as_deref());
+                            item["status"] = json!(status);
+                            observation("native_completed", &item);
                         }
-                        _ => {}
+                        Event::Quota(windows) => observation("quota", &json!(windows)),
+                        Event::Context { used, window } => observation("context", &json!({"used": used, "window": window})),
+                        Event::Activity => {}
                     }
                 }
                 if progressed { (first, last) = (true, Instant::now()); observation("activity", &Value::Null); }
                 match state {
                     Ok(State::Running) => {}
                     Ok(_) => break,
-                    Err(e) => { stop(run); return Ok((session(run), model, fail(tooled, e))); }
+                    Err(e) => { crate::host::log(name, &e); stop(run); return Ok((session(run), model, fail(tooled, format!("{label} state unavailable; check /status")))); }
                 }
                 let (limit, why, secs) = if first { (last + self.limits.silent, "sent no event for", self.limits.silent) } else { (start + self.limits.first_event, "sent no first event within", self.limits.first_event) };
                 if Instant::now() >= limit {
@@ -459,24 +414,18 @@ impl Runtime {
                 if !progressed { std::thread::sleep(Duration::from_millis(50)); }
             }
             let Ok(r) = a.report(run) else {
-                let why = error.map_or(format!("{label} exited without a terminal event"), |e| format!("{label} exited without a terminal event after: {e}"));
-                return Ok((session(run), model, fail(tooled, why)));
+                return Ok((session(run), model, fail(tooled, format!("{label} ended without a confirmed turn outcome"))));
             };
             if resume.is_some() && r.outcome != "ok" && !tooled && answer.is_none()
                 && a.transcript(run).ok().and_then(|p| std::fs::read_to_string(p).ok()).is_some_and(|t| missing(a, &t)) {
                 return Err(());
             }
-            if let (Some(used), Some(window)) = (used, window) {
-                observation("context", &json!({"last": {"inputTokens": used}, "modelContextWindow": window}));
-            }
-            if r.limit.window.as_deref() == Some("seven_day") && let (Some(p), Some(at)) = (r.limit.used_percent, r.limit.resets_at) {
-                observation("quota", &json!({"primary": {"usedPercent": p, "windowDurationMins": 10080, "resetsAt": at}}));
-            }
+            observation("quota", &json!(r.limits));
             let model = r.usage.model.clone().or(model);
-            let outcome = match (r.outcome, answer.or(r.text.clone())) {
+            let outcome = match (r.outcome, answer) {
                 ("ok", Some(a)) if !a.trim().is_empty() => Outcome::Answered(a),
                 ("ok", _) => Outcome::Failed(format!("{label} ended the turn without an answer")),
-                (o, _) => fail(tooled, format!("{label} turn {o}: {}", error.as_deref().or((!r.error.is_empty()).then_some(r.error)).unwrap_or("no reason given"))),
+                (o, _) => fail(tooled, format!("{label} turn {o}: {}", if r.error.is_empty() { "no reason given" } else { r.error })),
             };
             Ok((session(run), model, outcome))
         })();
@@ -618,7 +567,7 @@ fn run_inner(rt: &Runtime, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, t
         profile["conversation"] = context.clone();
         profile["conversation"]["attached_images"] = json!(images.iter().map(|(id,_)|*id).collect::<Vec<_>>());
         profile["conversation"]["missing_images"] = json!(r.image_gaps.iter().filter(|id|allowed_image(**id)).collect::<Vec<_>>());
-        j.lock().unwrap().catalogue(r,&tools)?;
+        j.lock().unwrap().catalogue(r,&tool_fingerprint(&name,&tools))?;
         let refresh = j.lock().unwrap().refresh_tools(r)? || foreign;
         // #186: name exactly what this message carries and label every image, so an earlier image is never taken for it.
         let names: Vec<String> = j.lock().unwrap().reply_files(r.request)?.iter().filter_map(|f| f["name"].as_str().map(str::to_string)).collect();
@@ -630,8 +579,8 @@ fn run_inner(rt: &Runtime, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, t
         for note in r.files.iter().chain([&r.text]) { input.as_array_mut().unwrap().push(json!({"type":"text","text":note})); }
         for (id, path) in images {
             let label = if *id == r.request { "Image attached to the current message:" } else { "Image from an earlier message, not attached to the current message:" };
-            input.as_array_mut().unwrap().push(json!({"type":"text","text":label}));
-            input.as_array_mut().unwrap().push(json!({"type":"localImage","path":path}));
+            input.as_array_mut().unwrap().push(json!({"type":"text","text":label,"historical":*id != r.request}));
+            input.as_array_mut().unwrap().push(json!({"type":"localImage","path":path,"historical":*id != r.request}));
         }
         if refresh {
             let context=j.lock().unwrap().rebuild(r,now(), if foreign { RebuildReason::ForeignRuntime } else { RebuildReason::PolicyRefresh })?;
@@ -662,11 +611,11 @@ fn run_inner(rt: &Runtime, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, t
         },
     };
     let thread = if refresh {None} else {own};
-    let dynamic = (&tools, instructions.as_str());
+    let tools_and_instructions = (&tools, instructions.as_str());
     let record = |f: &dyn Fn(&coreq::telemetry::Store) -> Result<(), String>| {
         if let Err(e) = j.lock().unwrap().telemetry(f) { eprintln!("run {} usage: {e}", r.id); }
     };
-    let (thread, model, outcome) = rt.turn(&name, native, thread, r.model.as_deref(), &input, dynamic, alive,
+    let (thread, model, outcome) = rt.turn(&name, native, thread, r.model.as_deref(), &input, tools_and_instructions, alive,
         |kind, item, result| { if let Err(e) = j.lock().unwrap().tool(r, kind, item, result, now()) { eprintln!("run {}: {e}", r.id); } },
         |name, args, version| tool_call(j, r, tq, d, &now, name, args, version),
         || j.lock().unwrap().rebuild(r, now(), RebuildReason::NativeUnavailable),
@@ -758,17 +707,12 @@ fn observe(j: &Mutex<Journal>, r: &Run, d: &crate::direct::Direct, now: &impl Fn
     "native_started" | "native_completed" => {
         let completed=kind=="native_completed";
         let kind=data["type"].as_str().unwrap_or("tool");
-        if kind!="dynamicToolCall" {
-            let detail=if let Some(command)=data["command"].as_str() {command.to_string()}
-                else if let Some(changes)=data["changes"].as_array() {format!("File changes: {}",changes.iter().filter_map(|v|v["path"].as_str()).collect::<Vec<_>>().join(", "))}
-                else {kind.to_string()};
-            let detail=d.keys.scrub(&detail);
-            let guard=j.lock().unwrap();
-            let _=guard.0.execute("UPDATE audit_events SET target=?3 WHERE run_id=?1 AND item=?2 AND kind='tool'",rusqlite::params![r.id,data["id"].as_str().unwrap_or(""),detail]);
-            if completed {
-                let text=format!("{detail}: {}",data["status"].as_str().unwrap_or("completion observed; outcome unconfirmed"));
-                let _=guard.keep_finding(r,&text,now());
-            }
+        let detail=d.keys.scrub(data["detail"].as_str().or(data["tool"].as_str()).unwrap_or(kind));
+        let guard=j.lock().unwrap();
+        let _=guard.0.execute("UPDATE audit_events SET target=?3 WHERE run_id=?1 AND item=?2 AND kind='tool'",rusqlite::params![r.id,data["id"].as_str().unwrap_or(""),detail]);
+        if completed && data["relay"]!=true {
+            let text=format!("{detail}: {}",data["status"].as_str().unwrap_or("completion observed; outcome unconfirmed"));
+            let _=guard.keep_finding(r,&text,now());
         }
     },
     "context" => footer.context(data, now()),
@@ -961,6 +905,80 @@ mod tests {
         j.revoke(7,8,&["shell".into()],3).unwrap();
         assert!(!super::native_access(&j,8).unwrap());
     }
+    // #383 A3/A6: a catalogue stored by an earlier build rebuilds a Codex session once, because its dynamic tools are fixed
+    // and unanswerable; the rebuilt session then resumes, and a Claude session keeps its fingerprint.
+    #[test]
+    fn pre_relay_codex_session_rebuilds_once_383() {
+        use super::*;
+        let tools=json!([{"name":"project_list"}]);
+        let mut j=Journal::open(std::path::Path::new(":memory:")).unwrap();
+        j.bootstrap(7,0).unwrap();
+        let r=j.ask(7,"before the update",1).unwrap();
+        j.catalogue(&r,&tools).unwrap();
+        j.finish(&r,Some(("codex","invented-dynamic-thread")),None,&Outcome::Answered("old".into()),2).unwrap();
+        let r=j.ask(7,"after the update",3).unwrap();
+        j.catalogue(&r,&tool_fingerprint("codex",&tools)).unwrap();
+        assert!(j.refresh_tools(&r).unwrap());
+        j.rebuild(&r,4,RebuildReason::PolicyRefresh).unwrap();
+        j.finish(&r,Some(("codex","invented-relay-thread")),None,&Outcome::Answered("new".into()),5).unwrap();
+        let r=j.ask(7,"next",6).unwrap();
+        j.catalogue(&r,&tool_fingerprint("codex",&tools)).unwrap();
+        assert!(!j.refresh_tools(&r).unwrap());
+        assert_eq!(r.thread.as_deref(),Some("invented-relay-thread"));
+        assert_eq!(tool_fingerprint("claude",&tools),tools);
+    }
+
+    // #383 / R5: only PilotQ's own MCP tools skip native findings, under one name on both runtimes.
+    #[test]
+    fn relay_tool_names_383() {
+        use super::*;
+        let tools=json!([{"name":"project_list"}]);
+        for native in ["project_list","mcp__pilotq__project_list"] { assert_eq!(relay_tool(&tools,ToolKind::Mcp,Some(native)),Some("project_list")); }
+        for (kind,native) in [(ToolKind::Mcp,Some("mcp__other__project_list")),(ToolKind::Mcp,Some("other")),(ToolKind::Mcp,None),(ToolKind::Shell,Some("project_list"))] {
+            assert_eq!(relay_tool(&tools,kind,native),None);
+        }
+    }
+
+    // R16/R17: neutral command/file detail reaches audit and recovery findings only after the same key scrubber.
+    #[test]
+    fn native_tool_detail_is_scrubbed_383() {
+        use super::*;
+        let dir=std::env::temp_dir().join(format!("pilotq-detail383-{}",token()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let d=crate::direct::Direct{keys:crate::keys::Keys(dir.join("keys.json"))};
+        d.keys.add("invented","invented test key",&["issue_read".into()],"invented-detail-383").unwrap();
+        let mut journal=Journal::open(std::path::Path::new(":memory:")).unwrap();
+        journal.bootstrap(7,0).unwrap();
+        let r=journal.ask(7,"invented request",1).unwrap();
+        let j=Mutex::new(journal);
+        let mut footer=crate::footer::Footer::default();
+        for (id,kind,name,detail,expected) in [
+            ("command","shell",None,Some("touch invented-detail-383"),"touch [key invented]"),
+            ("file","other",Some("Edit"),Some("src/invented-detail-383"),"src/[key invented]"),
+            ("missing","shell",None,None,"shell"),
+        ] {
+            j.lock().unwrap().tool(&r,kind,id,None,2).unwrap();
+            let item=json!({"id":id,"type":kind,"tool":name,"detail":detail,"status":"completed"});
+            for event in ["native_started","native_completed"] { observe(&j,&r,&d,&||3,&mut footer,false,event,&item); }
+            let guard=j.lock().unwrap();
+            let target:String=guard.0.query_row("SELECT target FROM audit_events WHERE run_id=?1 AND kind='tool' AND item=?2",rusqlite::params![r.id,id],|row|row.get(0)).unwrap();
+            assert_eq!(target,expected);
+            let finding:String=guard.0.query_row("SELECT result FROM audit_events WHERE run_id=?1 AND kind='kept_finding' ORDER BY id DESC LIMIT 1",[r.id],|row|row.get(0)).unwrap();
+            assert_eq!(finding,format!("{expected}: completed"));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // #383 A4: the resumed native thread already holds old pixels; rebuilds still receive them in order.
+    #[test]
+    fn image_parts_preserve_order_without_resend_383() {
+        use super::*;
+        let input=json!([{"type":"text","text":"before"},{"type":"localImage","path":"/invented/old.png","historical":true},
+            {"type":"text","text":"current"},{"type":"localImage","path":"/invented/current.png"},{"type":"text","text":"after"}]);
+        assert_eq!(parts(&input,false),vec![Part::Text("before".into()),Part::Image("/invented/old.png".into()),Part::Text("current".into()),Part::Image("/invented/current.png".into()),Part::Text("after".into())]);
+        assert_eq!(parts(&input,true),vec![Part::Text("before".into()),Part::Text("current".into()),Part::Image("/invented/current.png".into()),Part::Text("after".into())]);
+    }
+
     // #213 / R5: an early adapter error must release its claimed slot, retaining
     // uncertainty if a tool already started. The malformed control exercises a real error path.
     #[test]
@@ -1038,7 +1056,7 @@ mod full_agent_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let bin=dir.join("fake");
         std::fs::write(&bin,r#"#!/usr/bin/env python3
-import sys,json,time
+import sys,json,time,socket
 def send(v):
  if v.get('method') in ('turn/completed','item/completed','item/agentMessage/delta'): v['params'].update({'threadId':tid[0],'turnId':'invented-turn'}); v['params'].get('turn',{}).setdefault('id','invented-turn')
  print(json.dumps(v),flush=True)
@@ -1054,7 +1072,7 @@ for line in sys.stdin:
  elif method=='account/rateLimits/read': send({'id':ident,'result':{}})
  elif method in ('thread/start','thread/resume'):
   assert m['params']['sandbox']==('danger-full-access' if native else 'read-only')
-  if method=='thread/start': assert 'dynamicTools' in m['params']
+  srv=m['params']['config']['mcp_servers']['pilotq']
   if m['params'].get('threadId')=='missing':
    send({'id':ident,'error':{'message':'thread not found'}}); continue
   assert m['params']['approvalPolicy']=='never'
@@ -1065,16 +1083,15 @@ for line in sys.stdin:
   mode=m['params']['input'][-1]['text']
   assert native == (mode!='restricted')
   if mode=='restricted':
-   send({'id':77,'method':'item/tool/call','params':{'tool':'project_list','arguments':{}}})
+   c=socket.socket(socket.AF_UNIX); c.connect(srv['args'][1]); c.sendall((json.dumps({'token':srv['env']['PILOTQ_MCP_TOKEN'],'op':'call','name':'project_list','arguments':{}})+'\n').encode())
+   assert json.loads(c.makefile().readline())=={'ok':True,'text':'granted result'}
+   send({'method':'item/completed','params':{'item':{'type':'agentMessage','text':'finished'}}})
+   send({'method':'turn/completed','params':{'turn':{'status':'completed'}}})
   if mode=='active':
    for i in range(8):
     time.sleep(.05); send({'method':'item/agentMessage/delta','params':{'delta':'working'}})
    send({'method':'item/completed','params':{'item':{'type':'agentMessage','text':'finished'}}})
    send({'method':'turn/completed','params':{'turn':{'status':'completed'}}})
- elif ident==77:
-  assert m['result']['success'] and m['result']['contentItems'][0]['text']=='granted result'
-  send({'method':'item/completed','params':{'item':{'type':'agentMessage','text':'finished'}}})
-  send({'method':'turn/completed','params':{'turn':{'status':'completed'}}})
  elif method=='turn/interrupt':
   send({'method':'turn/completed','params':{'turn':{'status':'interrupted'}}})
 "#).unwrap();
@@ -1094,12 +1111,11 @@ for line in sys.stdin:
         assert!(matches!(run(false,Some("missing"),"restricted",false),Outcome::Answered(s) if s=="finished"));
         // #373 A5: a diagnostic containing "spawn" cannot turn an exited child into a launch failure.
         std::fs::write(&bin,"#!/bin/sh\necho spawn-diagnostic >&2\nexit 1\n").unwrap();
-        assert!(matches!(run(true,None,"active",false),Outcome::Failed(s) if s==format!("Codex CLI {HANDSHAKE_FAILED}")));
+        assert!(matches!(run(true,None,"active",false),Outcome::Uncertain(s) if s==format!("Codex CLI {STARTUP_UNCONFIRMED}")));
         std::fs::remove_file(&bin).unwrap();
         assert!(matches!(run(true,None,"active",false),Outcome::Failed(s) if s=="Codex CLI did not start; check login and runtime health."));
         std::fs::remove_dir_all(dir).unwrap();
     }
-
     // #390: native Codex returns a thread's turns in its one resume record unless excluded (AgentQ research 253). Invented bytes only.
     const LONG_THREAD: &str = r#"#!/usr/bin/env python3
 import json,os,sys
@@ -1110,7 +1126,7 @@ def send(v):
 for line in sys.stdin:
  m=json.loads(line); method=m.get('method'); ident=m.get('id'); p=m.get('params') or {}
  if method:
-  log.write(json.dumps({'method':method,'thread':p.get('threadId'),'exclude':p.get('excludeTurns'),'tools':'dynamicTools' in p,'input':[i.get('text') for i in p.get('input',[])]})+'\n'); log.flush()
+  log.write(json.dumps({'method':method,'thread':p.get('threadId'),'exclude':p.get('excludeTurns'),'relay':'pilotq' in p.get('config',{}).get('mcp_servers',{}),'input':[i.get('text') for i in p.get('input',[])]})+'\n'); log.flush()
  if method in ('initialize','account/rateLimits/read'): send({'id':ident,'result':{}})
  elif method=='thread/start': send({'id':ident,'result':{'thread':{'id':'new-thread'},'model':'unchanged'}})
  elif method=='thread/resume':
@@ -1146,25 +1162,25 @@ for line in sys.stdin:
         assert!(matches!(&outcome,Outcome::Answered(a) if a=="finished"),"{outcome:?}");
         assert_eq!((thread.as_deref(),model.as_deref(),rebuilds.get()),(Some("long-thread"),Some("unchanged"),0));
         let resumed=calls("thread/resume");
-        assert_eq!((resumed.len(),&resumed[0]["thread"],&resumed[0]["exclude"],&resumed[0]["tools"]),(1,&json!("long-thread"),&json!(true),&json!(false)));
+        assert_eq!((resumed.len(),&resumed[0]["thread"],&resumed[0]["exclude"],&resumed[0]["relay"]),(1,&json!("long-thread"),&json!(true),&json!(true)));
         assert!(calls("thread/start").is_empty(),"no new thread");
         let started=calls("turn/start");
         assert_eq!((started.len(),&started[0]["thread"],&started[0]["input"]),(1,&json!("long-thread"),&json!(["current input"])));
         clear();
 
-        // thread/start keeps its tools and sends no resume-only field.
+        // AgentQ opens a new thread with the same relay contract and bounded history projection.
         let (thread,_,outcome)=turn(None);
         assert!(matches!(&outcome,Outcome::Answered(_)),"{outcome:?}");
         assert_eq!(thread.as_deref(),Some("new-thread"));
         let opened=calls("thread/start");
-        assert_eq!((opened.len(),&opened[0]["tools"],&opened[0]["exclude"]),(1,&json!(true),&Value::Null));
+        assert_eq!((opened.len(),&opened[0]["relay"],&opened[0]["exclude"]),(1,&json!(true),&json!(true)));
         clear();
 
         // The record bound still holds. The adapter stops the child, so the failure claims no exit and carries no native
         // text, and the thread stays without a rebuild, a new thread or any input.
         std::fs::write(dir.join("always-long"),"").unwrap();
         let (thread,_,outcome)=turn(Some("long-thread"));
-        assert!(matches!(&outcome,Outcome::Failed(s) if *s==format!("Codex CLI {HANDSHAKE_FAILED}")),"{outcome:?}");
+        assert!(matches!(&outcome,Outcome::Uncertain(s) if *s==format!("Codex CLI {STARTUP_UNCONFIRMED}")),"{outcome:?}");
         assert_eq!((thread.as_deref(),rebuilds.get()),(Some("long-thread"),0));
         assert_eq!(calls("thread/resume").len(),1);
         assert!(calls("thread/start").is_empty() && calls("turn/start").is_empty());
