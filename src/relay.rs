@@ -1,6 +1,4 @@
-//! PilotQ's own tools for a runtime without app-server tool calls: a per-turn stdio MCP relay (`pilotq --mcp-bridge SOCKET`)
-//! forwards each call over a private Unix socket to the same tool boundary app-server calls use; the relay holds no authority
-//! or state of its own. Also the tool-item helper for CLI turns (#265, #359).
+//! Per-turn stdio MCP relay for every runtime. Calls reach PilotQ's grant/fence boundary; the relay owns no authority.
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -9,22 +7,6 @@ use std::time::Duration;
 
 const SERVER: &str = "pilotq";
 const TOKEN: &str = "PILOTQ_MCP_TOKEN";
-
-/// The native item PilotQ records for a stream-json tool use, in the app-server item vocabulary the journal and audit use.
-pub fn item(block: &Value) -> Value {
-    let name = block["name"].as_str().unwrap_or("tool");
-    let kind = match name {
-        n if n.starts_with("mcp__pilotq__") => "dynamicToolCall",
-        "Bash" => "commandExecution",
-        "Write" | "Edit" | "NotebookEdit" => "fileChange",
-        "WebSearch" | "WebFetch" => "webSearch",
-        _ => "mcpToolCall",
-    };
-    let mut v = json!({"type": kind, "id": block["id"], "tool": name});
-    if let Some(c) = block["input"]["command"].as_str() { v["command"] = json!(c); }
-    if let Some(p) = block["input"]["file_path"].as_str() { v["changes"] = json!([{"path": p}]); }
-    v
-}
 
 /// One turn's private relay: MCP config, instructions and socket. The token proves a relay connection belongs to this turn.
 pub struct Relay {
@@ -37,7 +19,7 @@ pub struct Relay {
 }
 
 impl Relay {
-    pub fn open(workspace: &Path, dynamic: (&Value, &str)) -> Result<Relay, String> {
+    pub fn open(workspace: &Path, tools: (&Value, &str)) -> Result<Relay, String> {
         let token = crate::manager::token();
         let dir = workspace.join(".pilotq-turns").join(&token[..8]);
         // SUN_LEN is 104 bytes on macOS: the socket lives directly in the OS temp dir, owner-only.
@@ -47,14 +29,14 @@ impl Relay {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
         let exe = std::env::current_exe().map_err(|e| format!("pilotq executable: {e}"))?;
-        let config = json!({"mcpServers": {SERVER: {"type": "stdio", "command": exe, "args": ["--mcp-bridge", socket], "env": {TOKEN: token}}}});
+        let config = json!({"mcpServers": {SERVER: {"command": exe, "args": ["--mcp-bridge", socket], "env": {TOKEN: token}}}});
         std::fs::write(dir.join("mcp.json"), config.to_string()).map_err(|e| e.to_string())?;
-        std::fs::write(dir.join("instructions.txt"), dynamic.1).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join("instructions.txt"), tools.1).map_err(|e| e.to_string())?;
         let _ = std::fs::remove_file(&socket);
         let listener = UnixListener::bind(&socket).map_err(|e| format!("tool relay: {e}"))?;
         std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
         listener.set_nonblocking(true).map_err(|e| e.to_string())?;
-        let tools = dynamic.0.as_array().cloned().unwrap_or_default().into_iter()
+        let tools = tools.0.as_array().cloned().unwrap_or_default().into_iter()
             .map(|t| json!({"name": t["name"], "description": t["description"], "inputSchema": t["inputSchema"]})).collect();
         Ok(Relay { config: dir.join("mcp.json"), instructions: dir.join("instructions.txt"), token, tools, listener, _cleanup: cleanup })
     }
@@ -91,7 +73,7 @@ fn relay(stream: UnixStream, token: &str, tools: &[Value], call: &mut impl FnMut
     (&stream).write_all(format!("{reply}\n").as_bytes())
 }
 
-/// `pilotq --mcp-bridge SOCKET`: the stdio MCP server Claude starts for PilotQ's tools. It relays and decides nothing.
+/// `pilotq --mcp-bridge SOCKET`: the stdio MCP server the runtime starts for PilotQ's tools. It relays and decides nothing.
 pub fn bridge(socket: &str) {
     serve_bridge(socket, &std::env::var(TOKEN).unwrap_or_default(), std::io::stdin().lock(), std::io::stdout());
 }
@@ -185,7 +167,7 @@ print(json.dumps({'type':'result','subtype':'success','is_error':False,'result':
         let ((session, model, outcome), drafts, seen, stored, context) = run(false, None);
         assert_eq!(outcome, Outcome::Answered("finished hello".into()));
         assert_eq!(model.as_deref(), Some("claude-invented"));
-        assert_eq!(drafts, ["draft"]);
+        assert_eq!(drafts, ["draft", "finished hello"]);
         assert_eq!(seen, [("t1".to_string(), None), ("t1".to_string(), Some("completed".to_string()))]);
         assert_eq!(stored, 1, "one usage observation per turn");
         // #374 A3: the real runtime record boundary supplies both kinds; PilotQ never parses calls.
@@ -199,7 +181,7 @@ print(json.dumps({'type':'result','subtype':'success','is_error':False,'result':
         assert_eq!(calls[0]["observation"]["input_tokens"],10);
         assert!(calls[0]["observation"]["reasoning_tokens"].is_null());
         assert!(calls[0]["observation"]["unknown"]["reasoning_tokens"].is_string());
-        assert_eq!(context, json!({"last": {"inputTokens": 10}, "modelContextWindow": 100}));
+        assert_eq!(context, json!({"used": 10, "window": 100}));
         let session = session.unwrap();
         let ((again, _, outcome), ..) = run(true, Some(&session));
         assert_eq!((again.as_deref(), outcome), (Some(session.as_str()), Outcome::Answered("finished hello".into())));
@@ -208,6 +190,26 @@ print(json.dumps({'type':'result','subtype':'success','is_error':False,'result':
         assert_eq!(outcome, Outcome::Answered("finished hello".into()));
         assert!(!dir.join("workspace/.pilotq-turns").read_dir().unwrap().any(|_| true), "per-turn relay files are removed");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // #383 A3 / R16: another turn's token must never dispatch a tool, including through the stdio bridge.
+    #[test]
+    fn mcp_bridge_refuses_foreign_token_383() {
+        let socket=std::env::temp_dir().join(format!("pilotq-token383-{}.sock",std::process::id()));
+        let _=std::fs::remove_file(&socket);
+        let listener=UnixListener::bind(&socket).unwrap();
+        let server=std::thread::spawn(move || {
+            let (stream,_)=listener.accept().unwrap();
+            relay(stream,"invented-current-token",&[],&mut |_,_,_| panic!("foreign token dispatched"),"v").unwrap();
+        });
+        let input=json!({"id":1,"method":"tools/call","params":{"name":"project_list","arguments":{}}}).to_string()+"\n";
+        let mut out=vec![];
+        serve_bridge(socket.to_str().unwrap(),"invented-old-token",input.as_bytes(),&mut out);
+        server.join().unwrap();
+        let reply:Value=serde_json::from_slice(&out).unwrap();
+        assert_eq!(reply["result"]["isError"],true);
+        assert_eq!(reply["result"]["content"][0]["text"],"tool relay refused");
+        std::fs::remove_file(socket).unwrap();
     }
 
     // #265: the stdio MCP relay answers initialize, lists and calls tools through the turn socket and never decides itself.

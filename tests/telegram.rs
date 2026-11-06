@@ -289,7 +289,7 @@ fn setup(tag: &str, updates: Vec<Value>) -> (PathBuf, State) {
 
 fn script(d: &Path, name: &str, body: &str) -> PathBuf {
     let p = d.join(name);
-    fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+    fs::write(&p, if body.starts_with("#!") { body.to_string() } else { format!("#!/bin/sh\n{body}\n") }).unwrap();
     fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
     p
 }
@@ -299,7 +299,7 @@ fn script(d: &Path, name: &str, body: &str) -> PathBuf {
 /// its first run only), diag (an unknown optional event first) or env (answers with the API key it sees).
 const FAKE: &str = r#"d=$(dirname "$0")
 while IFS= read -r l; do
-  printf '%s\n' "$l" >> "$d/codex.log"
+  printf '%s\n' "$l" | sed 's/"PILOTQ_MCP_TOKEN":"[^"]*"/"PILOTQ_MCP_TOKEN":"[redacted]"/g' >> "$d/codex.log"
   id=$(printf '%s' "$l" | sed -n 's/^{"id":\([0-9]*\),.*/\1/p')
   case "$l" in
   *'"method":"initialize"'*) echo '{"id":'$id',"result":{}}' ;;
@@ -367,7 +367,7 @@ fn texts(st: &State) -> Vec<String> {
 
 fn service(d: &Path, fault: Option<&str>) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_pilotq"));
-    c.env("PATH", format!("{}:{}", d.display(), std::env::var("PATH").unwrap_or_default()));
+    c.env("PATH", format!("{}:{}:{}", d.join("catalogue-bin").display(), d.display(), std::env::var("PATH").unwrap_or_default()));
     c.args(["service", "run"]).env("PILOTQ_INSTALL", d).stdout(Stdio::null()).stderr(Stdio::piped());
     if let Some(f) = fault {
         c.env("PILOTQ_FAULT", f);
@@ -558,7 +558,7 @@ fn f05_delivery_faults_are_bounded() {
 }
 
 fn cli(d: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_pilotq")).args(args).env("PILOTQ_INSTALL", d).output().unwrap()
+    Command::new(env!("CARGO_BIN_EXE_pilotq")).args(args).env("PILOTQ_INSTALL", d).env("PATH", format!("{}:{}:{}",d.join("catalogue-bin").display(),d.display(),std::env::var("PATH").unwrap_or_default())).output().unwrap()
 }
 
 // #205 A3 / R5,R13: the real CLI waits for a restart writer, then durably answers through the shared path.
@@ -852,10 +852,10 @@ fn f03_provider_faults_are_bounded() {
     use_codex(&d, &script(&d, "fake-codex", FAKE));
     let cases = [
         ("stall", "failed", "Codex CLI sent no event for 2 s"),
-        ("exit", "failed", "Codex CLI exited without a terminal event"),
-        ("tool", "uncertain", "Codex CLI exited without a terminal event"),
+        ("exit", "failed", "Codex CLI ended without a confirmed turn outcome"),
+        ("tool", "uncertain", "Codex CLI ended without a confirmed turn outcome"),
         ("empty", "failed", "Codex CLI ended the turn without an answer"),
-        ("failed", "failed", "usage limit reached"),
+        ("failed", "failed", "usage-limit"),
     ];
     for (input, state, error) in cases {
         let t = Instant::now();
@@ -881,7 +881,7 @@ fn f03_provider_faults_are_bounded() {
     // no first event at all
     use_codex(&d, &d.join("mute"));
     let o = cli(&d, &["ask", "--json", "hello"]);
-    assert_eq!(serde_json::from_slice::<Value>(&o.stdout).unwrap()["error"], "Codex CLI sent no first event within 2 s");
+    assert_eq!(serde_json::from_slice::<Value>(&o.stdout).unwrap()["error"], "Codex CLI could not confirm turn startup; the saved conversation is kept. Check /status and ask the owner to inspect the PilotQ service log before retrying.");
     cleanup(&d);
 }
 
@@ -1045,8 +1045,8 @@ fn concurrent_codex_starts_do_not_race() {
     let racy = script(&d, "racy-codex", r#"d=$(dirname "$0")
 mkdir "$d/init.lock" 2>/dev/null || { echo 'Error: failed to initialize sqlite state runtime' >&2; exit 1; }
 sleep 0.5; rmdir "$d/init.lock"; exec "$d/fake-codex""#);
-    // This checks startup serialization, not speed; three queued handshakes must fit under CI load.
-    limits(&d, &racy, json!({"first_event": 30, "silent": 2, "deadline": 4}));
+    // #390: retain the serialization fixture budget; production/F03 watches remain unchanged.
+    limits(&d, &racy, json!({"first_event":30,"silent":2,"deadline":4}));
     let c = spawn(&d, None);
     wait("three answers", 45, || ["re: a @", "re: b @", "re: c @"].iter().all(|t| sent_has(&st, t)));
     assert_eq!(query(&d, "SELECT count(*) FROM requests WHERE state='answered'"), 3);
@@ -1055,8 +1055,8 @@ sleep 0.5; rmdir "$d/init.lock"; exec "$d/fake-codex""#);
     let (d, _st) = setup("dead", vec![]);
     use_codex(&d, &script(&d, "dead-codex", "echo 'Error: boom' >&2; exit 1"));
     let o = cli(&d, &["ask", "--json", "hi"]);
-    assert_eq!(serde_json::from_slice::<Value>(&o.stdout).unwrap()["error"], "Codex CLI could not open the conversation, so this request was not submitted; the saved conversation is kept. Send the request again; if this repeats, the owner should check the PilotQ service log.", "the reply carries no raw stderr");
-    assert!(fs::read_to_string(d.join("codex/app-server.log")).unwrap().contains("Error: boom"), "the private operator log names the reason");
+    assert_eq!(serde_json::from_slice::<Value>(&o.stdout).unwrap()["error"], "Codex CLI could not confirm turn startup; the saved conversation is kept. Check /status and ask the owner to inspect the PilotQ service log before retrying.", "the reply carries no raw stderr");
+    assert!(fs::read_dir(d.join("codex-sessions")).unwrap().filter_map(Result::ok).any(|e| fs::read_to_string(e.path()).unwrap_or_default().contains("Error: boom")), "the private operator log names the reason");
     cleanup(&d);
 }
 
@@ -1212,40 +1212,55 @@ if cmd in ("later", "steer", "requeue"):
 print("Error: unknown command", file=sys.stderr); sys.exit(1)
 "#;
 
-/// A fake `codex app-server` in Python: `call NAME JSON` makes one complete dynamic tool call and answers "re: ok: RESULT" or
+/// A fake `codex app-server` in Python: `call NAME JSON` calls the real per-turn MCP bridge and answers "re: ok: RESULT" or
 /// "re: refused: RESULT"; `multi {"calls": [[NAME, ARGS]..], "sleep": S}` makes several, then sleeps S seconds; `hex HEX` is
 /// `multi` hex-encoded, so the person's text names nothing the calls use (a model steered by tool output); in `multi`, `"bare"`
-/// sends no tool item events (a run PilotQ may retry) and `"sleep_once": S` sleeps S seconds on the first run only; `slow S`
+/// sends no tool item events (the relay call still fences replay) and `"sleep_once": S` sleeps S seconds on the first run only; `slow S`
 /// sleeps; anything else answers "re: TEXT".
 const FAKE_TOOLS: &str = r#"#!/usr/bin/env python3
-import json, os, sys, time
+import json, os, sys, time, subprocess, hashlib
+if sys.argv[1:]==["--version"]: print("0.0.0"); sys.exit(0)
 d = os.path.dirname(os.path.abspath(__file__))
 log = open(os.path.join(d, "codex.log"), "a")
 def send(v):
     print(json.dumps(v), flush=True)
 th = None
+srv = None
+native = sys.argv[sys.argv.index('shell_tool')-1] == '--enable'
+assert 'OPENAI_API_KEY' not in os.environ and 'CODEX_API_KEY' not in os.environ
 for line in sys.stdin:
-    log.write(line); log.flush()
     m = json.loads(line); meth = m.get("method")
+    safe = json.loads(line)
+    for server in safe.get('params', {}).get('config', {}).get('mcp_servers', {}).values():
+        if 'PILOTQ_MCP_TOKEN' in server.get('env', {}): server['env']['PILOTQ_MCP_TOKEN'] = '[redacted]'
+    log.write(json.dumps(safe, separators=(',', ':')) + '\n'); log.flush()
     if meth == "initialize":
         send({"id": m["id"], "result": {"userAgent": "codex/0.0.0-test"}})
     elif meth == "account/rateLimits/read":
         send({"id": m["id"], "error": {"code": -32601, "message": "unsupported"}})
     elif meth == "thread/start":
+        srv = m["params"]["config"]["mcp_servers"]["pilotq"]
+        assert m["params"]["sandbox"] == ('danger-full-access' if native else 'read-only')
         p = os.path.join(d, "threads"); n = int(open(p).read()) + 1 if os.path.exists(p) else 1
         open(p, "w").write(str(n)); th = "th-%d" % n
         send({"id": m["id"], "result": {"thread": {"id": th}, "model": "gpt-test"}})
     elif meth == "thread/resume":
+        srv = m["params"]["config"]["mcp_servers"]["pilotq"]
+        assert m["params"]["sandbox"] == ('danger-full-access' if native else 'read-only')
         if os.path.exists(os.path.join(d, "damaged")):
             os.unlink(os.path.join(d, "damaged"))
             send({"id": m["id"], "error": {"message": "failed to read thread: /private/native/rollout.jsonl"}})
             continue
-        th = m["params"]["threadId"]; send({"id": m["id"], "result": {"thread": {"id": th}}})
+        th = m["params"]["threadId"]; send({"id": m["id"], "result": {"thread": {"id": th}, "model":"gpt-test"}})
     elif meth == "turn/start":
-        text = m["params"]["input"][-1]["text"]
+        text = next((i["text"] for i in reversed(m["params"]["input"]) if i["type"]=="text"), "")
         send({"id": m["id"], "result": {"turn": {"id": "u1", "status": "inProgress", "items": []}}})
         if text.startswith("slow "):
             time.sleep(float(text.split()[1]))
+        bridge = subprocess.Popen([srv["command"]] + srv["args"], env={**os.environ, **srv["env"]}, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        listed, _ = bridge.communicate(json.dumps({"jsonrpc":"2.0","id":1,"method":"tools/list"}) + "\n", timeout=15)
+        log.write(json.dumps({"mcp_tools":json.loads(listed)["result"]["tools"]}) + "\n"); log.flush()
+        log.write(json.dumps({'relay_token_hash':hashlib.sha256(srv['env']['PILOTQ_MCP_TOKEN'].encode()).hexdigest(),'native':native}) + '\n'); log.flush()
         # Explicit user prose selects the project; the following JSON only drives this fake.
         if text.startswith("Project: ") and "\n" in text:
             text = text.split("\n", 1)[1]
@@ -1258,15 +1273,22 @@ for line in sys.stdin:
         elif text.startswith("hex "):
             spec = json.loads(bytes.fromhex(text[4:]).decode())
         outs = []
+        if spec.get("stream") or "[Voice message," in json.dumps(m["params"]["input"]):
+            reset = int(time.time()) + 10000
+            send({"method":"thread/tokenUsage/updated","params":{"threadId":th,"tokenUsage":{"last":{"totalTokens":10},"modelContextWindow":100}}})
+            send({"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":25,"windowDurationMins":300,"resetsAt":reset},"secondary":{"usedPercent":50,"windowDurationMins":10080,"resetsAt":reset}}}})
+            send({"method":"item/agentMessage/delta","params":{"threadId":th,"turnId":"u1","itemId":"answer","delta":"preview"}})
+            time.sleep(1.3)
         for i, (name, args) in enumerate(spec["calls"]):
-            item = {"type": "dynamicToolCall", "id": "k%d" % i, "tool": name, "arguments": args, "status": "inProgress"}
+            item = {"type": "mcpToolCall", "id": "k%d" % i, "tool": name, "arguments": args, "status": "inProgress"}
             if not spec.get("bare"):
                 send({"method": "item/started", "params": {"threadId": th, "turnId": "u1", "item": item}})
-            send({"id": 50 + i, "method": "item/tool/call", "params": {"threadId": th, "turnId": "u1", "callId": item["id"], "tool": name, "arguments": args}})
-            r = {}
-            while r.get("id") != 50 + i:
-                r = json.loads(sys.stdin.readline()); log.write(json.dumps(r) + "\n"); log.flush()
-            res = r["result"]
+            bridge = subprocess.Popen([srv["command"]] + srv["args"], env={**os.environ, **srv["env"]}, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+            request = {"jsonrpc":"2.0", "id":50+i, "method":"tools/call", "params":{"name":name,"arguments":args}}
+            reply, _ = bridge.communicate(json.dumps(request) + "\n", timeout=15)
+            result = json.loads(reply)["result"]
+            res = {"success": not result["isError"], "contentItems": result["content"]}
+            log.write(json.dumps({"id":50+i,"result":res}) + "\n"); log.flush()
             answer = res["contentItems"][0]["text"]
             # #165: the fake manager summarizes structured successful reads like the
             # instructed manager; raw payloads remain in its protocol log for assertions.
@@ -1288,6 +1310,8 @@ for line in sys.stdin:
             open(os.path.join(d, "slept"), "w").close(); time.sleep(spec["sleep_once"])
         if outs:
             text = " | ".join(outs)
+        if spec.get("stream"):
+            send({"method":"item/completed","params":{"threadId":th,"turnId":"u1","item":{"type":"agentMessage","id":"earlier","text":"earlier result"}}})
         send({"method": "item/completed", "params": {"threadId": th, "turnId": "u1", "completedAtMs": 0, "item": {"type": "agentMessage", "id": "m1", "text": "re: " + text}}})
         send({"method": "turn/completed", "params": {"threadId": th, "turn": {"id": "u1", "status": "completed", "items": []}}})
 "#;
@@ -2381,7 +2405,7 @@ fn pilot_tool_sizes_metadata_and_window() {
     let log = fs::read_to_string(d.join("codex.log")).unwrap();
     let sizes: Vec<i64> = log.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter_map(|v| v["result"]["contentItems"][0]["text"].as_str().map(|s| s.len() as i64)).collect();
     assert_eq!(rows.iter().map(|r| r.1).collect::<Vec<_>>(), sizes);
-    assert!(rows.iter().all(|r| r.0 == "unknown_tool" && r.2 == "codex/0.0.0-test" && r.3 == env!("CARGO_PKG_VERSION")));
+    assert!(rows.iter().all(|r| r.0 == "unknown_tool" && r.2 == "0.0.0" && r.3 == env!("CARGO_PKG_VERSION")));
     let columns: Vec<String> = c.prepare("PRAGMA table_info(tool_sizes)").unwrap().query_map([], |r| r.get(1)).unwrap().map(Result::unwrap).collect();
     assert_eq!(columns, ["id", "request_id", "run_id", "at", "tool", "result_bytes", "codex_version", "pilotq_version"]);
     let since = "0".to_string();
@@ -2912,8 +2936,8 @@ fn telegram_images_reach_same_session() {
     let log=fs::read_to_string(d.join("codex.log")).unwrap();
     let turns:Vec<Value>=log.lines().filter_map(|l|serde_json::from_str::<Value>(l).ok()).filter(|v|v["method"]=="turn/start").collect();
     assert_eq!(turns.len(),5);
-    assert_eq!(turns[4]["params"]["input"].as_array().unwrap().iter().filter(|v|v["type"]=="localImage").count(),4,
-        "#92: a long text follow-up must still receive all preceding image bytes");
+    assert_eq!(turns[4]["params"]["input"].as_array().unwrap().iter().filter(|v|v["type"]=="localImage").count(),0,
+        "#383 A4: native resume retains prior images without resending their bytes");
     let profile: Value=serde_json::from_str(turns[4]["params"]["input"][0]["text"].as_str().unwrap()).unwrap();
     let recent=profile["conversation"]["recent"].as_array().unwrap();
     assert_eq!(recent.len(),5);
@@ -2935,10 +2959,10 @@ fn telegram_images_reach_same_session() {
         assert_eq!(input[input.len()-1]["type"],"localImage");
     }
     let labels:Vec<&str>=turns[4]["params"]["input"].as_array().unwrap().iter().filter_map(|v|v["text"].as_str()).filter(|t|t.starts_with("Image ")).collect();
-    assert_eq!(labels,["Image from an earlier message, not attached to the current message:";4],"#186: an earlier image is never presented as the current attachment");
+    assert!(labels.is_empty(),"#383 A4: retained native images are not resent or presented as current attachments");
     assert_eq!(profile["conversation"]["current_message_files"],json!([]));
     let images=fs::read_to_string(d.join("images.log")).expect("fake model read image bytes");
-    assert_eq!(images.lines().count(),5);
+    assert_eq!(images.lines().count(),4,"each current image is delivered once");
     // Completion is journaled inside run; ImageFile drops when the manager turn returns.
     wait("temporary images removed after turns",5,||images.lines().all(|p|!Path::new(p).exists()));
     assert!(images.lines().all(|p|!Path::new(p).exists()),"temporary images removed after turns");
@@ -2979,7 +3003,7 @@ fn telegram_documents_are_read_in_their_turn() {
     assert_eq!(text[3]["text"],"","file content is never the person's own text");
     let profile: Value=serde_json::from_str(text[0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(profile["conversation"]["current_message_files"],json!(["notes.txt"]));
-    assert_eq!(text[4]["text"],"Image from an earlier message, not attached to the current message:","the stale screenshot is labeled as earlier");
+    assert!(text.as_array().unwrap().iter().all(|i|i["type"]!="localImage"),"#383 A4: native context already holds the earlier screenshot");
     assert_eq!(text.as_array().unwrap().iter().filter(|v|v["text"]=="Image attached to the current message:").count(),0);
     assert_eq!(rar[2]["text"],"[File archive.rar, attached to this message, cannot be read: RAR archives cannot be opened here; send it as ZIP]");
     assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='file_read'"),2);
@@ -3454,10 +3478,9 @@ fn voice_update(id: i64, sender: i64, media: &str, file: Value) -> Value {
 #[test]
 fn telegram_intake_259() {
     let (d,st)=setup("intake-259",vec![]);
-    let reader=FAKE.replace("    case \"$text\" in",r#"    if printf '%s' "$l" | grep -q 'Complete original file'; then
-      echo '{"id":77,"method":"item/tool/call","params":{"tool":"reads_document","arguments":{"file":0,"offset":9600000}}}'
-    fi
-    case "$text" in"#);
+    let reader=FAKE_TOOLS.replace("        spec = {\"calls\": []}",r#"        spec = {"calls": []}
+        if any('Complete original file' in i.get('text','') for i in m['params']['input']):
+            spec = {'calls':[['reads_document',{'file':0,'offset':9600000}]]}"#);
     use_codex(&d,&script(&d,"reader-codex",&reader));
     use_voice(&d);
     let c=spawn(&d,None);
@@ -3824,7 +3847,7 @@ fn doctor_voice_readiness() {
     // #144 / §9: an unusable gh cannot affect CLI-only doctor.
     let gh_ok = r#"if [ "$1" = --version ]; then echo 'gh version 2.45.0 (invented)'; else echo '[]'; fi"#;
     script(&d, "gh", gh_ok);
-    let gh_path = format!("{}:{}",d.display(),std::env::var("PATH").unwrap_or_default());
+    let gh_path = format!("{}:{}:{}",d.join("catalogue-bin").display(),d.display(),std::env::var("PATH").unwrap_or_default());
     let model = d.join("model");
     fs::create_dir(&model).unwrap();
     for (mode, expected) in [(0,"voice not configured"),(1,"voice recognizer unavailable"),(2,"voice model unavailable"),
@@ -3867,6 +3890,11 @@ fn u106_telegram_controls_and_models() {
     let (d,st)=setup("u106",vec![]);
     let fake=FAKE.replace("d=$(dirname \"$0\")", "d=$(dirname \"$0\")\ncase \"$*\" in *'login status'*) echo 'Logged in using ChatGPT'; exit 0;; esac")
         .replace("  *'\"method\":\"initialize\"'*)", "  *'\"method\":\"model/list\"'*) echo '{\"id\":2,\"result\":{\"data\":[{\"model\":\"invented-a\",\"hidden\":false},{\"model\":\"invented-b\",\"hidden\":false}],\"nextCursor\":null}}' ;;\n  *'\"method\":\"initialize\"'*)");
+    fs::create_dir_all(d.join("catalogue-bin")).unwrap();
+    let source=d.join("catalogue-fixture.rs");
+    let body=format!("fn main() {{ let status=std::process::Command::new(\"sh\").arg({:?}).args(std::env::args_os().skip(1)).status().unwrap(); std::process::exit(status.code().unwrap_or(1)); }}",d.join("control-codex"));
+    fs::write(&source,body).unwrap();
+    assert!(Command::new("rustc").args(["--crate-name","catalogue_fixture"]).arg(&source).arg("-o").arg(d.join("catalogue-bin/codex")).status().unwrap().success());
     limits(&d,&script(&d,"control-codex",&fake),json!({"first_event":3,"silent":60,"deadline":60}));
     let mut c=spawn(&d,None);
     push(&st,text(1,OWNER,None,OWNER,"slow active"));
@@ -3954,7 +3982,7 @@ fn u165_status_observations_without_reply_footer() {
         let answer=texts(&st).into_iter().find(|s|s.contains("re: measured answer")).unwrap();
         assert!(!answer.contains("gpt-test") && !answer.contains("80%") && !answer.contains("75%"),"#165 no reply footer: {answer}");
         push(&st,text(3,chat,topic,OWNER,"/status"));
-        wait("measured status",15,||sent_has(&st,"gpt-test · 😣 80% · 🌖 75% ↻ 2:30"));
+        wait("measured status",15,||sent_has(&st,"gpt-test · 🥵 90% · 10080m 🌖 75% ↻ 2:30"));
         {
             let f=st.lock().unwrap();
             let attempts: Vec<_>=f.api.iter().filter(|(m,v,_)| {
@@ -3986,7 +4014,7 @@ fn u165_status_observations_without_reply_footer() {
         push(&st,text(6,chat,topic,OWNER,"/new"));
         wait("reset model announcement",10,||sent_has(&st,"New conversation started. Model: default (Codex configuration)."));
         assert_eq!(query(&d,"SELECT count(*) FROM runs"),2,"/new is deterministic");
-        assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='runtime_status' AND result LIKE '%😣 80% · 🌖 75% ↻ 2:30%'"),1,"measurements persisted separately");
+        assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='runtime_status' AND result LIKE '%🥵 90% · 10080m 🌖 75% ↻ 2:30%'"),1,"measurements persisted separately");
         assert!(!texts(&st).join("\n").contains("invented-secret-plan"));
         stop(c,d);
       }
@@ -4166,7 +4194,7 @@ while [ "$1" != -i ]; do shift; done; input=$2; for a; do out=$a; done; cp "$inp
         "projects":[{"root":d.join("root"),"status":{"complete":true,"capacity":{"limits":{"codex":4},"gate":"open"},
         "access":[{"runtime":"codex","grant":"none (taskq.json is a request)","effective":"legacy","refused":"no operator grant"}]}}]});
     fs::write(d.join("setup-service.json"),svc.to_string()).unwrap();
-    let out=Command::new(env!("CARGO_BIN_EXE_pilotq")).env("PILOTQ_INSTALL",&d).env("PATH",format!("{}:{}",d.display(),std::env::var("PATH").unwrap_or_default()))
+    let out=Command::new(env!("CARGO_BIN_EXE_pilotq")).env("PILOTQ_INSTALL",&d).env("PATH",format!("{}:{}:{}",d.join("catalogue-bin").display(),d.display(),std::env::var("PATH").unwrap_or_default()))
         .args(["projects","add","cyprusbz-board",d.join("root").to_str().unwrap(),"--json"]).output().unwrap();
     let v:Value=serde_json::from_slice(&out.stdout).unwrap_or_else(|_|panic!("{}",String::from_utf8_lossy(&out.stderr)));
     assert!(!out.status.success(),"a missing grant must fail the setup command while preserving registration");
@@ -4221,7 +4249,7 @@ fn project_266_cli_board_only_no_attach() {
 #[test]
 fn pm_221_pack_turn_boundary() {
     let (d,st)=setup("pm-221",vec![]);
-    use_codex(&d,&script(&d,"fake-codex",FAKE));
+    use_codex(&d,&script(&d,"fake-codex",FAKE_TOOLS));
     let pack=d.join("pm.txt");fs::write(&pack,"Use installed TaskQ status and taskq profile; report findings.").unwrap();
     for args in [vec!["pm","install","pm",pack.to_str().unwrap(),"--json"],vec!["pm","bind","cli","pm","--json"],
         vec!["pm","notes","cli","set","cadence","Invented initial cadence.","Keep the board observed.","--json"]] {
@@ -4235,7 +4263,9 @@ fn pm_221_pack_turn_boundary() {
         let input=turn["params"]["input"].to_string();assert!(input.contains(fact),"{input}");
         assert!(input.contains("installed TaskQ status"));
         let thread:Value=log.lines().filter_map(|l|serde_json::from_str::<Value>(l).ok()).filter(|v|v["method"]=="thread/start").last().unwrap();
-        assert!(thread["params"]["dynamicTools"].as_array().unwrap().iter().any(|t|t["name"]=="pm_note_write"));
+        assert!(thread["params"]["config"]["mcp_servers"]["pilotq"]["args"].as_array().unwrap().iter().any(|a| a=="--mcp-bridge"));
+        let listed:Value=log.lines().filter_map(|l|serde_json::from_str::<Value>(l).ok()).filter(|v|v["mcp_tools"].is_array()).last().unwrap();
+        assert!(listed["mcp_tools"].as_array().unwrap().iter().any(|t| t["name"]=="pm_note_write"));
     }
     let help=cli(&d,&["ask","/help operations","--json"]);assert!(String::from_utf8_lossy(&help.stdout).contains("PM pack: pm"));
     st.lock().unwrap().updates.push(text(1,OWNER,None,OWNER,"unbound"));
@@ -4245,4 +4275,79 @@ fn pm_221_pack_turn_boundary() {
     let input=turn["params"]["input"].to_string();
     assert!(!input.contains("Invented updated cadence.") && !input.contains("Current owner-installed PM context"),"{input}");
     stop(c,d);
+}
+
+// #383 A2-A5 / R10,R13,R16,R17: both adapters use the real per-turn bridge and audited boundary on first/resumed turns.
+// This invented-model component check does not qualify live model behavior (§9).
+#[test]
+fn runtime_relay_matrix_383() {
+    for runtime in ["codex", "claude"] {
+        let (d,st)=setup(&format!("relay383-{runtime}"),vec![]);
+        let executable=d.join("fake-runtime");
+        fs::write(&executable,if runtime=="codex" { FAKE_TOOLS } else { include_str!("fixtures/runtime-383/claude.py") }).unwrap();
+        fs::set_permissions(&executable,fs::Permissions::from_mode(0o700)).unwrap();
+        let mut config:Value=serde_json::from_str(&fs::read_to_string(d.join("config.json")).unwrap()).unwrap();
+        config["runtime"]=json!(runtime);
+        config["runtimes"]=json!({runtime:{"bin":executable,"home":d.join("runtime-home"),"models":["invented-choice"]}});
+        config["codex_limits"]=json!({"first_event":5,"silent":10});
+        fs::write(d.join("config.json"),config.to_string()).unwrap();
+        assert!(cli(&d,&["users","grant","8","chat"]).status.success());
+        use_voice(&d);
+        let c=spawn(&d,None);
+        for (update,actor) in [(1,OWNER),(2,8),(3,OWNER),(4,8)] {
+            push(&st,text(update,actor,None,actor,"multi {\"calls\":[[\"project_list\",{}]],\"stream\":true}"));
+            wait("relay answered",15,||try_query(&d,&format!("SELECT count(*) FROM requests WHERE update_id={update} AND state='answered'"))==Some(1));
+        }
+        push(&st,text(5,-100,None,OWNER,"multi {\"calls\":[[\"project_list\",{}]],\"stream\":true}"));
+        wait("group relay answered",15,||try_query(&d,"SELECT count(*) FROM requests WHERE update_id=5 AND state='answered'")==Some(1));
+        assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='direct' AND target='project_list'"),5);
+        assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='tool' AND result='completed'"),5);
+        let log=fs::read_to_string(d.join(if runtime=="codex" {"codex.log"} else {"relay.jsonl"})).unwrap();
+        let hashes:Vec<String>=log.lines().filter_map(|line|serde_json::from_str::<Value>(line).ok()).filter_map(|v|v["relay_token_hash"].as_str().map(str::to_string)).collect();
+        let turns:Vec<Value>=log.lines().filter_map(|line|serde_json::from_str::<Value>(line).ok()).collect();
+        let policies:Vec<bool>=turns.iter().filter(|v|v["relay_token_hash"].is_string()).map(|v|v["native"].as_bool().unwrap()).collect();
+        assert_eq!(policies,[true,false,true,false,true]);
+        if runtime=="codex" {
+            assert_eq!(turns.iter().filter(|v|v["method"]=="thread/start").count(),3);
+            assert_eq!(turns.iter().filter(|v|v["method"]=="thread/resume").count(),2);
+        } else {
+            assert_eq!(turns[0]["session"],turns[2]["session"]);
+            assert_eq!(turns[1]["session"],turns[3]["session"]);
+        }
+        assert_eq!(hashes.len(),5);
+        assert_eq!(hashes.into_iter().collect::<std::collections::HashSet<_>>().len(),5,"every turn rotates its token");
+        let f=st.lock().unwrap();
+        assert!(f.api.iter().any(|(method,_,_)|method.ends_with("draft")));
+        assert!(!f.api.iter().any(|(method,body,_)|method.ends_with("draft") && body["chat_id"]==-100));
+        drop(f);
+        for (update,actor) in [(6,OWNER),(7,8)] {
+            push(&st,text(update,actor,None,actor,"/status"));
+            wait("all windows reach status",10,||sent(&st).iter().any(|v|v["chat_id"]==actor && v["text"].as_str().is_some_and(|t|t.contains("10%") && t.contains("75%") && t.contains("50%"))));
+        }
+        assert_eq!(query(&d,"SELECT count(*) FROM conversations WHERE thread IS NOT NULL"),3,"two resumed DMs and one group");
+        assert_eq!(query(&d,"SELECT count(*) FROM requests WHERE reply LIKE '%earlier result%'"),0,"final output uses the last Message");
+        let mut photo=text(8,OWNER,None,OWNER,"");
+        photo["message"].as_object_mut().unwrap().remove("text");
+        photo["message"]["photo"]=json!([{"file_id":"invented-photo","file_unique_id":"invented-pixel","file_size":68,"width":1,"height":1}]);
+        photo["message"]["caption"]=json!("Inspect this image");
+        push(&st,photo);
+        wait("image answered",15,||try_query(&d,"SELECT count(*) FROM requests WHERE update_id=8 AND state='answered'")==Some(1));
+        push(&st,text(9,OWNER,None,OWNER,"follow up without another image"));
+        wait("image resume answered",15,||try_query(&d,"SELECT count(*) FROM requests WHERE update_id=9 AND state='answered'")==Some(1));
+        let log=fs::read_to_string(d.join(if runtime=="codex" {"codex.log"} else {"relay.jsonl"})).unwrap();
+        let records:Vec<Value>=log.lines().filter_map(|line|serde_json::from_str::<Value>(line).ok()).filter(|v|if runtime=="codex" {v["method"]=="turn/start"} else {v["part_types"].is_array()}).collect();
+        let image_counts:Vec<usize>=records.iter().rev().take(2).map(|v|if runtime=="codex" {v["params"]["input"].as_array().unwrap().iter().filter(|i|i["type"]=="localImage").count()} else {v["part_types"].as_array().unwrap().iter().filter(|i|**i=="image").count()}).collect();
+        assert_eq!(image_counts,[0,1],"ordered current image bytes are delivered only once");
+        push(&st,voice_update(10,OWNER,"voice",json!({"file_id":"invented-voice-reply","file_unique_id":"invented-voice","file_size":24,"duration":1,"mime_type":"audio/ogg"})));
+        wait("voice answered",20,||try_query(&d,"SELECT count(*) FROM requests WHERE update_id=10 AND state='answered'")==Some(1));
+        assert!(st.lock().unwrap().api.iter().any(|(method,body,_)|method.ends_with("draft") && (body["text"].as_str().unwrap_or("").contains("🎤") || body["rich_message"]["markdown"].as_str().unwrap_or("").contains("🎤"))),"voice draft retains its transcript prefix");
+        if runtime=="claude" {
+            push(&st,text(11,OWNER,None,OWNER,"/model"));
+            wait("configured models",10,||sent_has(&st,"invented-choice"));
+        }
+        assert_eq!(query(&d,"SELECT count(*) FROM runs"),8,"controls never start inference");
+        drop(c);
+        // No TaskQ configured here: no detached board observer can outlive this process group.
+        fs::remove_dir_all(d).unwrap();
+    }
 }

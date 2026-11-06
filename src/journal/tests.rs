@@ -405,8 +405,8 @@ fn replies_212_restart_and_measured_status() {
             j.admit(&[(1,Some(i))],0).unwrap();
             let r=j.claim_next(1,0).unwrap().remove(0);
             let mut f=crate::footer::Footer::default();
-            f.context(&json!({"last":{"inputTokens":20},"modelContextWindow":100}),0);
-            f.quota(&json!({"primary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":reset+120}}),0);
+            f.context(&json!({"used":20,"window":100}),0);
+            f.quota(&json!([{"window":"10080m","used":0.1,"resets_at":reset+120,"event_id":null,"unknown":null}]),0);
             f.context(&json!({}),120);
             let observed=f.render(Some("model"),None,120);
             j.0.execute("INSERT INTO audit_events(request_id,run_id,at,kind,result,item) VALUES (?1,?2,120,'runtime_status',?3,'0')",params![r.request,r.id,observed]).unwrap();
@@ -1573,26 +1573,23 @@ fn document_timeout_reply_195() {
     }
 }
 
-// #390 A4: a stopped handshake reaches the person as what happened and what to do, in their language; it claims no exit.
+// #383 / #390: unconfirmed startup preserves the conversation and gives a safe next action, without claiming an exit or inviting replay.
 #[test]
-fn handshake_failure_reply_390() {
-    use crate::manager::{HANDSHAKE_FAILED, Outcome};
-    for (language, words, next) in [("en", "Check the report", "Send the request again"), ("ru", "Проверь отчёт", "Отправьте запрос ещё раз")] {
-        let (mut j, p) = journal(&format!("handshake-{language}"));
-        let mut input = msg(7, 7, 1).unwrap();
-        input.language = Some(language.into());
-        input.text = Some(words.into());
-        j.admit(&[(1, Some(input))], 0).unwrap();
-        let r = j.claim_next(1, 0).unwrap().remove(0);
-        let detail = format!("Codex CLI {HANDSHAKE_FAILED}");
-        j.finish(&r, None, None, &Outcome::Failed(detail.clone()), 1).unwrap();
-        let (state, reply, error) = j.request(r.request).unwrap();
-        let reply = reply.unwrap();
-        assert_eq!((state.as_str(), error.as_deref()), ("failed", Some(detail.as_str())));
-        assert!(reply.contains(next) && reply != brief(Some(language), "failed"), "{reply}");
-        assert!(!detail.contains("exited") && !reply.contains("exited"));
-        drop(j);
-        std::fs::remove_dir_all(p).unwrap();
+fn startup_failure_reply_383() {
+    use crate::manager::Outcome;
+    for (language,words,next) in [("en","Check the report","Check /status"),("ru","Проверь отчёт","Проверьте /status")] {
+        let (mut j,p)=journal(&format!("startup383-{language}"));
+        let mut input=msg(7,7,1).unwrap();input.language=Some(language.into());input.text=Some(words.into());
+        j.admit(&[(1,Some(input))],0).unwrap();
+        let r=j.claim_next(1,0).unwrap().remove(0);
+        let detail=format!("Codex CLI {}",crate::manager::STARTUP_UNCONFIRMED);
+        j.finish(&r,None,None,&Outcome::Uncertain(detail.clone()),1).unwrap();
+        let (state,reply,error)=j.request(r.request).unwrap();
+        assert_eq!((state.as_str(),error.as_deref()),("uncertain",Some(detail.as_str())));
+        let reply=reply.unwrap();
+        assert!(reply.contains(next) && !reply.contains("exited") && !reply.contains("not submitted"),"{reply}");
+        assert!(j.claim_next(1,2).unwrap().is_empty(),"unconfirmed effects are never replayed");
+        drop(j);std::fs::remove_dir_all(p).unwrap();
     }
 }
 

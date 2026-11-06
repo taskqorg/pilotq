@@ -6,7 +6,7 @@ Part of the [PilotQ contract](../pilotq.md). Decisions here bind like the root c
 
 - Configuration: `config.json` `taskq` names the CLI binary and the project root. PilotQ runs it with an argument array, `TASKQ_ROOT` set to that root and no `TASKQ_ATTEMPT`. The configured root seeds the initial `pilotq` registry entry only when its `taskq.json` names `taskqorg/pilotq`; it never replaces a registered entry. Each call uses the resolved registered root, checks its `taskq.json` against the registered board and requires a fresh complete snapshot naming that board before board writes or task reads. An unavailable snapshot leaves an authorized plan unsent for retry. A mismatch disables that target.
 - Project scope is `project:<registered-name>`, or `projects` for an administrator. The owner holds `projects` from protected configuration.
-- The manager gets these tools as Codex dynamic tools. Each one is checked at dispatch against the caller's current grants and the run's fence. A refusal writes nothing and says why.
+- The manager gets these tools over the per-turn MCP relay on every runtime. Each one is checked at dispatch against the caller's current grants and the run's fence. A refusal writes nothing and says why.
 
 | Tool | Grants | Effect |
 |---|---|---|

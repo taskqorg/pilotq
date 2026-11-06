@@ -218,8 +218,8 @@ fn brief(language: Option<&str>, reason: &str) -> &'static str {
         ("ru", "voice_failed") => "Не удалось распознать голосовое сообщение; отправьте его ещё раз или текстом.",
         ("ru", "document_timeout") => "Время разбора документа истекло.",
         ("ru", "limit") => "Лимит запроса исчерпан; попросите продолжить с сохранённого результата.",
+        ("ru", "startup") => "Не удалось подтвердить запуск; разговор сохранён. Проверьте /status и попросите владельца проверить журнал PilotQ перед повторной отправкой.",
         ("ru", "uncertain") => "Результат действия неизвестен; автоматического повтора не будет.",
-        ("ru", "handshake") => "Не удалось открыть разговор, поэтому запрос не отправлен; разговор сохранён. Отправьте запрос ещё раз; если ошибка повторится, попросите владельца проверить журнал сервиса PilotQ.",
         ("ru", _) => "Не удалось завершить запрос; попробуйте ещё раз или проверьте /status.",
         ("he", "file_limit") => "הקובץ גדול מ־20 MiB; דחסו אותו או שלחו אותו בחלקים.",
         ("he", "voice_limit") => "ההקלטה גדולה מדי; שלחו הקלטה באורך של עד 5 דקות ובגודל של עד 20 MiB.",
@@ -233,8 +233,8 @@ fn brief(language: Option<&str>, reason: &str) -> &'static str {
         (_, "voice_failed") => "The voice message could not be recognized; send it again or as text.",
         (_, "document_timeout") => "Document parsing timed out.",
         (_, "limit") => "The request reached its limit; ask to continue from the saved result.",
+        (_, "startup") => "Turn startup could not be confirmed; the conversation is kept. Check /status and ask the owner to inspect the PilotQ log before retrying.",
         (_, "uncertain") => "The action’s outcome is uncertain; it will not be repeated automatically.",
-        (_, "handshake") => "The conversation could not be opened, so this request was not submitted; the conversation is kept. Send the request again; if this repeats, ask the owner to check the PilotQ service log.",
         _ => "The request failed; try again or check /status.",
     }
 }
