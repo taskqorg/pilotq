@@ -93,10 +93,13 @@ fn view(row: &Value, now: i64, budget: usize) -> Value {
         "data_age_seconds":age(&row["source"],now),"omitted_entities":total-kept.len(),"entities":kept})
 }
 
+/// Matches among rows the caller may read: selector, host, workspace/host, host without /kind, or its first DNS label.
 fn named<'a>(rows: &'a [Value], wanted: &str) -> Vec<&'a Value> {
-    rows.iter().filter(|r| r["pilotq_selector"] == wanted || r["host"].as_str().is_some_and(|h|
+    rows.iter().filter(|r| r["pilotq_selector"] == wanted || r["host"].as_str().is_some_and(|h| {
+        let name = h.rsplit_once('/').map_or(h, |(n, _)| n);
         h.eq_ignore_ascii_case(wanted) || format!("{}/{}",r["workspace"].as_str().unwrap_or("-"),h).eq_ignore_ascii_case(wanted)
-        || h.rsplit_once('/').is_some_and(|(n, _)| n.eq_ignore_ascii_case(wanted)))).collect()
+        || name.eq_ignore_ascii_case(wanted) || name.split('.').next().is_some_and(|label| label.eq_ignore_ascii_case(wanted))
+    })).collect()
 }
 
 fn visible(j: &Journal, user: i64, data: &Value) -> Result<Vec<Value>, String> {
@@ -406,6 +409,33 @@ mod tests {
         assert_eq!(v["servers"].as_array().unwrap().len(),1);
         assert_eq!(v["servers"][0]["workspace"],"example");
         assert!(!ask(&f,8,json!({"server":"other/invented-fresh/native"})).0,"a qualified name grants no access");
+        std::fs::remove_dir_all(f.dir).unwrap();
+    }
+
+    // A3/A7: a person says "pds18" for the host pds18.ufobe.com, with or without /kind. The short name reads only
+    // rows that grants already allow, and a shared first label stays ambiguous instead of picking a server.
+    #[test]
+    fn inventory_375_short_name_matches_first_dns_label() {
+        let f=fixture("label");
+        for host in ["pds18.ufobe.com","pds18.ufobe.com/native"] {
+            std::fs::write(f.dir.join("report.json"),json!({"servers":{"rows":[row(OWN,"invented-fresh/native",1),row("invented-pds18",host,1)]}}).to_string()).unwrap();
+            for name in ["pds18","PDS18"] {
+                let (ok,text)=ask(&f,7,json!({"server":name}));
+                assert!(ok,"{host} must resolve from {name}: {text}");
+                let v:Value=serde_json::from_str(&text).unwrap();
+                assert_eq!(v["servers"].as_array().unwrap().len(),1);
+                assert_eq!(v["servers"][0]["server"],host);
+            }
+            let (ok,text)=ask(&f,8,json!({"server":"pds18"}));
+            assert!(!ok && text==REFUSAL,"a short name grants no access: {text}");
+            let (ok,text)=ask(&f,7,json!({"server":"ufobe"}));
+            assert!(!ok && text==REFUSAL,"only the first label names a host: {text}");
+        }
+        std::fs::write(f.dir.join("report.json"),json!({"servers":{"rows":[row("invented-pds18-a","pds18.ufobe.com/native",1),row("invented-pds18-b","pds18.example.com/native",1)]}}).to_string()).unwrap();
+        let (ok,text)=ask(&f,7,json!({"server":"pds18"}));
+        assert!(!ok && text.contains("ambiguous"),"{text}");
+        let (ok,text)=ask(&f,7,json!({"server":"pds18.ufobe.com"}));
+        assert!(ok,"the full host clarifies a shared first label: {text}");
         std::fs::remove_dir_all(f.dir).unwrap();
     }
 

@@ -309,6 +309,11 @@ read rechecks grants. A read with no `server` argument uses the selection; `all`
 server. Telegram ignores other parameters, so DashQ's fallback `?server=` form for other targets
 cannot select a server here.
 
+**Server names.** A `server` argument matches, without case, among rows the caller may read: the
+selector, the host, `WORKSPACE/HOST`, the host without `/KIND` or the host's first DNS label. So
+`pds18` names `pds18.ufobe.com` and `pds18.ufobe.com/native`. Several matches stay ambiguous and ask for
+the workspace and full host name. A name never grants access.
+
 **Changes.** Proposed changes use the existing `task_plan` draft and launch path with its project
 resolution, readiness and grants. The discussion runs no command on a server. Other turns keep §5's
 native authority, so for an owner or shell grantee this boundary is a manager instruction rather

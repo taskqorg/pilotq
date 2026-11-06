@@ -1410,6 +1410,7 @@ Worker evidence is local and CI: `cargo test --locked servers::` and `cargo test
 - A person without a server grant is refused before the source runs. A narrow grant never reads another server by name, `all` or selection, and revocation refuses the next read.
 - Source diagnostics stay private. A missing, writable or table-less source reads unavailable.
 - The link digest selects only a readable server. A forged or foreign digest selects nothing.
+- A short name such as `pds18` reads the host `pds18.ufobe.com`, with or without `/KIND`. A shared first label stays ambiguous, and a name grants no access.
 - Failed-source stderr and argv stay out of service logs. English and Russian failures follow the resolved request language.
 - A queued inventory answer, rich/plain fallback or selection reply is blocked after server access is revoked, including after restart and multiple reads in one turn.
 - DM previews and later journal/native context obey the same revocation, including a turn that only reuses earlier findings.
