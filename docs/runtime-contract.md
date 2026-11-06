@@ -55,10 +55,13 @@ drafts, model choice, inactivity watches and recovery rules.
   child environment, so no API key reaches it and no paid API fallback exists (R9).
 - Every runtime reaches PilotQ's own tools through a per-turn stdio MCP relay, `pilotq --mcp-bridge
   SOCKET`. The relay forwards each list or call over an owner-only Unix socket with a per-turn token
-  to the one tool boundary. It holds no grant, state or decision.
+  to the one tool boundary. It holds no grant, state or decision. Native tools of an older Codex
+  thread are fixed at its creation and no longer answered, so its first turn after this upgrade
+  rebuilds once from the journal without repeating effects.
 - `Text` events feed answer drafts; the final text is the last `Message`. `ToolStart` and `ToolEnd`
   retain kind, name, identity and observed status in audit and the uncertain-effect record; missing
-  status stays unconfirmed. `Quota` and `Context` feed `/status`: retain every reported window,
+  status stays unconfirmed. A PilotQ relay tool uses one audit name on every runtime and writes no
+  native finding, because its boundary keeps its own. `Quota` and `Context` feed `/status`: retain every reported window,
   including named unknowns, without exposing account, credit or plan data.
 - Worker acceptance uses local/CI evidence. After a merged release, the PM qualifies live private
   text and voice prefixes on both runtimes, group delivery without drafts, edits at most once per

@@ -193,6 +193,19 @@ fn native_access(j:&Journal,user:i64)->Result<bool,String> {
 }
 
 /// Ordered user input as trait parts; `localImage` items are files PilotQ already stored for this turn.
+/// PilotQ's own tool behind a native MCP item, under one name on every runtime. Its boundary owns findings (§5, #383).
+fn relay_tool<'a>(tools: &Value, kind: ToolKind, name: Option<&'a str>) -> Option<&'a str> {
+    let name = name?;
+    let name = name.strip_prefix("mcp__pilotq__").unwrap_or(name);
+    (kind == ToolKind::Mcp && tools.as_array()?.iter().any(|t| t["name"] == name)).then_some(name)
+}
+
+/// The fingerprint of a session's tools. An app-server thread from before #383 fixed dynamic tools at creation and no AgentQ
+/// turn answers their calls, so the relay key rebuilds it once from the journal even when the tool list is unchanged.
+fn tool_fingerprint(name: &str, tools: &Value) -> Value {
+    if runtime(name).is_some_and(|a| a.descriptor().has("app-server")) { json!({"relay": tools}) } else { tools.clone() }
+}
+
 fn parts(input: &Value, resumed: bool) -> Vec<Part> {
     input.as_array().into_iter().flatten().filter(|i| !resumed || i["historical"] != true).map(|i| match i["path"].as_str() {
         Some(p) if i["type"] == "localImage" => Part::Image(p.into()),
@@ -367,8 +380,9 @@ impl Runtime {
                         Event::Message { text, .. } => { preview(&text); draft.clear(); answer = Some(text); }
                         Event::ToolStart { id, kind, name } => {
                             tooled = true;
+                            let own = relay_tool(tools.0, kind, name.as_deref()).map(str::to_string);
                             let kind = match kind { ToolKind::Shell => "shell", ToolKind::Mcp => "mcp", ToolKind::Web => "web", ToolKind::Other => "other" };
-                            let item = json!({"type": kind, "id": id, "tool": name});
+                            let item = json!({"type": kind, "id": id, "tool": own.as_deref().or(name.as_deref()), "relay": own.is_some()});
                             tool(kind, id.as_deref().unwrap_or(""), None);
                             observation("native_started", &item);
                             items.insert(id, item);
@@ -553,7 +567,7 @@ fn run_inner(rt: &Runtime, j: &Mutex<Journal>, r: &Run, now: impl Fn() -> i64, t
         profile["conversation"] = context.clone();
         profile["conversation"]["attached_images"] = json!(images.iter().map(|(id,_)|*id).collect::<Vec<_>>());
         profile["conversation"]["missing_images"] = json!(r.image_gaps.iter().filter(|id|allowed_image(**id)).collect::<Vec<_>>());
-        j.lock().unwrap().catalogue(r,&tools)?;
+        j.lock().unwrap().catalogue(r,&tool_fingerprint(&name,&tools))?;
         let refresh = j.lock().unwrap().refresh_tools(r)? || foreign;
         // #186: name exactly what this message carries and label every image, so an earlier image is never taken for it.
         let names: Vec<String> = j.lock().unwrap().reply_files(r.request)?.iter().filter_map(|f| f["name"].as_str().map(str::to_string)).collect();
@@ -695,7 +709,7 @@ fn observe(j: &Mutex<Journal>, r: &Run, d: &crate::direct::Direct, now: &impl Fn
         let detail=d.keys.scrub(data["tool"].as_str().unwrap_or(kind));
         let guard=j.lock().unwrap();
         let _=guard.0.execute("UPDATE audit_events SET target=?3 WHERE run_id=?1 AND item=?2 AND kind='tool'",rusqlite::params![r.id,data["id"].as_str().unwrap_or(""),detail]);
-        if completed {
+        if completed && data["relay"]!=true {
             let text=format!("{detail}: {}",data["status"].as_str().unwrap_or("completion observed; outcome unconfirmed"));
             let _=guard.keep_finding(r,&text,now());
         }
@@ -890,6 +904,40 @@ mod tests {
         j.revoke(7,8,&["shell".into()],3).unwrap();
         assert!(!super::native_access(&j,8).unwrap());
     }
+    // #383 A3/A6: a catalogue stored by an earlier build rebuilds a Codex session once, because its dynamic tools are fixed
+    // and unanswerable; the rebuilt session then resumes, and a Claude session keeps its fingerprint.
+    #[test]
+    fn pre_relay_codex_session_rebuilds_once_383() {
+        use super::*;
+        let tools=json!([{"name":"project_list"}]);
+        let mut j=Journal::open(std::path::Path::new(":memory:")).unwrap();
+        j.bootstrap(7,0).unwrap();
+        let r=j.ask(7,"before the update",1).unwrap();
+        j.catalogue(&r,&tools).unwrap();
+        j.finish(&r,Some(("codex","invented-dynamic-thread")),None,&Outcome::Answered("old".into()),2).unwrap();
+        let r=j.ask(7,"after the update",3).unwrap();
+        j.catalogue(&r,&tool_fingerprint("codex",&tools)).unwrap();
+        assert!(j.refresh_tools(&r).unwrap());
+        j.rebuild(&r,4,RebuildReason::PolicyRefresh).unwrap();
+        j.finish(&r,Some(("codex","invented-relay-thread")),None,&Outcome::Answered("new".into()),5).unwrap();
+        let r=j.ask(7,"next",6).unwrap();
+        j.catalogue(&r,&tool_fingerprint("codex",&tools)).unwrap();
+        assert!(!j.refresh_tools(&r).unwrap());
+        assert_eq!(r.thread.as_deref(),Some("invented-relay-thread"));
+        assert_eq!(tool_fingerprint("claude",&tools),tools);
+    }
+
+    // #383 / R5: only PilotQ's own MCP tools skip native findings, under one name on both runtimes.
+    #[test]
+    fn relay_tool_names_383() {
+        use super::*;
+        let tools=json!([{"name":"project_list"}]);
+        for native in ["project_list","mcp__pilotq__project_list"] { assert_eq!(relay_tool(&tools,ToolKind::Mcp,Some(native)),Some("project_list")); }
+        for (kind,native) in [(ToolKind::Mcp,Some("mcp__other__project_list")),(ToolKind::Mcp,Some("other")),(ToolKind::Mcp,None),(ToolKind::Shell,Some("project_list"))] {
+            assert_eq!(relay_tool(&tools,kind,native),None);
+        }
+    }
+
     // #383 A4: the resumed native thread already holds old pixels; rebuilds still receive them in order.
     #[test]
     fn image_parts_preserve_order_without_resend_383() {

@@ -1288,7 +1288,7 @@ for line in sys.stdin:
             reply, _ = bridge.communicate(json.dumps(request) + "\n", timeout=15)
             result = json.loads(reply)["result"]
             res = {"success": not result["isError"], "contentItems": result["content"]}
-            log.write(json.dumps({"id":50+i,"result":res}) + "\n"); log.flush()
+            log.write(json.dumps({"id":50+i,"result":res}, separators=(',', ':')) + "\n"); log.flush()
             answer = res["contentItems"][0]["text"]
             # #165: the fake manager summarizes structured successful reads like the
             # instructed manager; raw payloads remain in its protocol log for assertions.
@@ -4301,7 +4301,9 @@ fn runtime_relay_matrix_383() {
         push(&st,text(5,-100,None,OWNER,"multi {\"calls\":[[\"project_list\",{}]],\"stream\":true}"));
         wait("group relay answered",15,||try_query(&d,"SELECT count(*) FROM requests WHERE update_id=5 AND state='answered'")==Some(1));
         assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='direct' AND target='project_list'"),5);
-        assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='tool' AND result='completed'"),5);
+        assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='tool' AND target='project_list' AND result='completed'"),5,"one audit name on every runtime");
+        // #383 / R5: relay items stay out of restart and drain findings; the tool boundary keeps its own safe finding.
+        assert_eq!(query(&d,"SELECT count(*) FROM audit_events WHERE kind='kept_finding' AND coalesce(item,'')<>'project_list'"),0);
         let log=fs::read_to_string(d.join(if runtime=="codex" {"codex.log"} else {"relay.jsonl"})).unwrap();
         let hashes:Vec<String>=log.lines().filter_map(|line|serde_json::from_str::<Value>(line).ok()).filter_map(|v|v["relay_token_hash"].as_str().map(str::to_string)).collect();
         let turns:Vec<Value>=log.lines().filter_map(|line|serde_json::from_str::<Value>(line).ok()).collect();

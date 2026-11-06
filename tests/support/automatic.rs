@@ -68,7 +68,7 @@ struct Run {
 }
 
 pub(super) fn pause_tool_status(d: &Path, id: i64) -> String {
-    query_text(d, &format!("SELECT result FROM audit_events WHERE request_id={id} AND kind='tool' AND target='dynamicToolCall' AND result='completed' AND EXISTS (SELECT 1 FROM audit_events WHERE request_id={id} AND kind='call' AND target='queue_pause') ORDER BY id DESC LIMIT 1"))
+    query_text(d, &format!("SELECT result FROM audit_events WHERE request_id={id} AND kind='tool' AND target='queue_pause' AND result='completed' AND EXISTS (SELECT 1 FROM audit_events WHERE request_id={id} AND kind='call' AND target='queue_pause') ORDER BY id DESC LIMIT 1"))
 }
 
 fn request_delivered(d: &Path, update: i64) -> bool {
