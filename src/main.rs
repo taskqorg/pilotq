@@ -923,7 +923,7 @@ fn main() {
             let report = doctor(&t);
             if rest.contains(&"--json") { println!("{report}"); }
             else {
-                for (name, state) in report["checks"].as_object().unwrap() { println!("{name}: {}", state.as_str().unwrap()); }
+                for (name, state) in report["checks"].as_object().unwrap() { println!("{name}: {}", state.as_str().map_or_else(|| state.to_string(), str::to_string)); }
                 for r in report["requirements"].as_array().unwrap() {
                     println!("{}: {} (found {}, minimum {}); {}",r["tool"].as_str().unwrap(),r["outcome"].as_str().unwrap(),
                         r["found"].as_str().unwrap_or("unavailable"),r["minimum"].as_str().unwrap_or("undeclared"),r["fix"].as_str().unwrap());

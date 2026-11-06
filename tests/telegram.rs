@@ -3870,6 +3870,22 @@ fn doctor_voice_readiness() {
         assert_eq!(report["checks"]["voice"], expected, "mode {mode}: {report}");
         assert_eq!(out.status.success(), mode == 4, "mode {mode}: {report}");
         assert_eq!(report["ok"], mode == 4);
+        // #397 A1/A2 / §9: plain doctor must preserve structured readiness and requirements,
+        // succeed on the healthy fixture and fail cleanly (not panic) on an unhealthy fixture.
+        if mode == 0 || mode == 4 {
+            let plain = Command::new(env!("CARGO_BIN_EXE_pilotq")).env("PILOTQ_INSTALL", &d).env("PATH", &gh_path).arg("doctor").output().unwrap();
+            assert_eq!(plain.status.code(), Some(if mode == 4 { 0 } else { 1 }), "{}", String::from_utf8_lossy(&plain.stderr));
+            let text = String::from_utf8(plain.stdout).unwrap();
+            for (name, value) in report["checks"].as_object().unwrap() {
+                let value = value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string());
+                assert!(text.contains(&format!("{name}: {value}\n")), "missing {name}: {text}");
+            }
+            for r in report["requirements"].as_array().unwrap() {
+                let line = format!("{}: {} (found {}, minimum {}); {}\n", r["tool"].as_str().unwrap(), r["outcome"].as_str().unwrap(),
+                    r["found"].as_str().unwrap_or("unavailable"), r["minimum"].as_str().unwrap_or("undeclared"), r["fix"].as_str().unwrap());
+                assert!(text.contains(&line), "missing requirement: {line}");
+            }
+        }
         if mode == 3 { assert!(String::from_utf8_lossy(&out.stderr).contains("private-dependency-output")); }
         assert!(report.get("gh").is_none());
         assert!(report["checks"].get("board_answers").is_none());
