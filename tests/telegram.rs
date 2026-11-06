@@ -1678,7 +1678,7 @@ fn u82_ask_buttons_and_labeled_links() {
     });
     wait("question", 15, || sent_has(&st, "\nDecision:"));
     let q = sent(&st).into_iter().find(|s| s["text"].as_str().unwrap().contains("\nDecision:")).unwrap();
-    assert_eq!(q["rich_message"]["markdown"].as_str().unwrap().replace("  \n", "\n"), format!("🛑 [pilotq#19 — Docs]({issue})\nDone: drafted\nDecision: pick a wording, see [the spec](https://github.com/taskqorg/pilotq/blob/main/pilotq.md)\n1. short ★\n\\+ quick; - less detail\n2. long\n\\+ detail; - slower\nRecommendation reason: not separately verified."));
+    assert_eq!(q["rich_message"]["markdown"].as_str().unwrap().replace("  \n", "\n"), format!("🛑 [pilotq#19 — Docs]({issue})\nGoal: Make the README name the ask command.\nDone: drafted\nDecision: pick a wording, see [the spec](https://github.com/taskqorg/pilotq/blob/main/pilotq.md)\n1. short ★\n\\+ quick; - less detail\n2. long\n\\+ detail; - slower\nRecommendation reason: not separately verified."));
     assert_eq!(q["reply_markup"]["inline_keyboard"], json!([[{"text": "1. short ★", "callback_data": "answer:1"}], [{"text": "2. long", "callback_data": "answer:2"}]]));
     fs::write(d.join("hold-answer"),"").unwrap();
     push(&st, press(3, -100, topic, OWNER, q["id"].as_i64().unwrap(), "answer:2"));
