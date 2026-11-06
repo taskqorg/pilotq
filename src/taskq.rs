@@ -1278,6 +1278,17 @@ mod tests {
         assert_eq!(d.buttons.iter().map(|b|b.0.as_str()).collect::<Vec<_>>(),vec!["answer:1","answer:2"]);
         assert_eq!(journal.choice("taskq",2453,2,"1").unwrap().unwrap().1,"Complete protected-child A2");
         assert_eq!(models(&journal),0);
+        // /new keeps the subscription, so the next question gets the same card and still starts no model.
+        let reset=crate::journal::Input{files:vec![],callback:None,media_group:None,quote:None,image:None,voice:None,language:None,chat:7,topic:None,sender:Some(7),name:Some("Owner".into()),message:2,kind:"text",text:Some("/new".into()),reply_to:None};
+        journal.admit(&[(1,Some(reset))],3).unwrap();
+        assert_eq!(journal.0.query_row("SELECT state FROM requests WHERE update_id=1",[],|r|r.get::<_,String>(0)).unwrap(),"answered","/new really ran");
+        let j=Mutex::new(journal);
+        snapshot(&dir,json!([{"n":2453,"state":"ask","revision":3,"title":TITLE,"url":URL,"brief":f["task"]["body"],"question":q}]));
+        assert!(scan(&tq,&j));
+        let journal=j.into_inner().unwrap();
+        let after:String=journal.0.query_row("SELECT text FROM outbox WHERE kind='question' AND task=2453 AND revision=3",[],|r|r.get(0)).unwrap();
+        assert!(after.contains("A2 (task text): A consumer passes its CoreQ Store") && after.contains("Next: an admin or the project owner decides"),"{after}");
+        assert_eq!(models(&journal),0,"reset starts no model turn for a card");
         drop(journal);
         std::fs::remove_dir_all(dir).unwrap();
     }
