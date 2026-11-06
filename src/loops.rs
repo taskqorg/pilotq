@@ -370,7 +370,7 @@ fn collect(bound:Result<(crate::taskq::Taskq,String),String>,j:&std::sync::Mutex
     if snap["board"]["repo"]!=board {return Err("loop board mismatch".into());}
     let mut tasks=serde_json::Map::new();
     for t in snap["tasks"].as_array().ok_or("loop board tasks unavailable")? {
-        if let Some(n)=t["n"].as_i64() {tasks.insert(n.to_string(),json!({"state":t["state"],"revision":t["revision"],"question":t["question"],"options":t["options"],"title":t["title"],"blocked":t["blocked"],"url":t["url"],"verdict":t["verdict"]}));}
+        if let Some(n)=t["n"].as_i64() {tasks.insert(n.to_string(),json!({"state":t["state"],"revision":t["revision"],"question":t["question"],"options":t["options"],"title":t["title"],"blocked":t["blocked"],"url":t["url"],"verdict":t["verdict"],"goal":crate::taskq::task_goal(t["brief"].as_str())}));}
     }
     let baseline={let guard=j.lock().unwrap();guard.0.query_row("SELECT CAST(value AS TEXT) FROM meta WHERE key=?1",[format!("loop-board:{}",w.board)],|r|r.get::<_,String>(0)).optional().map_err(err)?};
     if let Some(baseline)=baseline {
@@ -983,6 +983,46 @@ mod tests {
                 assert_eq!(tick.as_deref(),Some(language));
             }
             drop(j);std::fs::remove_dir_all(p).unwrap();
+        }
+    }
+
+    // #387 / §2: open failed/ask PM cards must retain the available goal, not only closed cards.
+    #[cfg(unix)]
+    #[test]
+    fn explanations_387_open_pm_card_goal() {
+        use crate::taskq::fixture_2453::*;
+        for (language,address) in [("ru","Проверь задачи"),("en","Please review current tasks")] {
+            let (mut j,p)=journal(&format!("387-open-{language}"));
+            let bin=install(&p);
+            j.add_project(7,"taskq",BOARD,p.to_str().unwrap(),0).unwrap();
+            let mut said=input(1,7,address);said.language=None;
+            j.admit(&[(1,Some(said))],1).unwrap();
+            admitted(&mut j,2,1,7,"/review on",2);
+            let w=Watch{project:"taskq".into(),board:BOARD.into(),root:p.to_string_lossy().to_string()};
+            let tq=crate::taskq::Taskq{bot:None,bin,root:p.clone(),poll:std::time::Duration::from_secs(5)};
+            let mutex=std::sync::Mutex::new(j);
+            let collect_now=|| {let bound=tq.registered(&mutex.lock().unwrap(),"taskq");collect(bound,&mutex,&w)};
+            let q:Value=serde_json::from_str(include_str!("../tests/fixtures/385/2450.json")).unwrap();
+            let mut row=json!({"n":2453,"state":"doing","revision":1,"title":TITLE,"url":URL,
+                "brief":fixture()["closed_snapshot"]["tasks"][0]["brief"]});
+            snapshot(&p,json!([row]));collect_now().unwrap();
+            for (revision,state) in [(2,"failed"),(3,"ask")] {
+                row["revision"]=json!(revision);row["state"]=json!(state);
+                if state=="ask" {row["question"]=q["history"][0]["question"].clone();}
+                snapshot(&p,json!([row]));collect_now().unwrap();collect_now().unwrap();
+                let j=mutex.lock().unwrap();let text=ticks(&j);
+                assert_eq!(text.len(),revision as usize-1,"one review per transition, no repeats");
+                let text=text.last().unwrap();
+                for fact in [TITLE,URL,ESSENCE] {assert!(text.contains(fact),"open {state} PM card lacks {fact}: {text}");}
+                assert!(text.contains(&format!("\"state\":\"{state}\"")));
+                if state=="ask" {for c in q["history"][0]["question"]["choices"].as_array().unwrap() {
+                    assert!(text.contains(&c["id"].to_string()) && text.contains(c["label"].as_str().unwrap()) && text.contains(c["detail"].as_str().unwrap()));
+                }}
+                let tick:Option<String>=j.0.query_row("SELECT language FROM requests WHERE id IN (SELECT request_id FROM audit_events WHERE kind='loop_tick') ORDER BY id DESC LIMIT 1",[],|r|r.get(0)).unwrap();
+                assert_eq!(tick.as_deref(),Some(language));
+                j.0.execute("UPDATE requests SET state='answered' WHERE id IN (SELECT request_id FROM audit_events WHERE kind='loop_tick')",[]).unwrap();
+            }
+            drop(mutex);std::fs::remove_dir_all(p).unwrap();
         }
     }
 

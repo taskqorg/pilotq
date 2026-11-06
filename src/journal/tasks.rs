@@ -537,9 +537,20 @@ impl Journal {
     }
 
     pub fn task_goal(&self, project:&str, task:i64)->Result<Option<String>,String> {
-        self.0.query_row("SELECT a.result FROM audit_events a JOIN tasks t ON a.request_id=t.request_id AND a.item=t.root
+        let observed:Option<String>=self.0.query_row("SELECT a.result FROM audit_events a JOIN tasks t ON a.request_id=t.request_id AND a.item=t.root
             WHERE a.kind='task_goal' AND a.target=?1 AND t.project=?2 AND t.number=?3 ORDER BY a.id DESC LIMIT 1",
-            params![format!("{project}#{task}"),project,task],|r|r.get(0)).optional().map_err(|e|e.to_string())
+            params![format!("{project}#{task}"),project,task],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
+        if observed.is_some() {return Ok(observed)}
+        // Before the first scan, use the immutable plan that filed this exact subscription (§2 / #387).
+        let filed:Option<(String,i64)>=self.0.query_row("SELECT p.tickets,k.idx FROM tickets k
+            JOIN plan_runs r ON r.id=k.run_id JOIN plans p ON p.id=r.plan_id
+            JOIN tasks t ON t.request_id=r.request_id AND t.number=k.task AND t.project=p.project AND t.board=p.board AND t.root=p.root
+            WHERE t.project=?1 AND t.number=?2 ORDER BY r.id DESC LIMIT 1",
+            params![project,task],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(|e|e.to_string())?;
+        let Some((text,idx))=filed else {return Ok(None)};
+        let tickets:Value=serde_json::from_str(&text).map_err(|e|e.to_string())?;
+        Ok(tickets[idx.saturating_sub(1) as usize]["goal"].as_str()
+            .and_then(|goal|crate::taskq::task_goal(Some(&format!("## Goal\n{goal}")))))
     }
 
     /// Saved title for a subscribed task, including after it leaves the open snapshot (§12).

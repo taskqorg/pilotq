@@ -962,6 +962,45 @@ fn question_supersession_324_restart_routes_and_order() {
     }
 }
 
+// #387 / §2, R13: the first launch card must retain the filed goal before any board scan, including after restart.
+#[test]
+fn explanations_387_launch_goal_before_scan() {
+    use crate::manager::Outcome;
+    for (language,address,label) in [("ru","Запусти план","Цель: "),("en","Launch the plan","Goal: ")] {
+        let (mut j,p)=journal(&format!("387-launch-{language}"));
+        j.add_project(7,"pilotq","taskqorg/pilotq",p.to_str().unwrap(),0).unwrap();
+        let mut input=msg(7,7,1).unwrap();input.text=Some(address.into());
+        j.admit(&[(1,Some(input))],0).unwrap();let r=j.claim_next(4,0).unwrap().remove(0);
+        let goal="Keep each accepted input once";
+        j.save_plan(&r,&json!([{"title":"Durable intake","goal":goal}]),"pilotq","taskqorg/pilotq",p.to_str().unwrap(),1).unwrap();
+        j.finish(&r,None,None,&Outcome::Answered("saved".into()),1).unwrap();
+        let mut input=msg(7,7,2).unwrap();input.text=Some(address.into());
+        j.admit(&[(2,Some(input))],2).unwrap();let r=j.claim_next(4,2).unwrap().remove(0);
+        let id=j.authorize(&r,1,7,120,2).unwrap();let run=j.plan_run(id).unwrap();
+        j.filed(&run,1,19,10,2).unwrap();
+        let url="https://forge.invalid/pilotq/issues/19";
+        j.remember_task_url("pilotq",19,Some(url),2).unwrap();
+        drop(j);let mut j=Journal::open(&p.join("journal.sqlite")).unwrap();
+        j.started(&run,1,19,"ready",2).unwrap();j.run_outcome(&run,"started",None,None,0,2).unwrap();
+        j.finish(&r,None,None,&Outcome::Answered(j.launch_reply(&r).unwrap().unwrap()),2).unwrap();
+        let mut found=false;
+        while let Some(d)=j.due(3).unwrap().0 {
+            if d.kind=="status" {
+                found=true;
+                for sink in [d.text.clone(),crate::telegram::markdown(&d.text),crate::telegram::html(&d.text)] {
+                    for part in ["Durable intake",url,&format!("{label}{goal}")] {assert!(sink.contains(part),"launch before scan lacks {part}: {sink}");}
+                }
+            }
+            j.record(d.id,&Sent::Ok(d.edit.unwrap_or(100+d.id)),3).unwrap();
+        }
+        assert!(found,"first launch status was not queued");
+        assert_eq!(j.task_goal("other",19).unwrap(),None,"goals stay project-bound");
+        j.remember_task_goal("pilotq",19,Some("Fresh readback goal"),4).unwrap();
+        assert_eq!(j.task_goal("pilotq",19).unwrap().as_deref(),Some("Fresh readback goal"),"readback supersedes the filed goal");
+        drop(j);std::fs::remove_dir_all(p).unwrap();
+    }
+}
+
 // #165 A5: two tasks from one launch share a status receipt even as they
 // transition independently; task-specific questions remain separate messages.
 #[test]
