@@ -84,7 +84,7 @@ mod tests {
         // #212 A1/A5: native sessions load the authoritative reply rules, including after rebuild.
         assert!(policy.contains("at most three short bullets"));
         // #385 / R13: explanations and source-card exceptions must reach rebuilt sessions, not just docs.
-        for rule in ["With PM review enabled", "original option numbers", "Raw source alone is not an explanation", "Explanation does not answer the question"] {
+        for rule in ["With PM review enabled", "original option numbers", "Raw source alone is not an explanation", "Explanation does not answer the question", "without inventing, dropping or softening them"] {
             assert!(policy.contains(rule),"missing task explanation boundary: {rule}");
         }
         assert!(policy.contains("naming who acts"));
