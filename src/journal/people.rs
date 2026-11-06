@@ -23,7 +23,7 @@ impl Journal {
     /// Adds grants to `target`; the actor needs `users`. Returns the target's grants after the change.
     pub fn grant(&mut self, actor: i64, target: i64, names: &[String], at: i64) -> Result<Vec<String>, String> {
         if let Some(g) = names.iter().find(|g| !valid_grant(g)) {
-            return Err(format!("unknown grant {g}; use {}, project:NAME or owner:NAME", GRANTS.join(", ")));
+            return Err(format!("unknown grant {g}; use {}, project:NAME, owner:NAME or server:WORKSPACE/HOST", GRANTS.join(", ")));
         }
         if names.iter().any(|g|g.starts_with("release:")) && (self.owner()?!=Some(actor) || actor!=target) {return Err("Only the protected owner can grant their release capability".into());}
         self.change(Some(actor), target, at, |g| g.extend(names.iter().cloned()))

@@ -37,7 +37,7 @@ pub const ATTEMPTS: i64 = 5;
 /// Named grants (§ 2, § 5, § 8). `chat` admits conversation only; every other grant is separate. `project:NAME` scopes a project;
 /// `projects` covers every project; `queue` pauses host admission. Roles (#267): `admin` implies every named grant and every
 /// project; `owner:NAME` implies `project:NAME` and TaskQ writes there only. Neither implies `release:NAME`.
-pub const GRANTS: [&str; 8] = ["chat", "users", "projects", "taskq", "audit", "queue", "shell", "admin"];
+pub const GRANTS: [&str; 9] = ["chat", "users", "projects", "taskq", "audit", "queue", "shell", "admin", "servers"];
 /// Section 7 health sources, each reported separately.
 pub const SOURCES: [&str; 5] = ["poll", "storage", "model", "taskq", "delivery"];
 /// §9 / #81 owner incidents: source, opening and recovery text. Plain lines, no internal IDs or raw errors (§4).
@@ -58,7 +58,9 @@ const PROGRESS_EDIT: i64 = 30;
 
 pub(crate) fn valid_grant(g: &str) -> bool {
     let name = |p: &str| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
-    GRANTS.contains(&g) || ["release:", "project:", "owner:"].iter().any(|k| g.strip_prefix(k).is_some_and(name))
+    // §5 / #375: `server:WORKSPACE/HOST` names a DashQ row, lowercase; the host may keep its `/kind` suffix.
+    let server = |p: &str| p.split_once('/').is_some_and(|(w, h)| !w.is_empty() && !h.is_empty()) && p.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "-_./".contains(c));
+    GRANTS.contains(&g) || ["release:", "project:", "owner:"].iter().any(|k| g.strip_prefix(k).is_some_and(name)) || g.strip_prefix("server:").is_some_and(server)
 }
 
 /// R17: rows are pruned oldest first and their times are gone, so a window is complete only if the
@@ -1268,6 +1270,15 @@ impl Journal {
             "failed": failed.as_ref().ok(),
             "failed_reason": failed.err(),
         }))
+    }
+
+    /// §5 / #375: the DashQ selector chosen by this conversation's server link. It selects only; every read rechecks grants.
+    pub fn selected_server(&self, session: &str) -> Result<Option<String>, String> {
+        self.0.query_row("SELECT value FROM meta WHERE key=?1", [format!("server-selection:{session}")], |r| r.get(0)).optional().map_err(|e| e.to_string())
+    }
+
+    pub fn select_server(&self, session: &str, selector: &str) -> Result<(), String> {
+        self.0.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?1,?2)", params![format!("server-selection:{session}"), selector]).map(drop).map_err(|e| e.to_string())
     }
 
     /// The conversation's current project, set only by an explicit switch.

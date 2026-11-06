@@ -200,6 +200,16 @@ Under #144, the configured TaskQ executable and registered project root own boar
 The PM releases the accepted change on PDS 18, checks `project_list` for `agentq`, `pilotq` and `tight`, then asks an authorized person to request tight's board status in Telegram. Record the request and reply, source link, exact TaskQ/PilotQ revisions and complete snapshot. Zero tasks qualifies an empty board only after that successful read. Registration grants neither server access nor worker capacity. Task execution additionally needs TaskQ project setup, an authorized worker on PDS 18, applicable runtime/resource grants and the board's read-after-write qualification (§5). Do not change the installation from a worker attempt.
 
 
+### Server discussion source (#375)
+
+The installation owner may create `servers.json` beside `keys.json`, mode `0600`, naming the local DashQ report. The file holds no credentials. Replace the invented path:
+
+```json
+{"executable":"/opt/invented/dashq","args":["report"]}
+```
+
+Verify with `pilotq ask "what takes space on HOST"` as a person holding `servers`. Grant one server with `pilotq users grant ID server:WORKSPACE/HOST`. Without the file, the tool reads unavailable and every other PilotQ feature keeps working. See [server discussion](integration-contract.md#server-discussion).
+
 ### Approved installed read commands (#126)
 
 The installation owner may create `commands.json` beside `keys.json`, mode `0600`.

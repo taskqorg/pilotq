@@ -1151,6 +1151,23 @@ fn onboard_274_usage_reply() {
     }
 }
 
+// #375 A4 / §5: a server link is a selection, never the help reply, and an unconfigured source selects nothing.
+#[test]
+fn start_375_server_link_is_not_help() {
+    let (mut j,p)=journal("start-375");
+    let mut input=msg(7,7,1).unwrap();input.text=Some("/start server-0123456789abcdef".into());
+    j.admit(&[(1,Some(input))],0).unwrap();
+    let shared=std::sync::Arc::new(std::sync::Mutex::new(j));
+    let request=shared.lock().unwrap().builtin_next().unwrap().expect("server link was not a built-in");
+    crate::builtins::execute(&crate::tool(),&shared,&request,false).unwrap();
+    let (state,reply,_)=shared.lock().unwrap().request(request.id).unwrap();
+    let reply=reply.unwrap();
+    assert_eq!(state,"answered");
+    assert!(reply.starts_with("No server selected") || reply.contains("No access"),"{reply}");
+    assert!(shared.lock().unwrap().selected_server(&request.session).unwrap().is_none());
+    drop(shared);std::fs::remove_dir_all(p).unwrap();
+}
+
 // #360 A1 / §9: Telegram's first message /start, with or without a deep-link payload or @bot suffix,
 // must reach the same top-level help as /help instead of the unknown-command refusal.
 #[test]

@@ -1399,3 +1399,18 @@ The owner’s accepted PM-on/off decision is retained in [the task report](resea
 - **E385.5, delivery:** source and explanation survive rich Markdown, HTML and plain fallback with original option mapping, one sink encoding and English/Russian labels. Model output and Telegram appearance require the live checks below.
 
 After merge and release, the PM updates only the existing pds18 test install under §9 and records binary/source/specq identity, healthy service, selftest, doctor and request/journal continuity. In real authorized DM/topic routes, capture English and Russian ordinary replies, PM-off cards with no new model runs, PM-on explanations of a question and closing outcome, errors, rich/HTML/plain delivery, and a disposable three-option question answered with original option 2. Retain screenshots, original/edited card IDs, revision, authorized actor and accepted answer receipt. Verify stale/foreign/repeated presses and revoked grants make no additional writes. Do not replay the historical owner decisions in the fixtures. Record unsupported or untested paths as gaps. Workers never install; local fixtures and CI do not qualify these live paths (R19, §9).
+### A375 — Discuss servers in chat
+
+Worker evidence is local and CI: `cargo test --locked servers::` and `cargo test --locked start_375`.
+
+- Inventory answers carry data age, largest consumers and explicit unknowns.
+- A person without a server grant is refused before the source runs. A narrow grant never reads another server by name, `all` or selection, and revocation refuses the next read.
+- Source diagnostics stay private. A missing, writable or table-less source reads unavailable.
+- The link digest selects only a readable server. A forged or foreign digest selects nothing.
+
+PM live check after release, with ServerQ inventory and DashQ's server table deployed on PDS 18:
+
+1. Open a DashQ row link and confirm the chat replies with that server selected and its data age.
+2. Ask "what takes the most space on pds18" and compare the answer with `dashq report`.
+3. Ask for a cleanup and confirm that a draft appears, nothing runs on the server and a task exists only after Launch.
+4. Ask as a person without a server grant and confirm the one-line refusal.
