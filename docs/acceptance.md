@@ -1405,6 +1405,8 @@ After merge and release, the PM updates only the existing pds18 test install und
 
 ## Long-thread resume (#390)
 
+[Worker evidence and merge-queue fixture repair](research/390.md) retain the check boundaries and PM handoff.
+
 [AgentQ research 253](https://github.com/taskqorg/agentq/blob/0ba341d875ac82f24049340a68a188b8a7f49580/docs/research/253.md) reproduces the mechanism offline on real Codex. It does not prove the exact cause of live requests 714 and 716, which stays open until the PM checks.
 
 **Before:** on the fixture-only commit, Linux CI run [`42141109396`](https://github.com/taskqorg/pilotq/actions/runs/42141109396) failed `long_thread_resumes_in_place_390` with `app-server record incomplete or exceeds 8 MiB` in the operator log and `Codex CLI exited without a terminal event` as the outcome. These are the same two messages as the live failure. **After:** the same fixture passes with the fix.
