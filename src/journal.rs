@@ -219,6 +219,7 @@ fn brief(language: Option<&str>, reason: &str) -> &'static str {
         ("ru", "document_timeout") => "Время разбора документа истекло.",
         ("ru", "limit") => "Лимит запроса исчерпан; попросите продолжить с сохранённого результата.",
         ("ru", "uncertain") => "Результат действия неизвестен; автоматического повтора не будет.",
+        ("ru", "handshake") => "Не удалось открыть разговор, поэтому запрос не отправлен; разговор сохранён. Отправьте запрос ещё раз; если ошибка повторится, попросите владельца проверить журнал сервиса PilotQ.",
         ("ru", _) => "Не удалось завершить запрос; попробуйте ещё раз или проверьте /status.",
         ("he", "file_limit") => "הקובץ גדול מ־20 MiB; דחסו אותו או שלחו אותו בחלקים.",
         ("he", "voice_limit") => "ההקלטה גדולה מדי; שלחו הקלטה באורך של עד 5 דקות ובגודל של עד 20 MiB.",
@@ -233,6 +234,7 @@ fn brief(language: Option<&str>, reason: &str) -> &'static str {
         (_, "document_timeout") => "Document parsing timed out.",
         (_, "limit") => "The request reached its limit; ask to continue from the saved result.",
         (_, "uncertain") => "The action’s outcome is uncertain; it will not be repeated automatically.",
+        (_, "handshake") => "The conversation could not be opened, so this request was not submitted; the conversation is kept. Send the request again; if this repeats, ask the owner to check the PilotQ service log.",
         _ => "The request failed; try again or check /status.",
     }
 }

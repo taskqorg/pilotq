@@ -1573,6 +1573,29 @@ fn document_timeout_reply_195() {
     }
 }
 
+// #390 A4: a stopped handshake reaches the person as what happened and what to do, in their language; it claims no exit.
+#[test]
+fn handshake_failure_reply_390() {
+    use crate::manager::{HANDSHAKE_FAILED, Outcome};
+    for (language, words, next) in [("en", "Check the report", "Send the request again"), ("ru", "Проверь отчёт", "Отправьте запрос ещё раз")] {
+        let (mut j, p) = journal(&format!("handshake-{language}"));
+        let mut input = msg(7, 7, 1).unwrap();
+        input.language = Some(language.into());
+        input.text = Some(words.into());
+        j.admit(&[(1, Some(input))], 0).unwrap();
+        let r = j.claim_next(1, 0).unwrap().remove(0);
+        let detail = format!("Codex CLI {HANDSHAKE_FAILED}");
+        j.finish(&r, None, None, &Outcome::Failed(detail.clone()), 1).unwrap();
+        let (state, reply, error) = j.request(r.request).unwrap();
+        let reply = reply.unwrap();
+        assert_eq!((state.as_str(), error.as_deref()), ("failed", Some(detail.as_str())));
+        assert!(reply.contains(next) && reply != brief(Some(language), "failed"), "{reply}");
+        assert!(!detail.contains("exited") && !reply.contains("exited"));
+        drop(j);
+        std::fs::remove_dir_all(p).unwrap();
+    }
+}
+
 // #190 A6 replaces replay; R5 still fences stopped runs and preserves /new generation boundaries.
 #[test]
 fn runs_reconcile_and_fence() {

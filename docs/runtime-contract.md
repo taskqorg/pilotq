@@ -39,6 +39,12 @@ drafts, model choice, inactivity watches and recovery rules.
 - Codex runs as a trait app-server session (`Mode::AppServer`) with PilotQ's isolated `CODEX_HOME`,
   the forced ChatGPT login and its dynamic tools; the owner and shell grantees get
   `danger-full-access`, others `read-only`, both without approval prompts.
+- A Codex resume sends `excludeTurns: true`, because the reply is one stdout record under the
+  runtime's 8 MiB bound and PilotQ reads no turns from it. The native thread keeps its model
+  context; PilotQ neither raises the bound nor trims history. A handshake that fails after spawn
+  reports that the request was not submitted and the conversation is kept, with the next action.
+  It claims no child exit, because the adapter may have stopped the child. The adapter's reason
+  goes to the operator log only.
 - Claude runs as one trait CLI turn (`claude -p`, stream-json input and output, partial messages for
   drafts). Restricted principals get no built-in tools (`--tools ""`); the owner and shell grantees
   run with `bypassPermissions`. `/model` offers configured `models` (Claude default `opus`, `sonnet`,

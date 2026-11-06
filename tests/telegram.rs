@@ -1054,7 +1054,7 @@ sleep 0.5; rmdir "$d/init.lock"; exec "$d/fake-codex""#);
     let (d, _st) = setup("dead", vec![]);
     use_codex(&d, &script(&d, "dead-codex", "echo 'Error: boom' >&2; exit 1"));
     let o = cli(&d, &["ask", "--json", "hi"]);
-    assert_eq!(serde_json::from_slice::<Value>(&o.stdout).unwrap()["error"], "Codex CLI exited without a terminal event", "the reply carries no raw stderr");
+    assert_eq!(serde_json::from_slice::<Value>(&o.stdout).unwrap()["error"], "Codex CLI could not open the conversation, so this request was not submitted; the saved conversation is kept. Send the request again; if this repeats, the owner should check the PilotQ service log.", "the reply carries no raw stderr");
     assert!(fs::read_to_string(d.join("codex/app-server.log")).unwrap().contains("Error: boom"), "the private operator log names the reason");
     cleanup(&d);
 }

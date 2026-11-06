@@ -308,7 +308,8 @@ impl Runtime {
             // dynamic tools are an experimental app-server field; they are fixed at thread creation, so schema upgrades
             // explicitly rebuild older catalogues from the journal
             let mut thread = json!({"cwd": self.workspace, "developerInstructions": dynamic.1});
-            if resume.is_none() { thread["dynamicTools"] = dynamic.0.clone(); }
+            // #390: the resume reply is one stdout record; the native thread keeps its context without returning its turns
+            if resume.is_none() { thread["dynamicTools"] = dynamic.0.clone(); } else { thread["excludeTurns"] = json!(true); }
             l.mode = Mode::AppServer { initialize: json!({"clientInfo": {"name": "pilotq", "title": "PilotQ", "version": env!("CARGO_PKG_VERSION")}, "capabilities": {"experimentalApi": true}}), thread };
         } else {
             l.parts = parts(input);
@@ -342,7 +343,7 @@ impl Runtime {
             // native diagnostics can name paths or account details: operator log only, never a reply, the journal or telemetry
             Err(e) => {
                 crate::host::log(name, e.message());
-                return failed(match e { LaunchFailure::NotStarted(_) => format!("{label} did not start; check login and runtime health."), LaunchFailure::Exited(_) => format!("{label} exited without a terminal event") });
+                return failed(match e { LaunchFailure::NotStarted(_) => format!("{label} did not start; check login and runtime health."), LaunchFailure::Exited(_) if app_server => format!("{label} {HANDSHAKE_FAILED}"), LaunchFailure::Exited(_) => format!("{label} exited without a terminal event") });
             }
         };
         let result = (|| {
@@ -1092,7 +1093,7 @@ for line in sys.stdin:
         assert!(matches!(run(false,Some("missing"),"restricted",false),Outcome::Answered(s) if s=="finished"));
         // #373 A5: a diagnostic containing "spawn" cannot turn an exited child into a launch failure.
         std::fs::write(&bin,"#!/bin/sh\necho spawn-diagnostic >&2\nexit 1\n").unwrap();
-        assert!(matches!(run(true,None,"active",false),Outcome::Failed(s) if s=="Codex CLI exited without a terminal event"));
+        assert!(matches!(run(true,None,"active",false),Outcome::Failed(s) if s==format!("Codex CLI {HANDSHAKE_FAILED}")));
         std::fs::remove_file(&bin).unwrap();
         assert!(matches!(run(true,None,"active",false),Outcome::Failed(s) if s=="Codex CLI did not start; check login and runtime health."));
         std::fs::remove_dir_all(dir).unwrap();
