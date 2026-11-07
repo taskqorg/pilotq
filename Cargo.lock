@@ -21,14 +21,15 @@ dependencies = [
 
 [[package]]
 name = "agentq-runtime"
-version = "0.8.0"
-source = "git+https://github.com/taskqorg/agentq?tag=runtime-v0.8.0#eb13fe90cc86a682ec37259d9865dfe3e6f11e6e"
+version = "0.15.0"
+source = "git+https://github.com/taskqorg/agentq?tag=runtime-v0.15.0#c019708aa3d3c03bb372303199857e3047b0c1f6"
 dependencies = [
  "coreq",
  "libc",
  "ring",
  "serde",
  "serde_json",
+ "toml",
 ]
 
 [[package]]
@@ -262,8 +263,8 @@ checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
 
 [[package]]
 name = "coreq"
-version = "0.21.0"
-source = "git+https://github.com/taskqorg/coreq?tag=v0.21.0#18b177c445e92c5df58bd1dea1b473776dd0c6ae"
+version = "0.23.4"
+source = "git+https://github.com/taskqorg/coreq?tag=v0.23.4#ffbcafe764b6dfe0fd5584017dbcc9c2f5b12ba7"
 dependencies = [
  "coreq-instrument",
  "flate2",
@@ -278,7 +279,7 @@ dependencies = [
 [[package]]
 name = "coreq-instrument"
 version = "0.1.0"
-source = "git+https://github.com/taskqorg/coreq?tag=v0.21.0#18b177c445e92c5df58bd1dea1b473776dd0c6ae"
+source = "git+https://github.com/taskqorg/coreq?tag=v0.23.4#ffbcafe764b6dfe0fd5584017dbcc9c2f5b12ba7"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1698,6 +1699,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_spanned"
+version = "1.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c187e0a369471c550af028cba56d4f4fa2a489ad28151ae95a4d340a2a8b782"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
 name = "serde_urlencoded"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2090,6 +2100,45 @@ dependencies = [
  "pin-project-lite",
  "tokio",
 ]
+
+[[package]]
+name = "toml"
+version = "1.1.8+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "20489e00e4d8741d6be680764cc12e270655e375a20d1011e844a9c3379e678d"
+dependencies = [
+ "indexmap 2.14.2",
+ "serde_core",
+ "serde_spanned",
+ "toml_datetime",
+ "toml_parser",
+ "toml_writer",
+ "winnow",
+]
+
+[[package]]
+name = "toml_datetime"
+version = "1.1.3+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "173f25c883cd2176a2d8212155638c0a60d484a9d84546d270866f40f56b6e49"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
+name = "toml_parser"
+version = "1.1.5+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "baa693a8032d7e1cada7d0041e96126df243179ff061456783ac7f12bda4744c"
+dependencies = [
+ "winnow",
+]
+
+[[package]]
+name = "toml_writer"
+version = "1.2.0+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "009dbb7700f11c55ef83aebbe4c0e9cf1f1ac0844bd8d6f00dc38f302026e13a"
 
 [[package]]
 name = "tower"
@@ -2530,6 +2579,12 @@ name = "windows_x86_64_msvc"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
+
+[[package]]
+name = "winnow"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c3b93199df0ab874cdf0c6a94f0a0dc3423fe41f1cafb62b8bd7b1deb277aef"
 
 [[package]]
 name = "writeable"
