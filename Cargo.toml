@@ -6,8 +6,8 @@ publish = false
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-coreq = { git = "https://github.com/taskqorg/coreq", tag = "v0.21.0" }
-agentq-runtime = { git = "https://github.com/taskqorg/agentq", tag = "runtime-v0.8.0" }
+coreq = { git = "https://github.com/taskqorg/coreq", tag = "v0.23.4" }
+agentq-runtime = { git = "https://github.com/taskqorg/agentq", tag = "runtime-v0.15.0" }
 tracing = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
